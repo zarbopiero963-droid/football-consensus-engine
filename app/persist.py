@@ -53,18 +53,7 @@ def upsert_snapshots(rows: Iterable[dict]) -> int:
                     %(picked_odds)s,%(picked_edge)s,%(pin_favorite)s,%(pin_favorite_odds)s,%(same_as_favorite)s,
                     %(sha256_model_raw)s,%(sha256_odds_raw)s,%(payload)s::jsonb
                 )
-                ON CONFLICT (match_id,snapshot_timestamp_utc)
-                DO UPDATE SET
-                    analysis_eligible = EXCLUDED.analysis_eligible,
-                    model_pick = EXCLUDED.model_pick,
-                    model_pick_probability = EXCLUDED.model_pick_probability,
-                    picked_odds = EXCLUDED.picked_odds,
-                    picked_edge = EXCLUDED.picked_edge,
-                    pin_favorite = EXCLUDED.pin_favorite,
-                    pin_favorite_odds = EXCLUDED.pin_favorite_odds,
-                    same_as_favorite = EXCLUDED.same_as_favorite,
-                    sha256_odds_raw = EXCLUDED.sha256_odds_raw,
-                    payload = EXCLUDED.payload
+                ON CONFLICT (match_id,snapshot_timestamp_utc) DO NOTHING
                 """,
                 {
                     "match_id": r.get("match_id") or "",
@@ -103,15 +92,7 @@ def upsert_result(row: dict) -> None:
                 match_id,version,status,result_1x2,final_home_goals,final_away_goals,
                 result_timestamp_utc,result_source,payload
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
-            ON CONFLICT (match_id,version)
-            DO UPDATE SET
-                status = EXCLUDED.status,
-                result_1x2 = EXCLUDED.result_1x2,
-                final_home_goals = EXCLUDED.final_home_goals,
-                final_away_goals = EXCLUDED.final_away_goals,
-                result_timestamp_utc = EXCLUDED.result_timestamp_utc,
-                result_source = EXCLUDED.result_source,
-                payload = EXCLUDED.payload
+            ON CONFLICT (match_id,version) DO NOTHING
             """,
             (
                 row.get("match_id") or "",
