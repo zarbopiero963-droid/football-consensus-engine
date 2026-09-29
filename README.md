@@ -250,3 +250,33 @@ uvicorn bridge.server:app --host 0.0.0.0 --port $PORT
 ```
 
 The ChatGPT custom MCP URL is the dedicated Render service URL plus `/mcp`.
+
+
+## ChatGPT OAuth 2.1
+
+The Browser Use bridge now acts as both MCP resource server and a minimal single-user OAuth 2.1 authorization server for this private deployment.
+
+Discovery:
+
+- `GET /.well-known/oauth-protected-resource`
+- `GET /.well-known/oauth-authorization-server`
+
+Flow:
+
+- Authorization Code
+- PKCE `S256`
+- ChatGPT Client ID Metadata Document (CIMD)
+- access tokens stored only as SHA-256 hashes in Neon
+- rotating refresh tokens stored only as SHA-256 hashes in Neon
+- scopes: `browser:use offline_access`
+
+The authorization page requires `MCP_OAUTH_PASSWORD`, stored only as a Render environment variable. The previous static `MCP_BRIDGE_TOKEN` is no longer used by the bridge.
+
+ChatGPT plugin configuration uses:
+
+```
+Server URL: https://football-consensus-browser-bridge.onrender.com/mcp
+Authentication: OAuth
+```
+
+OAuth metadata is discovered automatically from the server. No client secret is manually entered in ChatGPT.
