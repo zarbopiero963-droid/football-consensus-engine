@@ -19,7 +19,9 @@ from urllib.request import Request, urlopen
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(ROOT))
 from collect import canon, name_score  # noqa: E402
+from app.persist import guarded, set_runtime_state, upsert_result  # noqa: E402
 
 LEDGER = os.path.join(ROOT, "prospective_ledger.csv")
 RESULTS = os.path.join(ROOT, "normalized", "results.csv")
@@ -500,6 +502,10 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
                 errors.append({"where": "hash_guard", "error": "prematch files changed during settlement; result not written"})
                 break
             append_result(results_path, stored)
+            if results_path == RESULTS:
+                db_result = guarded(upsert_result, stored)
+                if not db_result["ok"]:
+                    errors.append({"where": "database_result", "error": db_result["error"]})
             existing.append({k: str(v) for k, v in stored.items()})
             latest[snap["match_id"]] = existing[-1]
             appended += 1
@@ -540,6 +546,17 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
         **summary,
     }
     if results_path == RESULTS:
+        db_state = guarded(set_runtime_state, "settlement", {
+            "at_utc": payload["at_utc"],
+            "open_matches": payload["open_matches"],
+            "settled_matches": payload["settled_matches"],
+            "due": payload["due"],
+            "appended": payload["appended"],
+            "corrections": payload["corrections"],
+            "classification": payload["classification"],
+        })
+        if not db_state["ok"]:
+            payload["errors"].append({"where": "database_state", "error": db_state["error"]})
         write_report(payload)
     return payload
 
