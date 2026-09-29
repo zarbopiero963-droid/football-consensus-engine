@@ -182,3 +182,23 @@ Endpoints:
 - `GET /date/YYYY-MM-DD?results=true` — explicit date query.
 
 The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
+
+
+## Neon dual-write mode
+
+When `DATABASE_URL` is present, the prospective collector also inserts each newly sealed snapshot into Neon and settlement writes each immutable result version into Neon. Existing CSV/raw/manifest files remain untouched and continue to provide the local audit trail.
+
+For the persistent Render runtime set:
+
+```bash
+DATABASE_REQUIRED=1
+```
+
+In required mode a Neon write error is fatal rather than silently allowing the persistent database to drift. Snapshot conflicts and result-version conflicts use `ON CONFLICT DO NOTHING`; an existing sealed record is never rewritten. `runtime_state` is the only intentionally mutable operational table.
+
+A clean persistent startup should reconcile the committed CSV state before launching workers:
+
+```bash
+python3 -m app.migrate
+python3 -m app.import_legacy
+```
