@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import hmac
+import os
 from typing import Any
 
 from mcp.server import MCPServer
+from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
 from bridge.browser_use import BrowserUseBridge
 
@@ -69,4 +76,35 @@ async def browser_stop(session_id: str) -> dict[str, Any]:
     return await bridge.stop(session_id)
 
 
-app = mcp.streamable_http_app(json_response=True)
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/mcp"):
+            expected = os.environ.get("MCP_BRIDGE_TOKEN", "").strip()
+            if not expected:
+                return JSONResponse({"detail": "bridge authentication is not configured"}, status_code=503)
+            auth = request.headers.get("authorization", "")
+            prefix = "Bearer "
+            supplied = auth[len(prefix):] if auth.startswith(prefix) else ""
+            if not supplied or not hmac.compare_digest(supplied, expected):
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+async def healthz(_request: Request):
+    return JSONResponse(
+        {
+            "ok": True,
+            "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
+            "auth_configured": bool(os.environ.get("MCP_BRIDGE_TOKEN", "").strip()),
+        }
+    )
+
+
+mcp_app = mcp.streamable_http_app(json_response=True)
+app = Starlette(
+    routes=[
+        Route("/healthz", healthz, methods=["GET"]),
+        Mount("/mcp", app=mcp_app),
+    ]
+)
+app.add_middleware(BearerAuthMiddleware)
