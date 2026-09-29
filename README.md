@@ -155,3 +155,30 @@ Forebet `fixtures.csv`:
 - database Neon
 
 Per rimettere un raw al suo posto, vedi [storage/README.md](storage/README.md).
+
+
+## Neon read layer and query API
+
+The database layer introduced in PR1 is additive: the existing CSV ledger remains the source of truth until a later PR wires collectors directly to Neon.
+
+Set `DATABASE_URL`, then apply the schema and import the current append-only CSV state idempotently:
+
+```bash
+python3 -m app.migrate
+python3 -m app.import_legacy
+```
+
+Run the read-only API locally:
+
+```bash
+uvicorn app.api:app --host 0.0.0.0 --port 10000
+```
+
+Endpoints:
+
+- `GET /healthz` — database connectivity.
+- `GET /today` — latest valid pre-match snapshot per match for today's Europe/Rome calendar date.
+- `GET /yesterday` — same snapshots plus latest settled result when available.
+- `GET /date/YYYY-MM-DD?results=true` — explicit date query.
+
+The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
