@@ -56,3 +56,43 @@ CREATE TABLE IF NOT EXISTS runtime_state (
     value JSONB NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    token_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_access_active
+ON oauth_access_tokens (expires_at)
+WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_active
+ON oauth_refresh_tokens (expires_at)
+WHERE revoked_at IS NULL;
