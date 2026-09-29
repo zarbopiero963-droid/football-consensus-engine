@@ -202,3 +202,24 @@ A clean persistent startup should reconcile the committed CSV state before launc
 python3 -m app.migrate
 python3 -m app.import_legacy
 ```
+
+
+## Browser Use MCP bridge
+
+The bridge is deliberately separate from the collectors. Browser Use supplies remote browser infrastructure only; no Browser Use Agent interprets page content.
+
+Tools exposed by `bridge.server`:
+
+- `browser_create`
+- `browser_open_url`
+- `browser_get_html`
+- `browser_get_dom`
+- `browser_screenshot`
+- `browser_get_network_responses`
+- `browser_stop`
+
+The Browser Use `cdpUrl` is treated as a bearer-like capability and is kept in process memory only. It is never returned by an MCP tool, committed, or logged by the bridge. Browser sessions stay connected between tool calls and are terminated explicitly with `browser_stop`.
+
+The bridge rejects non-HTTP(S), credential-bearing, loopback, private, link-local, multicast, reserved and unspecified destinations, including navigation redirects. It must not be used to bypass paywalls, authentication, or other access controls.
+
+PR3 adds the MCP server implementation only. Public deployment, authentication and Render configuration are intentionally deferred to the next PR.
