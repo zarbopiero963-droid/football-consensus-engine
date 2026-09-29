@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -14,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from bridge import oauth, oauth_store
 from bridge.browser_use import BrowserUseBridge
 
 bridge = BrowserUseBridge()
@@ -79,17 +79,24 @@ async def browser_stop(session_id: str) -> dict[str, Any]:
     return await bridge.stop(session_id)
 
 
-class BearerAuthMiddleware(BaseHTTPMiddleware):
+class OAuthBearerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/mcp"):
-            expected = os.environ.get("MCP_BRIDGE_TOKEN", "").strip()
-            if not expected:
-                return JSONResponse({"detail": "bridge authentication is not configured"}, status_code=503)
             auth = request.headers.get("authorization", "")
-            prefix = "Bearer "
-            supplied = auth[len(prefix):] if auth.startswith(prefix) else ""
-            if not supplied or not hmac.compare_digest(supplied, expected):
-                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            token = auth[7:] if auth.startswith("Bearer ") else ""
+            valid = False
+            if token:
+                try:
+                    valid = oauth_store.valid_access_token(token, oauth.resource_url(), oauth.SCOPE)
+                except Exception:
+                    return JSONResponse({"detail": "authorization backend unavailable"}, status_code=503)
+            if not valid:
+                metadata = oauth.public_base() + "/.well-known/oauth-protected-resource"
+                return JSONResponse(
+                    {"detail": "unauthorized"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": f'Bearer resource_metadata="{metadata}"'},
+                )
         return await call_next(request)
 
 
@@ -98,7 +105,8 @@ async def healthz(_request: Request):
         {
             "ok": True,
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
-            "auth_configured": bool(os.environ.get("MCP_BRIDGE_TOKEN", "").strip()),
+            "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
+            "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
         }
     )
 
@@ -116,8 +124,6 @@ transport_security = TransportSecuritySettings(
     ],
 )
 
-# The MCP app is mounted at /mcp by the parent Starlette app, so its own
-# streamable path must be "/" to avoid an accidental /mcp/mcp endpoint.
 mcp_app = mcp.streamable_http_app(
     streamable_http_path="/",
     json_response=True,
@@ -128,8 +134,6 @@ mcp_app = mcp.streamable_http_app(
 
 @asynccontextmanager
 async def lifespan(_app: Starlette) -> AsyncIterator[None]:
-    # Mounted MCP apps do not run their own lifespan. The parent must own the
-    # session manager or every MCP request fails at runtime.
     async with mcp.session_manager.run():
         yield
 
@@ -137,8 +141,13 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/.well-known/oauth-protected-resource", oauth.protected_resource, methods=["GET"]),
+        Route("/.well-known/oauth-authorization-server", oauth.auth_metadata, methods=["GET"]),
+        Route("/oauth/authorize", oauth.authorize_get, methods=["GET"]),
+        Route("/oauth/authorize", oauth.authorize_post, methods=["POST"]),
+        Route("/oauth/token", oauth.token_endpoint, methods=["POST"]),
         Mount("/mcp", app=mcp_app),
     ],
     lifespan=lifespan,
 )
-app.add_middleware(BearerAuthMiddleware)
+app.add_middleware(OAuthBearerMiddleware)
