@@ -1,0 +1,76 @@
+{
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "ledger_sha256": "5d5163bd6b2b09e5c32ece63170b27e301b4bc4901a15c199e295f8e787a5464",
+  "seal_ok": true,
+  "anchor": "FootInsights future rows in prospective_ledger.csv, read-only, n=102",
+  "sessions": 25,
+  "total_browser_cost_usd": 0.008333,
+  "captcha": 0,
+  "shortlist": [
+    "elofoot",
+    "betstudy"
+  ],
+  "not_selected_third": "No third source had both a full 1X2 triplet and an unambiguous join to the anchor.",
+  "sites": {
+    "elofoot": {
+      "class": "PILOT 48H",
+      "tech": "A",
+      "fixtures": 23,
+      "triplet": true,
+      "anchor_found": 18,
+      "coverage_pct": 17.6,
+      "repeat_delta": 0,
+      "timezone": "UK label, UTC+1 checked on 18 anchor matches"
+    },
+    "betstudy": {
+      "class": "PILOT 48H",
+      "tech": "B",
+      "fixtures": 50,
+      "triplet": true,
+      "anchor_found": 19,
+      "coverage_pct": 18.6,
+      "repeat_delta": 0,
+      "timezone": "unlabeled; UTC matches 19, UK+1 matches 0"
+    },
+    "dratings": {
+      "class": "PILOT 48H",
+      "tech": "B",
+      "fixtures": 6,
+      "triplet": true,
+      "anchor_found": 0,
+      "note": "EPL 2026-10-10, datetime UTC, not in current anchor"
+    },
+    "sports4cast": {
+      "class": "PILOT 48H",
+      "tech": "B",
+      "schedule_name_hits": 52,
+      "probs_on_those_rows": false,
+      "england_future_with_triplet": 1691,
+      "anchor_prob_joins": 0
+    },
+    "xg_football": {
+      "class": "SCARTARE",
+      "tech": "B",
+      "triplet": false,
+      "note": "one pick probability only"
+    },
+    "predictlix": {
+      "class": "SCARTARE",
+      "tech": "B",
+      "triplet": false,
+      "upcoming": 27
+    },
+    "statsultra": {
+      "class": "SCARTARE",
+      "tech": "C",
+      "fixtures": 5,
+      "triplet": true,
+      "kickoff": "date only"
+    },
+    "prosoccer": {
+      "class": "SCARTARE",
+      "tech": "C",
+      "future_prematch": 0
+    }
+  }
+}

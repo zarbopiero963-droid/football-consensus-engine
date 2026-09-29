@@ -1,0 +1,301 @@
+{
+  "source": "prosoccer",
+  "run_id": "20260929T155049Z",
+  "started_utc": "2026-09-29T15:51:54Z",
+  "entry_url": "https://prosoccer.eu/",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "1bf74bf8-eb1d-40a8-bbce-ea3f7fd5184c",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:55:55.147019Z",
+    "startedAt": "2026-09-29T15:51:55.147147Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://prosoccer.eu/it",
+  "title": "ProSoccer.eu – Pronostici Calcio IA e Analisi Live | ProSoccer.eu",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c26f22c3aeea5-MXP",
+    "content-type": "text/html; charset=utf-8"
+  },
+  "cf_ray": "a42c26f22c3aeea5-MXP",
+  "redirected": true,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": false,
+  "screenshot_full_page": true,
+  "html_bytes": 119551,
+  "html_sha256": "d8723920faa08ea45962bbb563e3904b803cae859b73f391879b2ff5dfe4a96a",
+  "screenshot_sha256": "b1672939e7ac51ce9b04ff3274b5a768f7d6eeddc493148a4acb7b524cdca2a7",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://prosoccer.eu/",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://prosoccer.eu/api/app-logs/69f5ac1da247a3abb54d9b70/log-user-in-app/home",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://prosoccer.eu/api/apps/public/prod/public-settings/by-id/69f5ac1da247a3abb54d9b70",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json",
+      "file": "net_02.bin",
+      "sha256": "49d5a34128b96a0b21316029371addc3149ed305aac6ff8bcfcb64589ee89b4c",
+      "bytes": 74
+    },
+    {
+      "url": "https://ipapi.co/json/",
+      "status": 429,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_03.bin",
+      "sha256": "60c55544e3440e76edee6df579b9585b38cfb4fca01f6f3f17c9d4b4787cfea7",
+      "bytes": 160
+    },
+    {
+      "url": "https://prosoccer.eu/api/apps/69f5ac1da247a3abb54d9b70/analytics/track/batch",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://prosoccer.eu/api/app-logs/69f5ac1da247a3abb54d9b70/log-user-in-app/it",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://prosoccer.eu/api/app-logs/69f5ac1da247a3abb54d9b70/log-user-in-app/it",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://prosoccer.eu/api/apps/69f5ac1da247a3abb54d9b70/functions/getRegions",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json",
+      "file": "net_07.bin",
+      "sha256": "e4140620a9ede7db322555c001535e4f670f4841464357944352e073aabd05de",
+      "bytes": 226943
+    },
+    {
+      "url": "https://prosoccer.eu/api/apps/69f5ac1da247a3abb54d9b70/analytics/track/batch",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://prosoccer.eu/api/apps/69f5ac1da247a3abb54d9b70/functions/getLiveScores",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json",
+      "file": "net_09.bin",
+      "sha256": "54096610558b553ad5a42ab55fa740ddd9139bdbae5bba334bb1be6628c8c1a5",
+      "bytes": 403144
+    },
+    {
+      "url": "https://prosoccer.eu/api/apps/69f5ac1da247a3abb54d9b70/functions/getRegions",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json",
+      "file": "net_10.bin",
+      "sha256": "87009f8892c785f6e50df8f1775e500597c2c05c81f28f8f883c5441d30aa0a6",
+      "bytes": 35425
+    },
+    {
+      "error": "TargetClosedError"
+    }
+  ],
+  "visible_text_sample": "PRO\nSOCCER\nIT\nCerca squadre, leghe, partite...\nIn diretta\nPredizioni 1X2\nRisultato Esatto\nOver/Under Gol\nPrimo Tempo / Fine\nPredizioni Primo Tempo\nRisultato Esatto 1T\nPredizioni Calci d'Angolo\nPredizioni Bet Builder\nPredizioni giocatori\nPronostici Calcio Gratis Oggi\n\nPronostici calcistici generati dall'IA che utilizzano la modellazione della distribuzione di Poisson e le reti neurali. Ottieni risultati esatti, over/under gol, consigli mezzo tempo/tempo pieno e monitoraggio xG dal vivo per 1000+ partite giornaliere in 500+ campionati in tutto il mondo.\n\nChampions League\nUEFA Nations League\nEuropa Conference League\nEuropa League\nLa Liga\nPremier League\nSerie A\n2. Bundesliga\nLigue 1\nBundesliga\nSuper Lig\nSuperliga\nPro League\nSerie B\nUEFA Youth League\nLiga Profesional de Fútbol\nSerie A\nFA Cup\nChampionship\nEredivisie\nEliteserien\nSuper League\nAdmiral Bundesliga\nPremiership\nLiga Portugal\nPrimera Division\nA-League Men\nFirst League\nReserve League\nPrimera B Nacional\nHub\nOggi\nIn diretta\nRisultato esatto\nSegnali AI\nPlayer props",
+  "links_sample": [
+    {
+      "href": "https://prosoccer.eu/it/",
+      "text": "PRO SOCCER"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/livescores",
+      "text": "In diretta"
+    },
+    {
+      "href": "https://prosoccer.eu/it/predictions/today",
+      "text": "Predizioni 1X2"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/correct-scores",
+      "text": "Risultato Esatto"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/under-over",
+      "text": "Over/Under Gol"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/half-time-full-time",
+      "text": "Primo Tempo / Fine"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/half-time",
+      "text": "Predizioni Primo Tempo"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/ht-correct-scores",
+      "text": "Risultato Esatto 1T"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/corners",
+      "text": "Predizioni Calci d'Angolo"
+    },
+    {
+      "href": "https://prosoccer.eu/it/football/bet-builder-predictions",
+      "text": "Predizioni Bet Builder"
+    },
+    {
+      "href": "https://prosoccer.eu/it/player-predictions",
+      "text": "Predizioni giocatori"
+    },
+    {
+      "href": "https://prosoccer.eu/league/1",
+      "text": "Champions League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/788",
+      "text": "UEFA Nations League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/1244",
+      "text": "Europa Conference League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/2",
+      "text": "Europa League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/194",
+      "text": "La Liga"
+    },
+    {
+      "href": "https://prosoccer.eu/league/3",
+      "text": "Premier League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/136",
+      "text": "Serie A"
+    },
+    {
+      "href": "https://prosoccer.eu/league/37",
+      "text": "2. Bundesliga"
+    },
+    {
+      "href": "https://prosoccer.eu/league/109",
+      "text": "Ligue 1"
+    },
+    {
+      "href": "https://prosoccer.eu/league/36",
+      "text": "Bundesliga"
+    },
+    {
+      "href": "https://prosoccer.eu/league/206",
+      "text": "Super Lig"
+    },
+    {
+      "href": "https://prosoccer.eu/league/99",
+      "text": "Superliga"
+    },
+    {
+      "href": "https://prosoccer.eu/league/78",
+      "text": "Pro League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/223",
+      "text": "Serie B"
+    },
+    {
+      "href": "https://prosoccer.eu/league/602",
+      "text": "UEFA Youth League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/218",
+      "text": "Liga Profesional de Fútbol"
+    },
+    {
+      "href": "https://prosoccer.eu/league/222",
+      "text": "Serie A"
+    },
+    {
+      "href": "https://prosoccer.eu/league/10",
+      "text": "FA Cup"
+    },
+    {
+      "href": "https://prosoccer.eu/league/4",
+      "text": "Championship"
+    },
+    {
+      "href": "https://prosoccer.eu/league/30",
+      "text": "Eredivisie"
+    },
+    {
+      "href": "https://prosoccer.eu/league/155",
+      "text": "Eliteserien"
+    },
+    {
+      "href": "https://prosoccer.eu/league/116",
+      "text": "Super League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/69",
+      "text": "Admiral Bundesliga"
+    },
+    {
+      "href": "https://prosoccer.eu/league/174",
+      "text": "Premiership"
+    },
+    {
+      "href": "https://prosoccer.eu/league/161",
+      "text": "Liga Portugal"
+    },
+    {
+      "href": "https://prosoccer.eu/league/227",
+      "text": "Primera Division"
+    },
+    {
+      "href": "https://prosoccer.eu/league/626",
+      "text": "A-League Men"
+    },
+    {
+      "href": "https://prosoccer.eu/league/85",
+      "text": "First League"
+    },
+    {
+      "href": "https://prosoccer.eu/league/884",
+      "text": "Reserve League"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "1bf74bf8-eb1d-40a8-bbce-ea3f7fd5184c",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:55:55.147019Z",
+    "startedAt": "2026-09-29T15:51:55.147147Z",
+    "finishedAt": "2026-09-29T15:52:04.953010Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 10.05,
+  "finished_utc": "2026-09-29T15:52:05Z"
+}

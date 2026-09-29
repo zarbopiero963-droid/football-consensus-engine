@@ -1,0 +1,2088 @@
+{
+  "run_id": "20260929T104819Z",
+  "started_utc": "2026-09-29T10:48:19Z",
+  "finished_utc": "2026-09-29T10:57:48Z",
+  "scan_mode": "full_no_previous_run",
+  "kickoff_rule": "JSON match_date + time stored as UTC. HTML CET label is not used.",
+  "observed_future": 252,
+  "triplet": 78,
+  "discarded": 174,
+  "files": [
+    {
+      "path": "leagues.json",
+      "sha256": "1a83bd35a420d7c0d4403417670f6747e9fd73b0d9a32d1f10afc1d4c56f2fba",
+      "bytes": 16739,
+      "fetched_utc": "2026-09-29T10:48:19Z"
+    },
+    {
+      "path": "fixtures/algir1.json",
+      "sha256": "ae617db95b0457f6008d867058d93dec514206fc89af342565c1c9439c6395f9",
+      "bytes": 9225,
+      "fetched_utc": "2026-09-29T10:48:24Z"
+    },
+    {
+      "path": "fixtures/australia.json",
+      "sha256": "fe9b571bb6d511141693d5964b42009fe7281ed161f513332128e1f1537f22e1",
+      "bytes": 96,
+      "fetched_utc": "2026-09-29T10:48:27Z"
+    },
+    {
+      "path": "fixtures/austria1.json",
+      "sha256": "ee19129a6978641a98965693c444cb1c3ecdf8678d82499a8200f1b2539462a3",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:48:31Z"
+    },
+    {
+      "path": "fixtures/austria2.json",
+      "sha256": "738426adaa978be399ec4b7821017dcb2b6c76beb948df53d72a715253632f1d",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:48:34Z"
+    },
+    {
+      "path": "fixtures/azer.json",
+      "sha256": "52505611a4e8a1d6cdc463da539d085c7e124464f7fe341cdf247e2faf588dde",
+      "bytes": 91,
+      "fetched_utc": "2026-09-29T10:48:38Z"
+    },
+    {
+      "path": "fixtures/belgium1.json",
+      "sha256": "2d6fe765a6aefd633e4bddbbc1f8b47ca37a54d51584086f8744faabf8efa082",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:48:41Z"
+    },
+    {
+      "path": "fixtures/brazil1.json",
+      "sha256": "5648a8ac0b258ada2788aafb34020de1390c319a663632f1ffeb6fb09ad067f2",
+      "bytes": 4178,
+      "fetched_utc": "2026-09-29T10:48:44Z"
+    },
+    {
+      "path": "fixtures/brazil2.json",
+      "sha256": "67c1a2eb7af32cd020614529b8d4eabdf500d871220285516ea9eae06e1feaa0",
+      "bytes": 16472,
+      "fetched_utc": "2026-09-29T10:48:48Z"
+    },
+    {
+      "path": "fixtures/bulgaria1.json",
+      "sha256": "b74eec6ad89d54332f898131d8d4198346abb02366bd5161e22e5d4b44493263",
+      "bytes": 96,
+      "fetched_utc": "2026-09-29T10:48:54Z"
+    },
+    {
+      "path": "fixtures/cha.json",
+      "sha256": "b6968545f9d2b2ce171adc44e61f2ccb554e3a7a227247e462b608d78bde0e29",
+      "bytes": 90,
+      "fetched_utc": "2026-09-29T10:48:58Z"
+    },
+    {
+      "path": "fixtures/china.json",
+      "sha256": "554fa8d7cc345589b01ddb92fd4657d13af0e50cd97dfa34c10f55bb85c0240f",
+      "bytes": 92,
+      "fetched_utc": "2026-09-29T10:49:01Z"
+    },
+    {
+      "path": "fixtures/czech1.json",
+      "sha256": "df1b1dfe9983cc72872456e204fb9ec0306718d1503739553ccdafc6d87d83d9",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:49:04Z"
+    },
+    {
+      "path": "fixtures/czech2.json",
+      "sha256": "e4c07e1dc2026c29b437ab11db9092060a688d3b5edc74c120bfe70321608d96",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:49:08Z"
+    },
+    {
+      "path": "fixtures/czech3a.json",
+      "sha256": "2e28c86d0a4f943c42914bc4376cd51e5c8c2220e0b7b4118e62781521647d40",
+      "bytes": 6029,
+      "fetched_utc": "2026-09-29T10:49:11Z"
+    },
+    {
+      "path": "fixtures/czech3b.json",
+      "sha256": "69f98f220258cb4ebc14209497f4edc0aacc1129898bc1eea94c7746c2484a9b",
+      "bytes": 7184,
+      "fetched_utc": "2026-09-29T10:49:21Z"
+    },
+    {
+      "path": "fixtures/denmark1.json",
+      "sha256": "4ea8ec0532ebcc778101e30faab8360666606083f16c50cc6b04e72814a2dd3e",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:49:25Z"
+    },
+    {
+      "path": "fixtures/denmark2.json",
+      "sha256": "ff1f47496dbce7360a982d0634b4c0a1a66cd36dbf69a95c152d1aece046122f",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:49:28Z"
+    },
+    {
+      "path": "fixtures/develop21.json",
+      "sha256": "9aa848f4df3e57d0e9960206b3c9ba38fd07b9d6eaee285a99d06a1b222944da",
+      "bytes": 10948,
+      "fetched_utc": "2026-09-29T10:49:32Z"
+    },
+    {
+      "path": "fixtures/egypt.json",
+      "sha256": "bf5ff62116306ce966b058777b421e439f8ce9a9192bf3a7943aa33d14c01d4d",
+      "bytes": 92,
+      "fetched_utc": "2026-09-29T10:49:35Z"
+    },
+    {
+      "path": "fixtures/eng1.json",
+      "sha256": "996c96b1c61a352c31d35716dce7d9ef84271898d6487cdee5cc4ae2321b6830",
+      "bytes": 4700,
+      "fetched_utc": "2026-09-29T10:49:38Z"
+    },
+    {
+      "path": "fixtures/eng2.json",
+      "sha256": "2a176284ccb245f71b60c3436afab4ba38f2c405e3c2d16e4d9e285461a445ff",
+      "bytes": 13879,
+      "fetched_utc": "2026-09-29T10:49:42Z"
+    },
+    {
+      "path": "fixtures/estonia.json",
+      "sha256": "db1342ea72297092afda2b51c108ea2c3be499b655213cbbf052399baac142ca",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:49:45Z"
+    },
+    {
+      "path": "fixtures/finland1.json",
+      "sha256": "88f376d92e7f79daa2a9487ff95a1568f8d4b1b22373e2748f1c26135edc8c74",
+      "bytes": 946,
+      "fetched_utc": "2026-09-29T10:49:48Z"
+    },
+    {
+      "path": "fixtures/finland2.json",
+      "sha256": "d6a090baea7a4987f8488ddfbd86249e879340680c7ce5a138366b8e87619262",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:49:52Z"
+    },
+    {
+      "path": "fixtures/france1.json",
+      "sha256": "a2f64b871aa8ef85506a3324e46ff8d6d8f50e3d17834c987b0166f6c243a6ba",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:49:56Z"
+    },
+    {
+      "path": "fixtures/france2.json",
+      "sha256": "5f9ff85479d67c3334b308e4673075e80b36b7aef7d3d3b4e678c6d890385404",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:49:59Z"
+    },
+    {
+      "path": "fixtures/france3.json",
+      "sha256": "f7f44b1e1c5d235c0212bcd3b28a3c1ceeadf290f73be4d4e6112c12f5654b82",
+      "bytes": 10451,
+      "fetched_utc": "2026-09-29T10:50:03Z"
+    },
+    {
+      "path": "fixtures/germany-north.json",
+      "sha256": "34c38f14cef4a9978937375e8dfb67c16abfe80a0ed35ae94bbd36ef6b78d07c",
+      "bytes": 10772,
+      "fetched_utc": "2026-09-29T10:50:06Z"
+    },
+    {
+      "path": "fixtures/germany1.json",
+      "sha256": "1983c4a09c67f901221be05f3784be5e5dcd25dee3de3c28707e663d095ab604",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:09Z"
+    },
+    {
+      "path": "fixtures/germany2.json",
+      "sha256": "6c72013eb4013c14186bbd9bffb35e3453f7871068f72c1dde5498682ae6599e",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:13Z"
+    },
+    {
+      "path": "fixtures/germany3.json",
+      "sha256": "b6b4d0872867d089fd7a8fd745bc3c0ac524432247d53a1d2904c44f251da876",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:16Z"
+    },
+    {
+      "path": "fixtures/greece1.json",
+      "sha256": "cb6d69a04c9a35796830a20d2637cbab11eea392058f1e1400ab41a55e8e7f0a",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:50:20Z"
+    },
+    {
+      "path": "fixtures/greece2.json",
+      "sha256": "0a27ee590a8be7825d18f2abdfb253588025e0f6042ce5ff4f681c3cdfe9f3a3",
+      "bytes": 7098,
+      "fetched_utc": "2026-09-29T10:50:23Z"
+    },
+    {
+      "path": "fixtures/holland1.json",
+      "sha256": "68fa2e95805789918fc08e9367c3b99be512f10b9ec7c39c93db147c49c802c2",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:27Z"
+    },
+    {
+      "path": "fixtures/holland2.json",
+      "sha256": "59f62ef3c92f75f543075b5ea3ff3dfc94324675853d5c64024c340eecd24c74",
+      "bytes": 9430,
+      "fetched_utc": "2026-09-29T10:50:30Z"
+    },
+    {
+      "path": "fixtures/holland3.json",
+      "sha256": "06df85b11996febf80180a3fd330e67da0c28087e54e880ea1410b63484203b9",
+      "bytes": 10664,
+      "fetched_utc": "2026-09-29T10:50:33Z"
+    },
+    {
+      "path": "fixtures/hungary1.json",
+      "sha256": "46d89da618c1827401e8441f692794758e16f64836517b6391cd840d4aaa0ffe",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:37Z"
+    },
+    {
+      "path": "fixtures/hungary2.json",
+      "sha256": "9fdeba983dc274f0ea5c0f8c8eb554447e2dd8fce47a62981116b019b7101d81",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:40Z"
+    },
+    {
+      "path": "fixtures/india1.json",
+      "sha256": "964a382891b9d9eb38b6dfd01a65e7943e90802b62b4d93365465eaa4472c096",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:50:44Z"
+    },
+    {
+      "path": "fixtures/ireland1.json",
+      "sha256": "d7afd676c8c3dd061c0ef4a0b670bcda795003a3ca3473cebbfccd40cfa6e688",
+      "bytes": 95,
+      "fetched_utc": "2026-09-29T10:50:47Z"
+    },
+    {
+      "path": "fixtures/ireland2.json",
+      "sha256": "786c10792674563f3dac65b76b698e404a37bf0d50c341161be42c90b8f00998",
+      "bytes": 5855,
+      "fetched_utc": "2026-09-29T10:50:51Z"
+    },
+    {
+      "path": "fixtures/italy1.json",
+      "sha256": "f4de9b9c4a98039d398e143428013d7fc66f7a8c121a146857f33a86fa5d581d",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:50:54Z"
+    },
+    {
+      "path": "fixtures/italy19.json",
+      "sha256": "685a0083d9d3631100dde57e8e4fd7cfeee05fc80aa4f5ed85247e12572ac03a",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:50:57Z"
+    },
+    {
+      "path": "fixtures/italy2.json",
+      "sha256": "56a49f479d4ccd95fc922420dbd3f2ecf51deaa13fcdb6b6ff5a96d0db1233b7",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:01Z"
+    },
+    {
+      "path": "fixtures/italy3a.json",
+      "sha256": "a08d208d74fa3965d05a4af52840eeeb680695c5e7d9596e92be6843a93887b0",
+      "bytes": 11752,
+      "fetched_utc": "2026-09-29T10:51:06Z"
+    },
+    {
+      "path": "fixtures/italy3b.json",
+      "sha256": "f9b4bed3d8eb378ea934027e6b224d14d2bc4c4d38d493ec43761e5f8eb94613",
+      "bytes": 9336,
+      "fetched_utc": "2026-09-29T10:51:10Z"
+    },
+    {
+      "path": "fixtures/japan1.json",
+      "sha256": "1f639f0f9c7f30e5f65a5fcf2b322bf5361af8988e11779f588ce099a76fafeb",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:13Z"
+    },
+    {
+      "path": "fixtures/japan2.json",
+      "sha256": "37f21ac669fac9f92f124557f8ca3389c32f717bff96f31e2bc9e5a2e88246a2",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:16Z"
+    },
+    {
+      "path": "fixtures/korea1.json",
+      "sha256": "be3932b85cadf3224b7a295555009e545e5b96faa2be30f66bfe1ea8950b5069",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:20Z"
+    },
+    {
+      "path": "fixtures/korea2.json",
+      "sha256": "172e036693aec44d80bd75aba216bfb01037de52218836eda495c9e1c444ea9b",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:23Z"
+    },
+    {
+      "path": "fixtures/kuwait.json",
+      "sha256": "04230112b5aa90fcbc9af793869318950c0ff05d583c8fd8c8f177b162c5c00b",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:27Z"
+    },
+    {
+      "path": "fixtures/latvia.json",
+      "sha256": "11a44b50309384b9b5dc9929fd29ff889947207bd6f7268658f8246fc5e963e5",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:30Z"
+    },
+    {
+      "path": "fixtures/lithuania.json",
+      "sha256": "30e4ddb76c8479ba79e65c3bdd41b0a760a4146b1b2358ad786f630d204aa4b7",
+      "bytes": 96,
+      "fetched_utc": "2026-09-29T10:51:34Z"
+    },
+    {
+      "path": "fixtures/morocco.json",
+      "sha256": "2f8cd2524cfc33b5ea52e4fd4c417affded2d0993c428f92bfbca1702b43972d",
+      "bytes": 7096,
+      "fetched_utc": "2026-09-29T10:51:37Z"
+    },
+    {
+      "path": "fixtures/national.json",
+      "sha256": "f63a99548dfbb056593645008bc36c7cd0391d5de64338207921a586bc35c5b1",
+      "bytes": 28098,
+      "fetched_utc": "2026-09-29T10:51:40Z"
+    },
+    {
+      "path": "fixtures/north.json",
+      "sha256": "a3f9ec62f6cb937abe26f32c2c56329c9e369b632a89d54a232bb41c308fdb5e",
+      "bytes": 92,
+      "fetched_utc": "2026-09-29T10:51:44Z"
+    },
+    {
+      "path": "fixtures/norway.json",
+      "sha256": "92da618834e60f125058367ad90c16319587f0a99484cdcbe3cfd861a33aa86d",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:51:47Z"
+    },
+    {
+      "path": "fixtures/poland1.json",
+      "sha256": "c2e8c8ded1133fde76f4086ad32b95466ee9d1bfb8f350ddcb9ad05feab8d4e5",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:51:51Z"
+    },
+    {
+      "path": "fixtures/poland2.json",
+      "sha256": "3457fabe59aa012275af03a2dfa79f11182887c4b910d793f47b9a6ba9cde8fc",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:51:54Z"
+    },
+    {
+      "path": "fixtures/portugal1.json",
+      "sha256": "48943313eff6c1e36aa219cfa746734bab8552c32baffca39244da5776019645",
+      "bytes": 96,
+      "fetched_utc": "2026-09-29T10:51:57Z"
+    },
+    {
+      "path": "fixtures/portugal2.json",
+      "sha256": "73effff278cce5ba747377283ba7ac9057485ec190ebf5f5d8cefd7031de8e29",
+      "bytes": 1258,
+      "fetched_utc": "2026-09-29T10:52:01Z"
+    },
+    {
+      "path": "fixtures/premier.json",
+      "sha256": "82e8d575f70b314c71cf69b5b99438f6edae54177cd981b513bf63212a54afff",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:52:04Z"
+    },
+    {
+      "path": "fixtures/primera1.json",
+      "sha256": "fd488e34d1cb6498798ca125431822cde43ebd25d8e7feb995e1d03720cd1278",
+      "bytes": 8336,
+      "fetched_utc": "2026-09-29T10:52:08Z"
+    },
+    {
+      "path": "fixtures/primera2.json",
+      "sha256": "e8f39eec180fa297d87466779261658ccff8d77d96c20a1f77f089111ecfdaf6",
+      "bytes": 8629,
+      "fetched_utc": "2026-09-29T10:52:11Z"
+    },
+    {
+      "path": "fixtures/romania1.json",
+      "sha256": "8fb851c11277bd4c281ed89092f6c85b0f9331b5e8217e453e5c76d463e35a3d",
+      "bytes": 1231,
+      "fetched_utc": "2026-09-29T10:52:14Z"
+    },
+    {
+      "path": "fixtures/russia.json",
+      "sha256": "85b7c3a65e0d038d365f18730ad1f83bb7e16ec2e53ee67f7dec45b249c083d1",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:52:22Z"
+    },
+    {
+      "path": "fixtures/saudi1.json",
+      "sha256": "1d23f20a271e245927fd0141c514a162ba958280b7e0e0e63dd35425df82828b",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:52:26Z"
+    },
+    {
+      "path": "fixtures/saudi2.json",
+      "sha256": "be0c8f12a1cb1a2f5b87e04ef7269234ccb95155a8f615191c919136b41313c3",
+      "bytes": 1253,
+      "fetched_utc": "2026-09-29T10:52:30Z"
+    },
+    {
+      "path": "fixtures/scot-champ.json",
+      "sha256": "d616d107dce9a12c6a3a89fcd20bd14c8506c4eb5ea43e874fafb7f1fcb7a555",
+      "bytes": 3577,
+      "fetched_utc": "2026-09-29T10:52:33Z"
+    },
+    {
+      "path": "fixtures/scot-premier.json",
+      "sha256": "0b58bede11b93446d72993e087c876ee6b6899e4bb28ac9042568a068a2f867a",
+      "bytes": 99,
+      "fetched_utc": "2026-09-29T10:52:37Z"
+    },
+    {
+      "path": "fixtures/scot1.json",
+      "sha256": "246a62d68c1b610185fc6d47082d8df2cbff3462031ff4f9050159637d2c45df",
+      "bytes": 4723,
+      "fetched_utc": "2026-09-29T10:52:40Z"
+    },
+    {
+      "path": "fixtures/scot2.json",
+      "sha256": "5783ee7bfcf5bc168387a4c318137991541be63f365c084161817857329009d3",
+      "bytes": 5870,
+      "fetched_utc": "2026-09-29T10:52:45Z"
+    },
+    {
+      "path": "fixtures/segunda1.json",
+      "sha256": "deb6f3619b1f3791a6fc9dc78081221758e8fadbfdb3160a8b41d2a4fc652e99",
+      "bytes": 7229,
+      "fetched_utc": "2026-09-29T10:52:49Z"
+    },
+    {
+      "path": "fixtures/segunda2.json",
+      "sha256": "8fe1c3690681e7a57281ba3f4e49e63b7144de4a2d3f207d3119e5b32cb8ba65",
+      "bytes": 3638,
+      "fetched_utc": "2026-09-29T10:52:52Z"
+    },
+    {
+      "path": "fixtures/segunda3.json",
+      "sha256": "831f76fb527bd898e0289c57ebf27a6cd801d1aa032e561af03e7bf7b116ae0c",
+      "bytes": 4833,
+      "fetched_utc": "2026-09-29T10:52:56Z"
+    },
+    {
+      "path": "fixtures/segunda4.json",
+      "sha256": "09b5500f6818e2a33f58f6e20cab46ea851e5bf1f9c01c660c9df505b17afd89",
+      "bytes": 3677,
+      "fetched_utc": "2026-09-29T10:52:59Z"
+    },
+    {
+      "path": "fixtures/segunda5.json",
+      "sha256": "c951c25b25939c108afbbd81f3a7fd7bb24eaf00508106359a63825decf28a86",
+      "bytes": 2805,
+      "fetched_utc": "2026-09-29T10:53:02Z"
+    },
+    {
+      "path": "fixtures/serbia1.json",
+      "sha256": "4f4b30de2656f76725325c80ec692c06f5fbfe00433e3e3992373e1cee068273",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:53:06Z"
+    },
+    {
+      "path": "fixtures/slovenia1.json",
+      "sha256": "a8401b94d381c3e2da0ddd5fbe0bfc30841733227924cf76123378111949efc7",
+      "bytes": 96,
+      "fetched_utc": "2026-09-29T10:53:09Z"
+    },
+    {
+      "path": "fixtures/south.json",
+      "sha256": "067e8d571b3a1530ff69077f47d3f1d485a896e794c98aae2e575f5828c28be9",
+      "bytes": 4784,
+      "fetched_utc": "2026-09-29T10:53:12Z"
+    },
+    {
+      "path": "fixtures/spain1.json",
+      "sha256": "00c4919dad2f5c1d90c9110868856c754980527a7f7fc465bac76bb920e980bf",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:53:16Z"
+    },
+    {
+      "path": "fixtures/spain2.json",
+      "sha256": "b1269f5ce8aee92e3fe74ebcb36b9b9392c9615ef88fb979c551590216c2b362",
+      "bytes": 11507,
+      "fetched_utc": "2026-09-29T10:53:19Z"
+    },
+    {
+      "path": "fixtures/sweden1.json",
+      "sha256": "f44d117d49f4ddedd59cf7e036fb5921fe35173abe282d0b91713fe624038ba6",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:53:23Z"
+    },
+    {
+      "path": "fixtures/sweden2.json",
+      "sha256": "0337ce38e44449d539cd520417d73526a641cb256bd50c4d08e8f9596b945638",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:53:26Z"
+    },
+    {
+      "path": "fixtures/swiss1.json",
+      "sha256": "d9c44872fbb31a2e159e32a2d4b7e1fec3247d438d188304c3271b39447db265",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:53:30Z"
+    },
+    {
+      "path": "fixtures/swiss2.json",
+      "sha256": "ad4754d37110c908a98318f6216c94ba29e26db779e1202016b73559b5cc1156",
+      "bytes": 93,
+      "fetched_utc": "2026-09-29T10:53:33Z"
+    },
+    {
+      "path": "fixtures/thai1.json",
+      "sha256": "9602e2c766b0c1a18dae7843f5ece37b39fb9e9d3f0101008abe2fd2bc87446c",
+      "bytes": 92,
+      "fetched_utc": "2026-09-29T10:53:36Z"
+    },
+    {
+      "path": "fixtures/turkey1.json",
+      "sha256": "4bac7cd88fc15f131bc84a1976fd5e5d320fd1bd36d1f26fa1553d5138f9e783",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:53:40Z"
+    },
+    {
+      "path": "fixtures/turkey2.json",
+      "sha256": "17d58b35e01a7865e062ddb83411ff495706cd579240908a5879b0379e3d5917",
+      "bytes": 94,
+      "fetched_utc": "2026-09-29T10:53:43Z"
+    },
+    {
+      "path": "fixtures/wbelgium1.json",
+      "sha256": "26dc11d30248208e6c21c60f26b4cf894fe49a6114cf5b6c65c5665d54bdd522",
+      "bytes": 4808,
+      "fetched_utc": "2026-09-29T10:53:46Z"
+    },
+    {
+      "path": "fixtures/wfrance1.json",
+      "sha256": "a57ab82a783deae4d096fa29aaeaf29f697e4b724947f10a370c54b8ec8d75c3",
+      "bytes": 7084,
+      "fetched_utc": "2026-09-29T10:53:50Z"
+    },
+    {
+      "path": "fixtures/wgermany1.json",
+      "sha256": "6500f69f4cdc7a0c3a00a81bbf7cc1ac35bf5ee98dcc5018104fa8bc4c2eedbb",
+      "bytes": 4866,
+      "fetched_utc": "2026-09-29T10:53:53Z"
+    },
+    {
+      "path": "fixtures/wsweden.json",
+      "sha256": "619710d252f009d427073334ceabe86efe8d61c7fb977539a19f4685c6fbffc6",
+      "bytes": 7122,
+      "fetched_utc": "2026-09-29T10:53:57Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-03-kabylie-vs-biskra.html",
+      "sha256": "f45b605abc810716d56c99458853c83ef95ca7feb950cdc2fa461161b008a758",
+      "bytes": 73674,
+      "fetched_utc": "2026-09-29T10:54:00Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-03-ben-aknoun-vs-usm-alger.html",
+      "sha256": "d74bcff90d8bab962c38493fc1e1db0033727f24285f9fab8239410749bdcde9",
+      "bytes": 74008,
+      "fetched_utc": "2026-09-29T10:54:01Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-03-mc-alger-vs-es-setif.html",
+      "sha256": "baac521630373b5db3f91d2b725f90dd5032452559eb5da32c218dd5467f7710",
+      "bytes": 73531,
+      "fetched_utc": "2026-09-29T10:54:02Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-03-rouisset-vs-saoura.html",
+      "sha256": "9b3d8f4180376a4272e3e528670d0c1676c316fbadb02a9287a6d0f1ea7ec429",
+      "bytes": 73064,
+      "fetched_utc": "2026-09-29T10:54:03Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-03-oran-vs-khenchela.html",
+      "sha256": "c83fce7811bcaf317a4a1a0a779b45c0390727bb12720568253430eab36a2e00",
+      "bytes": 73360,
+      "fetched_utc": "2026-09-29T10:54:04Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-03-constantine-vs-el-biar.html",
+      "sha256": "c96f978c4314d4aa89a531de5aed3594e8d836de1544e99dc6800529fc6efb75",
+      "bytes": 59502,
+      "fetched_utc": "2026-09-29T10:54:05Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-06-kabylie-vs-mc-alger.html",
+      "sha256": "fd685cafed5d9a91b0fb04e59c62b69726bb0b69dabee7717e76af367b292232",
+      "bytes": 73474,
+      "fetched_utc": "2026-09-29T10:54:06Z"
+    },
+    {
+      "path": "html/algeria__ligue-1__2026-10-06-saoura-vs-khenchela.html",
+      "sha256": "e2eb73a4cc636a5f82e4626aae8893d49799a301c9f5d4550aaa7b5cca08f2cb",
+      "bytes": 73482,
+      "fetched_utc": "2026-09-29T10:54:07Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-03-atletico-mg-vs-bragantino.html",
+      "sha256": "53ab3cd4e6acf18626d0e26f8c51259c4757b2658ae4df3fb93aef2ca768c8a1",
+      "bytes": 74497,
+      "fetched_utc": "2026-09-29T10:54:08Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-03-sao-paulo-vs-santos.html",
+      "sha256": "679aab7d2e53d464560a501ca89e5416b12c6c9fb26184f6c7640e0afba5d6b2",
+      "bytes": 74147,
+      "fetched_utc": "2026-09-29T10:54:08Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-08-cruzeiro-vs-sao-paulo.html",
+      "sha256": "308eac10732660859faad7a4bb3da87eed0e301cdc904dc1f5a0f812b76bd015",
+      "bytes": 55687,
+      "fetched_utc": "2026-09-29T10:54:09Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-08-bragantino-vs-mirassol.html",
+      "sha256": "1f9c02200c80d00b8c1b04e5f720cc9891c691f486b1961346b2203f9b7ee78c",
+      "bytes": 56044,
+      "fetched_utc": "2026-09-29T10:54:09Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-08-remo-vs-gremio.html",
+      "sha256": "8894536245c515d54163ef0597247d99b2e0c4f3727ab10f2d15d3396b5f961d",
+      "bytes": 54111,
+      "fetched_utc": "2026-09-29T10:54:10Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-08-internacional-vs-corinthians.html",
+      "sha256": "10830cd41fa59597d9d4b29f36c907ea0dd60fe25eb9f1f8a53bc65361e98803",
+      "bytes": 56272,
+      "fetched_utc": "2026-09-29T10:54:11Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-08-vitoria-vs-chapecoense-sc.html",
+      "sha256": "95af4ddf09c08814ef2049f55c5a7482ec77509de83274f5052c8bcefe53168a",
+      "bytes": 54686,
+      "fetched_utc": "2026-09-29T10:54:11Z"
+    },
+    {
+      "path": "html/brazil__serie-a-betano__2026-10-08-botafogo-rj-vs-vasco.html",
+      "sha256": "e34e7f641d45e52d4010466227fff8c765784fbbdb346ad89d1ceacb58177a18",
+      "bytes": 55754,
+      "fetched_utc": "2026-09-29T10:54:12Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-09-29-america-mg-vs-juventude.html",
+      "sha256": "8bb52a40d89e6309db567764228f57f2526eb01a0330ca6fb20e1a47a2145813",
+      "bytes": 74627,
+      "fetched_utc": "2026-09-29T10:54:12Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-09-30-botafogo-sp-vs-ponte-preta.html",
+      "sha256": "6a6b7f330e56a4910967f960dff112f95abb8bc0669a6df83fba28bdb74ec0fe",
+      "bytes": 74859,
+      "fetched_utc": "2026-09-29T10:54:13Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-02-novorizontino-vs-goias.html",
+      "sha256": "ca98cbae047849da00b1aa52b304b99e5468b82b4bf6aef3f1c9496d04028911",
+      "bytes": 74622,
+      "fetched_utc": "2026-09-29T10:54:14Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-02-athletic-club-vs-sport-recife.html",
+      "sha256": "6aa6625e25e7cb1bceaaf533e088103f4bcca1a157be0d7ea1c2193e888b138c",
+      "bytes": 73618,
+      "fetched_utc": "2026-09-29T10:54:14Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-fortaleza-vs-nautico.html",
+      "sha256": "0b78965c94c755354e104c9ffc505db48e171b89a84bb5e6fa0dbad2ae2a246a",
+      "bytes": 73113,
+      "fetched_utc": "2026-09-29T10:54:15Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-avai-vs-ceara.html",
+      "sha256": "b8bc2f667819662afd2c6c459f2f08fb91211392d6ac504aad5157a93ddd74b3",
+      "bytes": 74143,
+      "fetched_utc": "2026-09-29T10:54:16Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-atletico-go-vs-america-mg.html",
+      "sha256": "18432b6e0f79fe72e8c4b91e9ebd1dd34f679f2cfe425f6a33c02e2eb850a6df",
+      "bytes": 74776,
+      "fetched_utc": "2026-09-29T10:54:16Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-cuiaba-vs-ponte-preta.html",
+      "sha256": "879b49be469a2576b20c1d840af996e076c596bc6ff39d6920ba718380129521",
+      "bytes": 74032,
+      "fetched_utc": "2026-09-29T10:54:17Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-botafogo-sp-vs-vila-nova-fc.html",
+      "sha256": "9d3e09d9d4ab43f6c66759f491de79ae1cfaae7dd49187b4376ef494776aae0d",
+      "bytes": 74425,
+      "fetched_utc": "2026-09-29T10:54:18Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-sao-bernardo-vs-crb.html",
+      "sha256": "af1242a97e8b613aead827fc02be57a8091417bde6d1d2c7bb37fb8136478796",
+      "bytes": 72675,
+      "fetched_utc": "2026-09-29T10:54:18Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-londrina-vs-criciuma.html",
+      "sha256": "3fa895477f2c41a6df37e47f42d6beffd8af006ecd788ec93a99b483fa32fbba",
+      "bytes": 74456,
+      "fetched_utc": "2026-09-29T10:54:19Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-03-juventude-vs-operario-pr.html",
+      "sha256": "fd46fd38b3ac81e4b17edd02b044648d12cacb6af49498403e763ffebd073cb3",
+      "bytes": 74772,
+      "fetched_utc": "2026-09-29T10:54:20Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-07-ponte-preta-vs-juventude.html",
+      "sha256": "dbabc066539166c4151bc423c1edb3131d96cb4e3e0131af037806e6b309ffa7",
+      "bytes": 56004,
+      "fetched_utc": "2026-09-29T10:54:20Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-07-sport-recife-vs-sao-bernardo.html",
+      "sha256": "097b6f7227c54e652bcb8bf00853d335f43052c1d58255e131818b85062f3227",
+      "bytes": 54757,
+      "fetched_utc": "2026-09-29T10:54:21Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-07-goias-vs-athletic-club.html",
+      "sha256": "b058fa3e57211d995379387fd7880c9cc6aa8289376e54914dce44da84acfc55",
+      "bytes": 55743,
+      "fetched_utc": "2026-09-29T10:54:22Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-08-operario-pr-vs-botafogo-sp.html",
+      "sha256": "5afba51d9e39a26a5f75f66458079eb6628b5690b58867b95bcab2ebf05ccdac",
+      "bytes": 56038,
+      "fetched_utc": "2026-09-29T10:54:22Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-08-avai-vs-londrina.html",
+      "sha256": "d173b1852c588cba7fa5d851a028c024f2494643a1f4adf6cb9c46cce24751ff",
+      "bytes": 55519,
+      "fetched_utc": "2026-09-29T10:54:23Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-08-america-mg-vs-fortaleza.html",
+      "sha256": "8b720ed966b5578cfea46d50ee43b5af54c25dbdeff987e90d7c2f991c12da9c",
+      "bytes": 54494,
+      "fetched_utc": "2026-09-29T10:54:23Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-08-vila-nova-fc-vs-cuiaba.html",
+      "sha256": "92ee3177e9553231ab34d8b51d01d5e4b9bafc80d399959aeadf9a582887d824",
+      "bytes": 55854,
+      "fetched_utc": "2026-09-29T10:54:24Z"
+    },
+    {
+      "path": "html/brazil__serie-b-superbet__2026-10-08-crb-vs-atletico-go.html",
+      "sha256": "baea93af116fe2d5e29e7bd5c967bc77f18340d636de5d8f6fbcb0f56092d73c",
+      "bytes": 55334,
+      "fetched_utc": "2026-09-29T10:54:25Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-a__2026-10-03-motorlet-prague-vs-loko-praha.html",
+      "sha256": "6b77b9c558a66818eef30660fe778d43f2f178e2cca2854fee53cb3ae5c3b493",
+      "bytes": 74716,
+      "fetched_utc": "2026-09-29T10:54:25Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-a__2026-10-03-pribram-b-vs-aritma-prague.html",
+      "sha256": "9dfc417bfe2dbc49d5c19e7e1e7645a3647c62d76ad05b78fc6efae4223c292b",
+      "bytes": 73497,
+      "fetched_utc": "2026-09-29T10:54:26Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-a__2026-10-04-admira-prague-vs-domazlice.html",
+      "sha256": "603dcc64e600d5cc5678284ea8a88f5b86c67bd7c89434014dfdd0ebc50006d3",
+      "bytes": 74418,
+      "fetched_utc": "2026-09-29T10:54:26Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-a__2026-10-04-bohemians-1905-b-vs-pisek.html",
+      "sha256": "0c50eaf8ff7120168c0c4ab5513fd0a6275639e74533ffb71148454f18b7e6e8",
+      "bytes": 74363,
+      "fetched_utc": "2026-09-29T10:54:27Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-a__2026-10-04-plzen-b-vs-dukla-prague-b.html",
+      "sha256": "2d2ee293560bac410dff64f4b7c145ed600bae9809cdb43569c0b66d11d57e22",
+      "bytes": 74437,
+      "fetched_utc": "2026-09-29T10:54:28Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-b__2026-10-03-banik-most-sous-vs-jablonec-b.html",
+      "sha256": "eaa0239e5d2cd33889198a66ea0ee599ab2632d7e4d4a906f60ca03b18e1de3c",
+      "bytes": 74505,
+      "fetched_utc": "2026-09-29T10:54:28Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-b__2026-10-04-hradec-kralove-b-vs-mlada-boleslav-b.html",
+      "sha256": "b9a9f0d6544789aa1fb788e0c6e9a6521d340ebb7c2e933c50eb532936808f6b",
+      "bytes": 74700,
+      "fetched_utc": "2026-09-29T10:54:29Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-b__2026-10-04-teplice-b-vs-neratovice.html",
+      "sha256": "ab06bab46267d70a7aa31f47c09416a82a1222ceb7fbc0a755315c67dad5adff",
+      "bytes": 73590,
+      "fetched_utc": "2026-09-29T10:54:30Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-b__2026-10-04-brozany-vs-zapy.html",
+      "sha256": "ace561a06d2f8b3d6190ad52490a8b721a315d24df0320d50ecebf9331a910ac",
+      "bytes": 73840,
+      "fetched_utc": "2026-09-29T10:54:30Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-b__2026-10-04-varnsdorf-vs-liberec-b.html",
+      "sha256": "22e805ae44bc84aa32f83ea61f8bf31a250bec40405d3ec33966eb3e9771fd8f",
+      "bytes": 73485,
+      "fetched_utc": "2026-09-29T10:54:31Z"
+    },
+    {
+      "path": "html/czech-republic__3-cfl-group-b__2026-10-04-benatky-n-jiz-vs-chrudim.html",
+      "sha256": "3018e5e966f7faf1c77aa27131f2b8539af4f37fa1d545017a5499843df47bbe",
+      "bytes": 60901,
+      "fetched_utc": "2026-09-29T10:54:31Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-09-29-charlton-u21-vs-millwall-u21.html",
+      "sha256": "5c2b79ca6bd336c04bbebcd833d098dc9f205c44eee24373fa8ebd895ebcbed8",
+      "bytes": 60582,
+      "fetched_utc": "2026-09-29T10:54:32Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-09-29-wigan-u21-vs-huddersfield-u21.html",
+      "sha256": "1baf18961d291a0c2c42416530a32cf472f6fd3bfc740018331806bf8ccbbd38",
+      "bytes": 60737,
+      "fetched_utc": "2026-09-29T10:54:33Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-09-29-coventry-u21-vs-colchester-u21.html",
+      "sha256": "9808d9ab271674d0ceb61466a748af23611effc29ded0e3ecd029d2cdd11c32f",
+      "bytes": 61251,
+      "fetched_utc": "2026-09-29T10:54:33Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-09-29-peterborough-u21-vs-fleetwood-u21.html",
+      "sha256": "6e704fd2ea0e1c26c046e8bf71c42e001a8ab55108d2c0e1c902280adb3bed71",
+      "bytes": 61328,
+      "fetched_utc": "2026-09-29T10:54:34Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-10-02-fleetwood-u21-vs-sheffield-wed-u21.html",
+      "sha256": "cad94b3d7b44621151958aadf900e05ba4bf6f50c606093f71fc48fc172f8446",
+      "bytes": 61703,
+      "fetched_utc": "2026-09-29T10:54:35Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-10-06-bristol-city-u21-vs-charlton-u21.html",
+      "sha256": "37fd311720629a47024d27699320aecc0a23b9c3872ec0ed4f79b87957b62abe",
+      "bytes": 61514,
+      "fetched_utc": "2026-09-29T10:54:35Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-10-06-qpr-u21-vs-coventry-u21.html",
+      "sha256": "36634fa9359d4e3d1f14ba0b75096757b7d52202b3f2224c39ebab7958abf58b",
+      "bytes": 60570,
+      "fetched_utc": "2026-09-29T10:54:36Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-10-06-hull-u21-vs-wigan-u21.html",
+      "sha256": "ae53afbb23f4c0aa692439178317536d449e89c8a5fd86280584d7d3c2343d7b",
+      "bytes": 60137,
+      "fetched_utc": "2026-09-29T10:54:36Z"
+    },
+    {
+      "path": "html/england__professional-development-league__2026-10-06-colchester-u21-vs-swansea-u21.html",
+      "sha256": "b8fa9eede9e735b4302fb4f4aa6190f0b2cb06e0720fae732f1f7e796d3264e9",
+      "bytes": 61465,
+      "fetched_utc": "2026-09-29T10:54:37Z"
+    },
+    {
+      "path": "html/england__league-one__2026-10-03-leyton-orient-vs-plymouth.html",
+      "sha256": "923b117daf8f879e48848791a77b534613b2b9b56beb856f322e206cc0c5790a",
+      "bytes": 73901,
+      "fetched_utc": "2026-09-29T10:54:38Z"
+    },
+    {
+      "path": "html/england__league-one__2026-10-03-wigan-vs-mansfield.html",
+      "sha256": "3c6dc229d07771bcebdffafc9d02a39a98009b6303070befb5bf5b1e5a058313",
+      "bytes": 73951,
+      "fetched_utc": "2026-09-29T10:54:38Z"
+    },
+    {
+      "path": "html/england__league-one__2026-10-03-burton-vs-huddersfield.html",
+      "sha256": "7191726e738dd0690b009220a5b5c4ce8e24ba8e2e3026e65e8b0820a4f37eba",
+      "bytes": 74494,
+      "fetched_utc": "2026-09-29T10:54:39Z"
+    },
+    {
+      "path": "html/england__league-one__2026-10-03-reading-vs-bradford-city.html",
+      "sha256": "ca85c11ef841f475fdb0be7ca22eee84c44d7421c490cb18e7117b4d04311e31",
+      "bytes": 73926,
+      "fetched_utc": "2026-09-29T10:54:40Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-chesterfield-vs-tranmere.html",
+      "sha256": "c157ef8521e56afbc6766295f8510c07cdde721d4e89d8abfab44369f765fe7a",
+      "bytes": 74503,
+      "fetched_utc": "2026-09-29T10:54:40Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-northampton-vs-oldham.html",
+      "sha256": "ba2210ea08684e3a91cc65747e1a07b55addfc1e17d9342044ecd1eaaa5be3aa",
+      "bytes": 62529,
+      "fetched_utc": "2026-09-29T10:54:41Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-walsall-vs-crawley.html",
+      "sha256": "4c7ce36bcc747de40babee5429cc62d4ecd54d1f653232c97e78a7f7c0bbbb0c",
+      "bytes": 73913,
+      "fetched_utc": "2026-09-29T10:54:41Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-crewe-vs-bristol-rovers.html",
+      "sha256": "a1948cc06176a9c775721d5867108bb633eca7a5c15410ef67dd6d8f86a86262",
+      "bytes": 73473,
+      "fetched_utc": "2026-09-29T10:54:42Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-exeter-vs-rotherham.html",
+      "sha256": "d6fc08519427e468a5141177b6f6f712385acf9117fc7b0b3c64ac4e13994437",
+      "bytes": 60873,
+      "fetched_utc": "2026-09-29T10:54:43Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-rochdale-vs-swindon.html",
+      "sha256": "0665a629b60a7e70ca51b11312d32a0661ed67f0996e74b827128b82c2b59fb8",
+      "bytes": 73944,
+      "fetched_utc": "2026-09-29T10:54:43Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-barnet-vs-york-city.html",
+      "sha256": "267055cfccd2507b70c01f66e781974642371edf96d969547d368637bad6cb0e",
+      "bytes": 60628,
+      "fetched_utc": "2026-09-29T10:54:44Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-accrington-vs-cheltenham.html",
+      "sha256": "1174ff6d8bc3c339ca08a5aa2b1ec449ffc1f2cfaa80df99acab3d70450250bd",
+      "bytes": 74510,
+      "fetched_utc": "2026-09-29T10:54:44Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-salford-vs-fleetwood.html",
+      "sha256": "631c9e347c2982acb512baa1b1ee1b9aadc3fbfc691d4fa90d05ed8aadd942c0",
+      "bytes": 74309,
+      "fetched_utc": "2026-09-29T10:54:45Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-grimsby-vs-shrewsbury.html",
+      "sha256": "63c609f35c4d32e5585c06ea0b79a3cd711fcc58b5e03dcf10cdeabc8302448b",
+      "bytes": 73397,
+      "fetched_utc": "2026-09-29T10:54:46Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-colchester-vs-port-vale.html",
+      "sha256": "b8b48af304d8af1c1099e8c1cced04e737cc08d92b267b2bb195c559a5dcbff1",
+      "bytes": 74051,
+      "fetched_utc": "2026-09-29T10:54:46Z"
+    },
+    {
+      "path": "html/england__league-two__2026-10-03-gillingham-vs-newport.html",
+      "sha256": "a36de76409ac815f261b16b4695694729f27f57206668a700729a76bfab8e822",
+      "bytes": 74422,
+      "fetched_utc": "2026-09-29T10:54:47Z"
+    },
+    {
+      "path": "html/finland__veikkausliiga__2026-10-07-gnistan-vs-inter-turku.html",
+      "sha256": "64a0be7c25449c58fc3cfa2db31e383a163c56e2ca9c868ad545f9e12c73fe1a",
+      "bytes": 55763,
+      "fetched_utc": "2026-09-29T10:54:48Z"
+    },
+    {
+      "path": "html/finland__veikkausliiga__2026-10-08-hjk-vs-vps.html",
+      "sha256": "206e6a298f2ae7cd6bfbab89fcfd6167084b2c10d769c05dc51c22d149a7a8e1",
+      "bytes": 54905,
+      "fetched_utc": "2026-09-29T10:54:48Z"
+    },
+    {
+      "path": "html/finland__veikkausliiga__2026-10-08-kups-vs-ac-oulu.html",
+      "sha256": "980aa18c3265721286015ad5e0c724f1b55ee8b03115ce27218b07450fb64a49",
+      "bytes": 55431,
+      "fetched_utc": "2026-09-29T10:54:49Z"
+    },
+    {
+      "path": "html/france__national__2026-10-01-bastia-vs-orleans.html",
+      "sha256": "ace3ff64d5a9d1f58136d2b799592cffc879c6b1503ea7a36f167cbaba1fb274",
+      "bytes": 62016,
+      "fetched_utc": "2026-09-29T10:54:50Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-la-roche-vs-aubagne.html",
+      "sha256": "1008a182e31240e4c0033547c1810d2985a1f69c0d74e39710631ee015edcb46",
+      "bytes": 60857,
+      "fetched_utc": "2026-09-29T10:54:50Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-amiens-vs-villefranche.html",
+      "sha256": "1d8040cea8f962c6ad6349578662ff65897a9a8825ed0404b01d83731fab71f9",
+      "bytes": 60954,
+      "fetched_utc": "2026-09-29T10:54:51Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-le-puy-en-velay-vs-thionville.html",
+      "sha256": "45e6994b694ab39358ea6c30a87dee8be99a808ba5047ca193c3061017d4899d",
+      "bytes": 61274,
+      "fetched_utc": "2026-09-29T10:54:53Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-rouen-vs-bourg-en-bresse.html",
+      "sha256": "0a60e2dd997b230f24014296f312e08c2255f384a7e6c3a888ea900462152a33",
+      "bytes": 74198,
+      "fetched_utc": "2026-09-29T10:54:54Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-cannes-vs-quevilly-rouen.html",
+      "sha256": "a5d15daa14a3f7c55d4ff60ffeacb8d44c81a013cdf2a342363f95a36fdad973",
+      "bytes": 61019,
+      "fetched_utc": "2026-09-29T10:54:55Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-concarneau-vs-paris-13-atl.html",
+      "sha256": "b8918c777a3e2aa6e0e2175b92f3f323f4e54fa8abaf8876f8887b807d46f933",
+      "bytes": 74735,
+      "fetched_utc": "2026-09-29T10:54:56Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-versailles-vs-valenciennes.html",
+      "sha256": "53c2f4e24572a3a504390e1ddef127712dbd1594731b17d4ce5f7c314b3a2228",
+      "bytes": 74522,
+      "fetched_utc": "2026-09-29T10:54:57Z"
+    },
+    {
+      "path": "html/france__national__2026-10-03-fleury-merogis-vs-caen.html",
+      "sha256": "359a8bd8ea52e09d733c302b9dc6ecf77cfa6ea329ea102b46afb1577f7f1c52",
+      "bytes": 73661,
+      "fetched_utc": "2026-09-29T10:54:57Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-01-hamburger-sv-ii-vs-werder-bremen-ii.html",
+      "sha256": "84bfe486a9828ed78662772e1722f01e1745083dacb5964176bb7d9c44e6f348",
+      "bytes": 74907,
+      "fetched_utc": "2026-09-29T10:54:58Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-03-sc-weiche-08-vs-vfb-oldenburg.html",
+      "sha256": "0186cc417f78ff817b2ef3c436027b7949aa94a17baac3c862976fdf444ecc8c",
+      "bytes": 74528,
+      "fetched_utc": "2026-09-29T10:54:58Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-03-drochtersenassel-vs-jeddeloh.html",
+      "sha256": "07f23210bc614d54aab4038a3dd9888197bbd90c7783998968808169cb4aded2",
+      "bytes": 74589,
+      "fetched_utc": "2026-09-29T10:55:00Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-03-norderstedt-vs-bremer.html",
+      "sha256": "3f5d8db8fc40d7936da89079181003a68c9f85b6c7041741e42a46e12e75af22",
+      "bytes": 73821,
+      "fetched_utc": "2026-09-29T10:55:02Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-03-hannover-ii-vs-phonix-lubeck.html",
+      "sha256": "5ed5f278e97b7a359147e49f8713a07af34ae0de83fcb113e52e356ade93d1dc",
+      "bytes": 74547,
+      "fetched_utc": "2026-09-29T10:55:04Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-03-delmenhorst-vs-st-pauli-ii.html",
+      "sha256": "3b1de54da0a5627a3353526365a3287be984fb9307684961441677f11dccdeac",
+      "bytes": 73505,
+      "fetched_utc": "2026-09-29T10:55:05Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-02-emden-vs-todesfelde.html",
+      "sha256": "794b2df88b514160ae49a2d48c5c1277af34f4743aede4b0781f206455cb91f1",
+      "bytes": 73028,
+      "fetched_utc": "2026-09-29T10:55:05Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-04-hannoverscher-sc-vs-schoningen.html",
+      "sha256": "d502e6efb669ae3887c60a6a33a271b70501d565dd8ff393dbec47915f219d0e",
+      "bytes": 73974,
+      "fetched_utc": "2026-09-29T10:55:07Z"
+    },
+    {
+      "path": "html/germany__regionalliga-north__2026-10-06-werder-bremen-ii-vs-hannover-ii.html",
+      "sha256": "55244bd93e322a047be52198637d8953ec2455c5f2cb5bdbb63cfabc2fefd1de",
+      "bytes": 74738,
+      "fetched_utc": "2026-09-29T10:55:07Z"
+    },
+    {
+      "path": "html/greece__super-league-2__2026-10-04-pyrgos-vs-panionios.html",
+      "sha256": "509860faa404b09c8fc0dbe647981ece306407be7f5e4dd707877eea3357e803",
+      "bytes": 60260,
+      "fetched_utc": "2026-09-29T10:55:09Z"
+    },
+    {
+      "path": "html/greece__super-league-2__2026-10-04-chrisoupolis-vs-marko.html",
+      "sha256": "3327e2e7b38d30be01c33e98750c88a8afc2a7f93717e94275dfdd9144c96be8",
+      "bytes": 71760,
+      "fetched_utc": "2026-09-29T10:55:10Z"
+    },
+    {
+      "path": "html/greece__super-league-2__2026-10-04-panthrakikos-vs-panserraikos.html",
+      "sha256": "9205a1ab0addb5b40533e393dd00ac12a80ce788bb288f6cd1a6a4e124e71740",
+      "bytes": 60435,
+      "fetched_utc": "2026-09-29T10:55:11Z"
+    },
+    {
+      "path": "html/greece__super-league-2__2026-10-04-asteras-tripolis-b-vs-karditsa.html",
+      "sha256": "3aab3b5e7d09379ae31e3a378ef679628294d1b944f4aa3fb9ae3ebdb52f917a",
+      "bytes": 74273,
+      "fetched_utc": "2026-09-29T10:55:13Z"
+    },
+    {
+      "path": "html/greece__super-league-2__2026-10-04-paok-b-vs-ellas-syrou.html",
+      "sha256": "5cb43d0efc740401dc69aa32b9ef3caf77c6533165927b85eec616a510f05fe5",
+      "bytes": 71771,
+      "fetched_utc": "2026-09-29T10:55:14Z"
+    },
+    {
+      "path": "html/greece__super-league-2__2026-10-04-olympiacos-piraeus-b-vs-athens-kallithea.html",
+      "sha256": "a42c6155490e3374a56fc7640b1033c62c1fc66d7b61b59a3e1a60e69101c2c9",
+      "bytes": 74773,
+      "fetched_utc": "2026-09-29T10:55:15Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-02-helmond-vs-heracles.html",
+      "sha256": "3ed7b66b91034f44273b5d8e8db07b03f8ee69675d9ce6648f67a34f7bc5d59e",
+      "bytes": 73673,
+      "fetched_utc": "2026-09-29T10:55:16Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-03-oss-vs-maastricht.html",
+      "sha256": "01dd28fa011512f1643aa1211867530d3cf0eddc22fa427ecce579a66b69fcbe",
+      "bytes": 74242,
+      "fetched_utc": "2026-09-29T10:55:16Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-03-vitesse-vs-nac-breda.html",
+      "sha256": "173d428bb90da7e896b6a5f3ed6a21bd8d6a9aab0340c316022e97d4e32be0f3",
+      "bytes": 72100,
+      "fetched_utc": "2026-09-29T10:55:17Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-03-waalwijk-vs-fc-emmen.html",
+      "sha256": "566f2ff48465ba4e9b76f8c687ecec87107e9b8bf95876a2f8cd8eb62ee4c228",
+      "bytes": 73822,
+      "fetched_utc": "2026-09-29T10:55:18Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-03-den-bosch-vs-dordrecht.html",
+      "sha256": "e5e6fdfcc4fe87fc8a8adfc34d420a6bf13800061a9ee573f5b9d30c8c70d252",
+      "bytes": 74561,
+      "fetched_utc": "2026-09-29T10:55:18Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-03-almere-city-vs-fc-volendam.html",
+      "sha256": "c302bbfad754682c63bd2d92a40c00b8cad81b411bac0dd56180b08a99a55dc9",
+      "bytes": 74836,
+      "fetched_utc": "2026-09-29T10:55:19Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-03-eindhoven-fc-vs-de-graafschap.html",
+      "sha256": "c440351d3e4c71b91016bd836a2996c0a352d9c6d4e5ae1e5d41938ec0f847eb",
+      "bytes": 75076,
+      "fetched_utc": "2026-09-29T10:55:19Z"
+    },
+    {
+      "path": "html/netherlands__eerste-divisie__2026-10-04-venlo-vs-roda.html",
+      "sha256": "5a0fc28f6f288fb55549fe803bbeb1398644c1a105b846950b860204855d5aeb",
+      "bytes": 74072,
+      "fetched_utc": "2026-09-29T10:55:20Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-hfc-vs-quick-boys.html",
+      "sha256": "7b3b09f421b64bb4a3789405d0cba4e4340fd0083b5181bead9cc4971a816f6b",
+      "bytes": 73967,
+      "fetched_utc": "2026-09-29T10:55:21Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-hardenberg-vs-ijsselmeervogels.html",
+      "sha256": "b67d5b83ec48a300598ac81aa3dfc25e51b7803dcb29019bea0060994317ba52",
+      "bytes": 74615,
+      "fetched_utc": "2026-09-29T10:55:22Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-rkav-volendam-vs-jong-almere-city.html",
+      "sha256": "922a7fefe4ec1fd13a239aa3f4336bc365a59d7f68858b4d6c9a359c8a5a5e6c",
+      "bytes": 74689,
+      "fetched_utc": "2026-09-29T10:55:23Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-rijnsburgse-boys-vs-kloetinge.html",
+      "sha256": "b19b925aab7f4dbb6e5517d39db557ec12a1271bc67c27d971d786eb0522010b",
+      "bytes": 61219,
+      "fetched_utc": "2026-09-29T10:55:24Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-hoek-vs-de-treffers.html",
+      "sha256": "10c2d5ce9d4ec11382f9acf2b8945846f01a681527a238fdf15a444f3832d462",
+      "bytes": 73256,
+      "fetched_utc": "2026-09-29T10:55:26Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-katwijk-vs-kozakken-boys.html",
+      "sha256": "9b87423da69220be5b02068203ee6246fc6d79d89c43071ea558d4534ff85f29",
+      "bytes": 74290,
+      "fetched_utc": "2026-09-29T10:55:27Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-raalte-vs-gvvv.html",
+      "sha256": "3d4ceecf411ac22cb856ca13658a9ed46a23ddcab8a0f0cfb557a83d223f8d2a",
+      "bytes": 60565,
+      "fetched_utc": "2026-09-29T10:55:29Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-spakenburg-vs-afc.html",
+      "sha256": "27b7359ecacd4e745feca1e146e1f4b7ac3df10373fd6108df8f524b080ef119",
+      "bytes": 73923,
+      "fetched_utc": "2026-09-29T10:55:30Z"
+    },
+    {
+      "path": "html/netherlands__tweede-divisie__2026-10-03-barendrecht-vs-jong-sparta-rotterdam.html",
+      "sha256": "b6136aafbc66430842ba7f6b92f5cfa6e1fc64bccd0e049ae4c99aa3a0e0eb02",
+      "bytes": 74881,
+      "fetched_utc": "2026-09-29T10:55:31Z"
+    },
+    {
+      "path": "html/ireland__division-1__2026-10-02-treaty-united-vs-uc-dublin.html",
+      "sha256": "a21ea3b26b4ff9f19a98cb7561ebad24a87eef94a97ceb09d469f7f6e512c525",
+      "bytes": 74632,
+      "fetched_utc": "2026-09-29T10:55:33Z"
+    },
+    {
+      "path": "html/ireland__division-1__2026-10-02-finn-harps-vs-kerry.html",
+      "sha256": "40a37b63c3633b071c0e523969d4545adcd50d9ccee273f01f5d328a019dcb18",
+      "bytes": 73960,
+      "fetched_utc": "2026-09-29T10:55:33Z"
+    },
+    {
+      "path": "html/ireland__division-1__2026-10-02-athlone-vs-cork-city.html",
+      "sha256": "22828aae5dfaa74c5149a826d3919b472edcbe51804b105e31679f574d583759",
+      "bytes": 74305,
+      "fetched_utc": "2026-09-29T10:55:34Z"
+    },
+    {
+      "path": "html/ireland__division-1__2026-10-02-bray-vs-cobh-ramblers.html",
+      "sha256": "caa6c585f660c5ddddf65eb0dfea37e79b8dc278fba6b7e6ca9929d8b443f40d",
+      "bytes": 74396,
+      "fetched_utc": "2026-09-29T10:55:35Z"
+    },
+    {
+      "path": "html/ireland__division-1__2026-10-02-wexford-vs-longford.html",
+      "sha256": "a42b60ce6a167cca510459c61cf4576bd6b6854dcaab1b7c836322e6714c6625",
+      "bytes": 74248,
+      "fetched_utc": "2026-09-29T10:55:35Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-03-cittadella-vs-albinoleffe.html",
+      "sha256": "32709480c5d214f59198c25d8d0143b857a92af37e0ac5a6bc5f48303b97244b",
+      "bytes": 73607,
+      "fetched_utc": "2026-09-29T10:55:36Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-03-arzignano-vs-pergolettese.html",
+      "sha256": "3a0f666a28fe2404191f19a44e6d3787c5cf432f6656db4fb04241ff20820907",
+      "bytes": 74305,
+      "fetched_utc": "2026-09-29T10:55:37Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-03-pro-vercelli-vs-carpi.html",
+      "sha256": "0bb18e781410a8da47ca638c635412edcc32e7c50b00d16fc35cf24079e9bf00",
+      "bytes": 60581,
+      "fetched_utc": "2026-09-29T10:55:39Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-03-folgore-caratese-vs-desenzano.html",
+      "sha256": "a1741895cfe9a4f0366d38844cc71b16dcac270041108d48f4da46a089860589",
+      "bytes": 61093,
+      "fetched_utc": "2026-09-29T10:55:40Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-03-ospitaletto-vs-renate.html",
+      "sha256": "9886b76790f01a734e8b1477e6ab8ba8fa8c567690fda5b05b72ea3b129be7db",
+      "bytes": 73323,
+      "fetched_utc": "2026-09-29T10:55:43Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-04-lecco-vs-brescia.html",
+      "sha256": "bf2ae9de6d11d72c68130d977160dfac06e3e5f03b2bbf252c52752cd816d0dd",
+      "bytes": 73114,
+      "fetched_utc": "2026-09-29T10:55:44Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-04-treviso-vs-giana-erminio.html",
+      "sha256": "723fce140f887728cb69bf86e92d70762521edb41e6d0e3efdc3573dae3617ab",
+      "bytes": 60720,
+      "fetched_utc": "2026-09-29T10:55:45Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-04-dolomiti-bellunesi-vs-novara.html",
+      "sha256": "f6e53dd442102ca58a872d6afa0092816e793f1cf09b182dfadcf661a7ed51b6",
+      "bytes": 73424,
+      "fetched_utc": "2026-09-29T10:55:46Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-04-juventus-u23-vs-lumezzane.html",
+      "sha256": "ec4deb4e72cb4f006d4c508ff60881032b24a2d1c8ef2fadd76ebd301ffb40bf",
+      "bytes": 61099,
+      "fetched_utc": "2026-09-29T10:55:48Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-a__2026-10-04-alcione-milano-vs-trento.html",
+      "sha256": "8d8ad062090ba0c30d6aeb117b9642c4b38a6c5ab7b954617f6ca3866a6fb2c8",
+      "bytes": 73949,
+      "fetched_utc": "2026-09-29T10:55:49Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-03-gubbio-vs-perugia.html",
+      "sha256": "6a28f5a21c74bbfd3ea7edc48da5ef5bd80331eb15d4caf59fbcf5d8b059099f",
+      "bytes": 73460,
+      "fetched_utc": "2026-09-29T10:55:51Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-03-vado-vs-forli.html",
+      "sha256": "781371d3b040d3096d0b5af1e82f13f28fcab4c578df972cb7fe8f1a5f0382b1",
+      "bytes": 60151,
+      "fetched_utc": "2026-09-29T10:55:52Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-03-livorno-vs-pescara.html",
+      "sha256": "828fe55172216643ebaafc73c09eb74320fce328c480d04ea49d07a515cf536c",
+      "bytes": 71500,
+      "fetched_utc": "2026-09-29T10:55:55Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-03-grosseto-vs-sambenedettese.html",
+      "sha256": "c5ccc6bc179915c9923a88b88b069204e66c9fb6b5941206c37592a4f3c18dea",
+      "bytes": 60788,
+      "fetched_utc": "2026-09-29T10:55:56Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-04-guidonia-vs-pineto.html",
+      "sha256": "925c7fb5b2875811f1c868075f92774104245483b659f395186021a9b969f25a",
+      "bytes": 73147,
+      "fetched_utc": "2026-09-29T10:55:57Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-04-campobasso-vs-torres.html",
+      "sha256": "85de6d4d66e38b46bb0468565cf93e2f6e215b284f52cc851ac39d1562b8b3a1",
+      "bytes": 73883,
+      "fetched_utc": "2026-09-29T10:55:58Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-04-pianese-vs-ravenna.html",
+      "sha256": "5b2677adf43420572d21b9e9ef264cfefa740ff66c8f5cb6e0cd579bf4e29007",
+      "bytes": 72886,
+      "fetched_utc": "2026-09-29T10:56:00Z"
+    },
+    {
+      "path": "html/italy__serie-c-group-b__2026-10-04-reggiana-vs-spezia.html",
+      "sha256": "cf1ac952e796006e80f89f5e2de15d97275dc391700be632742b9bb17a1928af",
+      "bytes": 60706,
+      "fetched_utc": "2026-09-29T10:56:02Z"
+    },
+    {
+      "path": "html/morocco__botola-pro__2026-10-02-fus-rabat-vs-amal-tiznit.html",
+      "sha256": "88495f6425d227ef8c5163c12b954810e46308a50f0031bae5b869c0116c3a11",
+      "bytes": 58879,
+      "fetched_utc": "2026-09-29T10:56:03Z"
+    },
+    {
+      "path": "html/morocco__botola-pro__2026-10-02-ir-tanger-vs-moghreb-tetouan.html",
+      "sha256": "6876f7a4361e25072997d4d8b34ee86b2186873ff777526c102685e7501ddca8",
+      "bytes": 74406,
+      "fetched_utc": "2026-09-29T10:56:04Z"
+    },
+    {
+      "path": "html/morocco__botola-pro__2026-10-03-hassania-agadir-vs-maghreb-fez.html",
+      "sha256": "1cc1fddca4867d663a0b01051b8fdeef968074f84cd3b4931235e42fe2b2e9e1",
+      "bytes": 74300,
+      "fetched_utc": "2026-09-29T10:56:05Z"
+    },
+    {
+      "path": "html/morocco__botola-pro__2026-10-03-difaa-el-jadidi-vs-wydad.html",
+      "sha256": "4d515bd9737cdf6caf8f6d3814acfccd216d5801657b9e5aa3599aae0daed6a0",
+      "bytes": 73826,
+      "fetched_utc": "2026-09-29T10:56:06Z"
+    },
+    {
+      "path": "html/morocco__botola-pro__2026-10-03-cod-meknes-vs-kawkab-marrakech.html",
+      "sha256": "9d3ca259c741abe5fc9fe019b274972655ea6d5a5aff66d80bf3ae57712f7b16",
+      "bytes": 73555,
+      "fetched_utc": "2026-09-29T10:56:07Z"
+    },
+    {
+      "path": "html/morocco__botola-pro__2026-10-03-raja-casablanca-vs-renaissance-zemamra.html",
+      "sha256": "a58c86219f70f6c6a6132876f2db4623281bb9838eab26b1361184d5a532c18f",
+      "bytes": 74700,
+      "fetched_utc": "2026-09-29T10:56:07Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-boreham-wood-vs-kidderminster.html",
+      "sha256": "1525c1c4c9d39397aa30752865f30ae1d697ee7f5790ea0556cf62cc26c50894",
+      "bytes": 74318,
+      "fetched_utc": "2026-09-29T10:56:08Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-fc-halifax-vs-boston-utd.html",
+      "sha256": "213f7048c22e1170343a0688e1be2513731b8e7d92c990f2bebeb0e227381d54",
+      "bytes": 74360,
+      "fetched_utc": "2026-09-29T10:56:09Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-afc-fylde-vs-carlisle.html",
+      "sha256": "dfcafb14cb71a5b7ebf528a807a128cd654ffe3b7492015075c1f50661380263",
+      "bytes": 72234,
+      "fetched_utc": "2026-09-29T10:56:10Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-hartlepool-vs-harrogate.html",
+      "sha256": "51a79b71718c509505bc6444d08b67430c1c104de2ee30dd5007ddd2e89956f9",
+      "bytes": 61150,
+      "fetched_utc": "2026-09-29T10:56:10Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-gateshead-vs-altrincham.html",
+      "sha256": "36e3c7afef4642c920bc8421b8d658110ed500c4160476b0c1cc8a97ba045a0b",
+      "bytes": 74579,
+      "fetched_utc": "2026-09-29T10:56:11Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-barrow-vs-scunthorpe.html",
+      "sha256": "a26b01c92840493991ea828ca2421263821a583bb06a0271654208cf30211443",
+      "bytes": 61064,
+      "fetched_utc": "2026-09-29T10:56:11Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-woking-vs-solihull-moors.html",
+      "sha256": "203ee556faaf65056c58e37d385bfb5a7cdd9e7348ed91a6066f32a7a4a0d7f3",
+      "bytes": 74390,
+      "fetched_utc": "2026-09-29T10:56:12Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-hornchurch-vs-aldershot.html",
+      "sha256": "44fd6ff016ea223a4abf7cd46513bef267137e182047a2142b586fa0d124cd06",
+      "bytes": 60927,
+      "fetched_utc": "2026-09-29T10:56:13Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-forest-green-vs-wealdstone.html",
+      "sha256": "7ffdc7e2ec4f010d16a164c8b3c1e03f3d86ff5ef8b85cb3f693334816fdaec9",
+      "bytes": 74560,
+      "fetched_utc": "2026-09-29T10:56:13Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-29-yeovil-vs-worthing.html",
+      "sha256": "71a5e9aba15fde396a4e9d58d48fe9a7ff4d577ecf7b8b690067a4a30e7de145",
+      "bytes": 60954,
+      "fetched_utc": "2026-09-29T10:56:14Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-30-tamworth-vs-sutton.html",
+      "sha256": "44d05b7b822cdcf9c3c8a27958779e2b5fae3c651c3f17e88f7e4b81eab68f7b",
+      "bytes": 74044,
+      "fetched_utc": "2026-09-29T10:56:14Z"
+    },
+    {
+      "path": "html/england__national-league__2026-09-30-eastleigh-vs-southend.html",
+      "sha256": "73cefc26d4d9716334b9be36c3168c0ead0d9f939ba791f64c76ff08f61b2f87",
+      "bytes": 74227,
+      "fetched_utc": "2026-09-29T10:56:15Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-solihull-moors-vs-fc-halifax.html",
+      "sha256": "c6882fa890b5b3f690df9ab952c124794787596e5b7b87856340444a78d45b79",
+      "bytes": 74568,
+      "fetched_utc": "2026-09-29T10:56:16Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-aldershot-vs-carlisle.html",
+      "sha256": "5d49c0c86212cd344bd11c6a15d878365f0111e3b829d7b8b4718f1c9a216927",
+      "bytes": 73848,
+      "fetched_utc": "2026-09-29T10:56:16Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-hartlepool-vs-tamworth.html",
+      "sha256": "a9de154d6398ac283b2f14f7e619fb913560c4feb7c8b1c6bf96666836d78642",
+      "bytes": 74597,
+      "fetched_utc": "2026-09-29T10:56:17Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-southend-vs-afc-fylde.html",
+      "sha256": "c55928b690e2dcfb3cc699417928fcc3445ec4af10e70d21d4c6390681f7e025",
+      "bytes": 74253,
+      "fetched_utc": "2026-09-29T10:56:18Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-eastleigh-vs-woking.html",
+      "sha256": "a802d43cc7c525a0d43e5fd61c9212dd2a5646f171c8c56c0f533a7a4a9c45c2",
+      "bytes": 74071,
+      "fetched_utc": "2026-09-29T10:56:18Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-boreham-wood-vs-altrincham.html",
+      "sha256": "655477d64bfdda1e07b0ea908fbfdfa3670524de482927c713ad2fe2e95ba675",
+      "bytes": 74788,
+      "fetched_utc": "2026-09-29T10:56:19Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-gateshead-vs-worthing.html",
+      "sha256": "470a4dbc220286ba501702beb8f04d64708b28e21402e5f5e509dae2e9292ef6",
+      "bytes": 60947,
+      "fetched_utc": "2026-09-29T10:56:20Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-yeovil-vs-boston-utd.html",
+      "sha256": "af5393c85d15e7c993a93189743a9d1ce4a3c05ede743c3c8df778bbd040985c",
+      "bytes": 74454,
+      "fetched_utc": "2026-09-29T10:56:20Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-barrow-vs-wealdstone.html",
+      "sha256": "461bd8cc57b3b1593cc5976e7b39d24415e74dd4af5c3d2e9f60dfcc37637b01",
+      "bytes": 61058,
+      "fetched_utc": "2026-09-29T10:56:21Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-kidderminster-vs-sutton.html",
+      "sha256": "53b3c6dc3705d5469b9362a7096c59c1b1cf73a1d1e89f1d52d4839777d28a9c",
+      "bytes": 72062,
+      "fetched_utc": "2026-09-29T10:56:21Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-harrogate-vs-hornchurch.html",
+      "sha256": "aded9c5c64f2a0f091094a0c360bef84ab017ef5b690abd4ff2a062de7dcb182",
+      "bytes": 60877,
+      "fetched_utc": "2026-09-29T10:56:22Z"
+    },
+    {
+      "path": "html/england__national-league__2026-10-03-scunthorpe-vs-forest-green.html",
+      "sha256": "633aa4ccbb5dd4e5789013095f97a8714648b9a981a5dddac9db662d99eda55e",
+      "bytes": 73847,
+      "fetched_utc": "2026-09-29T10:56:23Z"
+    },
+    {
+      "path": "html/portugal__liga-portugal-2__2026-09-06-sc-farense-vs-chaves.html",
+      "sha256": "010e9e4ab4297e5776e2b8de7fdafea5f16ce7acfd34a86d8241ee41c37b10c6",
+      "bytes": 74241,
+      "fetched_utc": "2026-09-29T10:56:23Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-02-real-aviles-vs-lugo.html",
+      "sha256": "ca0c2942d61fc2b162fe429d783a5ac53d8de77f4060768e0540a8eaa583826c",
+      "bytes": 73222,
+      "fetched_utc": "2026-09-29T10:56:24Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-03-racing-club-ferrol-vs-pontevedra.html",
+      "sha256": "8f169405f3b8b0e4d87e68c763da7cace26c9f687fd69b89a6a60147ec3195e5",
+      "bytes": 74512,
+      "fetched_utc": "2026-09-29T10:56:25Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-03-barakaldo-vs-arenas-getxo.html",
+      "sha256": "7d5bdbb44de83260e8cb95a039956e13d322f9aa300d22fcb57e9c5a404b2a83",
+      "bytes": 73715,
+      "fetched_utc": "2026-09-29T10:56:26Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-03-unionistas-vs-cultural-leonesa.html",
+      "sha256": "a3a453cd614ee306ca26cdaef0c96eee63e2791441b4c491f961989e023930b7",
+      "bytes": 74575,
+      "fetched_utc": "2026-09-29T10:56:27Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-04-zamora-vs-cd-coria.html",
+      "sha256": "9d923db87550bf0547464653bcfc9220f44949ed611b07aaf5a4bfe76f716762",
+      "bytes": 60497,
+      "fetched_utc": "2026-09-29T10:56:28Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-04-ponferradina-vs-mirandes.html",
+      "sha256": "1eda73187c1af30b24d282cc2a36ec6c46b15062392a6fcf564cde0f39afc218",
+      "bytes": 60841,
+      "fetched_utc": "2026-09-29T10:56:29Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-1__2026-10-04-merida-ad-vs-cacereno.html",
+      "sha256": "3c54df2414ca38b98f3a72b0029ce03579246e0258304ecb30f0825099455d0c",
+      "bytes": 72705,
+      "fetched_utc": "2026-09-29T10:56:30Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-03-sant-andreu-vs-antequera.html",
+      "sha256": "82360eeb8ac56bc0e1d53722f994c9d979d3e4968ebba301336d6b454e9c35ef",
+      "bytes": 60797,
+      "fetched_utc": "2026-09-29T10:56:31Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-03-alcorcon-vs-torremolinos.html",
+      "sha256": "3e93fc8ca43149c67358fecf1a8991dbc466dedc2995672ec3c76b61810d126a",
+      "bytes": 73553,
+      "fetched_utc": "2026-09-29T10:56:32Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-04-murcia-vs-gimnastic.html",
+      "sha256": "792c7e4dddaceb692b3af2538f100bddf2228d54886c1b5f30167dcad5b18fff",
+      "bytes": 74087,
+      "fetched_utc": "2026-09-29T10:56:33Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-04-villarreal-b-vs-ud-ibiza.html",
+      "sha256": "d8d2cf45fa5a9e94e685b57598ba9c8e1ef8af959dd4fa6d9fc4a67b10b7e2cd",
+      "bytes": 74384,
+      "fetched_utc": "2026-09-29T10:56:35Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-04-huesca-vs-ce-europa.html",
+      "sha256": "fa06342ab3dd5a552ab49ef0fe60847c451ec86b15396d26737ffdf17316afdd",
+      "bytes": 60800,
+      "fetched_utc": "2026-09-29T10:56:36Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-04-algeciras-vs-rayo-majadahonda.html",
+      "sha256": "6e670b84dd9e4455a2b723a97bf3b02d71fdbf36d8a47fce24700ca401f4e1c4",
+      "bytes": 61140,
+      "fetched_utc": "2026-09-29T10:56:37Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-04-zaragoza-vs-teruel.html",
+      "sha256": "21cffca2adec46390e47249c4d80e3fb9f29e0a275b4b2fbaf8008180f0d0cd5",
+      "bytes": 60841,
+      "fetched_utc": "2026-09-29T10:56:38Z"
+    },
+    {
+      "path": "html/spain__primera-rfef-group-2__2026-10-07-fc-cartagena-sad-vs-murcia.html",
+      "sha256": "f2dc13e75efc0f3f26a46970ee50ef90c994d5b58f2f00df2dc16e8bee16d40f",
+      "bytes": 55488,
+      "fetched_utc": "2026-09-29T10:56:40Z"
+    },
+    {
+      "path": "html/romania__liga-1__2026-08-10-cfr-cluj-vs-u-cluj.html",
+      "sha256": "54469bf26483a85b8cb62def5b2519ac08d552daa69f7bb8c064983bb0c67807",
+      "bytes": 73903,
+      "fetched_utc": "2026-09-29T10:56:40Z"
+    },
+    {
+      "path": "html/saudi-arabia__division-1__2026-09-19-al-okhdood-vs-al-ula.html",
+      "sha256": "0d94c45a86008798d7ff3998905ba58f6c5e188528bc7af02be5f95f05713f2a",
+      "bytes": 60532,
+      "fetched_utc": "2026-09-29T10:56:41Z"
+    },
+    {
+      "path": "html/scotland__championship__2026-10-03-morton-vs-raith.html",
+      "sha256": "353fd3a689adaf1de6f10fbef0ca7482f4591b701d3786938b1632bf3db46ba3",
+      "bytes": 74101,
+      "fetched_utc": "2026-09-29T10:56:42Z"
+    },
+    {
+      "path": "html/scotland__championship__2026-10-03-livingston-vs-ayr.html",
+      "sha256": "a9faa9470363d943b9a40c996d7a97f27d80ff959afd3c18a5f186fb59bc323c",
+      "bytes": 73976,
+      "fetched_utc": "2026-09-29T10:56:42Z"
+    },
+    {
+      "path": "html/scotland__championship__2026-10-03-partick-thistle-vs-arbroath.html",
+      "sha256": "ac1ea72d2ebb1b8f42c4d8c539590fd142be0251e5ae6756989b58e07ee10b0d",
+      "bytes": 74551,
+      "fetched_utc": "2026-09-29T10:56:43Z"
+    },
+    {
+      "path": "html/scotland__league-one__2026-10-03-east-fife-vs-east-kilbride.html",
+      "sha256": "e3ce0f0eaa97d2c398b7709d5522ec06c5416574bb5a4ec647368b236114824b",
+      "bytes": 61222,
+      "fetched_utc": "2026-09-29T10:56:44Z"
+    },
+    {
+      "path": "html/scotland__league-one__2026-10-03-queen-of-south-vs-cove-rangers.html",
+      "sha256": "b1b885653a342dc9aa995bf3557cec6269486e3c6050ed8e7648921f7f8a4e62",
+      "bytes": 74821,
+      "fetched_utc": "2026-09-29T10:56:45Z"
+    },
+    {
+      "path": "html/scotland__league-one__2026-10-03-ross-county-vs-alloa.html",
+      "sha256": "84c6adade222134f267c2bdf59ac591f6e00f61a8e1bea09a683491cd806cab2",
+      "bytes": 61035,
+      "fetched_utc": "2026-09-29T10:56:46Z"
+    },
+    {
+      "path": "html/scotland__league-one__2026-10-03-hamilton-vs-peterhead.html",
+      "sha256": "7f3ec40232c09dd5d14e0a098fa3968420a899f46e4f937e794543aea47a8afb",
+      "bytes": 74169,
+      "fetched_utc": "2026-09-29T10:56:47Z"
+    },
+    {
+      "path": "html/scotland__league-two__2026-10-03-spartans-vs-kelty-hearts.html",
+      "sha256": "e76b07877590c769d2043aedcf19ab2929955c86436edd620ca9d46aff01ca4f",
+      "bytes": 61148,
+      "fetched_utc": "2026-09-29T10:56:47Z"
+    },
+    {
+      "path": "html/scotland__league-two__2026-10-03-stranraer-vs-edinburgh-city.html",
+      "sha256": "fa860d09a6bbe69457a6756b58e0084bc8da4101a3813efc4ec53a3a5f057ac3",
+      "bytes": 74501,
+      "fetched_utc": "2026-09-29T10:56:49Z"
+    },
+    {
+      "path": "html/scotland__league-two__2026-10-03-annan-vs-stirling.html",
+      "sha256": "c0b7519ffd36d9bc8b1f8f904164d4f1a5ff9d666a62ced4fc8ba97b76281194",
+      "bytes": 74195,
+      "fetched_utc": "2026-09-29T10:56:50Z"
+    },
+    {
+      "path": "html/scotland__league-two__2026-10-03-dumbarton-vs-forfar-athletic.html",
+      "sha256": "838e5486b5dd4e3819fba1ed443f565140cf6e5b0e73a50ac4139582510e62e8",
+      "bytes": 74818,
+      "fetched_utc": "2026-09-29T10:56:51Z"
+    },
+    {
+      "path": "html/scotland__league-two__2026-10-03-elgin-city-vs-clyde.html",
+      "sha256": "d0e41aedb9165f302af6939263edb61c5f3bda86bfaa16d3d30b8779e12440ae",
+      "bytes": 74318,
+      "fetched_utc": "2026-09-29T10:56:51Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-1__2026-10-03-basconia-vs-llanera.html",
+      "sha256": "3148febaf5da01ba83c5d13594f54f5ed9d81f16900b8afe4a5ca3c67d57035c",
+      "bytes": 60375,
+      "fetched_utc": "2026-09-29T10:56:52Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-1__2026-10-03-atl-astorga-vs-amorebieta.html",
+      "sha256": "71c56c43774e03f032fca933b4b87c1cc0e4f1d9ae7d3ea4669329185798fc36",
+      "bytes": 60563,
+      "fetched_utc": "2026-09-29T10:56:53Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-1__2026-10-03-torrelavega-vs-marino-de-luanco.html",
+      "sha256": "998d324f2434cea4a62adf5e1cc9262e80e6521530b027f9b0ac1868f3261521",
+      "bytes": 74545,
+      "fetched_utc": "2026-09-29T10:56:54Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-1__2026-10-04-compostela-vs-oviedo-b.html",
+      "sha256": "963143ee19cf9f872c379315b76bff4e34c4e54ee75b7777c962789a54fe2a8d",
+      "bytes": 74046,
+      "fetched_utc": "2026-09-29T10:56:56Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-1__2026-10-04-gernika-vs-sestao.html",
+      "sha256": "16947e4b5b74665f0e27fa4a0e8dd13d476626b2f99a309c292e45add76ae495",
+      "bytes": 59808,
+      "fetched_utc": "2026-09-29T10:56:57Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-1__2026-10-04-bergantinos-vs-coruxo-fc.html",
+      "sha256": "2611c4b2174347942432ea7a11c19fc1167da37d7f66552a0694f238ca855c3e",
+      "bytes": 74212,
+      "fetched_utc": "2026-09-29T10:56:58Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-2__2026-10-04-arnedo-vs-ebro.html",
+      "sha256": "1351118837daa89c98b36f8a2c5f12bd2e7c60d3ed64a07e3b97f3003abd5d53",
+      "bytes": 60809,
+      "fetched_utc": "2026-09-29T10:57:00Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-2__2026-10-04-barbastro-vs-utebo-fc.html",
+      "sha256": "e62433b2e0743b93d6cd9646956fdeb42bd8fa1be17b972be1d1d178512473cc",
+      "bytes": 73943,
+      "fetched_utc": "2026-09-29T10:57:02Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-2__2026-10-04-tudelano-vs-barcelona-b.html",
+      "sha256": "55f6e166047234aab577e108edf29ce9e794b11c531be3c22f0399b076e8513b",
+      "bytes": 60385,
+      "fetched_utc": "2026-09-29T10:57:03Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-3__2026-10-03-castellon-b-vs-lorca-deportiva.html",
+      "sha256": "e0fd939999c3a017f9d64c1b96a302487db837ee0d3da54de5ca10b8ebe01a53",
+      "bytes": 60987,
+      "fetched_utc": "2026-09-29T10:57:04Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-3__2026-10-04-cf-intercity-vs-yeclano.html",
+      "sha256": "77769635df79397b214b3386aa083f928c384c8a2d4c8f700919c0062d330a3c",
+      "bytes": 60573,
+      "fetched_utc": "2026-09-29T10:57:05Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-3__2026-10-04-baleares-vs-poblense.html",
+      "sha256": "2e46e1c2cb8ab84bca5ed8b7c0820211d032a152773016ebbe0eede741b2e743",
+      "bytes": 73541,
+      "fetched_utc": "2026-09-29T10:57:06Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-3__2026-10-04-orihuela-vs-cieza.html",
+      "sha256": "2604043fe2c5ee87740ab1c50ec7e769241e068f70096d809212d21b729711be",
+      "bytes": 60702,
+      "fetched_utc": "2026-09-29T10:57:08Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-4__2026-10-03-cd-estepona-vs-don-benito.html",
+      "sha256": "ce15f3d362281c6172a6ddaa4db895bb6b906c472abfbffcf8b9fbec131bffbe",
+      "bytes": 73586,
+      "fetched_utc": "2026-09-29T10:57:09Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-4__2026-10-04-tamaraceite-vs-antoniano.html",
+      "sha256": "80ced510d76f597825614378dd0bc891b9d4e60eba77cd3bb54394b2124bae2c",
+      "bytes": 61015,
+      "fetched_utc": "2026-09-29T10:57:11Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-4__2026-10-04-ciudad-de-lucena-vs-puente-genil.html",
+      "sha256": "baaabcfbbcbd93f524c79f47c07dd880987ce22caba54f71956f64e168c45c81",
+      "bytes": 61123,
+      "fetched_utc": "2026-09-29T10:57:12Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-5__2026-10-04-rsd-alcala-vs-navalcarnero.html",
+      "sha256": "f269301ac3dfca705feb087b598d30e1d1469267cb2c72aa0573b0227ee263f8",
+      "bytes": 73913,
+      "fetched_utc": "2026-09-29T10:57:13Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-5__2026-10-04-getafe-b-vs-numancia.html",
+      "sha256": "2be9e16e95a9d69b8b8322ffd20aa52ddfcdd60d24235c7e76edcea3fa4f6d33",
+      "bytes": 62378,
+      "fetched_utc": "2026-09-29T10:57:15Z"
+    },
+    {
+      "path": "html/spain__segunda-division-b-group-5__2026-10-07-real-madrid-c-vs-guadalajara.html",
+      "sha256": "7dc1aaab3bb94edb62e9ccc086863eb6482cc865b780e8100502f5b093e68a93",
+      "bytes": 55698,
+      "fetched_utc": "2026-09-29T10:57:16Z"
+    },
+    {
+      "path": "html/england__national-league-south__2026-09-29-slough-vs-ebbsfleet.html",
+      "sha256": "f82e9cb3f747bbd59986995c5d3b04b82037ddadebacdef24710beba1952957d",
+      "bytes": 74563,
+      "fetched_utc": "2026-09-29T10:57:16Z"
+    },
+    {
+      "path": "html/england__national-league-south__2026-10-06-braintree-vs-walton-hersham.html",
+      "sha256": "03885979d7d3e1de24cb564cace4469932c0e8667921f3a69a85c9e6bd3a26b9",
+      "bytes": 61403,
+      "fetched_utc": "2026-09-29T10:57:17Z"
+    },
+    {
+      "path": "html/england__national-league-south__2026-10-06-farnham-vs-truro.html",
+      "sha256": "bb787006e7e8b4b1f7280666fc36148d39dd32d4e297495381c0f4e01365d635",
+      "bytes": 60833,
+      "fetched_utc": "2026-09-29T10:57:18Z"
+    },
+    {
+      "path": "html/england__national-league-south__2026-10-06-ebbsfleet-vs-folkestone.html",
+      "sha256": "b919a42e11b074b55ac372c968e88f893ca56c1c6cdd32c115dded8425c1971f",
+      "bytes": 61055,
+      "fetched_utc": "2026-09-29T10:57:18Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-02-eldense-vs-oviedo.html",
+      "sha256": "92e9f3e59ecf24af2e5dda0c0bca33bdbcc64e9e2b7d4b80728d37b892bdcc87",
+      "bytes": 73764,
+      "fetched_utc": "2026-09-29T10:57:19Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-03-albacete-vs-eibar.html",
+      "sha256": "c75bbd5364c82d225a5b42f4056165bd52cea979700ca9f10e42b6dd7dc67856",
+      "bytes": 73790,
+      "fetched_utc": "2026-09-29T10:57:19Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-03-almeria-vs-burgos-cf.html",
+      "sha256": "1e62b990ba9664c2b57eed450caa46d26ecbd34a17a61a837bd1386a4c676e09",
+      "bytes": 74155,
+      "fetched_utc": "2026-09-29T10:57:20Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-03-cadiz-cf-vs-leganes.html",
+      "sha256": "f86aed52bb01803fb186c25b83196a52b3d65e5f4b3ed4be4b041e3e0c0fb46a",
+      "bytes": 73215,
+      "fetched_utc": "2026-09-29T10:57:21Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-03-sabadell-vs-andorra.html",
+      "sha256": "e0079fd6738074a50695480f8a7f966b9ffefea5ae2f9e1f21a1990bdbd3efcd",
+      "bytes": 60830,
+      "fetched_utc": "2026-09-29T10:57:21Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-04-real-sociedad-b-vs-granada-cf.html",
+      "sha256": "c4b199cbf7cb9e4440fa9c05350e0f5a7940999bb3b26c02c52c392052417a14",
+      "bytes": 74013,
+      "fetched_utc": "2026-09-29T10:57:23Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-04-las-palmas-vs-valladolid.html",
+      "sha256": "c90ecdb505022e9e67e1e086951af9a8abe0a6686228d3df5bef56f4da75a8ab",
+      "bytes": 74155,
+      "fetched_utc": "2026-09-29T10:57:23Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-04-castellon-vs-ceuta.html",
+      "sha256": "94bc975535eb44e0904f92eabfbb7bc0eb243fa2d5991bc10c36d1c100bce90d",
+      "bytes": 73186,
+      "fetched_utc": "2026-09-29T10:57:24Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-04-girona-vs-mallorca.html",
+      "sha256": "091b53a6f5f5a3fb0cd922c822fe9242196e0c846e9d0af96ed6000dcb869297",
+      "bytes": 62032,
+      "fetched_utc": "2026-09-29T10:57:25Z"
+    },
+    {
+      "path": "html/spain__la-liga2__2026-10-05-cordoba-vs-tenerife.html",
+      "sha256": "50b8399e4fda21e877f664edd8bcbd0189851aa03744d64787d315bf15f1b9c3",
+      "bytes": 73443,
+      "fetched_utc": "2026-09-29T10:57:26Z"
+    },
+    {
+      "path": "html/belgium__super-league-women__2026-10-03-club-brugge-w-vs-rsc-anderlecht-w.html",
+      "sha256": "9409921cb1d20ae13d0c713134c4f229cf8bc4d1c108bab3fac24928136835b4",
+      "bytes": 74829,
+      "fetched_utc": "2026-09-29T10:57:26Z"
+    },
+    {
+      "path": "html/belgium__super-league-women__2026-10-03-st-liege-w-vs-genk-w.html",
+      "sha256": "7cf8072f6ef6ef7a514f22db5b2e0c0b5c459f3b42c4462dba35f18deac6d245",
+      "bytes": 73814,
+      "fetched_utc": "2026-09-29T10:57:27Z"
+    },
+    {
+      "path": "html/belgium__super-league-women__2026-10-03-gent-w-vs-waregem-w.html",
+      "sha256": "7b4f1338a8f8d9212a6ce40aa2d218a84ff0456825c1ea45b448c0c567aa8085",
+      "bytes": 73982,
+      "fetched_utc": "2026-09-29T10:57:28Z"
+    },
+    {
+      "path": "html/belgium__super-league-women__2026-10-04-leuven-w-vs-raal-la-louviere-w.html",
+      "sha256": "fbc2e796ca9c4efa22a195c704011dc3a83cd991a3fc4b19d8352a0f5989a9e6",
+      "bytes": 60860,
+      "fetched_utc": "2026-09-29T10:57:28Z"
+    },
+    {
+      "path": "html/france__division-1-women__2026-10-03-lyon-w-vs-toulouse-w.html",
+      "sha256": "815c8dc2dc2b085e7c535037bf74c8f89145d6efca88f4c7a2bc7272f148b769",
+      "bytes": 59814,
+      "fetched_utc": "2026-09-29T10:57:29Z"
+    },
+    {
+      "path": "html/france__division-1-women__2026-10-03-le-havre-w-vs-saint-malo-w.html",
+      "sha256": "58e2c3418e2f8a5c6a1dacb54d586fe9d26a750dd57f77588638e112d56c31fa",
+      "bytes": 60110,
+      "fetched_utc": "2026-09-29T10:57:31Z"
+    },
+    {
+      "path": "html/france__division-1-women__2026-10-03-strasbourg-w-vs-marseille-w.html",
+      "sha256": "ef25281c71283cdfc61a8f93e19de783e44f7a94037da2d80494d484d6906366",
+      "bytes": 73630,
+      "fetched_utc": "2026-09-29T10:57:33Z"
+    },
+    {
+      "path": "html/france__division-1-women__2026-10-03-nantes-w-vs-montpellier-w.html",
+      "sha256": "992757f169a4a5f9842297650f5ea6a87e98aead64275a9253f4b54a92c8c3f4",
+      "bytes": 74204,
+      "fetched_utc": "2026-09-29T10:57:33Z"
+    },
+    {
+      "path": "html/france__division-1-women__2026-10-03-paris-fc-w-vs-lens-w.html",
+      "sha256": "aafdc0e331a2a9d1da630571191482043cca14dd40a8cd79539dd251ec0baf1e",
+      "bytes": 73270,
+      "fetched_utc": "2026-09-29T10:57:34Z"
+    },
+    {
+      "path": "html/france__division-1-women__2026-10-04-fleury-91-w-vs-psg-w.html",
+      "sha256": "2e4af78ba46aadc82fad3f6285d8e6ca09b1445cbdc270cfbf492eebbf74a471",
+      "bytes": 73815,
+      "fetched_utc": "2026-09-29T10:57:35Z"
+    },
+    {
+      "path": "html/germany__frauen-bundesliga__2026-10-02-bayer-leverkusen-w-vs-werder-bremen-w.html",
+      "sha256": "4b16ca38d55411cf21505a15045dd7806e12bfd0170d7c4db958610762c47007",
+      "bytes": 75031,
+      "fetched_utc": "2026-09-29T10:57:35Z"
+    },
+    {
+      "path": "html/germany__frauen-bundesliga__2026-10-03-eintracht-frankfurt-w-vs-bayern-munich-w.html",
+      "sha256": "f3e12fe18f6c498535d5905de094e01863a6ab5f151671a4339c0f74bb71b307",
+      "bytes": 75101,
+      "fetched_utc": "2026-09-29T10:57:36Z"
+    },
+    {
+      "path": "html/germany__frauen-bundesliga__2026-10-04-wolfsburg-w-vs-hamburger-sv-w.html",
+      "sha256": "8d9beb8bf562411d4e51939c8adb153931e1f162fd967e58c6bd7c4c34518c60",
+      "bytes": 73964,
+      "fetched_utc": "2026-09-29T10:57:38Z"
+    },
+    {
+      "path": "html/germany__frauen-bundesliga__2026-10-04-stuttgart-w-vs-union-berlin-w.html",
+      "sha256": "2d32939720860f71a95313d45397a54940624505add841609d28ca46a789505d",
+      "bytes": 61224,
+      "fetched_utc": "2026-09-29T10:57:39Z"
+    },
+    {
+      "path": "html/sweden__allsvenskan-women__2026-10-03-vittsjo-w-vs-eskilstuna-utd-w.html",
+      "sha256": "c215dd57a6e5e8f2f5b7a9daacbcd006e69b7dad716ce9cc21354341682c2f10",
+      "bytes": 74538,
+      "fetched_utc": "2026-09-29T10:57:40Z"
+    },
+    {
+      "path": "html/sweden__allsvenskan-women__2026-10-03-pitea-w-vs-norrkoping-w.html",
+      "sha256": "595a4b65051dae6e7e2925ba4f1f7034e847fce400c1d00cebce77b09e3cf8eb",
+      "bytes": 74241,
+      "fetched_utc": "2026-09-29T10:57:42Z"
+    },
+    {
+      "path": "html/sweden__allsvenskan-women__2026-10-04-djurgarden-w-vs-aik-w.html",
+      "sha256": "9ce09b34c7c285e45965ea1cc1aeee966d99b7ea108395c8cc9a818b49d05345",
+      "bytes": 74067,
+      "fetched_utc": "2026-09-29T10:57:43Z"
+    },
+    {
+      "path": "html/sweden__allsvenskan-women__2026-10-04-malmo-ff-w-vs-rosengard-w.html",
+      "sha256": "8fa133f28eedc7342c15c1a678fe1328565c2e6880c30081ad73937fd108b93a",
+      "bytes": 74323,
+      "fetched_utc": "2026-09-29T10:57:44Z"
+    },
+    {
+      "path": "html/sweden__allsvenskan-women__2026-10-04-hacken-w-vs-uppsala-w.html",
+      "sha256": "b59f69a818dcd651899179d701bf3ce96fe4b33187fa6cc1a6002e91bfc9b437",
+      "bytes": 74101,
+      "fetched_utc": "2026-09-29T10:57:45Z"
+    },
+    {
+      "path": "html/sweden__allsvenskan-women__2026-10-04-hammarby-w-vs-if-brommapojkarna-w.html",
+      "sha256": "2df3fb65969e815df8ecd1eb4c516f169f6c1f307fb91d0b5cd636f365ccace3",
+      "bytes": 74850,
+      "fetched_utc": "2026-09-29T10:57:46Z"
+    }
+  ]
+}

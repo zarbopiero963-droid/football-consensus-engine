@@ -1,0 +1,73 @@
+{
+  "pilot_id": "forebet-48h-20260929T153629Z",
+  "slot": 1,
+  "attempt": 1,
+  "planned_slots": 16,
+  "run_id": "20260929T153847Z-s01a1",
+  "sealed_utc": "2026-09-29T15:38:49Z",
+  "snapshot_timestamp_utc": "2026-09-29T15:38:47Z",
+  "agent_used": false,
+  "session_id": "4d1a09d0-39e7-4658-b0ca-1bc8eaac5497",
+  "duration_seconds": 1.24,
+  "cost": {
+    "browser_cost": 0.0003333333333333333,
+    "proxy_cost": 0.0,
+    "captcha_cost": 0.0,
+    "proxy_used_mb": 0.0,
+    "total_cost": 0.00033333,
+    "session_id": "4d1a09d0-39e7-4658-b0ca-1bc8eaac5497",
+    "duration_seconds": 1.24
+  },
+  "nav_http": null,
+  "final_url": null,
+  "cf_ray": null,
+  "captcha": null,
+  "challenge_wall": null,
+  "redirected": null,
+  "completeness": {
+    "dom_rows": 0,
+    "ok": 0,
+    "parse_errors": 0,
+    "error_kinds": {},
+    "duplicate_ids": [],
+    "with_triplet": 0,
+    "without_triplet": 0,
+    "with_odds": 0,
+    "without_odds": 0,
+    "kickoff_dates": {},
+    "declared_counter": null,
+    "xhr_matches": null,
+    "badge_gap": null,
+    "xhr_ids_missing_in_dom": null,
+    "probability_mismatches": null,
+    "dom_ids_not_in_xhr": null,
+    "structural_regression": false,
+    "structural_reason": null,
+    "explained": false,
+    "explanation": null
+  },
+  "timezone": {
+    "resolved": false,
+    "compared": 0,
+    "ambiguous": 0,
+    "unique_delta_minutes": []
+  },
+  "timezone_samples": [],
+  "invalid_prematch": [],
+  "matching": {
+    "forebet_prematch": 0,
+    "footinsights": 0,
+    "football_charts": 0,
+    "pinnacle": 0,
+    "forebet_fi_pinnacle": 0,
+    "forebet_fc_pinnacle": 0,
+    "all_available_models": 0,
+    "rejected_ambiguous_or_league": 0
+  },
+  "files": {
+    "report.json": {
+      "sha256": "f3c680c4e28b7eea8657cece2374c39b27a36f106898dd34be2a266d75dd42d6",
+      "bytes": 1963
+    }
+  }
+}

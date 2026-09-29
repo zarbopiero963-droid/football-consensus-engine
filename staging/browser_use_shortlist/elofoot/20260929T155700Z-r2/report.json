@@ -1,0 +1,39 @@
+{
+  "source": "elofoot",
+  "run_id": "20260929T155700Z-r2",
+  "started_utc": "2026-09-29T15:56:21Z",
+  "agent_used": false,
+  "entry_url": "https://www.elofoot.com/en/pronostic-du-jour",
+  "create_http": 201,
+  "create": {
+    "id": "e3ca2b95-e4c3-4c77-80c6-ac4ca404aeb1",
+    "status": "active",
+    "timeoutAt": "2026-09-29T16:00:21.222569Z",
+    "startedAt": "2026-09-29T15:56:21.222706Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.elofoot.com/en/pronostic-du-jour",
+  "html_bytes": 442914,
+  "html_sha256": "82babb7f15160cbbd48d5b156a8a2157fa15fe34a2483a4900e0b07075d21448",
+  "title": "Football predictions today: correct scores – September 29 · Elofoot",
+  "challenge_wall": false,
+  "captcha": false,
+  "visible_text_sample": "Skip to content\nToday's predictions\nFeatures\nAI prediction\nAffiliate\nBlog\nFAQ\n🇬🇧\nEnglish\nLog in\nPredict a match for free\nToday's football predictions: AI correct scores and 1X2 (Tuesday, September 29)\n\nHere are today's football predictions (Tuesday, September 29), worked out by our AI: for each of the 30 matches analysed across 5 competitions, the most likely correct score and the 1X2 probabilities (home win, draw, away win). Everything starts from real data — expected goals (xG), recent form, league table — run through a statistical model, not gut feeling. Pick a match to open its detailed prediction.\n\nKick-off times in UK time and Lagos time (WAT, also Kinshasa and Douala). Updated at 16:56 (UK time).\n\nToday's predictions\nTomorrow's predictions\nAll competitions\nUEFA Nations League\nAll UEFA Nations League predictions\n17:00 UK/Lagos\nMoldova\n0 – 0\nFaroe Islands\nPredicted score · 18% probability\n1\n33 %\nX\n34 %\n2\n34 %\n17:00 UK/Lagos\nFinland\n1 – 0\nBelarus\nPredicted score · 18% probability\n1\n56 %\nX\n27 %\n2\n17 %\n19:45 UK/Lagos\nSlovakia\n2 – 0\nKazakhstan\nPredicted score · 16% probability\n1\n77 %\nX\n16 %\n2\n7 %\n19:45 UK/Lagos\nCzechia\n0 – 2\nEngland\nPredicted score · 15% probability\n1\n10 %\nX\n19 %\n2\n71 %\n19:45 UK/Lagos\nSlovenia\n1 – 0\nNorth Macedonia\nPredicted score · 18% probability\n1\n59 %\nX\n26 %\n2\n15 %\n19:45 UK/Lagos\nLuxembourg\n0 – 1\nIceland\nPredicted score · 15% probability\n1\n27 %\nX\n29 %\n2\n43 %\n19:45 UK/Lagos\nSpain\n2 – 0\nCroatia\nPredicted score · 11% probability\n1\n67 %\nX\n19 %\n2\n14 %\n19:45 UK/Lagos\nScotland\n0 – 1\nSwitzerland\nPredicted score · 15% probability\n1\n21 %\nX\n27 %\n2\n52 %\n19:45 UK/Lagos\nBulgaria\n1 – 0\nEstonia\nPredicted score · 19% probability\n1\n58 %\nX\n27 %\n2\n15 %\n19:45 UK/Lagos\nSan Marino\n0 – 4\nAlbania\nPredicted score · 10% probability\n1\n2 %\nX\n4 %\n2\n94 %\nAFCON 2027 Qualifiers\n",
+  "stop_http": 200,
+  "session": {
+    "id": "e3ca2b95-e4c3-4c77-80c6-ac4ca404aeb1",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T16:00:21.222569Z",
+    "startedAt": "2026-09-29T15:56:21.222706Z",
+    "finishedAt": "2026-09-29T15:56:27.640519Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 6.66,
+  "finished_utc": "2026-09-29T15:56:27Z"
+}

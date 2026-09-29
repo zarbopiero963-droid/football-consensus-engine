@@ -1,0 +1,23 @@
+{
+  "run_id": "20260929T075426Z",
+  "collected_at_utc": "2026-09-29T07:54:26.866551+00:00",
+  "odds_batch_finished_utc": "2026-09-29T07:54:40.415402+00:00",
+  "scraper_version": "prospective-ledger-1",
+  "strategy_set_sha256": "bec79c912a6e26c44d61243c0acce4ec6f8ec400e87da0ae6f4d8ba1353c76c8",
+  "footinsights_slugs_seen": 276,
+  "footinsights_slugs_date_kept": 118,
+  "footinsights_pages_saved": 118,
+  "valid_prematch": 110,
+  "invalid_or_unparsed": 8,
+  "invalid_because_kickoff_passed": 5,
+  "no_probability": 2,
+  "pinnacle_leagues_with_matchups": 121,
+  "pinnacle_open_moneylines": 665,
+  "joined": 49,
+  "unmatched_model": 61,
+  "manual_review": 0,
+  "analysis_eligible": 49,
+  "duplicates_in_run": 0,
+  "prob_sum_check_failures": 4,
+  "note": "No result fields were filled. Bet365 prices on the FootInsights page are stored as page_odds_* and are not Pinnacle."
+}

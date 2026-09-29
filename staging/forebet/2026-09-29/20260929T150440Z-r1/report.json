@@ -1,0 +1,242 @@
+{
+  "started_utc": "2026-09-29T15:04:40Z",
+  "target": "https://www.forebet.com/en/football-tips-and-predictions-for-today",
+  "agent_used": false,
+  "create_http": 201,
+  "create": {
+    "id": "e7f4a01d-9056-46d3-86ab-63ccf8d2bbde",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:10:40.277737Z",
+    "startedAt": "2026-09-29T15:04:40.277870Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.002000000000000000000000000000"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.forebet.com/en/football-tips-and-predictions-for-today",
+  "title": "Football Predictions for Today | Forebet",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42be1bcedd90e23-MXP",
+    "content-type": "text/html; charset=utf-8"
+  },
+  "challenge_wall": false,
+  "cf_ray": "a42be1bcedd90e23-MXP",
+  "captcha": false,
+  "redirected": false,
+  "browser_timezone": "Europe/Rome",
+  "cookie_sample": "REDACTED_NOT_COMMITTED",
+  "all_js_status": 200,
+  "all_js_bytes": 122578,
+  "all_js_sha256": "37e6abcda583d2428968f6120ddbbb7d69f6ae558a10ea8d0d2fd293e6913d3c",
+  "endpoints_in_all_js": [],
+  "loader_buttons": [
+    "football is mathematics\n    \nmore",
+    "more"
+  ],
+  "clicks": 1,
+  "scroll_log": [
+    {
+      "step": 0,
+      "rows": 44
+    },
+    {
+      "step": 1,
+      "rows": 44
+    },
+    {
+      "step": 2,
+      "rows": 44
+    },
+    {
+      "step": 3,
+      "rows": 44
+    },
+    {
+      "click": "more",
+      "rows": 44
+    }
+  ],
+  "rows_initial": 44,
+  "rows_document_response": 0,
+  "rows_dom_final": 44,
+  "declared_counter": 129,
+  "parsed_ok": 42,
+  "parse_errors": 2,
+  "duplicates": 0,
+  "live_rows": 39,
+  "document_first_times": [
+    "29/09/2026 15:00",
+    "29/09/2026 15:00",
+    "29/09/2026 15:00",
+    "29/09/2026 15:30",
+    "29/09/2026 15:30"
+  ],
+  "dom_first_times": [
+    "29/09/2026 15:00",
+    "29/09/2026 15:00",
+    "29/09/2026 15:00",
+    "29/09/2026 15:30",
+    "29/09/2026 15:30"
+  ],
+  "times_rewritten_by_js": false,
+  "html_bytes": 343661,
+  "html_sha256": "a29591037c44b2fa00d1aa6e2b0d9264b37d802769208fb7578d1ce82890c375",
+  "screenshot_full_page": true,
+  "screenshot_sha256": "2766f5cb1e379ac01566ba3953d17c13dc7aa9338ea8ccf716a2b880ab79f5fd",
+  "network": [
+    {
+      "url": "https://www.forebet.com/en/football-tips-and-predictions-for-today",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://www.forebet.com/cdn-cgi/challenge-platform/h/b/jsd/oneshot/d76008a69eab/0.8543740490901786:1790690455:Q63mu6ZwS8E7_DsKM3T2p9Mt80pCOr6d5LIknwn2kcQ/a42be1bcedd90e23",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "text/plain; charset=UTF-8"
+    },
+    {
+      "url": "https://www.forebet.com/includes/js/all.js?v=618",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/javascript"
+    },
+    {
+      "url": "https://www.forebet.com/cdn-cgi/rum?",
+      "status": 204,
+      "type": "xhr",
+      "content_type": "text/plain"
+    },
+    {
+      "url": "https://www.forebet.com/gsv/",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json",
+      "file": "xhr_04.json",
+      "sha256": "28a334a0dc4dec950355c671665d9326fb5cd3f33d1919f299702b30cc6cbcb4"
+    },
+    {
+      "url": "https://region1.analytics.google.com/g/collect?v=2&tid=G-7LGKT05LES&gtm=45je69p1v9100059345za200zd9100059345xf1&_p=1790694281896&_gaz=1&gcd=13l3lPl2l1l1&npa=1&dma_cps=a&dma=1&ecid=1797998181&_eu=AgAAACAC&are=1&cid=62885576.1790694286&ec_mode=a&frm=0&ibt=1&ngs=1&pscdl=noapi&rcb=1&sr=1366x900&uaa=arm&uab=64&uafvl=Not%253DA%253FBrand%3B99.0.0.0%7CGoogle%2520Chrome%3B151.0.7922.76%7CChromium%3B151.0.7",
+      "status": 204,
+      "type": "fetch",
+      "content_type": "text/plain"
+    },
+    {
+      "url": "https://region1.analytics.google.com/g/collect?v=2&tid=G-7LGKT05LES&gtm=45je69p1v9100059345za200zd9100059345xf1&_p=1790694281896&gcd=13l3lPl2l1l1&npa=1&dma_cps=a&dma=1&ecid=1797998181&_eu=AAgAACQC&_prs=ok&are=1&cid=62885576.1790694286&ec_mode=a&frm=0&ibt=1&ngs=1&pscdl=noapi&rcb=1&sr=1366x900&uaa=arm&uab=64&uafvl=Not%253DA%253FBrand%3B99.0.0.0%7CGoogle%2520Chrome%3B151.0.7922.76%7CChromium%3B151.0.",
+      "status": 204,
+      "type": "fetch",
+      "content_type": "text/plain"
+    },
+    {
+      "url": "https://region1.analytics.google.com/measurement/conversion?random=1790694286336&cv=11&tid=G-7LGKT05LES&fst=1790694286336&fmt=8&en=%D1%84%D1%83%D1%82%D0%B1%D0%BE%D0%BB%D0%BD%D0%B8_%D0%BF%D1%80%D0%BE%D0%B3%D0%BD%D0%BE%D0%B7%D0%B8&gtm=45je69p1v9100059345za200zd9100059345xecxf1&gcd=13l3lPl2l1l1&dma_cps=a&dma=1&tag_exp=115938466~115938469~117776795~118897920~118897930~120213116~120385422~120469145~120",
+      "status": 200,
+      "type": "fetch",
+      "content_type": ""
+    },
+    {
+      "url": "https://region1.analytics.google.com/g/collect?v=2&tid=G-7LGKT05LES&gtm=45je69p1v9100059345za200zd9100059345xf1&_p=1790694281896&gcd=13l3lPl2l1l1&npa=1&dma_cps=a&dma=1&ecid=1797998181&_eu=AEAAACQC&ae=a&are=1&cid=62885576.1790694286&frm=0&ibt=1&ngs=1&pscdl=noapi&rcb=1&sr=1366x900&uaa=arm&uab=64&uafvl=Not%253DA%253FBrand%3B99.0.0.0%7CGoogle%2520Chrome%3B151.0.7922.76%7CChromium%3B151.0.7922.76&uam=&",
+      "status": 204,
+      "type": "fetch",
+      "content_type": "text/plain"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "e7f4a01d-9056-46d3-86ab-63ccf8d2bbde",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:10:40.277737Z",
+    "startedAt": "2026-09-29T15:04:40.277870Z",
+    "finishedAt": "2026-09-29T15:04:52.048909Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333333"
+  },
+  "duration_seconds": 12.07,
+  "finished_utc": "2026-09-29T15:04:52Z",
+  "timezone": {
+    "checks": [
+      {
+        "home": "Ethiopia",
+        "away": "Senegal",
+        "forebet": "29/09/2026 15:00",
+        "footinsights_utc": "2026-09-29T13:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T13:00:00+00:00",
+        "offset_hours": 2
+      },
+      {
+        "home": "South Sudan",
+        "away": "Egypt",
+        "forebet": "29/09/2026 15:00",
+        "footinsights_utc": "2026-09-29T13:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T13:00:00+00:00",
+        "offset_hours": 2
+      },
+      {
+        "home": "Burundi",
+        "away": "Algeria",
+        "forebet": "29/09/2026 15:00",
+        "footinsights_utc": "2026-09-29T13:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T13:00:00+00:00",
+        "offset_hours": 2
+      },
+      {
+        "home": "Madagascar",
+        "away": "Tanzania",
+        "forebet": "29/09/2026 16:00",
+        "footinsights_utc": "2026-09-29T13:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T14:00:00+00:00",
+        "offset_hours": 3
+      },
+      {
+        "home": "Moldova",
+        "away": "Faroe Islands",
+        "forebet": "29/09/2026 18:00",
+        "footinsights_utc": "2026-09-29T16:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T16:00:00+00:00",
+        "offset_hours": 2
+      },
+      {
+        "home": "Finland",
+        "away": "Belarus",
+        "forebet": "29/09/2026 18:00",
+        "footinsights_utc": "2026-09-29T16:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T16:00:00+00:00",
+        "offset_hours": 2
+      },
+      {
+        "home": "Zambia",
+        "away": "Togo",
+        "forebet": "29/09/2026 18:00",
+        "footinsights_utc": "2026-09-29T16:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T16:00:00+00:00",
+        "offset_hours": 2
+      },
+      {
+        "home": "Ghana",
+        "away": "Gambia",
+        "forebet": "29/09/2026 18:00",
+        "footinsights_utc": "2026-09-29T16:00:00+00:00",
+        "pinnacle_utc": "2026-09-29T16:00:00+00:00",
+        "offset_hours": 2
+      }
+    ],
+    "unique_offsets": [
+      2,
+      3
+    ],
+    "confident": false,
+    "offset_hours": null,
+    "label_on_page": null
+  },
+  "matching": {
+    "footinsights": 0,
+    "pinnacle": 0,
+    "football_charts": 0,
+    "at_least_two": 0,
+    "all_three": 0,
+    "examples_fi": []
+  }
+}

@@ -1,0 +1,319 @@
+{
+  "source": "elofoot",
+  "run_id": "20260929T155323Z-p2",
+  "started_utc": "2026-09-29T15:54:06Z",
+  "entry_url": "https://www.elofoot.com/en/pronostic-du-jour",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "6027ffb9-2b20-4f8d-b7c4-5a8d5bc3c64c",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:58:06.631344Z",
+    "startedAt": "2026-09-29T15:54:06.631462Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.elofoot.com/en/pronostic-du-jour",
+  "title": "Football predictions today: correct scores – September 29 · Elofoot",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c2a277ffeeddb-MXP",
+    "content-type": "text/html; charset=utf-8"
+  },
+  "cf_ray": "a42c2a277ffeeddb-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": true,
+  "screenshot_full_page": true,
+  "html_bytes": 442914,
+  "html_sha256": "82c62032d548c2bc566cb3e110dfb5c38f2bd6564b8a1384a0140499698ade35",
+  "screenshot_sha256": "249e8e55758d9a2b15185dfbf4cfefcae8c667db989b32b496cfeda0521492eb",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://www.elofoot.com/en/pronostic-du-jour",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://www.elofoot.com/en/faq?_rsc=J-n00fKwldur23S3",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_01.bin",
+      "sha256": "b9411c5d23eba5269a50d085b830cac033ab9793d70d0f11ee2cf87ae814dfec",
+      "bytes": 251
+    },
+    {
+      "url": "https://www.elofoot.com/en/blog?_rsc=J-n00fKwldur23S3",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_02.bin",
+      "sha256": "00075b0d9dfe10b14fa7bc646b2839662c628a4bcd665982b7efbc5e31c32523",
+      "bytes": 252
+    },
+    {
+      "url": "https://www.elofoot.com/en/?_rsc=J-n00fKwldur23S3",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_03.bin",
+      "sha256": "76676cc5c0eddf4c88e7de8c48161d7c24c900a3b726d0f97adce7ddf17c3113",
+      "bytes": 230
+    },
+    {
+      "url": "https://www.elofoot.com/en/analyse-ia-football?_rsc=J-n00fKwldur23S3",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_04.bin",
+      "sha256": "6ab49b9925cadcf6d8d842c71daaddd17defc31bab99122772b13509f7b16c97",
+      "bytes": 267
+    },
+    {
+      "url": "https://www.elofoot.com/en?_rsc=J-n00fKwldur23S3",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_05.bin",
+      "sha256": "76676cc5c0eddf4c88e7de8c48161d7c24c900a3b726d0f97adce7ddf17c3113",
+      "bytes": 230
+    },
+    {
+      "url": "https://www.elofoot.com/en/faq?_rsc=CIHsrd9vefdaXMvT",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component"
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "url": "https://analytics.internal.performcode.fr/api/websites/b68f07b2-6dbd-4530-b135-0659ab450c9d/recorder",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_09.bin",
+      "sha256": "918ea70fec6ecd290b0b848265a3df1781f5c2b4eb9430b91ffe47a4087992b6",
+      "bytes": 161
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "url": "https://www.elofoot.com/en/pronostic-du-jour?_rsc=CIHsrd9vefdaXMvT",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component"
+    },
+    {
+      "url": "https://analytics.internal.performcode.fr/api/send",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_12.bin",
+      "sha256": "47eca88d7d4d1293e79a9311bceb3aef3607809c7c7f19d6b15319e897735ec6",
+      "bytes": 439
+    },
+    {
+      "url": "https://analytics.internal.performcode.fr/api/record",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://analytics.internal.performcode.fr/api/record",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    }
+  ],
+  "visible_text_sample": "Skip to content\nToday's predictions\nFeatures\nAI prediction\nAffiliate\nBlog\nFAQ\n🇬🇧\nEnglish\nLog in\nPredict a match for free\nToday's football predictions: AI correct scores and 1X2 (Tuesday, September 29)\n\nHere are today's football predictions (Tuesday, September 29), worked out by our AI: for each of the 30 matches analysed across 5 competitions, the most likely correct score and the 1X2 probabilities (home win, draw, away win). Everything starts from real data — expected goals (xG), recent form, league table — run through a statistical model, not gut feeling. Pick a match to open its detailed prediction.\n\nKick-off times in UK time and Lagos time (WAT, also Kinshasa and Douala). Updated at 16:54 (UK time).\n\nToday's predictions\nTomorrow's predictions\nAll competitions\nUEFA Nations League\nAll UEFA Nations League predictions\n17:00 UK/Lagos\nMoldova\n0 – 0\nFaroe Islands\nPredicted score · 18% probability\n1\n33 %\nX\n34 %\n2\n34 %\n17:00 UK/Lagos\nFinland\n1 – 0\nBelarus\nPredicted score · 18% probability\n1\n56 %\nX\n27 %\n2\n17 %\n19:45 UK/Lagos\nSlovakia\n2 – 0\nKazakhstan\nPredicted score · 16% probability\n1\n77 %\nX\n16 %\n2\n7 %\n19:45 UK/Lagos\nCzechia\n0 – 2\nEngland\nPredicted score · 15% probability\n1\n10 %\nX\n19 %\n2\n71 %\n19:45 UK/Lagos\nSlovenia\n1 – 0\nNorth Macedonia\nPredicted score · 18% probability\n1\n59 %\nX\n26 %\n2\n15 %\n19:45 UK/Lagos\nLuxembourg\n0 – 1\nIceland\nPredicted score · 15% probability\n1\n27 %\nX\n29 %\n2\n43 %\n19:45 UK/Lagos\nSpain\n2 – 0\nCroatia\nPredicted score · 11% probability\n1\n67 %\nX\n19 %\n2\n14 %\n19:45 UK/Lagos\nScotland\n0 – 1\nSwitzerland\nPredicted score · 15% probability\n1\n21 %\nX\n27 %\n2\n52 %\n19:45 UK/Lagos\nBulgaria\n1 – 0\nEstonia\nPredicted score · 19% probability\n1\n58 %\nX\n27 %\n2\n15 %\n19:45 UK/Lagos\nSan Marino\n0 – 4\nAlbania\nPredicted score · 10% probability\n1\n2 %\nX\n4 %\n2\n94 %\nAFCON 2027 Qualifiers\nAll AFCON 2027 Qualifiers predictions\n14:00 UK/Lagos\nFull time\nBurundi\n2 – 2\nAlgeria\nPredicted: 1-1 · 13% probability\n1\n31 %\nX\n26 %\n2\n43 %\nCorrect score missed\n1X2 wrong\n14:00 UK/Lagos\nFull time\nSouth Sudan\n0 – 5\nEgypt\nPredicted: 1-1 · 12% probability\n1\n28 %\nX\n25 %\n2\n47 %\nCorrect score missed\n1X2 right\n14:00 UK/Lagos\nFull time\nEthiopia\n0 – 1\nSenegal\nPredicted: 1-2 · 9% probability\n1\n12 %\nX\n15 %\n2\n73 %\nCorrect score missed\n1X2 right\n14:00 UK/Lagos\nFull time\nComoros\n1 – 0\nNamibia\nPredicted: 1-1 · 12% probability\n1\n51 %\nX\n25 %\n2\n24 %\nCorrect score missed\n1X2 right\n14:00 UK/Lagos\nFull time\nMozambique\n4 – 1\nSudan\nPredicted: 1-1 · 12% probability\n1\n48 %\nX\n25 %\n2\n27 %\nCorrect score missed\n1X2 right\n1",
+  "links_sample": [
+    {
+      "href": "https://www.elofoot.com/en/pronostic-du-jour#main-content",
+      "text": "Skip to content"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-du-jour",
+      "text": "Today's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/#features",
+      "text": "Features"
+    },
+    {
+      "href": "https://www.elofoot.com/en/analyse-ia-football",
+      "text": "AI prediction"
+    },
+    {
+      "href": "https://www.elofoot.com/en/#affiliate",
+      "text": "Affiliate"
+    },
+    {
+      "href": "https://www.elofoot.com/en/blog",
+      "text": "Blog"
+    },
+    {
+      "href": "https://www.elofoot.com/en/faq",
+      "text": "FAQ"
+    },
+    {
+      "href": "https://www.elofoot.com/auth/login",
+      "text": "Log in"
+    },
+    {
+      "href": "https://www.elofoot.com/onboarding",
+      "text": "Predict a match for free"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-du-jour",
+      "text": "Today's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-demain",
+      "text": "Tomorrow's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction",
+      "text": "All competitions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations",
+      "text": "All UEFA Nations League predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/moldova-faroe-islands-2026-09-29",
+      "text": "17:00 UK/Lagos Moldova 0 – 0 Faroe Islands Predicted score · 18% probability 1 33 % X 34 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/finland-belarus-2026-09-29",
+      "text": "17:00 UK/Lagos Finland 1 – 0 Belarus Predicted score · 18% probability 1 56 % X 27 % 2 17 "
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/slovakia-kazakhstan-2026-09-29",
+      "text": "19:45 UK/Lagos Slovakia 2 – 0 Kazakhstan Predicted score · 16% probability 1 77 % X 16 % 2"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/czech-republic-england-2026-09-29",
+      "text": "19:45 UK/Lagos Czechia 0 – 2 England Predicted score · 15% probability 1 10 % X 19 % 2 71 "
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/slovenia-fyr-macedonia-2026-09-29",
+      "text": "19:45 UK/Lagos Slovenia 1 – 0 North Macedonia Predicted score · 18% probability 1 59 % X 2"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/luxembourg-iceland-2026-09-29",
+      "text": "19:45 UK/Lagos Luxembourg 0 – 1 Iceland Predicted score · 15% probability 1 27 % X 29 % 2 "
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/spain-croatia-2026-09-29",
+      "text": "19:45 UK/Lagos Spain 2 – 0 Croatia Predicted score · 11% probability 1 67 % X 19 % 2 14 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/scotland-switzerland-2026-09-29",
+      "text": "19:45 UK/Lagos Scotland 0 – 1 Switzerland Predicted score · 15% probability 1 21 % X 27 % "
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/bulgaria-estonia-2026-09-29",
+      "text": "19:45 UK/Lagos Bulgaria 1 – 0 Estonia Predicted score · 19% probability 1 58 % X 27 % 2 15"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/san-marino-albania-2026-09-29",
+      "text": "19:45 UK/Lagos San Marino 0 – 4 Albania Predicted score · 10% probability 1 2 % X 4 % 2 94"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027",
+      "text": "All AFCON 2027 Qualifiers predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/burundi-algeria-2026-09-29",
+      "text": "14:00 UK/Lagos Full time Burundi 2 – 2 Algeria Predicted: 1-1 · 13% probability 1 31 % X 2"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/south-sudan-egypt-2026-09-29",
+      "text": "14:00 UK/Lagos Full time South Sudan 0 – 5 Egypt Predicted: 1-1 · 12% probability 1 28 % X"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/ethiopia-senegal-2026-09-29",
+      "text": "14:00 UK/Lagos Full time Ethiopia 0 – 1 Senegal Predicted: 1-2 · 9% probability 1 12 % X 1"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/comoros-namibia-2026-09-29",
+      "text": "14:00 UK/Lagos Full time Comoros 1 – 0 Namibia Predicted: 1-1 · 12% probability 1 51 % X 2"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/mozambique-sudan-2026-09-29",
+      "text": "14:00 UK/Lagos Full time Mozambique 4 – 1 Sudan Predicted: 1-1 · 12% probability 1 48 % X "
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/lesotho-morocco-2026-09-29",
+      "text": "14:00 UK/Lagos Full time Lesotho 0 – 2 Morocco Predicted: 0-2 · 10% probability 1 16 % X 1"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/madagascar-tanzania-2026-09-29",
+      "text": "15:00 UK/Lagos Live Madagascar 0 – 0 Tanzania Predicted score · 18% probability 1 36 % X 3"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/zambia-togo-2026-09-29",
+      "text": "17:00 UK/Lagos Zambia 1 – 1 Togo Predicted score · 12% probability 1 45 % X 26 % 2 29 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/uganda-libya-2026-09-29",
+      "text": "17:00 UK/Lagos Uganda 1 – 0 Libya Predicted score · 19% probability 1 49 % X 31 % 2 20 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/ghana-gambia-2026-09-29",
+      "text": "17:00 UK/Lagos Ghana 0 – 0 Gambia Predicted score · 19% probability 1 26 % X 34 % 2 40 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/guinea-bissau-nigeria-2026-09-29",
+      "text": "17:00 UK/Lagos Guinea-Bissau 0 – 1 Nigeria Predicted score · 22% probability 1 10 % X 25 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/cape-verde-islands-rwanda-2026-09-29",
+      "text": "17:00 UK/Lagos Cape Verde 1 – 0 Rwanda Predicted score · 21% probability 1 64 % X 25 % 2 1"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/benin-mauritania-2026-09-29",
+      "text": "18:00 UK/Lagos Benin 1 – 1 Mauritania Predicted score · 12% probability 1 52 % X 25 % 2 23"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/gabon-niger-2026-09-29",
+      "text": "20:00 UK/Lagos Gabon 1 – 0 Niger Predicted score · 20% probability 1 57 % X 28 % 2 15 %"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/somalia-ivory-coast-2026-09-29",
+      "text": "20:00 UK/Lagos Somalia 1 – 1 Ivory Coast Predicted score · 10% probability 1 20 % X 22 % 2"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/eliminatoires-can-2027/congo-cameroon-2026-09-29",
+      "text": "20:00 UK/Lagos Congo 1 – 1 Cameroon Predicted score · 13% probability 1 33 % X 26 % 2 41 %"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "6027ffb9-2b20-4f8d-b7c4-5a8d5bc3c64c",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:58:06.631344Z",
+    "startedAt": "2026-09-29T15:54:06.631462Z",
+    "finishedAt": "2026-09-29T15:54:12.601184Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 6.21,
+  "finished_utc": "2026-09-29T15:54:12Z"
+}

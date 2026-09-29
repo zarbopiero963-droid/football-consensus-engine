@@ -1,0 +1,280 @@
+{
+  "source": "sports4cast",
+  "run_id": "20260929T155049Z",
+  "started_utc": "2026-09-29T15:51:31Z",
+  "entry_url": "https://sports4cast.com/4casts/football4cast/",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "e6e39ce9-55c8-4f41-bfbf-63997c89b548",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:55:31.417173Z",
+    "startedAt": "2026-09-29T15:51:31.417436Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://sports4cast.com/4casts/football4cast/",
+  "title": "Football Predictions & Betting Analysis | Sports4Cast",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c265e2aad4c3f-MXP",
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "cf_ray": "a42c265e2aad4c3f-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": false,
+  "screenshot_full_page": true,
+  "html_bytes": 275006,
+  "html_sha256": "d0300a264f934f3af4bf1c2f2a626112e9a764e0ce59bf9f10ec56a0c3cebde4",
+  "screenshot_sha256": "fde3d8400643c08e5330a6b50a01d7c7255ac54adf4c0d57341c7005c6a21629",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://sports4cast.com/4casts/football4cast/",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://widgets.sports4cast.com/football/website/homepage-widget.html?v=3",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://football4cast.substack.com/embed",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://widgets.sports4cast.com/website/betting-cta-widget.html?v=1",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html"
+    },
+    {
+      "url": "https://data.sports4cast.com/all/recent_winners",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_04.bin",
+      "sha256": "37e442b0a568ce7db25cd756c52e068b402bd4be1f53504925446287c42e14fe",
+      "bytes": 37368
+    },
+    {
+      "url": "https://data.sports4cast.com/football/homepage_fixtures",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    },
+    {
+      "url": "https://widgets.sports4cast.com/website/betting-cta-widget.html?noCollapse=1",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html"
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "url": "https://football4cast.substack.com/cdn-cgi/challenge-platform/h/b/jsd/oneshot/d76008a69eab/0.024671611896523116:1790694037:Opdj7gB02DJWIPKAdwtY_AlaiVpXgwCreRnFniUKIPw/a42c2665ec07ed53",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "text/plain; charset=UTF-8"
+    },
+    {
+      "url": "https://substack.com/api/v1/i18n/translations?language=it&isMarketingPage=false",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json; charset=utf-8",
+      "file": "net_09.bin",
+      "sha256": "c43019b92c92f857ed4d9ca975ce40c25d9184f8f6d1edc8287fa82905a2f759",
+      "bytes": 1270177
+    }
+  ],
+  "visible_text_sample": "SERVICES\nCASE STUDIES\nABOUT\nNEWS\nFootball Predictions & Analysis\n\n⚽️\n\nWelcome to Football4Cast! Get data-driven predictions and season insights from 70+ leagues around the world – including our powerful, graded betting analysis 🏆\n\nLeagues\n\nSee our Global League Coverage – over 30 countries and 70 leagues! 🌍\n\nAbout Football4Cast\n\nJust what is going on here?\n\nAbout Football4Cast\n\nFootball4Cast grew out of the analytics work we do for clubs. We already had the data and the models, so we started publishing a slice of it for fans – the same idea that began with Rugby4Cast.\n\nUnder the hood, every match is rated by our Elo-based model, which tracks the relative strength of more than 2,000 teams across 70+ leagues in 30-plus countries – from the Premier League and La Liga down to the Primera RFEF and the Allsvenskan, plus internationals and the World Cup. The ratings shift with every result, turn into a probability for each home win, draw and away win, and drive our graded value-betting analysis.\n\nHave a dig around and you’ll find predictions and rankings for whichever league you follow – and the reasoning behind them. The aim’s simple: help you understand the teams, their chances, and where the value lies.\n\nThe Data, Predictions and Tipping\n\nSo how do these work?\n\nSee more\nAll football leagues we cover\n\nSports4Cast runs machine-learning match predictions, live Elo power rankings and results analysis across 70+ football leagues and competitions worldwide, updated daily. Explore our coverage by country and competition:\n\nEnglish Football predictions\nPremier League, Championship, League One & League Two\nSpanish Football predictions\nLa Liga, La Liga 2, Primera RFEF Grp 1 & Primera RFEF Grp 2\nGerman Football predictions\nBundesliga, 2. Bundesliga & 3. Liga\nItalian Football predictions\nSerie A, Serie B, Serie C Grp A, Serie C Grp B & Serie C Grp C\nFrench Football predictions\nLigue 1, Ligue 2 & National 1\nEuropean Football predictions\nUEFA Champions League, UEFA Europa League & UEFA Conference League\nScottish Football predictions\nPremiership, Championship, League One & League Two\nGreek Football predictions\nSuperleague & Super League 2\nDanish Football predictions\nSuperliga & 1st Division\nPortuguese Football predictions\nPrimeira Liga & LigaPro\nDutch Football predictions\nEredivisie & Eerste Divisie\nBelgian Football predictions\nPro League & 1st Division B\nTurkish Football predictions\nSüper Lig & 1. Lig\nNorwegian Football predictions\nEliteserien & 1. Divisjon\nCzech Football pr",
+  "links_sample": [
+    {
+      "href": "https://sports4cast.com/services/",
+      "text": "SERVICES"
+    },
+    {
+      "href": "https://sports4cast.com/case-studies/",
+      "text": "CASE STUDIES"
+    },
+    {
+      "href": "https://sports4cast.com/about/",
+      "text": "ABOUT"
+    },
+    {
+      "href": "https://sports4cast.com/news-and-insights/",
+      "text": "NEWS"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/",
+      "text": "⚽ Football ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/rugby4cast/",
+      "text": "🏉 Rugby ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/tennis4cast/",
+      "text": "🎾 Tennis ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/baseball4cast/",
+      "text": "⚾ MLB ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/nfl4cast/",
+      "text": "🏈 NFL ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/nba4cast/",
+      "text": "🏀 NBA ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/nhl4cast/",
+      "text": "🏒 NHL ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/darts4cast/",
+      "text": "🎯 Darts ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/",
+      "text": "About The 4Casts ›"
+    },
+    {
+      "href": "https://sports4cast.com/?memberful_endpoint=auth",
+      "text": "Sign In ›"
+    },
+    {
+      "href": "https://sports4cast.com/betting-analysis/",
+      "text": "Subscribe ›"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/english-football-predictions/",
+      "text": "English Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/spanish-football-predictions/",
+      "text": "Spanish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/german-football-predictions/",
+      "text": "German Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/italian-football-predictions/",
+      "text": "Italian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/french-football-predictions/",
+      "text": "French Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/european-football-predictions/",
+      "text": "European Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/scottish-football-predictions/",
+      "text": "Scottish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/greek-football-predictions/",
+      "text": "Greek Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/danish-football-predictions/",
+      "text": "Danish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/portuguese-football-predictions/",
+      "text": "Portuguese Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/dutch-football-predictions/",
+      "text": "Dutch Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/belgian-football-predictions/",
+      "text": "Belgian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/turkish-football-predictions/",
+      "text": "Turkish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/norwegian-football-predictions/",
+      "text": "Norwegian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/czech-football-predictions/",
+      "text": "Czech Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/polish-football-predictions/",
+      "text": "Polish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/croatian-football-predictions/",
+      "text": "Croatian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/austrian-football-predictions/",
+      "text": "Austrian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/swiss-football-predictions/",
+      "text": "Swiss Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/swedish-football-predictions/",
+      "text": "Swedish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/finnish-football-predictions/",
+      "text": "Finnish Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/brazilian-football-predictions/",
+      "text": "Brazilian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/argentinian-football-predictions/",
+      "text": "Argentinian Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/mexican-football-predictions/",
+      "text": "Mexican Football predictions"
+    },
+    {
+      "href": "https://sports4cast.com/4casts/football4cast/american-football-predictions/",
+      "text": "American Football predictions"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "e6e39ce9-55c8-4f41-bfbf-63997c89b548",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:55:31.417173Z",
+    "startedAt": "2026-09-29T15:51:31.417436Z",
+    "finishedAt": "2026-09-29T15:51:38.437197Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 7.25,
+  "finished_utc": "2026-09-29T15:51:38Z"
+}

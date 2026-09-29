@@ -1,0 +1,292 @@
+{
+  "source": "betstudy",
+  "run_id": "20260929T155049Z",
+  "started_utc": "2026-09-29T15:51:46Z",
+  "entry_url": "https://www.betstudy.com/",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "bbbea3ff-13c4-4604-971d-05f442db9439",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:55:46.946041Z",
+    "startedAt": "2026-09-29T15:51:46.946163Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.betstudy.com/",
+  "title": "Soccer Predictions, Football Statistics & Betting Tips",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c26bf0bc6ee4f-MXP",
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "cf_ray": "a42c26bf0bc6ee4f-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": false,
+  "screenshot_full_page": true,
+  "html_bytes": 216032,
+  "html_sha256": "78ad399a5948395f72ce9894795e3034b537317bdd311a32e5ca8fd1762d4a5d",
+  "screenshot_sha256": "d8d169731945b8d1a6e579df5d0d23293b0390b655b52595454c666f7f7ec744",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://www.betstudy.com/",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://www.youtube.com/embed/videoseries?list=PLmUr2SVwEXMDP453dKlyDsVm_ExsjZeBz&rel=0",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://www.betstudy.com/timeoffset.php?t=120",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://www.betstudy.com/cdn-cgi/challenge-platform/h/b/jsd/oneshot/d76008a69eab/0.024671611896523116:1790694037:Opdj7gB02DJWIPKAdwtY_AlaiVpXgwCreRnFniUKIPw/a42c26bf0bc6ee4f",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "text/plain; charset=UTF-8"
+    },
+    {
+      "url": "https://connect.facebook.net/app_config/json/1009598739101708/",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json; charset=utf-8"
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "url": "https://www.gstatic.com/youtube/img/icons/mweb/youtube_fill/logo/v2/67px.svg",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "image/svg+xml"
+    },
+    {
+      "url": "https://googleads.g.doubleclick.net/pagead/id?slf_rd=1",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json; charset=UTF-8",
+      "file": "net_08.bin",
+      "sha256": "bc5d9b0ee89b7680a76fe062e0cc98f46059bf2d062019bb07a3c48ff3a65091",
+      "bytes": 100
+    },
+    {
+      "url": "https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/GenerateIT",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json+protobuf; charset=UTF-8",
+      "file": "net_09.bin",
+      "sha256": "220952fd167c41a2c96bf95c8407ff6fe3d166d09f2fa76d6894dcf83ccaf75e",
+      "bytes": 94
+    },
+    {
+      "url": "https://ep1.adtrafficquality.google/getconfig/sodar?sv=200&tid=afs&tv=1234567890&st=env&sjk=o3yR7OBORrStb/bUS/LuUw==&sde=1",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "application/json; charset=UTF-8",
+      "file": "net_10.bin",
+      "sha256": "55a87fe52bd03d9eaff7859801721dd45efa5fdb777c20d44bf740e2760ee4f2",
+      "bytes": 10862
+    },
+    {
+      "url": "https://ep2.adtrafficquality.google/sodar/sodar2/255/runner.html",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html"
+    }
+  ],
+  "visible_text_sample": "FOOTBALL STATS\nBETTING SITES\nCOMPUTER PREDICTIONS\nBET CALCULATOR\nBLOG\nTIPSTERS\nCONTACT\nDaily football predictions, free on Telegram\nJoin @betstudycom\n×\nEN \n TELEGRAM\n TWITTER\nFOOTBALL STATS\nTODAY’S MATCHES\nTOMORROW’S MATCHES\nH2H STATS\nENGLAND PREMIER LEAGUE\nSPAIN PRIMERA DIVISIÓN\nGERMANY BUNDESLIGA\nITALY SERIE A\nFRANCE LIGUE 1\nBETTING SITES\nBET365 SITE FEATURES\n£5 DEPOSIT BETTING SITES\nBETTING BONUSES\nFREE BETS\nCOMPUTER PREDICTIONS\nFULL TIME BETTING PREDICTIONS\nUNDER/OVER 2.5 GOALS PREDICTIONS\nDOUBLE CHANCE PREDICTIONS\nBOTH TEAMS TO SCORE PREDICTIONS\nTOMORROW'S PREDICTIONS\nWEEKEND PREDICTIONS\nBET CALCULATOR\nSINGLE BET CALCULATOR\nDOUBLE BET CALCULATOR\nTREBLE BET CALCULATOR\nACCUMULATOR CALCULATOR\nTRIXIE CALCULATOR\nPATENT CALCULATOR\nYANKEE CALCULATOR\nLUCKY 15 CALCULATOR\nCANADIAN CALCULATOR\nLUCKY 31 CALCULATOR\nHEINZ CALCULATOR\nLUCKY 63 CALCULATOR\nSUPER HEINZ CALCULATOR\nGOLIATH CALCULATOR\nBLOG\nTIPSTERS\nCONTACT\nFOOTBALL PREDICTIONS\nSHOW MORE\nCape Verde Islands - Rwanda\n\nToday 16:00\n\nAfrica Africa Cup of Nations Qualifications\n\nProbability: 61%\n\n1\n61%\nX\n30%\n2\n9%\nBet Here\nOdense Q W - AGF W\n\nToday 16:00\n\nDenmark 3f Ligaen Women\n\nProbability: 61%\n\nO\n61%\nU\n39%\nBet Here\nGuinea-Bissau - Nigeria\n\nToday 16:00\n\nAfrica Africa Cup of Nations Qualifications\n\nProbability: 61%\n\n1\n13%\nX\n26%\n2\n61%\nBet Here\nHertha Zehlendorf - Hertha BSC\n\nToday 16:00\n\nWorld Club Friendlies 3\n\nProbability: 73%\n\nO\n73%\nU\n27%\nBet Here\nHuesca W - Osasuna W\n\nToday 17:00\n\nSpain Copa de la Reina\n\nProbability: 70%\n\n1\n20%\nX\n10%\n2\n70%\nBet Here\nHuge W - Uppsala W\n\nToday 17:00\n\nSweden Svenska Cupen Women\n\nProbability: 71%\n\nO\n71%\nU\n29%\nBet Here\nRepublic of Ireland U21 - Kazakhstan U21\n\nToday 18:00\n\nEurope U21 Championship Qualification\n\nProbability: 66%\n\n1\n66%\nX\n25%\n2\n9%\nBet Here\nBelgium U21 - Wales U21\n\nToday 18:00\n\nEurope U21 Championship Qualification\n\nProbability: 53%\n\nO\n53%\nU\n47%\nBet Here\nAtlético Rafaela Res. - Ferro Carril Reserves\n\nToday 18:00\n\nArgentina Reserve League\n\nProbability: 75%\n\n1\n75%\nX\n25%\n2\n0%\nBet Here\nHitchin Town - Leighton Town\n\nToday 18:45\n\nEngland Non League Premier: Southern\n\nProbability: 60%\n\nO\n60%\nU\n40%\nBet Here\n22Bet\nGet Your Welcome Bonus\n\n22Bet is open for Italy — join today and double your first deposit\n\nSEE OFFER\nSOCCER STATISTICS\nClub Domestic Leagues\nAfrica\nAlbania\nAlgeria\nAndorra\nAngola\nAntigua and Barbuda\nArgentina\nArmenia\nAruba\nAsia\nAustralia\nAustria\nAzerbaijan\nBahrain\nBangladesh\nBarbados\nBelarus\nBelgium\nBelize\nBenin\nBermuda\nBhutan\nBolivia\nBosnia and Herzegovina\nBotswana\nB",
+  "links_sample": [
+    {
+      "href": "https://www.betstudy.com/soccer-stats/",
+      "text": "FOOTBALL STATS"
+    },
+    {
+      "href": "https://www.betstudy.com/today-matches/",
+      "text": "TODAY’S MATCHES"
+    },
+    {
+      "href": "https://www.betstudy.com/today-matches/tomorrow/",
+      "text": "TOMORROW’S MATCHES"
+    },
+    {
+      "href": "https://www.betstudy.com/soccer-stats/h2h/",
+      "text": "H2H Stats"
+    },
+    {
+      "href": "https://www.betstudy.com/soccer-stats/c/england/premier-league/",
+      "text": "England Premier League"
+    },
+    {
+      "href": "https://www.betstudy.com/soccer-stats/c/spain/primera-division/",
+      "text": "Spain Primera División"
+    },
+    {
+      "href": "https://www.betstudy.com/soccer-stats/c/germany/bundesliga/",
+      "text": "Germany Bundesliga"
+    },
+    {
+      "href": "https://www.betstudy.com/soccer-stats/c/italy/serie-a/",
+      "text": "Italy Serie A"
+    },
+    {
+      "href": "https://www.betstudy.com/soccer-stats/c/france/ligue-1/",
+      "text": "France Ligue 1"
+    },
+    {
+      "href": "https://www.betstudy.com/online-bookmakers/",
+      "text": "BETTING SITES"
+    },
+    {
+      "href": "https://www.betstudy.com/betting-sites/bet365/features/",
+      "text": "Bet365 Site Features"
+    },
+    {
+      "href": "https://www.betstudy.com/blog/betting-sites-with-a-5-minimum-deposit/",
+      "text": "£5 Deposit Betting Sites"
+    },
+    {
+      "href": "https://www.betstudy.com/betting-bonuses/",
+      "text": "Betting Bonuses"
+    },
+    {
+      "href": "https://www.betstudy.com/free-bets/",
+      "text": "Free Bets"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/",
+      "text": "COMPUTER PREDICTIONS"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/",
+      "text": "full time betting predictions"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/over-under-25/",
+      "text": "Under/Over 2.5 goals predictions"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/double-chance/",
+      "text": "double chance predictions"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/both-teams-to-score/",
+      "text": "both teams to score predictions"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/tomorrow/",
+      "text": "tomorrow's predictions"
+    },
+    {
+      "href": "https://www.betstudy.com/predictions/weekend/",
+      "text": "weekend predictions"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/",
+      "text": "BET CALCULATOR"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/single/",
+      "text": "Single Bet Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/double/",
+      "text": "Double Bet Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/treble/",
+      "text": "Treble Bet Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/accumulator/",
+      "text": "Accumulator Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/trixie/",
+      "text": "Trixie Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/patent/",
+      "text": "Patent Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/yankee/",
+      "text": "Yankee Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/lucky-15/",
+      "text": "Lucky 15 Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/canadian/",
+      "text": "Canadian Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/lucky-31/",
+      "text": "Lucky 31 Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/heinz/",
+      "text": "Heinz Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/lucky-63/",
+      "text": "Lucky 63 Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/super-heinz/",
+      "text": "Super Heinz Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/bet-calculator/goliath/",
+      "text": "Goliath Calculator"
+    },
+    {
+      "href": "https://www.betstudy.com/blog/",
+      "text": "BLOG"
+    },
+    {
+      "href": "https://www.betstudy.com/tipsters/",
+      "text": "TIPSTERS"
+    },
+    {
+      "href": "https://www.betstudy.com/contact/",
+      "text": "CONTACT"
+    },
+    {
+      "href": "https://t.me/betstudycom",
+      "text": "Join @betstudycom"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "bbbea3ff-13c4-4604-971d-05f442db9439",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:55:46.946041Z",
+    "startedAt": "2026-09-29T15:51:46.946163Z",
+    "finishedAt": "2026-09-29T15:51:54.903297Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 8.2,
+  "finished_utc": "2026-09-29T15:51:54Z"
+}

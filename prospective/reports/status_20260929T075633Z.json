@@ -1,0 +1,10 @@
+{
+  "at_utc": "2026-09-29T07:56:33.372327+00:00",
+  "status": "INSUFFICIENT FOR CONCLUSIONS",
+  "settled_matches": 0,
+  "ledger_rows": 110,
+  "eligible_prematch_rows": 49,
+  "strategies": "S1-S9 frozen in strategies_preregistered.json",
+  "classification": null,
+  "note": "No threshold was changed. Historical Foresportia and the old 312-match set are not inputs."
+}

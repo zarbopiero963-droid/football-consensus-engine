@@ -1,0 +1,113 @@
+{
+  "started_utc": "2026-09-29T15:36:29Z",
+  "target": "https://www.forebet.com/en/football-tips-and-predictions-for-today",
+  "agent_used": false,
+  "nav_http": null,
+  "document_recovered": true,
+  "document_note": "HTTP status was not flushed before the csv crash. page.html is the predictions document, not a challenge page.",
+  "challenge_wall": false,
+  "captcha": false,
+  "final_url": "https://www.forebet.com/en/football-tips-and-predictions-for-today",
+  "redirected": false,
+  "xhr_audit": {
+    "file": "net_11.bin",
+    "xhr_matches": 150,
+    "xhr_ids_missing_in_dom": 0,
+    "dom_ids_not_in_xhr": 1,
+    "probability_mismatches": 0,
+    "missing_sample": [],
+    "extra_sample": [
+      "2554168"
+    ]
+  },
+  "rows_dom_final": 152,
+  "recovered_after_csv_crash": true,
+  "session": {},
+  "duration_seconds": null,
+  "completeness": {
+    "dom_rows": 152,
+    "ok": 150,
+    "parse_errors": 2,
+    "error_kinds": {
+      "triplet": 2
+    },
+    "duplicate_ids": [
+      "2554617"
+    ],
+    "with_triplet": 150,
+    "without_triplet": 2,
+    "with_odds": 143,
+    "without_odds": 8,
+    "kickoff_dates": {
+      "29/09/2026": 145,
+      "28/09/2026": 6,
+      "30/09/2026": 1
+    },
+    "declared_counter": null,
+    "xhr_matches": 150,
+    "badge_gap": null,
+    "xhr_ids_missing_in_dom": 0,
+    "probability_mismatches": 0,
+    "dom_ids_not_in_xhr": 1,
+    "structural_regression": false,
+    "structural_reason": null,
+    "explained": true,
+    "explanation": "menu badge=None; getrs=150; dom=152; ok=150; parse_error=2; duplicate_ids=['2554617']; badge_gap=None because the badge is not the payload length. Every getrs id is in the DOM and every parsed triplet matches getrs."
+  },
+  "timezone_proof": {
+    "compared": 28,
+    "ambiguous": 3,
+    "ambiguous_share": 0.0968,
+    "ambiguous_sample": [
+      {
+        "home": "Madagascar",
+        "away": "Tanzania",
+        "deltas": [
+          {
+            "source": "footinsights",
+            "delta_minutes": 180
+          },
+          {
+            "source": "pinnacle",
+            "delta_minutes": 120
+          }
+        ]
+      },
+      {
+        "home": "Benin",
+        "away": "Mauritania",
+        "deltas": [
+          {
+            "source": "footinsights",
+            "delta_minutes": 240
+          },
+          {
+            "source": "pinnacle",
+            "delta_minutes": 120
+          }
+        ]
+      },
+      {
+        "home": "Comoros",
+        "away": "Namibia",
+        "deltas": [
+          {
+            "source": "footinsights",
+            "delta_minutes": 180
+          },
+          {
+            "source": "pinnacle",
+            "delta_minutes": 120
+          }
+        ]
+      }
+    ],
+    "unique_delta_minutes": [
+      120
+    ],
+    "offset_hours": 2,
+    "resolved": true,
+    "resolution_rule": "at least 10 source-agreeing fixtures, one offset, ambiguous share under 20 percent",
+    "fifa_schedule": "not_available"
+  }
+}

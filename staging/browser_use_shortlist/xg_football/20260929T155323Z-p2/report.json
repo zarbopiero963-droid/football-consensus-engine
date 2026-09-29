@@ -1,0 +1,229 @@
+{
+  "source": "xg_football",
+  "run_id": "20260929T155323Z-p2",
+  "started_utc": "2026-09-29T15:53:23Z",
+  "entry_url": "https://xg.football/predictions",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "6929247f-3c0a-44c5-9e9e-cf52802f7166",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:57:23.976202Z",
+    "startedAt": "2026-09-29T15:53:23.976314Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://xg.football/predictions",
+  "title": "xG Predictions Today, 29 September — Football Tips & Probabilities",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c2925a86eeda2-MXP",
+    "content-type": "text/html; charset=utf-8"
+  },
+  "cf_ray": "a42c2925a86eeda2-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": false,
+  "screenshot_full_page": true,
+  "html_bytes": 47779,
+  "html_sha256": "ff9fb618e7964e4f11c6d75e9fb3de1adf578ec31a77e7b9d510a6ed9f315ab3",
+  "screenshot_sha256": "e25237aee89b89fe7065fc7f2317df116f03e8d57c178f6f7747c1f6b6adfed7",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://xg.football/predictions",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://xg.football/cdn-cgi/challenge-platform/h/b/jsd/oneshot/d76008a69eab/0.024671611896523116:1790694037:Opdj7gB02DJWIPKAdwtY_AlaiVpXgwCreRnFniUKIPw/a42c2925a86eeda2",
+      "status": 200,
+      "type": "xhr",
+      "content_type": "text/plain; charset=UTF-8"
+    }
+  ],
+  "visible_text_sample": "xG\nxG.Football\nMatches\nPredictions\nStatistics\nCompetitions\nBlog\nPremium\nTeam, competition or match\nEN\nSign in\n\nHome › All predictions today\n\nTODAY\n\nAll predictions today\nYesterday\nToday\nTomorrow\n\n14 predictions · 5 competitions\n\nWORLD\nFriendlies\n12\n13:00\nMatch played\nAustralia vs Brazil result and statistics\nAustralia — Brazil\n2:4\n13:00\nMatch played\nUSA U19 vs Wales U19 result and statistics\nUSA U19 — Wales U19\n2:0\n13:00\nMatch played\nRomania U18 vs Turkey U18 result and statistics\nRomania U18 — Turkey U18\n2:0\n13:30\nMatch played\nUkraine U17 vs Turkey U17 result and statistics\nUkraine U17 — Turkey U17\n0:2\n13:30\nMatch prediction\nItaly U18 vs Denmark U18 prediction\nItaly U18 — Denmark U18\n14:00\nMatch played\nNetherlands U17 vs United States U17 result and statistics\nNetherlands U17 — United States U17\n1:2\n15:00\nMatch played\nMoldova U19 vs Cyprus U19 result and statistics\nMoldova U19 — Cyprus U19\n0:1\n15:30\nMatch played\nBulgaria U19 vs Romania U19 result and statistics\nBulgaria U19 — Romania U19\n0:1\n17:00\nHalf-time\n45+2′\nEngland U19 vs Norway U19 prediction\nEngland U19 — Norway U19\n2:0\n17:30\n1st half\n26′\nSerbia U19 vs Hungary U19 prediction\nSerbia U19 — Hungary U19\n0:1\n19:00\nMatch prediction\nRussia vs Iran prediction\nRussia — Iran\nX · 27%\n20:15\nMatch prediction\nPortugal U18 vs Uzbekistan U18 prediction\nPortugal U18 — Uzbekistan U18\nWORLD\nFriendlies Clubs\n2\n16:00\nMatch played\nJagiellonia vs Suduva Marijampole result and statistics\nJagiellonia — Suduva Marijampole\n5:0\n19:00\nMatch prediction\nHertha Zehlendorf vs Hertha Berlin prediction\nHertha Zehlendorf — Hertha Berlin\nDENMARK\nKvindeliga\n1\n19:00\nMatch prediction\nOdense Q W vs AGF W prediction\nOdense Q W — AGF W\nSWEDEN\nSvenska Cupen - Women\n3\n20:00\nMatch prediction\nJitex W vs Vittsjö W prediction\nJitex W — Vittsjö W\n20:00\nMatch prediction\nLinköping W vs Norrköping W prediction\nLinköping W — Norrköping W\n2 · 50%\n20:00\nMatch prediction\nHu Ge W vs Uppsala W prediction\nHu Ge W — Uppsala W\nWORLD\nUEFA Nations League\n10\n19:00\nMatch prediction\nFinland vs Belarus prediction\nFinland — Belarus\n2 · 41%\n19:00\nMatch prediction\nMoldova vs Faroe Islands prediction\nMoldova — Faroe Islands\n1 · 59%\n21:45\nMatch prediction\nSpain vs Croatia prediction\nSpain — Croatia\n1 · 59%\n21:45\nMatch prediction\nCzechia vs England prediction\nCzechia — England\n2 · 50%\n21:45\nMatch prediction\nSlovakia vs Kazakhstan prediction\nSlovakia — Kazakhstan\n1 · 59%\n21:45\nMatch prediction\nSlovenia vs FYR Macedonia prediction\nSlovenia — FYR Macedonia\n2 · 41%\n21:45\nMa",
+  "links_sample": [
+    {
+      "href": "https://xg.football/",
+      "text": "xG xG.Football"
+    },
+    {
+      "href": "https://xg.football/",
+      "text": "Matches"
+    },
+    {
+      "href": "https://xg.football/predictions",
+      "text": "Predictions"
+    },
+    {
+      "href": "https://xg.football/statistics",
+      "text": "Statistics"
+    },
+    {
+      "href": "https://xg.football/competitions",
+      "text": "Competitions"
+    },
+    {
+      "href": "https://xg.football/blog",
+      "text": "Blog"
+    },
+    {
+      "href": "https://xg.football/premium",
+      "text": "Premium"
+    },
+    {
+      "href": "https://xg.football/ru/predictions",
+      "text": "RU"
+    },
+    {
+      "href": "https://xg.football/predictions",
+      "text": "EN"
+    },
+    {
+      "href": "https://xg.football/fr/predictions",
+      "text": "FR"
+    },
+    {
+      "href": "https://xg.football/uk/predictions",
+      "text": "UK"
+    },
+    {
+      "href": "https://xg.football/login",
+      "text": "Sign in"
+    },
+    {
+      "href": "https://xg.football/ru/predictions",
+      "text": "Switch to Русский"
+    },
+    {
+      "href": "https://xg.football/fr/predictions",
+      "text": "Switch to Français"
+    },
+    {
+      "href": "https://xg.football/uk/predictions",
+      "text": "Switch to Українська"
+    },
+    {
+      "href": "https://xg.football/",
+      "text": "Home"
+    },
+    {
+      "href": "https://xg.football/predictions?date=2026-09-28",
+      "text": "Yesterday"
+    },
+    {
+      "href": "https://xg.football/predictions",
+      "text": "Today"
+    },
+    {
+      "href": "https://xg.football/predictions?date=2026-09-30",
+      "text": "Tomorrow"
+    },
+    {
+      "href": "https://xg.football/competitions/world-friendlies",
+      "text": "Friendlies"
+    },
+    {
+      "href": "https://xg.football/matches/australia-brazil-2026-09-29",
+      "text": "13:00 Match played Australia vs Brazil result and statistics Australia — Brazil 2:4"
+    },
+    {
+      "href": "https://xg.football/matches/usa-u19-wales-u19-2026-09-29",
+      "text": "13:00 Match played USA U19 vs Wales U19 result and statistics USA U19 — Wales U19 2:0"
+    },
+    {
+      "href": "https://xg.football/matches/romania-u18-turkey-u18-2026-09-29",
+      "text": "13:00 Match played Romania U18 vs Turkey U18 result and statistics Romania U18 — Turkey U1"
+    },
+    {
+      "href": "https://xg.football/matches/ukraine-u17-turkey-u17-2026-09-29",
+      "text": "13:30 Match played Ukraine U17 vs Turkey U17 result and statistics Ukraine U17 — Turkey U1"
+    },
+    {
+      "href": "https://xg.football/matches/italy-u18-denmark-u18-2026-09-29",
+      "text": "13:30 Match prediction Italy U18 vs Denmark U18 prediction Italy U18 — Denmark U18"
+    },
+    {
+      "href": "https://xg.football/matches/netherlands-u17-united-states-u17-2026-09-29",
+      "text": "14:00 Match played Netherlands U17 vs United States U17 result and statistics Netherlands "
+    },
+    {
+      "href": "https://xg.football/matches/moldova-u19-cyprus-u19-2026-09-29",
+      "text": "15:00 Match played Moldova U19 vs Cyprus U19 result and statistics Moldova U19 — Cyprus U1"
+    },
+    {
+      "href": "https://xg.football/matches/bulgaria-u19-romania-u19-2026-09-29",
+      "text": "15:30 Match played Bulgaria U19 vs Romania U19 result and statistics Bulgaria U19 — Romani"
+    },
+    {
+      "href": "https://xg.football/matches/england-u19-norway-u19-2026-09-29",
+      "text": "17:00 Half-time 45+2′ England U19 vs Norway U19 prediction England U19 — Norway U19 2:0"
+    },
+    {
+      "href": "https://xg.football/matches/serbia-u19-hungary-u19-2026-09-29",
+      "text": "17:30 1st half 26′ Serbia U19 vs Hungary U19 prediction Serbia U19 — Hungary U19 0:1"
+    },
+    {
+      "href": "https://xg.football/matches/russia-iran-2026-09-29",
+      "text": "19:00 Match prediction Russia vs Iran prediction Russia — Iran X · 27%"
+    },
+    {
+      "href": "https://xg.football/matches/portugal-u18-uzbekistan-u18-2026-09-29",
+      "text": "20:15 Match prediction Portugal U18 vs Uzbekistan U18 prediction Portugal U18 — Uzbekistan"
+    },
+    {
+      "href": "https://xg.football/competitions/world-friendlies-clubs",
+      "text": "Friendlies Clubs"
+    },
+    {
+      "href": "https://xg.football/matches/jagiellonia-suduva-marijampole-2026-09-29",
+      "text": "16:00 Match played Jagiellonia vs Suduva Marijampole result and statistics Jagiellonia — S"
+    },
+    {
+      "href": "https://xg.football/matches/hertha-zehlendorf-hertha-berlin-2026-09-29",
+      "text": "19:00 Match prediction Hertha Zehlendorf vs Hertha Berlin prediction Hertha Zehlendorf — H"
+    },
+    {
+      "href": "https://xg.football/competitions/denmark-kvindeliga",
+      "text": "Kvindeliga"
+    },
+    {
+      "href": "https://xg.football/matches/odense-q-w-agf-w-2026-09-29",
+      "text": "19:00 Match prediction Odense Q W vs AGF W prediction Odense Q W — AGF W"
+    },
+    {
+      "href": "https://xg.football/competitions/sweden-svenska-cupen-women",
+      "text": "Svenska Cupen - Women"
+    },
+    {
+      "href": "https://xg.football/matches/jitex-w-vittsjo-w-2026-09-29",
+      "text": "20:00 Match prediction Jitex W vs Vittsjö W prediction Jitex W — Vittsjö W"
+    },
+    {
+      "href": "https://xg.football/matches/linkoping-w-norrkoping-w-2026-09-29",
+      "text": "20:00 Match prediction Linköping W vs Norrköping W prediction Linköping W — Norrköping W 2"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "6929247f-3c0a-44c5-9e9e-cf52802f7166",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:57:23.976202Z",
+    "startedAt": "2026-09-29T15:53:23.976314Z",
+    "finishedAt": "2026-09-29T15:53:32.355519Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 8.64,
+  "finished_utc": "2026-09-29T15:53:32Z"
+}

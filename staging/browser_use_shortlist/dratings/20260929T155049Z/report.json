@@ -1,0 +1,223 @@
+{
+  "source": "dratings",
+  "run_id": "20260929T155049Z",
+  "started_utc": "2026-09-29T15:50:57Z",
+  "entry_url": "https://www.dratings.com/",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "42810680-8f1e-4aa2-a3a5-d5d2916156b9",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:54:57.655745Z",
+    "startedAt": "2026-09-29T15:50:57.655913Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.dratings.com/",
+  "title": "Donchess Sports Computer Ratings and Predictions",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c258c0862333a-MXP",
+    "content-type": "text/html"
+  },
+  "cf_ray": "a42c258c0862333a-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": false,
+  "screenshot_full_page": true,
+  "html_bytes": 32867,
+  "html_sha256": "13a10fe9236382b9e921843b6fc91c20a37e1e59e5a25c2a964575562967a4d3",
+  "screenshot_sha256": "3b1a88b6bfee9034dda95740315abf7a118675b83afa7f838b5c8c221a446072",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://www.dratings.com/",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html"
+    }
+  ],
+  "visible_text_sample": "Sports Ratings, Prediction, & Analysis\nRatings\nPredictions\nTools\nSportsbooks\nAbout\nBlog\n★ PREMIUM\nUpcoming Games\nNFL\nUpdated 6 sec ago\tPoints\n10/02/2026\n02:15 AM\tPittsburgh Steelers\nCleveland Browns\t60.5%\n39.5%\t21.8\n18.6\n10/04/2026\n03:30 PM\tIndianapolis Colts\nWashington Commanders\t65.4%\n34.6%\t25.4\n21.1\n10/04/2026\n07:00 PM\tNew England Patriots\nBuffalo Bills\t28.7%\n71.3%\t19.7\n26.5\nAll NFL Predictions\nMLB\nUpdated 7 sec ago\tRuns\n09/29/2026\n08:10 PM\tPhiladelphia Phillies\nAtlanta Braves\t37.8%\n62.2%\t2.63\n3.91\n09/29/2026\n11:10 PM\tChicago White Sox\nHouston Astros\t46.9%\n53.1%\t3.95\n4.28\n09/30/2026\n02:10 AM\tBoston Red Sox\nNew York Yankees\t44.1%\n55.9%\t2.78\n3.41\nAll MLB Predictions\nNCAAF\nUpdated 5 sec ago\tPoints\n10/02/2026\n02:00 AM\tWestern Kentucky Hilltoppers\nNew Mexico State Aggies\t50.1%\n49.9%\t27.5\n27.4\n10/02/2026\n03:00 AM\tNorth Texas Mean Green\nTulsa Golden Hurricane\t52.5%\n47.5%\t29.4\n28.3\n10/03/2026\n01:00 AM\tPittsburgh Panthers\nVirginia Tech Hokies\t39.6%\n60.4%\t25.0\n28.1\nAll NCAAF Predictions\nSport Computer Ratings\nNFL\nUpdated 3 hr ago\tRating\tChg\nSeattle Seahawks (0-0)\t0.7958\t-\nBuffalo Bills (0-0)\t0.7605\t+2\nLos Angeles Rams (0-0)\t0.6907\t-1\nSan Francisco 49ers (0-0)\t0.6505\t-1\nKansas City Chiefs (0-0)\t0.5869\t-\nJacksonville Jaguars (0-0)\t0.5016\t+5\nFull NFL Table\nMLS\nUpdated 1 day ago\tRating\tChg\nNashville SC (18-3-6)\t0.5578\t-\nVancouver Whitecaps (15-6-5)\t0.4680\t-\nInter Miami CF (12-5-10)\t0.3740\t-\nPhiladelphia Union (11-10-6)\t0.2388\t-\nSt Louis City (12-6-8)\t0.1764\t+3\nChicago Fire (12-8-6)\t0.1686\t+4\nFull MLS Table\nFootball\nNCAA Football (1-A) FBS\nNFL Football\nCFL Football\nBasketball\nNBA Basketball\nNCAA Men’s Basketball\nWNBA Basketball\nBaseball\nMLB Baseball\nHockey\nNHL Hockey\nSoccer\nMen’s International Soccer\nMLS Soccer\nMisc\nAustralian Football League\nLatest Blog Posts\n2026-2027 Preseason CFB Conference Projections\n\nOur preseason 2026-2027 conference projections for every FBS team.\n\nWhy Bigger Markets Make Better Predictions\n\nSports betting and prediction markets get sharper as more money flows through them.\n\nWhat Are Power Ratings In Sports Betting?\n\nUse custom power ratings to cut through the noise in sports betting\n\nRealistic Expected ROI Target for Sports Bettors\n\nLearn what a realistic expected ROI looks like in sports betting\n\nJourney To March\n\nAnnouncing Journey to March, a new interactive bracket projection site\n\nAll Blog Posts\nSport Computer Predictions\nSep 29, 2026\nUpdated 5 sec ago\tGames\n\nBaseball\n\t\nMLB Baseball\n4\n\n\nFootball\n\t\nNCAA Football\n0\nNFL Football\n0\n\n\nSoccer",
+  "links_sample": [
+    {
+      "href": "https://www.dratings.com/sports/",
+      "text": "Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/sports/nfl-football-ratings/",
+      "text": "NFL Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/sports/ncaa-fbs-football-ratings/",
+      "text": "FBS Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/sports/mlb-baseball-ratings/",
+      "text": "MLB Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/sports/nhl-hockey-ratings/",
+      "text": "NHL Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/sports/nba-basketball-ratings/",
+      "text": "NBA Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/sports/wnba-basketball-ratings/",
+      "text": "WNBA Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/",
+      "text": "Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/nfl-football-predictions/",
+      "text": "NFL Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/ncaa-football-predictions/",
+      "text": "CFB Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/mlb-baseball-predictions/",
+      "text": "MLB Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/nhl-hockey-predictions/",
+      "text": "NHL Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/nba-basketball-predictions/",
+      "text": "NBA Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/wnba-basketball-predictions/",
+      "text": "WNBA Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/ufc-mma-predictions/",
+      "text": "UFC Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/tools/",
+      "text": "Tools"
+    },
+    {
+      "href": "https://www.dratings.com/odds-conversion-calculator/",
+      "text": "Odds Conversion Calculator"
+    },
+    {
+      "href": "https://www.dratings.com/parlay-calculator/",
+      "text": "Parlay Calculator"
+    },
+    {
+      "href": "https://www.dratings.com/sports-betting-hold-calculator/",
+      "text": "Hold Calculator"
+    },
+    {
+      "href": "https://www.dratings.com/no-vig-fair-odds-calculator/",
+      "text": "No-Vig Line"
+    },
+    {
+      "href": "https://www.dratings.com/clv-calculator/",
+      "text": "CLV Calculator"
+    },
+    {
+      "href": "https://www.dratings.com/kelly-criterion-calculator/",
+      "text": "Kelly Criterion Calculator"
+    },
+    {
+      "href": "https://www.dratings.com/top-5-online-sportsbooks-for-us-gamblers/",
+      "text": "Sportsbooks"
+    },
+    {
+      "href": "https://www.dratings.com/bovada-sportsbook-review/",
+      "text": "Bovada Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/betonline-sportsbook-review/",
+      "text": "BetOnline Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/intertops-sportsbook-review/",
+      "text": "Everygame Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/bet105-sportsbook-review/",
+      "text": "bet105 Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/nitrogen-sports-sportsbook-review/",
+      "text": "Nitrobetting Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/sportsbetting-sportsbook-review/",
+      "text": "SportsBetting Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/youwager-sportsbook-review/",
+      "text": "Youwager Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/betanysports-sportsbook-review/",
+      "text": "BetAnySports Sportsbook Review"
+    },
+    {
+      "href": "https://www.dratings.com/about/",
+      "text": "About"
+    },
+    {
+      "href": "https://www.dratings.com/acknowledgments/",
+      "text": "Acknowledgments"
+    },
+    {
+      "href": "https://www.dratings.com/methodology/",
+      "text": "Methodology"
+    },
+    {
+      "href": "https://www.dratings.com/about/predictions-disclaimer/",
+      "text": "Predictions Disclaimer"
+    },
+    {
+      "href": "https://www.dratings.com/blog/",
+      "text": "Blog"
+    },
+    {
+      "href": "https://www.dratings.com/dratings-premium-with-gamedaymath/",
+      "text": "★ PREMIUM"
+    },
+    {
+      "href": "https://www.dratings.com/sports/",
+      "text": "Ratings"
+    },
+    {
+      "href": "https://www.dratings.com/predictor/",
+      "text": "Predictions"
+    },
+    {
+      "href": "https://www.dratings.com/tools/",
+      "text": "Tools"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "42810680-8f1e-4aa2-a3a5-d5d2916156b9",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:54:57.655745Z",
+    "startedAt": "2026-09-29T15:50:57.655913Z",
+    "finishedAt": "2026-09-29T15:51:24.614776Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 27.22,
+  "finished_utc": "2026-09-29T15:51:24Z"
+}

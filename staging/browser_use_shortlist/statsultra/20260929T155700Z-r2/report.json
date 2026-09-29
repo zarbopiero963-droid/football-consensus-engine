@@ -1,0 +1,39 @@
+{
+  "source": "statsultra",
+  "run_id": "20260929T155700Z-r2",
+  "started_utc": "2026-09-29T15:56:47Z",
+  "agent_used": false,
+  "entry_url": "https://statsultra.com/forecasts/",
+  "create_http": 201,
+  "create": {
+    "id": "61376548-3652-44ee-b598-0f307df5ee37",
+    "status": "active",
+    "timeoutAt": "2026-09-29T16:00:47.186406Z",
+    "startedAt": "2026-09-29T15:56:47.186533Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://statsultra.com/forecasts/",
+  "html_bytes": 249085,
+  "html_sha256": "959ae54b81fd3e788349faff3fa46727a64fab67374e4a0cab54ebd434e9ae96",
+  "title": "Football Predictions & League Forecasts - StatsUltra",
+  "challenge_wall": false,
+  "captcha": false,
+  "visible_text_sample": "We value your privacy\n\nWe use cookies to enhance your browsing experience, serve personalised ads or content, and analyse our traffic. By clicking \"Accept All\", you consent to our use of cookies.\n\nCustomise\nReject All\nAccept All\nPowered by\nSkip to content\n\nStatsUltra\n\nClub Strength\nForecasts\nBlogs\nContact\nAbout\nHome›Forecasts\nFootball League Predictions & Table Forecasts 2026/27\nChoose a league\nAll Leagues (Overview)\nUEFA Champions League\nAustria: Bundesliga\nAzerbaijan: Premier League\nBelgium: Pro League\nCroatia: HNL\nCyprus: 1. Division\nCzech Republic: 1. Liga\nDenmark: Superliga\nEngland: Premier League\nEngland: Championship\nFrance: Ligue 1\nFrance: Ligue 2\nGermany: Bundesliga\nGermany: 2. Bundesliga\nGreece: Super League\nHungary: NB I\nIreland: Premier Division\nItaly: Serie A\nItaly: Serie B\nNetherlands: Eredivisie\nNorway: Eliteserien\nPoland: Ekstraklasa\nPortugal: Primeira Liga\nRomania: Liga I\nScotland: Premiership\nSlovakia: Super Liga\nSlovenia: Prva Liga\nSpain: La Liga\nSpain: La Liga 2\nSweden: Allsvenskan\nSwitzerland: Super League\nTürkiye: Süper Lig\nUkraine: Premier League\n\nFootball league predictions for 33 competitions, updated daily. StatsUltra simulates every remaining fixture 15,000 times to predict each club’s chances of winning the league, qualifying for Europe or being relegated. The tightest title race right now is Germany’s 2. Bundesliga, where Hertha BSC and 1. FC Nürnberg are level on 39%, while Bayern München, Ferencváros and PSG are the clearest favourites elsewhere.\n\nUpdated 29 September 2026, 14:34 UTC, 15,000 simulated seasons per competition. Pick any league for the full table predictor, or simulate a season yourself on its page. Match data from FootyStats.\n\nModeled and designed by Fabio Leidwein\n·\nHow this works\n\nTIGHTEST TITLE RACE\nGermany: 2. Bundesliga",
+  "stop_http": 200,
+  "session": {
+    "id": "61376548-3652-44ee-b598-0f307df5ee37",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T16:00:47.186406Z",
+    "startedAt": "2026-09-29T15:56:47.186533Z",
+    "finishedAt": "2026-09-29T15:56:55.030822Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 8.05,
+  "finished_utc": "2026-09-29T15:56:55Z"
+}

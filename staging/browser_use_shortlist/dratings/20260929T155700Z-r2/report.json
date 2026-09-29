@@ -1,0 +1,39 @@
+{
+  "source": "dratings",
+  "run_id": "20260929T155700Z-r2",
+  "started_utc": "2026-09-29T15:56:34Z",
+  "agent_used": false,
+  "entry_url": "https://www.dratings.com/predictor/english-premier-league-predictions/",
+  "create_http": 201,
+  "create": {
+    "id": "3c042d60-7617-4de9-ac58-0ab064c13442",
+    "status": "active",
+    "timeoutAt": "2026-09-29T16:00:35.012715Z",
+    "startedAt": "2026-09-29T15:56:35.012841Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.dratings.com/predictor/english-premier-league-predictions/",
+  "html_bytes": 47825,
+  "html_sha256": "e2e4391472aad736bd98d5470484154ec25d5564e391d0c2c8c4e9eb421c8004",
+  "title": "English Premier League Score Predictions - DRatings",
+  "challenge_wall": false,
+  "captcha": false,
+  "visible_text_sample": "Sports Ratings, Prediction, & Analysis\nRatings\nPredictions\nTools\nSportsbooks\nAbout\nBlog\n★ PREMIUM\nOdds Feed\nOffshore Odds\nVegas Odds\nEnglish Premier League Predictions\nUpdated 1 min ago\nUpcoming\nCompleted\nSeason\nMethodology\nRelated\nUpcoming Games for October 10, 2026\nTime\tTeams\tWin\tDraw\tBest\nML\tGoals\tTotal\nGoals\tBest\nO/U\tBet\nValue\t\nMore Details\n\n\n10/10/2026\n01:30 PM\n\tLeeds United\nArsenal\t7.2%\n79.8%\t13.0%\t\n\n\n\t0.72\n2.76\t3.48\t\n\n\n\t\n\t\n\n\n10/10/2026\n04:00 PM\n\tBrentford\nAston Villa\t20.6%\n56.1%\t23.4%\t\n\n\n\t0.97\n1.76\t2.73\t\n\n\n\t\n\t\n\n\n10/10/2026\n04:00 PM\n\tBrighton and Hove Albion\nSunderland\t39.1%\n32.6%\t28.2%\t\n\n\n\t1.22\n1.09\t2.31\t\n\n\n\t\n\t\n\n\n10/10/2026\n04:00 PM\n\tBournemouth\nChelsea\t14.3%\n65.1%\t20.5%\t\n\n\n\t0.81\n2.00\t2.81\t\n\n\n\t\n\t\n\n\n10/10/2026\n04:00 PM\n\tFulham\nIpswich Town\t41.2%\n31.0%\t27.8%\t\n\n\n\t1.28\n1.07\t2.35\t\n\n\n\t\n\t\n\n\n10/10/2026\n06:30 PM\n\tTottenham\nManchester United\t21.1%\n56.5%\t22.4%\t\n\n\n\t1.06\n1.87\t2.93\t\n\n\n\t\n\t\nGames for Oct 9, 2026\nGames for Oct 11, 2026\nCompleted Games\nTime\tTeams\tWin\tDraw\tBest\nML\tFinal\nGoals\tSportsbook\nLog Loss\tDRatings\nLog Loss\n09/20/2026\n05:30 PM\tManchester United\nFulham\t45.8%\n27.1%\t27.1%\t\n+100\n+255\n\t1\n1\t-1.37294\t-1.30741\n09/20/2026\n03:00 PM\tCrystal Palace\nLeeds United\t21.5%\n52.5%\t26.0%\t\n+416\n-145\n\t0\n0\t-1.41178\t-1.34634\n09/20/2026\n03:00 PM\tSunderland\nManchester City\t9.3%\n75.4%\t15.3%\t\n+850\n-305\n\t3\n5\t-0.32953\t-0.28263\n09/20/2026\n03:00 PM\tLiverpool\nBournemouth\t45.1%\n29.7%\t25.2%\t\n+120\n+215\n\t1\n0\t-0.82986\t-0.79629\n09/19/2026\n06:30 PM\tCoventry City\nNottingham Forest\t17.8%\n59.8%\t22.4%\t\n+483\n-160\n\t1\n0\t-1.80862\t-1.72535\n09/19/2026\n04:00 PM\tIpswich Town\nEverton\t21.0%\n56.7%\t22.3%\t\n+350\n-125\n\t0\n1\t-0.62461\t-0.56655\n09/19/2026\n04:00 PM\tHull City\nNewcastle United\t15.0%\n67.5%\t17.4%\t\n+433\n-170\n\t1\n2\t-0.50868\t-0.39309\n09/19/2026\n04:00 PM\tArsenal\nBrighton and Hove Albion\t54.7%\n20.3%\t25.0%\t\n-140\n+412",
+  "stop_http": 200,
+  "session": {
+    "id": "3c042d60-7617-4de9-ac58-0ab064c13442",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T16:00:35.012715Z",
+    "startedAt": "2026-09-29T15:56:35.012841Z",
+    "finishedAt": "2026-09-29T15:56:41.273627Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 6.49,
+  "finished_utc": "2026-09-29T15:56:41Z"
+}

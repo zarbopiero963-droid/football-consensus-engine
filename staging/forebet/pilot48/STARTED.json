@@ -1,0 +1,77 @@
+{
+  "pilot_id": "forebet-48h-20260929T153629Z",
+  "started_utc": "2026-09-29T15:36:29Z",
+  "deadline_utc": "2026-10-01T15:36:29Z",
+  "interval_seconds": 10800,
+  "planned_slots": 16,
+  "slots": [
+    {
+      "slot": 1,
+      "scheduled_for_utc": "2026-09-29T15:36:29Z"
+    },
+    {
+      "slot": 2,
+      "scheduled_for_utc": "2026-09-29T18:36:29Z"
+    },
+    {
+      "slot": 3,
+      "scheduled_for_utc": "2026-09-29T21:36:29Z"
+    },
+    {
+      "slot": 4,
+      "scheduled_for_utc": "2026-09-30T00:36:29Z"
+    },
+    {
+      "slot": 5,
+      "scheduled_for_utc": "2026-09-30T03:36:29Z"
+    },
+    {
+      "slot": 6,
+      "scheduled_for_utc": "2026-09-30T06:36:29Z"
+    },
+    {
+      "slot": 7,
+      "scheduled_for_utc": "2026-09-30T09:36:29Z"
+    },
+    {
+      "slot": 8,
+      "scheduled_for_utc": "2026-09-30T12:36:29Z"
+    },
+    {
+      "slot": 9,
+      "scheduled_for_utc": "2026-09-30T15:36:29Z"
+    },
+    {
+      "slot": 10,
+      "scheduled_for_utc": "2026-09-30T18:36:29Z"
+    },
+    {
+      "slot": 11,
+      "scheduled_for_utc": "2026-09-30T21:36:29Z"
+    },
+    {
+      "slot": 12,
+      "scheduled_for_utc": "2026-10-01T00:36:29Z"
+    },
+    {
+      "slot": 13,
+      "scheduled_for_utc": "2026-10-01T03:36:29Z"
+    },
+    {
+      "slot": 14,
+      "scheduled_for_utc": "2026-10-01T06:36:29Z"
+    },
+    {
+      "slot": 15,
+      "scheduled_for_utc": "2026-10-01T09:36:29Z"
+    },
+    {
+      "slot": 16,
+      "scheduled_for_utc": "2026-10-01T12:36:29Z"
+    }
+  ],
+  "ledger": "read-only",
+  "agent_used": false,
+  "parser": "frozen-unified-span-or-b",
+  "ratio_definition": "successful_planned_slots/16; retries stay inside the slot and are not extra snapshots"
+}

@@ -1,0 +1,298 @@
+{
+  "source": "statsultra",
+  "run_id": "20260929T155049Z",
+  "started_utc": "2026-09-29T15:51:38Z",
+  "entry_url": "https://statsultra.com/forecasts/",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "f950c12e-119e-49e6-90ea-ad1fbf6c3ffd",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:55:38.687417Z",
+    "startedAt": "2026-09-29T15:51:38.687533Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://statsultra.com/forecasts/",
+  "title": "Football Predictions & League Forecasts - StatsUltra",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c268ab8e6ee6d-MXP",
+    "content-type": "text/html; charset=UTF-8"
+  },
+  "cf_ray": "a42c268ab8e6ee6d-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": false,
+  "login_wall_language": false,
+  "cookie_banner_language": false,
+  "screenshot_full_page": true,
+  "html_bytes": 292851,
+  "html_sha256": "44e1fb43350e8c51dbd06dc32a6c2cccc29180a1858310e38fbe93316f3d1791",
+  "screenshot_sha256": "f8c0a24a8a2506532f99a92ca6b099d06f9b37f85ad812ed5f95331961698949",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://statsultra.com/forecasts/",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://app.rybbit.io/api/site/tracking-config/7",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json; charset=utf-8",
+      "file": "net_01.bin",
+      "sha256": "a6b548b2a858c11bc1f24ac70a78027de822c39a08703a2e95624e453ff1cd0d",
+      "bytes": 272
+    },
+    {
+      "url": "https://app.rybbit.io/api/track",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json; charset=utf-8"
+    },
+    {
+      "url": "https://cdn-cookieyes.com/client_data/748c952c703a35e216ed01848ad520d5/jnFTtr47.json",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_03.bin",
+      "sha256": "1fa3354bc7256cd26ccab7a9981858fec29f5d1e788e433b8c8c7c44ad79f608",
+      "bytes": 62
+    },
+    {
+      "url": "https://cdn-cookieyes.com/client_data/748c952c703a35e216ed01848ad520d5/config/GQxF6Dif.json",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_04.bin",
+      "sha256": "e3a4fb03650bc7f2152145855364501f5d9e83a7c4e0bc0edc9b414dca4c56e3",
+      "bytes": 45118
+    },
+    {
+      "url": "https://cdn-cookieyes.com/client_data/748c952c703a35e216ed01848ad520d5/translations/XlqbIN9g.json",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_05.bin",
+      "sha256": "a5f105b1c4147ad1cc199000ccaaf4541d38a9ac48401d50026b1a60d8cc750d",
+      "bytes": 1775
+    },
+    {
+      "url": "https://cdn-cookieyes.com/client_data/748c952c703a35e216ed01848ad520d5/audit-table/TP7OuMEH.json",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_06.bin",
+      "sha256": "4b2afa05ca0a5ab1c2f7946aa8f17b57ae281f0f9b38a5cb8a3e1aa5604d98ce",
+      "bytes": 3003
+    },
+    {
+      "url": "https://form-assets.mailchimp.com/snippet/config/219432606?site=7197c37bf14ac38c0f4fe06eb",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_07.bin",
+      "sha256": "2a9809c37866aca69d8e0a1e154b8e6ab500630ee5541e37342ba797e9c92cc9",
+      "bytes": 5866
+    },
+    {
+      "url": "https://form-assets.mailchimp.com/snippet/config/219432606/variation/294535?site=7197c37bf14ac38c0f4fe06eb",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_08.bin",
+      "sha256": "645088f2d5fdcc9ce6b151974b0dc398eaf00b0cbf842f24650574a93ce698e5",
+      "bytes": 59748
+    },
+    {
+      "url": "https://9kvu81ddh3.execute-api.us-east-2.amazonaws.com/prod/collect",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json"
+    }
+  ],
+  "visible_text_sample": "Skip to content\n\nStatsUltra\n\nClub Strength\nForecasts\nBlogs\nContact\nAbout\nHome›Forecasts\nFootball League Predictions & Table Forecasts 2026/27\nChoose a league\nAll Leagues (Overview)\nUEFA Champions League\nAustria: Bundesliga\nAzerbaijan: Premier League\nBelgium: Pro League\nCroatia: HNL\nCyprus: 1. Division\nCzech Republic: 1. Liga\nDenmark: Superliga\nEngland: Premier League\nEngland: Championship\nFrance: Ligue 1\nFrance: Ligue 2\nGermany: Bundesliga\nGermany: 2. Bundesliga\nGreece: Super League\nHungary: NB I\nIreland: Premier Division\nItaly: Serie A\nItaly: Serie B\nNetherlands: Eredivisie\nNorway: Eliteserien\nPoland: Ekstraklasa\nPortugal: Primeira Liga\nRomania: Liga I\nScotland: Premiership\nSlovakia: Super Liga\nSlovenia: Prva Liga\nSpain: La Liga\nSpain: La Liga 2\nSweden: Allsvenskan\nSwitzerland: Super League\nTürkiye: Süper Lig\nUkraine: Premier League\n\nFootball league predictions for 33 competitions, updated daily. StatsUltra simulates every remaining fixture 15,000 times to predict each club’s chances of winning the league, qualifying for Europe or being relegated. The tightest title race right now is Germany’s 2. Bundesliga, where Hertha BSC and 1. FC Nürnberg are level on 39%, while Bayern München, Ferencváros and PSG are the clearest favourites elsewhere.\n\nUpdated 29 September 2026, 14:34 UTC, 15,000 simulated seasons per competition. Pick any league for the full table predictor, or simulate a season yourself on its page. Match data from FootyStats.\n\nModeled and designed by Fabio Leidwein\n·\nHow this works\n\nTIGHTEST TITLE RACE\nGermany: 2. Bundesliga\n\nThree clubs win the 2. Bundesliga in at least 5% of simulated seasons. Hertha BSC and 1. FC Nürnberg are level at the top.\n\nBSC\nHertha BSC\n39%\nFCN\n1. FC Nürnberg\n39%\nWOB\nWolfsburg\n15%\nGermany: 2. Bundesliga →\nCLEAREST FAVOURITE\n97%\nFCB\nBayern München\nwin the Bundesliga in 97% of simulated seasons\nGermany: Bundesliga →\nCHAMPIONS LEAGUE FAVOURITES\nFCB\nBayern München\n25%\nBAR\nBarcelona\n20%\nARS\nArsenal\n15%\nEurope: Champions League →\nBIGGEST SWING THIS WEEK\n+7.6pts\nCAS\nCastellón\ntitle chance in seven days, now 61%\nSpain: La Liga 2 →\nMOST CROWDED RELEGATION FIGHT\n13clubs\nwith a 10%+ chance of going down in the Serie B, the most anywhere\nCAR\nARE\nVIC\nVIR\nEMP\nJST\nBEN\nAVE\nItaly: Serie B →\nEvery title race at a glance\n\nEvery competition we forecast, most open first. Each bar splits the title between the clubs that win it in the simulations, in their colours; hover a segment for the club, select a row for the full forecast.\n\nEUROPE\nChamp",
+  "links_sample": [
+    {
+      "href": "https://statsultra.com/forecasts/#wp--skip-link--target",
+      "text": "Skip to content"
+    },
+    {
+      "href": "https://statsultra.com/",
+      "text": "StatsUltra"
+    },
+    {
+      "href": "https://statsultra.com/club-strength/",
+      "text": "Club Strength"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/",
+      "text": "Forecasts"
+    },
+    {
+      "href": "https://statsultra.com/blogs/",
+      "text": "Blogs"
+    },
+    {
+      "href": "https://statsultra.com/contact/",
+      "text": "Contact"
+    },
+    {
+      "href": "https://statsultra.com/about/",
+      "text": "About"
+    },
+    {
+      "href": "https://statsultra.com/",
+      "text": "Home"
+    },
+    {
+      "href": "https://footystats.org/api/",
+      "text": "FootyStats"
+    },
+    {
+      "href": "https://www.linkedin.com/in/fabio-leidwein-65bb2121b/",
+      "text": "Modeled and designed by Fabio Leidwein"
+    },
+    {
+      "href": "https://statsultra.com/football-prediction-model-how-it-works-explained/",
+      "text": "How this works"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/2-bundesliga/",
+      "text": "TIGHTEST TITLE RACE Germany: 2. Bundesliga Three clubs win the 2. Bundesliga in at least 5"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/bundesliga/",
+      "text": "CLEAREST FAVOURITE 97% FCB Bayern München win the Bundesliga in 97% of simulated seasons G"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/champions-league/",
+      "text": "CHAMPIONS LEAGUE FAVOURITES FCB Bayern München 25% BAR Barcelona 20% ARS Arsenal 15% Europ"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/la-liga-2/",
+      "text": "BIGGEST SWING THIS WEEK +7.6pts CAS Castellón title chance in seven days, now 61% Spain: L"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/serie-b/",
+      "text": "MOST CROWDED RELEGATION FIGHT 13clubs with a 10%+ chance of going down in the Serie B, the"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/champions-league/",
+      "text": "EUROPE Champions League FCB BAR ARS MCI PSG FCB 25%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/greek-super-league/",
+      "text": "GREECE Super League PAN AEK PIR PAN 34%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/2-bundesliga/",
+      "text": "GERMANY 2. Bundesliga BSC FCN WOB BSC 39%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/super-lig/",
+      "text": "TÜRKIYE Süper Lig GAL BJK FEN GAL 41%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/championship/",
+      "text": "ENGLAND Championship WHU MID WOL WHU 44%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/serie-b/",
+      "text": "ITALY Serie B PAL MOD VER PAL 48%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/slovakia-super-liga/",
+      "text": "SLOVAKIA Super Liga SLO DAC SLO 50%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/liga-portugal/",
+      "text": "PORTUGAL Primeira Liga SLB FCP SLB 50%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/premier-league/",
+      "text": "ENGLAND Premier League MCI ARS MCI 51%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/scottish-premiership/",
+      "text": "SCOTLAND Premiership RAN CEL RAN 51%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/slovenia-prva-liga/",
+      "text": "SLOVENIA Prva Liga MAR KOP CEL OLI MAR 51%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/eredivisie/",
+      "text": "NETHERLANDS Eredivisie PSV FEY AZ PSV 52%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/azerbaijan-premier-league/",
+      "text": "AZERBAIJAN Premier League SAB QAR SAB 61%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/la-liga-2/",
+      "text": "SPAIN La Liga 2 CAS GIR ALM CAS 61%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/sweden-allsvenskan/",
+      "text": "SWEDEN Allsvenskan IKS HAM IKS 65%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/serie-a/",
+      "text": "ITALY Serie A INT ROM INT 65%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/cyprus-first-division/",
+      "text": "CYPRUS 1. Division OMO PAP OMO 66%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/irish-premier-division/",
+      "text": "IRELAND Premier Division SHA STP BOH SHA 67%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/danish-superliga/",
+      "text": "DENMARK Superliga FCK FCM FCK 67%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/austrian-bundesliga/",
+      "text": "AUSTRIA Bundesliga RBS ASK SCR RBS 67%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/ekstraklasa/",
+      "text": "POLAND Ekstraklasa LPO GZA LPO 68%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/romania-liga-i/",
+      "text": "ROMANIA Liga I UCV DIN UCV 69%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/pro-league/",
+      "text": "BELGIUM Pro League USG BRU USG 71%"
+    },
+    {
+      "href": "https://statsultra.com/forecasts/swiss-super-league/",
+      "text": "SWITZERLAND Super League LUG YB LUG 72%"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "f950c12e-119e-49e6-90ea-ad1fbf6c3ffd",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:55:38.687417Z",
+    "startedAt": "2026-09-29T15:51:38.687533Z",
+    "finishedAt": "2026-09-29T15:51:46.716925Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 8.27,
+  "finished_utc": "2026-09-29T15:51:46Z"
+}

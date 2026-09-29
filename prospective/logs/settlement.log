@@ -1,0 +1,4 @@
+2026-09-29T08:40:19Z settle loop start pid=2613 interval_seconds=1800 expires=never
+2026-09-29T08:40:19Z cycle exception AttributeError: 'NoneType' object has no attribute 'get'; retry_seconds=600
+2026-09-29T08:41:28Z settle loop start pid=2811 interval_seconds=1800 expires=never
+2026-09-29T08:41:28Z cycle open=110 settled=0 due=0 appended=0 skipped=0 corrections=0 hashes_unchanged=True errors=0 class=INSUFFICIENT SAMPLE

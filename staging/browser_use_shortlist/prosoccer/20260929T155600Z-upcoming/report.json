@@ -1,0 +1,42 @@
+{
+  "source": "prosoccer",
+  "run_id": "20260929T155600Z-upcoming",
+  "started_utc": "2026-09-29T15:56:08Z",
+  "agent_used": false,
+  "entry_url": "https://prosoccer.eu/it/predictions/today",
+  "create_http": 201,
+  "create": {
+    "id": "2f9443cb-0153-4b5d-9c6e-b5fb17c7de2b",
+    "status": "active",
+    "timeoutAt": "2026-09-29T16:00:08.284707Z",
+    "startedAt": "2026-09-29T15:56:08.284836Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://prosoccer.eu/it/predictions/today",
+  "html_bytes": 102944,
+  "html_sha256": "83c4f00a40b464cf89526097b3f06fc9e48f8fe5fde1a29b6e545351026dc96c",
+  "title": "Pronostici 1X2 Calcio Oggi – Consigli AI Gratis | ProSoccer.eu",
+  "challenge_wall": false,
+  "captcha": false,
+  "visible_text_sample": "PRO\nSOCCER\nIT\nIeri\nOggi\nDomani\nWeekend\nMon\n5\nWed\n30\nThu\n1\nFri\n2\nSat\n3\nSun\n4\nIn diretta\nPronostici Calcio – Oggi · 1X2, Over/Under e i nostri pronostici\n\n2026-09-29 · …\n\nPrima le partite in diretta, poi per orario di inizio.\n\nHub\nOggi\nIn diretta\nRisultato esatto\nSegnali AI\nPlayer props",
+  "clicked_prossime": false,
+  "after_sha256": "83c4f00a40b464cf89526097b3f06fc9e48f8fe5fde1a29b6e545351026dc96c",
+  "after_sample": "PRO\nSOCCER\nIT\nIeri\nOggi\nDomani\nWeekend\nMon\n5\nWed\n30\nThu\n1\nFri\n2\nSat\n3\nSun\n4\nIn diretta\nPronostici Calcio – Oggi · 1X2, Over/Under e i nostri pronostici\n\n2026-09-29 · …\n\nPrima le partite in diretta, poi per orario di inizio.\n\nHub\nOggi\nIn diretta\nRisultato esatto\nSegnali AI\nPlayer props",
+  "stop_http": 200,
+  "session": {
+    "id": "2f9443cb-0153-4b5d-9c6e-b5fb17c7de2b",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T16:00:08.284707Z",
+    "startedAt": "2026-09-29T15:56:08.284836Z",
+    "finishedAt": "2026-09-29T15:56:14.374234Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 6.34,
+  "finished_utc": "2026-09-29T15:56:14Z"
+}

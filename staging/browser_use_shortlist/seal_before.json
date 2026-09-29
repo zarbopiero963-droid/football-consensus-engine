@@ -1,0 +1,50 @@
+{
+  "at": "pre",
+  "files": [
+    {
+      "path": "/workspace/prospective/prospective_ledger.csv",
+      "sha256": "5d5163bd6b2b09e5c32ece63170b27e301b4bc4901a15c199e295f8e787a5464",
+      "bytes": 229666
+    },
+    {
+      "path": "/workspace/staging/forebet/pilot48/STARTED.json",
+      "sha256": "a725ab69d561001495bc9e15dca5ab92f8e0ebf19bfc86ec6d4bd3c533b8f312",
+      "bytes": 1687
+    },
+    {
+      "path": "/workspace/staging/forebet/pilot48/slots.jsonl",
+      "sha256": "11f49954672c0dd43d67ae314813ffcfdcc2c2dc1772004f143543eae2a7f4f0",
+      "bytes": 511
+    },
+    {
+      "path": "/workspace/staging/forebet/pilot48/attempts.jsonl",
+      "sha256": "32320cda067582be0d6ddafd9e7989a2f5a7140770e82ec0786303e343feb91e",
+      "bytes": 2062
+    },
+    {
+      "path": "/workspace/staging/forebet/pilot48/status.json",
+      "sha256": "0487420fc8c8fc4e8f9504047c45f078f0c92a09cd88fb9038b8cf29a4dd9f23",
+      "bytes": 1198
+    },
+    {
+      "path": "/workspace/staging/forebet/pilot48/observations.jsonl",
+      "sha256": "765735e4647cae1fdc8aab974bb4988017072388d1546ffb3e2dbf2f022ffffe",
+      "bytes": 26408
+    },
+    {
+      "path": "/workspace/staging/forebet/pilot48/seal_at_start.json",
+      "sha256": "d402522100c52f9d4f4c0b0a35cbf12fa5bf56f1753588eb79e20356cecd2420",
+      "bytes": 3004
+    },
+    {
+      "path": "/workspace/staging/football_charts/pilot/STARTED.json",
+      "sha256": "fa2771cbcc405eccf1dd57f71b8ced625860d5dad670d37facd1ce9a441eff6a",
+      "bytes": 190
+    },
+    {
+      "path": "/workspace/staging/football_charts/pilot/pilot.log",
+      "sha256": "6742ead323121f60ef52047ee3bbf9435ea38abe4a035e56617ce3ce9c0779b5",
+      "bytes": 492
+    }
+  ]
+}

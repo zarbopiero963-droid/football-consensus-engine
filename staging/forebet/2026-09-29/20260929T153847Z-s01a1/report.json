@@ -1,0 +1,62 @@
+{
+  "started_utc": "2026-09-29T15:38:47Z",
+  "target": "https://www.forebet.com/en/football-tips-and-predictions-for-today",
+  "agent_used": false,
+  "create_http": 201,
+  "proxy_country": "it",
+  "create": {
+    "id": "4d1a09d0-39e7-4658-b0ca-1bc8eaac5497",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:44:48.090186Z",
+    "startedAt": "2026-09-29T15:38:48.090343Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.002000000000000000000000000000"
+  },
+  "playwright_error": "Error: Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.forebet.com/en/football-tips-and-predictions-for-today\nCall log:\n  - navigating to \"https://www.forebet.com/en/football-tips-and-predictions-for-today\", waiting until \"domcontentloaded\"\n",
+  "stop_http": 200,
+  "session": {
+    "id": "4d1a09d0-39e7-4658-b0ca-1bc8eaac5497",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:44:48.090186Z",
+    "startedAt": "2026-09-29T15:38:48.090343Z",
+    "finishedAt": "2026-09-29T15:38:49.023229Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333333"
+  },
+  "duration_seconds": 1.24,
+  "finished_utc": "2026-09-29T15:38:49Z",
+  "pilot_id": "forebet-48h-20260929T153629Z",
+  "slot": 1,
+  "attempt": 1,
+  "completeness": {
+    "dom_rows": 0,
+    "ok": 0,
+    "parse_errors": 0,
+    "error_kinds": {},
+    "duplicate_ids": [],
+    "with_triplet": 0,
+    "without_triplet": 0,
+    "with_odds": 0,
+    "without_odds": 0,
+    "kickoff_dates": {},
+    "declared_counter": null,
+    "xhr_matches": null,
+    "badge_gap": null,
+    "xhr_ids_missing_in_dom": null,
+    "probability_mismatches": null,
+    "dom_ids_not_in_xhr": null,
+    "structural_regression": false,
+    "structural_reason": null,
+    "explained": false,
+    "explanation": null
+  },
+  "timezone_proof": {
+    "resolved": false,
+    "compared": 0,
+    "ambiguous": 0,
+    "unique_delta_minutes": []
+  }
+}

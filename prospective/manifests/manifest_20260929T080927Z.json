@@ -1,0 +1,2256 @@
+{
+  "counts": {
+    "analysis_eligible": 49,
+    "collected_at_utc": "2026-09-29T08:09:27.387644+00:00",
+    "duplicate_rows_skipped": 0,
+    "duplicates_in_run": 0,
+    "footinsights_pages_saved": 118,
+    "footinsights_slugs_date_kept": 118,
+    "footinsights_slugs_seen": 276,
+    "invalid_because_kickoff_passed": 5,
+    "invalid_or_unparsed": 8,
+    "joined": 49,
+    "manual_review": 0,
+    "no_probability": 2,
+    "note": "No result fields were filled. Bet365 prices on the FootInsights page are stored as page_odds_* and are not Pinnacle.",
+    "odds_batch_finished_utc": "2026-09-29T08:09:39.118237+00:00",
+    "pinnacle_leagues_with_matchups": 122,
+    "pinnacle_open_moneylines": 666,
+    "prob_sum_check_failures": 4,
+    "run_id": "20260929T080927Z",
+    "scraper_version": "prospective-ledger-1",
+    "strategy_set_sha256": "bec79c912a6e26c44d61243c0acce4ec6f8ec400e87da0ae6f4d8ba1353c76c8",
+    "unmatched_model": 61,
+    "valid_prematch": 110
+  },
+  "created_at_utc": "2026-09-29T08:09:39.465968+00:00",
+  "files": [
+    {
+      "bytes": 930169,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/index_today.html",
+      "role": "fi-index",
+      "sha256": "62a6f144e99e16c3ed3e7554f58da228c480f7142ac530d494f268d6504d2c8e"
+    },
+    {
+      "bytes": 81696,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/index_tomorrow.html",
+      "role": "fi-index",
+      "sha256": "6af23796ede02d9a45dba2779198cadbcab587bf32ef108fcabed4bf22d86b43"
+    },
+    {
+      "bytes": 164876,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/index_weekend.html",
+      "role": "fi-index",
+      "sha256": "c328b46796a1a01c4026e924508ea44bfaf80ad7df39c6be2871734cfd00ac98"
+    },
+    {
+      "bytes": 92212,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/afc-leopards-vs-homeboyz-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "a2ca087425ef0115a3420d5456b9c1cf7402774836c2e23219840cf149a02747"
+    },
+    {
+      "bytes": 69936,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/anguilla-vs-antigua-and-barbuda-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "c66608e40e32bdedff5509a03925e52c58d24d8351d85c21c4383189e5b11465"
+    },
+    {
+      "bytes": 67379,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/anguilla-vs-aruba-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "a7923e0cc816fd17c8f44bf791c7815543d50d30667b13b76b42ad511b869ebe"
+    },
+    {
+      "bytes": 90590,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/aps-bomet-vs-murang-a-seal-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "918227acd07b7ba3c822281c72ce04ee316824482fb4162a18e69b17f6c4a2f8"
+    },
+    {
+      "bytes": 77630,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/argentina-vs-bolivia-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "b659042b37eb5d6918ce10fda368a90e904700564a25e3d65d841f4aff37e577"
+    },
+    {
+      "bytes": 88971,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/asante-kotoko-vs-karela-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "fb559fb3098d14a76b7bcc39fe29384728103e4b3082581aa549833b860bfd31"
+    },
+    {
+      "bytes": 76988,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/australia-vs-brazil-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "0310d50b6dddf09bfb4764f5108858c7cd5f9a6f93a60079c067807a724f743d"
+    },
+    {
+      "bytes": 76025,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/azerbaijan-vs-liechtenstein-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "8375540cd715daccfcd74d554fdeeabfb8776ad354014d534693425e3965b97d"
+    },
+    {
+      "bytes": 73944,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/bahrain-vs-yemen-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "e7dff5380139aa47a0c1e90236c48e6ec670f74913b9f503472970479d6df66a"
+    },
+    {
+      "bytes": 67359,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/barbados-vs-bermuda-2026-10-03.html",
+      "role": "fi-match",
+      "sha256": "01db4ff722344cfc582719582379166c39c71b19717f755f68896e25f7bf7665"
+    },
+    {
+      "bytes": 74655,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/belgium-vs-turkiye-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "0c319291cf6849b72aec1ce8220a042c97511bea05ee3ceadb60a4b91a54d513"
+    },
+    {
+      "bytes": 64560,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/belize-vs-st-vincent-grenadines-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "1a754085ab33d8c9b6bcfa0bea9550c4178aaa519038cf85735bab3cd0afbde5"
+    },
+    {
+      "bytes": 75635,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/benin-vs-mauritania-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "09dfdfd1ef42568671f020fc1b8b1bae9bdaa8371e5475127025c84c58ecbf32"
+    },
+    {
+      "bytes": 64485,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/bonaire-vs-grenada-2026-10-03.html",
+      "role": "fi-match",
+      "sha256": "b0634e88fa7ee23299bf36f87d0c0e90cff264485e45c4ea5f1dd9cc487c2ee1"
+    },
+    {
+      "bytes": 71630,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/bosnia-herzegovina-vs-sweden-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "9795215b209aec86718cb01f9d61ba72c9ceb478d997cd79651ae64fa20999e8"
+    },
+    {
+      "bytes": 65769,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/british-virgin-islands-vs-turks-and-caicos-islands-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "80e21508c0592dba8f6035b61b38abb1d65814b27b9803c22f9ed33e76f9c859"
+    },
+    {
+      "bytes": 75535,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/bulgaria-vs-estonia-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "4c06c45b478e2e61b6f67e05b0019541e6463a055b0ba86737fd0d2fc01d6b15"
+    },
+    {
+      "bytes": 75388,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/burundi-vs-algeria-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "e5d59464fed8369a28523188e83dcb35427874bdc38bda55c67dcc87261debe9"
+    },
+    {
+      "bytes": 76349,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/cape-verde-islands-vs-rwanda-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "9b2ad4b34b2422312ae8642082002ebf488c4dddf8ebdfe9b12d8201cb0dcfff"
+    },
+    {
+      "bytes": 68156,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/cayman-islands-vs-puerto-rico-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "6ab5d24aeab862bd00ca2c623ab4d05f25015ac1f3dd789ace273e5ac5ee656b"
+    },
+    {
+      "bytes": 71520,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/china-vs-palestine-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "6a7f253b89f6d8fd25f5efe79b58bbcfe6fa09a6ce1bce1788a0b049ba54e3e1"
+    },
+    {
+      "bytes": 74046,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/colombia-vs-paraguay-2026-10-03.html",
+      "role": "fi-match",
+      "sha256": "1b563e5758a4b9eeb62b33054f08a0401f5beb4ba5ce929af28df1d396b13094"
+    },
+    {
+      "bytes": 75657,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/comoros-vs-namibia-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "c2cb3defcc4c3c69f3fd17dcb220b8bbb1643dcb6a9aca6b66689455a012b398"
+    },
+    {
+      "bytes": 71071,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/congo-dr-vs-uganda-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "60c97defaddc04ed9b5c9caacfc095651560000b5cc3e23b49ba40df189ea3da"
+    },
+    {
+      "bytes": 74530,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/congo-vs-cameroon-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "60aae36c883c69e15d54ac739969cad55f577b17ff6f52125411759cd01bb029"
+    },
+    {
+      "bytes": 69143,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/cook-islands-vs-tahiti-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "de31c60aeed1998bc0bb15222b9ee7232439157fc3993f5b0af1d8d4df9717d2"
+    },
+    {
+      "bytes": 74747,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/curacao-vs-trinidad-and-tobago-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "8a71b7711035aa1e67ee3c8a80d00b18fc96d19c6218142d56d928a3a89fd76f"
+    },
+    {
+      "bytes": 75632,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/cyprus-vs-armenia-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "05586836ae1a6624ed973b7ee04825c274f1fbc609ef764529ba38559714900b"
+    },
+    {
+      "bytes": 75207,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/czechia-vs-england-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "7a6b5c85a6fe3dbb3f1c9476d31840605bfb2f6736605156988001e7353481cb"
+    },
+    {
+      "bytes": 75498,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/denmark-vs-portugal-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "348af9d8dfdba25f794ab3459bbe4ed2d0362f2014ee58cd293a3f44283262fc"
+    },
+    {
+      "bytes": 66036,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/dominica-vs-guyana-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "30b5d75ca780f492ff201f950430ef87bf872c4a33a1c0317350875df933cb73"
+    },
+    {
+      "bytes": 72450,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/dominican-republic-vs-haiti-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "bad7df2a34d20364c7b7d3b70320d58c2cfa4c37c1ae50ac0145c0489c497ce6"
+    },
+    {
+      "bytes": 71315,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/el-salvador-vs-jamaica-2026-10-03.html",
+      "role": "fi-match",
+      "sha256": "38b982f4220311f9a22a4dc5f8a069a17e4ab68b343ca5e06cb0931755f99759"
+    },
+    {
+      "bytes": 91240,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/eldense-vs-real-oviedo-2026-10-04.html",
+      "role": "fi-match",
+      "sha256": "c3b43ac610b8cd8df1b6fff1f7cf3260b87d9357f93c0f397f7cd3cdea5eab1c"
+    },
+    {
+      "bytes": 94482,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/enyimba-vs-shooting-stars-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "983e1c24872d44961f9374e401edb15c4467fe480be4b261688b44947f5b469b"
+    },
+    {
+      "bytes": 70827,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/eritrea-vs-south-africa-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "cccb8f9092cafa1452526075c2a1cb881743e9ac218068e3dc0253faec2511a5"
+    },
+    {
+      "bytes": 75468,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/ethiopia-vs-senegal-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "73b5fe00097d0e69cc450aa4d7468108f029df79ccab73142d627f55dee9c2c3"
+    },
+    {
+      "bytes": 71096,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/faroe-islands-vs-slovakia-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "b6ee97cdde98c49aade98861212724659d4f7590455cf7078c97ab8b977ad7c7"
+    },
+    {
+      "bytes": 72651,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/fiji-vs-new-caledonia-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "de7a2eeb7b9d77541f2302e44e874a773013ba2421447cb40296c7e7058b4e0e"
+    },
+    {
+      "bytes": 75445,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/finland-vs-belarus-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "bce81a808cac6028dfa8397a34d37389c0bb59f13478ba4ad33be609f304be4a"
+    },
+    {
+      "bytes": 70639,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/france-vs-italy-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "428f7e4c77ff6156f067a3bc69116b3ee6f6a1e9638eea7e0866947302d0612b"
+    },
+    {
+      "bytes": 58828,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/french-guyana-vs-sint-maarten-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "2a9bbb0a984abe0c3381fee8df04122f1ec4a8ba6c1c85cecc2bc93c0953c93b"
+    },
+    {
+      "bytes": 79542,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/fus-rabat-vs-amal-tiznit-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "d1cc8ee9bbbfe06a84c79203ecd198109e30d083254edf2d25f102dc992f37e3"
+    },
+    {
+      "bytes": 74975,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/gabon-vs-niger-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "b8e9e5f431d0d90bd07387dc765b52ee880ef407b0b48f26c3215e15c64a3b92"
+    },
+    {
+      "bytes": 75331,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/germany-vs-serbia-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "6df9721bda3f9723cc6e0446a2892b8c0da46b1b1bd790a13b0fad56f811fbc8"
+    },
+    {
+      "bytes": 75188,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/ghana-vs-gambia-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "4044a4ed881fc452893abe7ea41eadc5fc7d990ce8646ba16e3ac48b23800abe"
+    },
+    {
+      "bytes": 91623,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/gor-mahia-vs-kcb-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "069b3f8045dcef02cda2bdebdfd97b90cdc3b799d9d09b76ad2282db7f638119"
+    },
+    {
+      "bytes": 77945,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/greece-vs-netherlands-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "55bc4b01dfe019f3ebc76777aa32a4fe5cff3ce7963877f7de8e7d7ee79d4363"
+    },
+    {
+      "bytes": 70465,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/guatemala-vs-el-salvador-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "0c74a17ff3cf9077d80aa0c93921576ca1c7349cede9627916423ea1f77a468d"
+    },
+    {
+      "bytes": 75805,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/guinea-bissau-vs-nigeria-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "e3758f9dd3565bc0fb3b7b123461556b366fe1d4a0f4a158adb5f3b1bd8359f8"
+    },
+    {
+      "bytes": 71720,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/guinea-vs-kenya-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "cc181ad5329135f90f54dcd8968962f37b9a23a5f2567567bfd0600240c7a2f2"
+    },
+    {
+      "bytes": 88919,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/helmond-sport-vs-heracles-almelo-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "8db84f90b00d6d4f95a82f3a3e4fb233f6ff086b52c02f8adebcf910bb7f6437"
+    },
+    {
+      "bytes": 70866,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/hungary-vs-georgia-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "db01bee158d46d177dfecfd39d44f031fefbb3b83c1428bfe74f56c8964aacb5"
+    },
+    {
+      "bytes": 85347,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/independ-rivadavia-vs-gimnasia-l-p-2026-10-03.html",
+      "role": "fi-match",
+      "sha256": "c5a914025423f96b3611b44b31a03cc749b1f234a4a35744e811100fc95467e4"
+    },
+    {
+      "bytes": 92775,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/independiente-vs-instituto-cordoba-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "0c2b03715566e2cfc42b6379a4d3745aaa690a7608a2a8fcfe3205cebd766f0a"
+    },
+    {
+      "bytes": 77739,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/israel-vs-kosovo-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "ba3ac37ee3e158aa42ca3906385deb8a90455496a19499dc6710d4b441eeee02"
+    },
+    {
+      "bytes": 87851,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/ittihad-tanger-vs-moghreb-tetouan-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "4e7eeee1ab8c852fac44b12876ac94de64b974c5cafbb575c549fb19f77e64c9"
+    },
+    {
+      "bytes": 71000,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/jamaica-vs-honduras-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "99a59a545af7fb1e0ae102b636c2c959cb7554a66ff335fa035c94845ee84da3"
+    },
+    {
+      "bytes": 95105,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/katsina-united-vs-rivers-united-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "a68f36cd508cee7e178076e64773b0548a358d720d8155f6be0d92473b2ce33c"
+    },
+    {
+      "bytes": 75569,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/kazakhstan-vs-moldova-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "219a5e4b314442197eb363ad7ac699b5fcb17794c010f1e3496f07069bb5276d"
+    },
+    {
+      "bytes": 70968,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/kyrgyzstan-vs-maldives-2026-10-04.html",
+      "role": "fi-match",
+      "sha256": "f12c73e6ed9a6ce43d82e8f950ebd71526eb502a739e7b954c4d6d5854cb7e2e"
+    },
+    {
+      "bytes": 75714,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/latvia-vs-montenegro-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "33052768145c944e33f961ce86d4a67609871ea4a916328201efb7dba93e2f97"
+    },
+    {
+      "bytes": 75457,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/lesotho-vs-morocco-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "65a0114883cf9049fe55488c2c45752a04e939be5e6ff72bab791db66dc5cb0e"
+    },
+    {
+      "bytes": 75607,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/liberia-vs-mali-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "b701ae3fbac2aadafbbfdcc0768de37db4d762d6f9c3878a5dc857878f7db49e"
+    },
+    {
+      "bytes": 71933,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/lithuania-vs-andorra-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "67ab68e5f6cb97fbb2d5f940abf3e13a262f2eb18d631553d44539b39a2d7c0d"
+    },
+    {
+      "bytes": 77715,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/luxembourg-vs-iceland-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "010fbe96b6208e88bb204cb3cb5eb26956dabe8fd17a8a2f2294d59a581aecdd"
+    },
+    {
+      "bytes": 78181,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/madagascar-vs-tanzania-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "9dc57f16131b0e432b6386440b27d23cc8b390bebbca9f54fabbb3fde15b6b64"
+    },
+    {
+      "bytes": 73066,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/maldives-vs-lebanon-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "ed15afa4e4f40f6fab153e43a451499e46fa413bc639bf3b3ad0e5dd79e3e3c3"
+    },
+    {
+      "bytes": 75444,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/malta-vs-gibraltar-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "aea90c095f1024352daa5d7cf1fb4d8e8ec261041046e783af71395d7c48e9a6"
+    },
+    {
+      "bytes": 66050,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/martinique-vs-honduras-2026-10-03.html",
+      "role": "fi-match",
+      "sha256": "e48d7cebf8db693395ca67ac93f3838778f3ba2918ca4607dcc45db8347c7498"
+    },
+    {
+      "bytes": 71431,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/mauritius-vs-djibouti-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "fc3b6b2347e47c1ed4c5bdb85a9b1e353a364cbf488a116281d186d4b261ca85"
+    },
+    {
+      "bytes": 83537,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/medeama-vs-port-city-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "3088684c2501d24100bfb9d1f8407a39a7e310681130bb87c95b3785415aa5d8"
+    },
+    {
+      "bytes": 71192,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/mexico-vs-peru-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "16503fae3a5277e10cbc2b7f238fb02b54115ae45f417a4ac0e1349ba9414ab2"
+    },
+    {
+      "bytes": 69735,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/migori-youth-vs-mombasa-elite-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "bd733faafa97c512685c62fd1a02070678400cbc7899f4daecf28878fb989522"
+    },
+    {
+      "bytes": 78068,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/moldova-vs-faroe-islands-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "b5838db3771029861ab915c20a4bb7f9a64fc1d490ff20f60a917123199e82bb"
+    },
+    {
+      "bytes": 61454,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/mombasa-elite-vs-kariobangi-sharks-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "43ccaebb04c5f44df19e206a04391a590f0ee4bf42d0ad5b9ff5f6fc0a524c0a"
+    },
+    {
+      "bytes": 75863,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/mozambique-vs-sudan-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "c39ee00ec95e55c6e242fe6fd81e71c82661f1638bb2b78675565f65533b35df"
+    },
+    {
+      "bytes": 90561,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/nairobi-united-vs-bandari-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "faf50b8a16a2e69db0dde61246b0182cdc07711565fe0753016d06c0c4e66c0f"
+    },
+    {
+      "bytes": 74409,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/nicaragua-vs-costa-rica-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "3f370ec7762f3a36d2d2e02e8dedaab17a060ce886627e087572018ec70c0491"
+    },
+    {
+      "bytes": 77245,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/oman-vs-kuwait-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "462036a12e20c361f8b67c2e630422f1823f4d06a5cc38502ef4b8e35e741cc2"
+    },
+    {
+      "bytes": 71833,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/panama-vs-new-zealand-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "532b4d00b09ae16b080ccf0379fa5af2b8b09a23bca27b96fc1e507728f425a0"
+    },
+    {
+      "bytes": 70581,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/papua-new-guinea-vs-solomon-islands-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "29d73b2f952f0d4e61f3bae404a8a525b7aee0316ce115e16eb6de07c20a4789"
+    },
+    {
+      "bytes": 70780,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/poland-vs-romania-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "27d4a7b566742202cc0908e76b6e2585ceafa912c52c36a3cc8b3d9a5b339956"
+    },
+    {
+      "bytes": 77808,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/posta-rangers-fc-vs-3k-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "70a829883c38160444da5dec1e21f6d1d8f6c5bd927ee7e7856762420a994010"
+    },
+    {
+      "bytes": 75980,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/rep-of-ireland-vs-austria-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "3a298fe3f9219c14a36c34c67db0b150387b6667f396c8d1b8be27b61765e6f3"
+    },
+    {
+      "bytes": 71277,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/russia-vs-iran-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "7f81ee892c184dd1905fedee99e815a1461e0898cb9c642bc328dcd17b12e3a3"
+    },
+    {
+      "bytes": 75579,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/san-marino-vs-albania-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "09f4fa2cf036337cf9435b688876416dbde63edf215d84812a473411f46e0e54"
+    },
+    {
+      "bytes": 76738,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/saudi-arabia-vs-iraq-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "e6f91957a28d3bc05c90389af98650969a24f81a0a334a21fca76c3bb7417db1"
+    },
+    {
+      "bytes": 77149,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/scotland-vs-switzerland-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "2a75c08354ce0e2ff180724cfca7de84614233ddcc39862e57154579cc2a7065"
+    },
+    {
+      "bytes": 94118,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/seattle-sounders-vs-sporting-kansas-city-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "91d7cada689165e8cefb9e6ccd7b3f52e62ca2e394086f11952af718ab0e72ee"
+    },
+    {
+      "bytes": 73403,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/seychelles-vs-sri-lanka-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "8edd6797a7c6c966cce01e3024fc39f53058231eed245881dd32f6ef97ac754d"
+    },
+    {
+      "bytes": 91677,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/shabana-vs-police-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "645c9d9a268e796e87aacb82286abcefc787c5c0f17cab61aaec459836e14f3f"
+    },
+    {
+      "bytes": 75591,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/slovakia-vs-kazakhstan-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "415b00f5b5e032ecf41f3da537bf52dcb11e657a1a31008437f991d1f834ba1f"
+    },
+    {
+      "bytes": 75849,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/slovenia-vs-fyr-macedonia-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "933a823c237f94d82490b8e0f439c7b7fcf7fd95fa48c0403375ff4d0ddb014c"
+    },
+    {
+      "bytes": 75804,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/somalia-vs-ivory-coast-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "039afdd442bf40846335691ad2e1bdaee4704e4448af13b3d32fe2769eed36ed"
+    },
+    {
+      "bytes": 71665,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/south-korea-vs-venezuela-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "97ca8097a5f2f12625c145596c38df4d286829767c1e461ba75055e903dd167a"
+    },
+    {
+      "bytes": 75408,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/south-sudan-vs-egypt-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "45b3ab45d09ccbc77ae72f640fb063aa3d6e5343a9d7d6a5a4d5d6ef72e8a344"
+    },
+    {
+      "bytes": 76524,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/spain-vs-croatia-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "b492e224921cfef0afd93aee0bea84e4058bae4b5a22fda7b83a0ed04920dac1"
+    },
+    {
+      "bytes": 85280,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/sporting-lagos-vs-ikorodu-city-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "631955cb2047814bf308c2854f8f61301aa612846415bbf9428fc75ab8c4284b"
+    },
+    {
+      "bytes": 66530,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/st-kitts-and-nevis-vs-cuba-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "5511e381bd6f735474e3dc0b0991a5fc1536b60ea678073874f5dd9a695c4847"
+    },
+    {
+      "bytes": 67265,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/st-kitts-and-nevis-vs-grenada-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "197e9ed74dcfa670b42383e626e5d32af73aef2b92e507d3ab35fab8da675053"
+    },
+    {
+      "bytes": 67263,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/st-lucia-vs-bermuda-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "cd97fabb1c9f357c6add607bc1ee3abc51f3d99e00638974c1247f223517f52e"
+    },
+    {
+      "bytes": 74063,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/suriname-vs-guatemala-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "aea0f3abc72d006305ec3fda2b0b49ad1b3c9964652d1035141323d01e1588bc"
+    },
+    {
+      "bytes": 81696,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/tomorrow.html",
+      "role": "fi-match",
+      "sha256": "b8d8b9d2ea12a1c482203bb2dd9177b937a07f30d658cf47d0c46999ba79d4d7"
+    },
+    {
+      "bytes": 91917,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/tusker-vs-mara-sugar-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "168ed5ecd6054510d5ac40f5c380ebbab8c48e7e93d63b193e0dc933b56de513"
+    },
+    {
+      "bytes": 75455,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/uganda-vs-libya-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "54cf2bd646f234e836dcca2467d3fa89b7a1920dcfd1eacadf009df42a2b54b7"
+    },
+    {
+      "bytes": 71366,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/ukraine-vs-northern-ireland-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "2a19e60803ed2e4b9b52f2d2d6a6b8d479b67c36c562d63782ce8090dfe17663"
+    },
+    {
+      "bytes": 92557,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/ulinzi-stars-vs-mathare-united-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "129cd06abb21a4fd5884b7ed9a1630746d6dcde2db41ea75abe49ec5b5953e41"
+    },
+    {
+      "bytes": 75724,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/united-arab-emirates-vs-qatar-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "2224202cf9b3d7d68a8ea6d4618c000a0180ad9b88ae1e074372c3a1a514bf08"
+    },
+    {
+      "bytes": 63366,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/us-virgin-islands-vs-bahamas-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "795b259b5079634b5afca2283f4e40994eaa9c76bd125ec7ae04d07a3f8fdc28"
+    },
+    {
+      "bytes": 63113,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/us-virgin-islands-vs-saint-martin-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "44632507a4ce7c871351f8d7453245eb7553f1c14d5effcac646717338b7612e"
+    },
+    {
+      "bytes": 74776,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/usa-vs-chile-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "fa646ef9be9e3eac3e61df209d55c33512a2a276fc928f3394a6ee423ce85c5e"
+    },
+    {
+      "bytes": 71646,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/uzbekistan-vs-syria-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "84101fc304ab4a050dc4104db26b07f5b6e20f8a95300a2ee32cc3a39b6b0c82"
+    },
+    {
+      "bytes": 75196,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/wales-vs-norway-2026-10-01.html",
+      "role": "fi-match",
+      "sha256": "72937fe9daf41d625547f862a93d2ff507bd37016a315eed16c8e3e76b970656"
+    },
+    {
+      "bytes": 93179,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/warri-wolves-vs-enugu-rangers-2026-09-30.html",
+      "role": "fi-match",
+      "sha256": "773645c31b07bdac8707c4546d18a605a15682ec522f464755d7990c792cdb93"
+    },
+    {
+      "bytes": 164876,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/weekend.html",
+      "role": "fi-match",
+      "sha256": "74f1537283218aceda21a599ca8755eac5da8b9ee2860f4d1652cf5608f91140"
+    },
+    {
+      "bytes": 78840,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/widad-temara-vs-uts-rabat-2026-10-02.html",
+      "role": "fi-match",
+      "sha256": "87808c3dc5f16de4fa086d3de2f93be7aa42a8b046950231f6ef9024adf977c4"
+    },
+    {
+      "bytes": 75370,
+      "path": "raw/footinsights/2026-09-29/20260929T080927Z/zambia-vs-togo-2026-09-29.html",
+      "role": "fi-match",
+      "sha256": "fc4fd41ac4f437b1de601ef052eb532d7a782d4a987d22436176ba0bcc814691"
+    },
+    {
+      "bytes": 67556,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/leagues.json",
+      "role": "pin-leagues",
+      "sha256": "8d6b7b8a57233ae895df1c485d8af5755a03a12b35f8d0c209ac0b3a5b784286"
+    },
+    {
+      "bytes": 2232,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_283400.json",
+      "role": "pin-matchups",
+      "sha256": "ddf386b27a24a8725ce3b39830559c33f67df1f01f1dcd78343b8b4e034800f9"
+    },
+    {
+      "bytes": 15261,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_283400.json",
+      "role": "pin-markets",
+      "sha256": "7afe536b26f31594eb69a230d81ce76c9dd9331b46f90d9da2b3096cb0cc1f42"
+    },
+    {
+      "bytes": 33287,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_210697.json",
+      "role": "pin-matchups",
+      "sha256": "89498d2533280ef72f5698434c50f3fda17e20590d42fb8c15caf3a8ecc734ee"
+    },
+    {
+      "bytes": 259171,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_210697.json",
+      "role": "pin-markets",
+      "sha256": "cca49ab449812e588ef611d68d89476d619f10a63eb2bb44041b5c5b9ae1e9d1"
+    },
+    {
+      "bytes": 19913,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2386.json",
+      "role": "pin-matchups",
+      "sha256": "051673ee796b21c93a305cab4284fe8885948cf94b47f8f89b8e82f62370e8b6"
+    },
+    {
+      "bytes": 159943,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2386.json",
+      "role": "pin-markets",
+      "sha256": "7373e33821614ecbb1c34ec165b4642c767d2e92875d89b8ca62f20f37e4f6e2"
+    },
+    {
+      "bytes": 4452,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_214839.json",
+      "role": "pin-matchups",
+      "sha256": "21366868eada5b1cbfb2eb90bf33b3501ad0ce0d0ffdd96443121dc111ed02fa"
+    },
+    {
+      "bytes": 29973,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_214839.json",
+      "role": "pin-markets",
+      "sha256": "66ed5cd764bf7ad08eaf7ef3d6eeac5e6de7f819aa296c61a1d26f9fe7b0a432"
+    },
+    {
+      "bytes": 48373,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2436.json",
+      "role": "pin-matchups",
+      "sha256": "690125be88ce1dd3762a1e3d62e40e49d1511f010c5bc84d4dd59d0228c7a3c0"
+    },
+    {
+      "bytes": 379148,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2436.json",
+      "role": "pin-markets",
+      "sha256": "d8530e963ba2deed656e746a258837cf3944c9ed08d0417fc4f2aec8df362064"
+    },
+    {
+      "bytes": 46725,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2630.json",
+      "role": "pin-matchups",
+      "sha256": "b27febf54ec9d6fae5502dd26941e54ae6ff7574c56c886e288e1e4255dae197"
+    },
+    {
+      "bytes": 331959,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2630.json",
+      "role": "pin-markets",
+      "sha256": "f516ce97e400027959f93efc9b749278ee648c0bf2758434e0d40d8c91ec7f65"
+    },
+    {
+      "bytes": 4917,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1741.json",
+      "role": "pin-matchups",
+      "sha256": "aaef68db97923a3035ef63c3473f5a5d00e8daed03ecb5d246d96a27a5a8d8e4"
+    },
+    {
+      "bytes": 15255,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1741.json",
+      "role": "pin-markets",
+      "sha256": "5a9a4384618484149f8ea7aa6f2f9429a938e9a8bef7970325177e905df4add0"
+    },
+    {
+      "bytes": 155222,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1834.json",
+      "role": "pin-matchups",
+      "sha256": "6d070f80558f1a5420046d9ec36d5104e2c372bfcf38f5f67bfac48167acf3ec"
+    },
+    {
+      "bytes": 246175,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1834.json",
+      "role": "pin-markets",
+      "sha256": "a060673d9dd837cc94247e5ca830f8928691886fe2dd78e914b8df0c499fc895"
+    },
+    {
+      "bytes": 36532,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_294929.json",
+      "role": "pin-matchups",
+      "sha256": "914f2d04e34f109708355733b0e06ccdee6847b31f5fbeb387c57ccc805e193e"
+    },
+    {
+      "bytes": 21450,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_294929.json",
+      "role": "pin-markets",
+      "sha256": "906cb0a1b6d881a2edbb587daec6805456c5e27c23904dca98082e5ac9012745"
+    },
+    {
+      "bytes": 24650,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_283341.json",
+      "role": "pin-matchups",
+      "sha256": "91acac15d40167f0eb90cc46b0dc5935c23f4d0ff5ee4668ded3c48aecb68809"
+    },
+    {
+      "bytes": 166397,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_283341.json",
+      "role": "pin-markets",
+      "sha256": "fb69d97808923805878335f433f6e8a58ed2b466e421facc2bd9455a63b1504d"
+    },
+    {
+      "bytes": 8476,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1875.json",
+      "role": "pin-matchups",
+      "sha256": "32ed9f17e113cc25f72e31d85455c7a8a9ced6dd9c211ae6f2f5a66fbcaee644"
+    },
+    {
+      "bytes": 35453,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1875.json",
+      "role": "pin-markets",
+      "sha256": "bdd2e1c41a25c1c009417f303967ae3c792de846a8bb5cfb6f8b6b7f7652f647"
+    },
+    {
+      "bytes": 43739,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2036.json",
+      "role": "pin-matchups",
+      "sha256": "c570b8a24b1f2c9f857e1808e89fb2ef0348df58372acec8f71e7928c402a29d"
+    },
+    {
+      "bytes": 343768,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2036.json",
+      "role": "pin-markets",
+      "sha256": "bcfa9db306176957252c1a1d643a71bbfe8be0cabd631a13ee464bab47b02bec"
+    },
+    {
+      "bytes": 6716,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_191445.json",
+      "role": "pin-matchups",
+      "sha256": "b71f18879319394b2c6cabe89cc69fca1a2d16ae8abf813d5d5fc218b112ec6b"
+    },
+    {
+      "bytes": 45228,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_191445.json",
+      "role": "pin-markets",
+      "sha256": "561ddcd6fe696539ce949d376d5791309f4eeda42d3e722732937170f578893b"
+    },
+    {
+      "bytes": 17704,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1958.json",
+      "role": "pin-matchups",
+      "sha256": "c8236338bea8f1bc1f8dbee4fd0d274dda009d765d6708c6dab72a4334de9f06"
+    },
+    {
+      "bytes": 147817,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1958.json",
+      "role": "pin-markets",
+      "sha256": "ece3fb41703bb2241e155d84f4272f9eca84b8d535bed058b6c84b185bbecb31"
+    },
+    {
+      "bytes": 11169,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_226450.json",
+      "role": "pin-matchups",
+      "sha256": "91ebac2c644cc05f45a3e1b04b55f407cba203c43d67041cf78319030e41ebdf"
+    },
+    {
+      "bytes": 74747,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_226450.json",
+      "role": "pin-markets",
+      "sha256": "bec21ff08dca242bf3c4fed7c2c2a584038004c2805c8a14b2830c5c71d23924"
+    },
+    {
+      "bytes": 13255,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2421.json",
+      "role": "pin-matchups",
+      "sha256": "dc97f045552b8c3b18237bbd8525f11838045412eedcf481be4bcf04aac19c1e"
+    },
+    {
+      "bytes": 110325,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2421.json",
+      "role": "pin-markets",
+      "sha256": "94b95c8a14f2885e7d393b3c637a35829eb681be966767cf62192cd09bfb718b"
+    },
+    {
+      "bytes": 266453,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_200727.json",
+      "role": "pin-matchups",
+      "sha256": "00733cc230f00eb1a84d6e763c1aeba693565aee3c218a32114ad968b5cc2b70"
+    },
+    {
+      "bytes": 85288,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_200727.json",
+      "role": "pin-markets",
+      "sha256": "39d9429d273c8dac40a8ec069571312c8004ddc1f7f1922a23da2fa61188743f"
+    },
+    {
+      "bytes": 2202,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2387.json",
+      "role": "pin-matchups",
+      "sha256": "e713b8f5082eceef995871dafb7a5dff16fb0816c2562fa82ab6d52cb51c2c67"
+    },
+    {
+      "bytes": 18481,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2387.json",
+      "role": "pin-markets",
+      "sha256": "5914be156eba9ee82da437f1b7f0875cfbe546a00e2b3987b543f688751c2fa2"
+    },
+    {
+      "bytes": 21993,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2438.json",
+      "role": "pin-matchups",
+      "sha256": "601aac34f07c23ada5790acecc16246b3d95de554f698ada6048662ea49b0c2e"
+    },
+    {
+      "bytes": 182663,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2438.json",
+      "role": "pin-markets",
+      "sha256": "1c56e9916cb1583559fa2f7b8e989e1a3477813b7d23bc2b9f1bfc8542d9c438"
+    },
+    {
+      "bytes": 31825,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1977.json",
+      "role": "pin-matchups",
+      "sha256": "43698d079e5b32a8291d07a09d43b3112c4c729330da0cae53e54cd29e67bcb1"
+    },
+    {
+      "bytes": 221176,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1977.json",
+      "role": "pin-markets",
+      "sha256": "4db92bf8141b2a1ed29491ac0c8c2b5bf54118e11d8a3c313e9e8be60f107d30"
+    },
+    {
+      "bytes": 22119,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2159.json",
+      "role": "pin-matchups",
+      "sha256": "13f5e4babc965bcc053a00a449900284307ae2f308fe5bad1dcfdf81d8813bf0"
+    },
+    {
+      "bytes": 179479,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2159.json",
+      "role": "pin-markets",
+      "sha256": "a33021f51e399a0c482add130b67abcb44f6af34485f3a21eeba1ab6e1faac17"
+    },
+    {
+      "bytes": 36628,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1951.json",
+      "role": "pin-matchups",
+      "sha256": "d79c6c65e480bd054132ad3e25ec3a455abfdf04e32f6115d4cef328b3578545"
+    },
+    {
+      "bytes": 22155,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1951.json",
+      "role": "pin-markets",
+      "sha256": "a24e3f0534a90d87f6eb25b44c5846ae2ea89a81d54251d6234819377bd9e29f"
+    },
+    {
+      "bytes": 5058,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_204223.json",
+      "role": "pin-matchups",
+      "sha256": "5dd73f5b620231eefdc95393fc0375390b253d73c7398101e2074091d47a9804"
+    },
+    {
+      "bytes": 30361,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_204223.json",
+      "role": "pin-markets",
+      "sha256": "358f4f6c074eee6cea4d625ffc5bdad159bcfbfb5e3ebdf6e5578cf1ec7fbdcf"
+    },
+    {
+      "bytes": 156579,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2432.json",
+      "role": "pin-matchups",
+      "sha256": "33a745d34e859cd2e5974d8d0678a69d72df7c4f36e3db132985ec6911b85e51"
+    },
+    {
+      "bytes": 228237,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2432.json",
+      "role": "pin-markets",
+      "sha256": "8de5475d61edd02cc688e71e31f9ed34a2c55ad7211c3d0a29a0d246ce73208e"
+    },
+    {
+      "bytes": 6607,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_10901.json",
+      "role": "pin-matchups",
+      "sha256": "1003fb7259bedc23fb35800853b17600be8a151047dfeae989afcfa653abdd40"
+    },
+    {
+      "bytes": 45815,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_10901.json",
+      "role": "pin-markets",
+      "sha256": "aeb4c7202a8b97618f5e2b013901453db032aeb521590c191644359613d7b3ae"
+    },
+    {
+      "bytes": 20209,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1982.json",
+      "role": "pin-matchups",
+      "sha256": "18f41fc0a139179b968ec774cbeba310d934382c92781c2b507e35771250be81"
+    },
+    {
+      "bytes": 149956,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1982.json",
+      "role": "pin-markets",
+      "sha256": "3ecbc3eafce546ea12c565d121d4bdd5c621fd98bb72f1f1fedc374551507dde"
+    },
+    {
+      "bytes": 421274,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1835.json",
+      "role": "pin-matchups",
+      "sha256": "9479e126d96061533c31080c76c73ce6db301ffc051697acafee1724b2be09b7"
+    },
+    {
+      "bytes": 247309,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1835.json",
+      "role": "pin-markets",
+      "sha256": "4b424dc701f75260cfcfd52266308875736238d9aed65e467925904b635601fd"
+    },
+    {
+      "bytes": 39628,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1952.json",
+      "role": "pin-matchups",
+      "sha256": "77ed8ee8ece47cdeedc4142c56da8015a1bcb074382cf18b023de7ee6341c75a"
+    },
+    {
+      "bytes": 28993,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1952.json",
+      "role": "pin-markets",
+      "sha256": "39faeb161fb09016be28dc71914ccab2a0f37cdcca7ea9ae9df995b35a702105"
+    },
+    {
+      "bytes": 40123,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1739.json",
+      "role": "pin-matchups",
+      "sha256": "068fe2cf68fb7f13e829234b5eada6d56e3bb3ea110e4e6c7b6c5c5d48b8e614"
+    },
+    {
+      "bytes": 310348,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1739.json",
+      "role": "pin-markets",
+      "sha256": "779be1b55d43928d221b0c045212959e644817d2ca5311a3896dbcf70aeddf3e"
+    },
+    {
+      "bytes": 13257,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1792.json",
+      "role": "pin-matchups",
+      "sha256": "049d9bcb1686dbc3d610ef769b3aeaaa661e63f9e4ac858da5179f8780061fb7"
+    },
+    {
+      "bytes": 110320,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1792.json",
+      "role": "pin-markets",
+      "sha256": "56d2a23d3cd8da1ebdb8e33ee3f0e11c6e15387b7830148f3d8450f54072d4a6"
+    },
+    {
+      "bytes": 637445,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2117.json",
+      "role": "pin-matchups",
+      "sha256": "4618708a250cbce36b515bc45617fbfb491777bc98c465aa603afa2fb6af0d18"
+    },
+    {
+      "bytes": 255519,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2117.json",
+      "role": "pin-markets",
+      "sha256": "bedd652a07c0c32c66d5281fd24a18256996cd53f32cce09c8aa1f9caba7b631"
+    },
+    {
+      "bytes": 2215,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_197206.json",
+      "role": "pin-matchups",
+      "sha256": "3748a43539b0c1641b2d3c1ae31b440d89006023f192ee9684c9e1b0540ad498"
+    },
+    {
+      "bytes": 15271,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_197206.json",
+      "role": "pin-markets",
+      "sha256": "d836757bf2f549602be6fabc5d5034fa7fcdfb76650423b4da44fc45503182d3"
+    },
+    {
+      "bytes": 19893,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2592.json",
+      "role": "pin-matchups",
+      "sha256": "e013ec0ea234567cb9cc112cfcbe2af6219b72871283fbb39accea815157f366"
+    },
+    {
+      "bytes": 164719,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2592.json",
+      "role": "pin-markets",
+      "sha256": "941acbeee9865d61505684f9f47efc7548d0a9afe49fbc8875982696f358799f"
+    },
+    {
+      "bytes": 25912,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_202447.json",
+      "role": "pin-matchups",
+      "sha256": "690ea371e4646e1d523ac9b5325f08ce947195692d3f125c6dfa0cc4616374ef"
+    },
+    {
+      "bytes": 123212,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_202447.json",
+      "role": "pin-markets",
+      "sha256": "074d1bbdcbafafc9ef2d528337e065cbcf4146dad132806db6fe78807a412084"
+    },
+    {
+      "bytes": 15420,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2331.json",
+      "role": "pin-matchups",
+      "sha256": "48ef532b54e7b1fcbff7884207193a8f78f110058c8bf503a29278ef1095a2ff"
+    },
+    {
+      "bytes": 129388,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2331.json",
+      "role": "pin-markets",
+      "sha256": "8df62c9764b9d40d8edf8efebcd87d49e7e0d0a557798a5917758d8a92bb7736"
+    },
+    {
+      "bytes": 139466,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2663.json",
+      "role": "pin-matchups",
+      "sha256": "609aa14ca150ad2e8c73242a1c7eba7e1759ae71ac1a4ade85a2ca4ed4cf9736"
+    },
+    {
+      "bytes": 65225,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2663.json",
+      "role": "pin-markets",
+      "sha256": "584622e1e280aa9582be601c9842c7d639cbbf751b7c7b4a57e228d5182be764"
+    },
+    {
+      "bytes": 1097688,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_200719.json",
+      "role": "pin-matchups",
+      "sha256": "1f0bfa078b6d11b8d55e60cdeefdcf3c0d91165374d8213b195401bb4428a3f9"
+    },
+    {
+      "bytes": 401051,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_200719.json",
+      "role": "pin-markets",
+      "sha256": "4d180154b35d1c9e783afefde01de560ed81c9435c9a057f597c72b627c081ed"
+    },
+    {
+      "bytes": 592694,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1713.json",
+      "role": "pin-matchups",
+      "sha256": "b04a25f3ddc0a7778bb157e518d39b068f0e3336c300f53a0d0fc531207d247a"
+    },
+    {
+      "bytes": 449912,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1713.json",
+      "role": "pin-markets",
+      "sha256": "b5c51af020ba9bbf7fe6674da18d917d6c68c9db3b55b06b3bc53e3aa8eecaef"
+    },
+    {
+      "bytes": 26845,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_201373.json",
+      "role": "pin-matchups",
+      "sha256": "1bfc4e1f22891161813c8688e8c96f8541d9be4a622d75ca69e8745321a610f8"
+    },
+    {
+      "bytes": 181552,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_201373.json",
+      "role": "pin-markets",
+      "sha256": "d1eafc96793316fd51c3ced26762aca7f5c6dcdc5d0ae3ee877d864c8dd4e453"
+    },
+    {
+      "bytes": 4462,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2472.json",
+      "role": "pin-matchups",
+      "sha256": "10dd9d3d9c5f7523cf614f93965005dca1979d55cadae29121e4b4ee97b68dcd"
+    },
+    {
+      "bytes": 34309,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2472.json",
+      "role": "pin-markets",
+      "sha256": "e0dbd7b32c6f8220eab25bf246934de7b1901709d8f3436029cc00aeab4d08f3"
+    },
+    {
+      "bytes": 2217,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_211144.json",
+      "role": "pin-matchups",
+      "sha256": "500dcd94367938b37f2a8f91f8bb3e3423d2ebf869c4cffe47a6eec493beeda1"
+    },
+    {
+      "bytes": 14731,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_211144.json",
+      "role": "pin-markets",
+      "sha256": "ac43a58ddb9c625f6d20d7d9bc95f367872427f1a845d13c5398fb403874bd0d"
+    },
+    {
+      "bytes": 17634,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2333.json",
+      "role": "pin-matchups",
+      "sha256": "3d4a9857c5773fbf9c82bdb92198d6961634615e4f320d6a968b615cbf744991"
+    },
+    {
+      "bytes": 150461,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2333.json",
+      "role": "pin-markets",
+      "sha256": "484b249921b5d7d21b0391980a761baf7ee615b6489a174074009a4ab6708a36"
+    },
+    {
+      "bytes": 2204,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2120.json",
+      "role": "pin-matchups",
+      "sha256": "4cd8fd05d596cef8cd9dff8cddb2aa523557acb549f795036a4aaecf275e8d67"
+    },
+    {
+      "bytes": 17955,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2120.json",
+      "role": "pin-markets",
+      "sha256": "a5c0974e1fce8915960118e59ad8877480fb6eada63df4d25e0282b7dc9a1f53"
+    },
+    {
+      "bytes": 2227,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_294937.json",
+      "role": "pin-matchups",
+      "sha256": "e69048a1dbfff2c93fe457abf87d0f43b02c49d581578df742afecefdc3bba54"
+    },
+    {
+      "bytes": 14718,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_294937.json",
+      "role": "pin-markets",
+      "sha256": "76eae83a2ea51ddf81527b2021dba01baa68d1c0e510cd19475909115b147426"
+    },
+    {
+      "bytes": 2223,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_286332.json",
+      "role": "pin-matchups",
+      "sha256": "97d961c6addb2d510ee2fe1e3764ee3236fc9396f70fea6593b862b5a79608c1"
+    },
+    {
+      "bytes": 14725,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_286332.json",
+      "role": "pin-markets",
+      "sha256": "3573348ea69da43c33885b1569c07f003d6bd5c22cca19fa48db10170b72653a"
+    },
+    {
+      "bytes": 41347,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2642.json",
+      "role": "pin-matchups",
+      "sha256": "0908560ee7f3f0d080afb45536fc918638dc81510e5fb62bfdf39cf0c32e7fae"
+    },
+    {
+      "bytes": 136920,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2642.json",
+      "role": "pin-markets",
+      "sha256": "6b30091c50ac7f3794ab486a65c422a072b129eac3fb0ecae1757f2d31597308"
+    },
+    {
+      "bytes": 4419,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_5594.json",
+      "role": "pin-matchups",
+      "sha256": "b7e93ad4cbc3bd9b43dacfa7d5e0dfc961a0b5b7075374132bc018374a7ead9a"
+    },
+    {
+      "bytes": 28939,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_5594.json",
+      "role": "pin-markets",
+      "sha256": "4846f6f016d221b0ea9c2b31f50ef6db8f222a4be52c1ef2314f9c96a049b259"
+    },
+    {
+      "bytes": 13229,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2024.json",
+      "role": "pin-matchups",
+      "sha256": "65b9ed0939080a89efafa178215468cbf6d4ea571987292625c27a3b7fa83a99"
+    },
+    {
+      "bytes": 110890,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2024.json",
+      "role": "pin-markets",
+      "sha256": "9d89f0d3c0df0c42c905e718ffe0bebf77b5146d94a6f12d400ac9162cb3b7b8"
+    },
+    {
+      "bytes": 13304,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2517.json",
+      "role": "pin-matchups",
+      "sha256": "736fe6c4da6177f8222fd130ef7a976f3f38f0c7cd3b4365ed55f972f697e0f9"
+    },
+    {
+      "bytes": 113507,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2517.json",
+      "role": "pin-markets",
+      "sha256": "22ea13837dda938809b001548ba652efead55d6466388c3a0e0110a8e56f18d7"
+    },
+    {
+      "bytes": 9416,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_5264.json",
+      "role": "pin-matchups",
+      "sha256": "56488ff4473a9feae5dfca70dcc3c97c4bb41fceeff66fe0b4909a0d65826aca"
+    },
+    {
+      "bytes": 4371,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_5264.json",
+      "role": "pin-markets",
+      "sha256": "1ffd68008b83c5af4c4213c37057912e23391e9b1548a628a9c4150227848f32"
+    },
+    {
+      "bytes": 44095,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1842.json",
+      "role": "pin-matchups",
+      "sha256": "93a9d75edef1b4713ebbc7f73b849ec8f50065170c0c85add9daccb903719e08"
+    },
+    {
+      "bytes": 345933,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1842.json",
+      "role": "pin-markets",
+      "sha256": "331482f2e2df10635e7e9480f4b8c95ef39d2d5bb5d5ab63f4ed27cc50e2594e"
+    },
+    {
+      "bytes": 36086,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1856.json",
+      "role": "pin-matchups",
+      "sha256": "38fd73c9b947b59843be4ad4d5cd2f35157e1982ee4bb5b58f8853eb9afe1eca"
+    },
+    {
+      "bytes": 21055,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1856.json",
+      "role": "pin-markets",
+      "sha256": "43c04c36b715aae86e1f00c9cce492c59f90b0ca2b60cb130c2218a02a83911c"
+    },
+    {
+      "bytes": 1182528,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1978.json",
+      "role": "pin-matchups",
+      "sha256": "b0de71e51950926edaf83faed1cd87999de07cc85b8cd278c1ebeeee243c22b5"
+    },
+    {
+      "bytes": 540517,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1978.json",
+      "role": "pin-markets",
+      "sha256": "5043634e18cbe7ef9d88382f12e877c46e69a344dc6efcf4493ba10c87c1189f"
+    },
+    {
+      "bytes": 17794,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_209758.json",
+      "role": "pin-matchups",
+      "sha256": "4fa3ac0a3c75c014a6c78433b466b54ffe56b5015d4e2e4805b5bea6c90893f0"
+    },
+    {
+      "bytes": 146264,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_209758.json",
+      "role": "pin-markets",
+      "sha256": "ac30c79896dd2430456ffc0d8ead8d38091000ff99cb915563f793405bb56142"
+    },
+    {
+      "bytes": 4466,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_201331.json",
+      "role": "pin-matchups",
+      "sha256": "617ad57e0cce18e7e176b1e2594e31ad2eba063be98ef866ce3b0c89da355c17"
+    },
+    {
+      "bytes": 29985,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_201331.json",
+      "role": "pin-markets",
+      "sha256": "702cc1cbb93a463f13c12071ccc2f79e23b650497479fada5eb0e4457c8edd58"
+    },
+    {
+      "bytes": 24590,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_8713.json",
+      "role": "pin-matchups",
+      "sha256": "51c4d2b7152ebecde177f4b4b1cafd17714489dfac447853c8fe748feacf79e3"
+    },
+    {
+      "bytes": 80549,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_8713.json",
+      "role": "pin-markets",
+      "sha256": "a19b10700978fca663094f0bf4ca5cdfc4b5e8ba12e7bed3e395fc0ce2834167"
+    },
+    {
+      "bytes": 36741,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2123.json",
+      "role": "pin-matchups",
+      "sha256": "5ebfd84161f8143745880ee6b3250319162ee009d8a04ffd54fb93750d726f94"
+    },
+    {
+      "bytes": 96644,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2123.json",
+      "role": "pin-markets",
+      "sha256": "f92fb1b378acc6cfa5ff5362c678833f89f7bb37a8f06381363ad49c4c6ad85a"
+    },
+    {
+      "bytes": 46796,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_214101.json",
+      "role": "pin-matchups",
+      "sha256": "77ba455d25ad76815559fd5a723e40cf9128489d5425cd9504c5c3f76ba584c7"
+    },
+    {
+      "bytes": 324499,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_214101.json",
+      "role": "pin-markets",
+      "sha256": "00b847fadd9d15e33b5a7af57c38eced272a6df1cdf8748e914490232a550127"
+    },
+    {
+      "bytes": 19934,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1843.json",
+      "role": "pin-matchups",
+      "sha256": "87826cef95e82693765b4cb5add167df496a910446e89ff096d88373511a6fd8"
+    },
+    {
+      "bytes": 177223,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1843.json",
+      "role": "pin-markets",
+      "sha256": "43a885e6bd01e122a25b762344db16404497e2448d541f0b17aa0182d0f03161"
+    },
+    {
+      "bytes": 39655,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_10921.json",
+      "role": "pin-matchups",
+      "sha256": "80fc5af4d0751ba25828d56d37b4445b5fcf24d42b1afad3ff5d9f101679be1e"
+    },
+    {
+      "bytes": 17625,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_10921.json",
+      "role": "pin-markets",
+      "sha256": "3c27c5e794b3a5d7ac6018a947cd9e812f48083b088a5f0b9ec15ce6731140fa"
+    },
+    {
+      "bytes": 172480,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_198316.json",
+      "role": "pin-matchups",
+      "sha256": "f3b4eca18725c5f796fb48fe1d227ec93fbd8a66477e5fa62a6dbe243e867ea3"
+    },
+    {
+      "bytes": 109935,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_198316.json",
+      "role": "pin-markets",
+      "sha256": "a1a471bcfc8e9976e5a27e7b39a48c7172f41e60cc1223bb48a9a05589f2accb"
+    },
+    {
+      "bytes": 6639,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1957.json",
+      "role": "pin-matchups",
+      "sha256": "283416bbaf61dff94d9121ff16547e3758e5cc1629b984167de99edddefe981d"
+    },
+    {
+      "bytes": 55420,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1957.json",
+      "role": "pin-markets",
+      "sha256": "48bf7e5a9cda2469ab2e143490fdecb00af72f79a27b4b17d7a8bd649e9b4a08"
+    },
+    {
+      "bytes": 4457,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_200786.json",
+      "role": "pin-matchups",
+      "sha256": "1e4a4f9346bd460771e35fc4f06675a6c861e5b17a53aabbeec27f77752e895a"
+    },
+    {
+      "bytes": 26714,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_200786.json",
+      "role": "pin-markets",
+      "sha256": "d6820291849ba66515556903905eb3401d883786828ddf17376d13a8a4464132"
+    },
+    {
+      "bytes": 36758,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_196742.json",
+      "role": "pin-matchups",
+      "sha256": "72c1d5e2ed236a020886b1e2fca12355807c14e0cae2a5681f81ebb808f9c855"
+    },
+    {
+      "bytes": 21607,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_196742.json",
+      "role": "pin-markets",
+      "sha256": "c311d1dc9dc590fdb7c6533696657bee1cd77cb5314330ef993b4be693961505"
+    },
+    {
+      "bytes": 73316,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2624.json",
+      "role": "pin-matchups",
+      "sha256": "5b85506142be2f037bb60aceedecd00a8dca13a88e230ccef071993dc7c04445"
+    },
+    {
+      "bytes": 44634,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2624.json",
+      "role": "pin-markets",
+      "sha256": "6cd3236d966a552e06bcb13b9a1cda6873f959056600507732aaf865b3b823eb"
+    },
+    {
+      "bytes": 47768,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2627.json",
+      "role": "pin-matchups",
+      "sha256": "ed89679f1814ad0a653fba211bdeff6105ae67ba7c74b90e3aed8d2b72cc944a"
+    },
+    {
+      "bytes": 338808,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2627.json",
+      "role": "pin-markets",
+      "sha256": "83a461f9028dc8b49eb7050282f820e81b287333857d1de2c9bc0770c94809c6"
+    },
+    {
+      "bytes": 6649,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2417.json",
+      "role": "pin-matchups",
+      "sha256": "87adc8a4e0304f8dd2807b40099c2123e144f11d29e7964995662ae977462f8b"
+    },
+    {
+      "bytes": 53819,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2417.json",
+      "role": "pin-markets",
+      "sha256": "df7dae1f5c7ccd2e5089d7f194ba2f5fcdcfb52aa05525f31599ee62991184ec"
+    },
+    {
+      "bytes": 2231,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_35174.json",
+      "role": "pin-matchups",
+      "sha256": "50d26cebe0115f6c8c2e58f57aa7fffe2b7334e3555175b5fbf94a2d2ecf7fee"
+    },
+    {
+      "bytes": 17957,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_35174.json",
+      "role": "pin-markets",
+      "sha256": "6ee2592637c9c1b11759025d0468b5a8d879421c8b190a06bc80fabef49257b7"
+    },
+    {
+      "bytes": 19955,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1928.json",
+      "role": "pin-matchups",
+      "sha256": "2f4ec3ed9d66c6dada5b85db01f33834992efb9b333057b780bfb7516cf0ddd4"
+    },
+    {
+      "bytes": 169535,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1928.json",
+      "role": "pin-markets",
+      "sha256": "8d0b04ec9d474ea07e8a0482cd10b92fb98af16435e18ccf9431e34c1a1417aa"
+    },
+    {
+      "bytes": 2216,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_187661.json",
+      "role": "pin-matchups",
+      "sha256": "73f2cfa86729e9958b83eeabae2562004fec6e1dd90e2c541edcc22ba0b676f5"
+    },
+    {
+      "bytes": 15277,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_187661.json",
+      "role": "pin-markets",
+      "sha256": "520fb0bcefbf5862b2d10978437f4b95d3e68b6bee749dbd83c524b270e80ea8"
+    },
+    {
+      "bytes": 17622,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1728.json",
+      "role": "pin-matchups",
+      "sha256": "dfd637f3e5316a7af0485465ecc43f7e2ae46039454c3d801848abc643ed6366"
+    },
+    {
+      "bytes": 146813,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1728.json",
+      "role": "pin-markets",
+      "sha256": "ff8e691627081236979e5fdb6594f21dfbf66f029fefc43faa4bd17e0654712d"
+    },
+    {
+      "bytes": 535665,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_201065.json",
+      "role": "pin-matchups",
+      "sha256": "78b662f0f62f8002e7e85ae2e1d20634e61ad9d3eed1c9258415ca3c02d9913c"
+    },
+    {
+      "bytes": 266445,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_201065.json",
+      "role": "pin-markets",
+      "sha256": "b0631343b836dca621a2a0f5adc8f20b924e58cc41f8d05c4d1147edfcb70fd8"
+    },
+    {
+      "bytes": 143493,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2113.json",
+      "role": "pin-matchups",
+      "sha256": "751323da71ff0708dbab4a7f90482a009369c1fd226d014b11db4a9f4e37e487"
+    },
+    {
+      "bytes": 87196,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2113.json",
+      "role": "pin-markets",
+      "sha256": "54c015d54d35020c1a76684235c762f63667a355eeca0a3995b14353d6ba68c8"
+    },
+    {
+      "bytes": 36541,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_6546.json",
+      "role": "pin-matchups",
+      "sha256": "768efe3393893346683a6ac5b97631d4998249a75e93ceb60bb8e9051f7a41d7"
+    },
+    {
+      "bytes": 22156,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_6546.json",
+      "role": "pin-markets",
+      "sha256": "1976eba5ccec4af74d878060f91408f090653ac17e5cbc2504bc0cd3b4eebd57"
+    },
+    {
+      "bytes": 2235,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_191446.json",
+      "role": "pin-matchups",
+      "sha256": "88176b2abb690f0eff8850c30aac995063305903d84fa8e164f7fb279fee2528"
+    },
+    {
+      "bytes": 15269,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_191446.json",
+      "role": "pin-markets",
+      "sha256": "652e74d22a5a390ab706e0059290708c54d1c6c20efe9c69ec1005eacd657092"
+    },
+    {
+      "bytes": 4898,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_205098.json",
+      "role": "pin-matchups",
+      "sha256": "a6bfc78d9dd4217e799428393dbdcb4fedc9f55225e4076786a15f0ff0594ad0"
+    },
+    {
+      "bytes": 15786,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_205098.json",
+      "role": "pin-markets",
+      "sha256": "0670d9e7f2045c58153f19d267d9cacc6aac60e6f09f6bd603dac229121937da"
+    },
+    {
+      "bytes": 120351,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2027.json",
+      "role": "pin-matchups",
+      "sha256": "894db6602531ec7cf190a153a767fc3848f51d1795433fd3a321011a6f9daf8e"
+    },
+    {
+      "bytes": 182138,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2027.json",
+      "role": "pin-markets",
+      "sha256": "36cbfa62bcf969c6519f8f489d40c76191c6d150fd7b35c5040d7f0f1bf55f82"
+    },
+    {
+      "bytes": 2229,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_204527.json",
+      "role": "pin-matchups",
+      "sha256": "3502772b181445e6160c2d5183e8046bcdd69056cc4ba7eda8df3d4ff9bf997c"
+    },
+    {
+      "bytes": 14731,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_204527.json",
+      "role": "pin-markets",
+      "sha256": "b228a375fd03557d9f3784b152f823cefe27b473893f99dba07cf626902dff37"
+    },
+    {
+      "bytes": 34053,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_201290.json",
+      "role": "pin-matchups",
+      "sha256": "f65126c00a479ec5d1ddea2eaaa077139e2b06c747ddc41323426ec6b6f1be07"
+    },
+    {
+      "bytes": 124739,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_201290.json",
+      "role": "pin-markets",
+      "sha256": "9a2ccd794a74db0f386f66f78ae925895f91598487fc99464fb9caaac3886426"
+    },
+    {
+      "bytes": 947802,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_200726.json",
+      "role": "pin-matchups",
+      "sha256": "3801c74dc2b66810158c2239a4355b83fab5654806e6b91312e248bf082fe573"
+    },
+    {
+      "bytes": 372198,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_200726.json",
+      "role": "pin-markets",
+      "sha256": "e3ecdbbaa065855c8304d52f1de87028a76906a85fa92846d03dd589c4fc192a"
+    },
+    {
+      "bytes": 11146,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_11693.json",
+      "role": "pin-matchups",
+      "sha256": "20cb6ea4f3d6bb54e74dce8c141ad2d3a475c1756e4d95ac83cf770f9272c45a"
+    },
+    {
+      "bytes": 76356,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_11693.json",
+      "role": "pin-markets",
+      "sha256": "4050e4c42f8399112ca31e89171a33d51d5ecc246aebaebf5a648e6e472fb469"
+    },
+    {
+      "bytes": 60936,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1980.json",
+      "role": "pin-matchups",
+      "sha256": "17879ae2d42fb02b9a6192f82c915c90a767a99113aca695e42a4a9210f43ea0"
+    },
+    {
+      "bytes": 386526,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1980.json",
+      "role": "pin-markets",
+      "sha256": "790ac4384532e68770833ed28356e0d882fa4bcaa7cff53d5aa0f7952ca77c01"
+    },
+    {
+      "bytes": 13230,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1913.json",
+      "role": "pin-matchups",
+      "sha256": "c839b1e4a1298d176478d844a8b213967a43ad23a13e3a3629fc924e2a168068"
+    },
+    {
+      "bytes": 110915,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1913.json",
+      "role": "pin-markets",
+      "sha256": "1040a270a23366b4417a2f832a9429f776e7ead64031a6cf8caad357b120d6b7"
+    },
+    {
+      "bytes": 2231,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_214748.json",
+      "role": "pin-matchups",
+      "sha256": "71b227dcb277dceee13f2f27f77ac0c813964dddb08b5788c43ccc9123d66fa4"
+    },
+    {
+      "bytes": 13640,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_214748.json",
+      "role": "pin-markets",
+      "sha256": "b127ba3bf6220396a4fee418d02e894472fdc9059a7c33b7c9d6acf6713ffada"
+    },
+    {
+      "bytes": 2226,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_236856.json",
+      "role": "pin-matchups",
+      "sha256": "2141bb45840c2f00538e3ff5926f9aa2d52af24fc30d102eeca2ac95b9a6e98b"
+    },
+    {
+      "bytes": 13613,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_236856.json",
+      "role": "pin-markets",
+      "sha256": "0ed049551038687045f65b37ae0c931daaca9d4876da7c36c883e6cce7dcdaa5"
+    },
+    {
+      "bytes": 73008,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_227790.json",
+      "role": "pin-matchups",
+      "sha256": "75ff2c9be9a97e6d2ff7954d4eb262fdef3035ed1b92cb979884b5c8424b96ee"
+    },
+    {
+      "bytes": 43007,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_227790.json",
+      "role": "pin-markets",
+      "sha256": "d9d8934e44a0886fae3a800cf6977f9fa416886d9b58df9659dabed70221c56f"
+    },
+    {
+      "bytes": 19769,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2037.json",
+      "role": "pin-matchups",
+      "sha256": "418be3c036c4a9220927d3ce7b3b0e4d6566a9ce90b13b6410879a050d35ef93"
+    },
+    {
+      "bytes": 164734,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2037.json",
+      "role": "pin-markets",
+      "sha256": "e22e48fd3ee89f731ef0620ae34fb268e7bccc8ae312446f12507688f90f04d5"
+    },
+    {
+      "bytes": 2523,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_199337.json",
+      "role": "pin-matchups",
+      "sha256": "11da8aff20e91dfc8bb1e675e4fa8be91a93f0f2f569b8b2c0eeff5239b64db4"
+    },
+    {
+      "bytes": 14636,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_199337.json",
+      "role": "pin-markets",
+      "sha256": "09c20801c019fd2eca55549e944e970746878fb4a07b691c01270489bc5ded4f"
+    },
+    {
+      "bytes": 19982,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1857.json",
+      "role": "pin-matchups",
+      "sha256": "5ecdf1b5925def944c8e108c67e52de69570d4ecb68ebfda74cb13f7133074aa"
+    },
+    {
+      "bytes": 164743,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1857.json",
+      "role": "pin-markets",
+      "sha256": "745305a8b1a9ff27c1bfcb324df99acefca44a6350788bf625db434a3ae73263"
+    },
+    {
+      "bytes": 15456,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2081.json",
+      "role": "pin-matchups",
+      "sha256": "44ecf65149f1f1e9f809e4554e0151396fc8fdeb34f03c9ca4d3b269f08ba63a"
+    },
+    {
+      "bytes": 125696,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2081.json",
+      "role": "pin-markets",
+      "sha256": "76de92d605dcbb13c97815e69dfecbeab88a93eed2700bcfb1c826ce0d9b91a2"
+    },
+    {
+      "bytes": 2246,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_234301.json",
+      "role": "pin-matchups",
+      "sha256": "1f15629e1b5a848bd8e80186724e9167c23b9eff09dcc2101fa0109a900b0536"
+    },
+    {
+      "bytes": 14739,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_234301.json",
+      "role": "pin-markets",
+      "sha256": "e96346898d5700aed4a3e2676a1e9e0b77ff41d0c6dada6336f81cabc76fc70a"
+    },
+    {
+      "bytes": 2213,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2454.json",
+      "role": "pin-matchups",
+      "sha256": "5609713f0a69753dba9d2dcd27ed213a569c2dc0698a3a7aa5e96a95872b1a36"
+    },
+    {
+      "bytes": 15259,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2454.json",
+      "role": "pin-markets",
+      "sha256": "ae51f2369e8847afc5d93c5873c2390ef352c241f5e9ee516df9cb2d6784d278"
+    },
+    {
+      "bytes": 105921,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_202276.json",
+      "role": "pin-matchups",
+      "sha256": "bf4e0cfa1a03ad34a4391fc0d29859142714c12909968f51ab25976be8cb1f24"
+    },
+    {
+      "bytes": 49948,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_202276.json",
+      "role": "pin-markets",
+      "sha256": "71c46478c4062a53112c2ea3fa356c5eb33b84f4152f172475ace451752eeb44"
+    },
+    {
+      "bytes": 647379,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_5982.json",
+      "role": "pin-matchups",
+      "sha256": "a8885aa2016841829218a083030c58838e56ef0278e0caf15502b6dab976d1e9"
+    },
+    {
+      "bytes": 319767,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_5982.json",
+      "role": "pin-markets",
+      "sha256": "9012e0a0cef61580941579c27a992be777af34120d505b33deb7f0c616606784"
+    },
+    {
+      "bytes": 39580,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_8655.json",
+      "role": "pin-matchups",
+      "sha256": "d66e6c3c600f7dc3cefc53e0d9c86d6ce9b40bc967993f83902806e7581c37ba"
+    },
+    {
+      "bytes": 28845,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_8655.json",
+      "role": "pin-markets",
+      "sha256": "62a6ae528874ab101ba36e014e111b886d6ae504a95653b8753fcb224716d641"
+    },
+    {
+      "bytes": 550715,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_200721.json",
+      "role": "pin-matchups",
+      "sha256": "0db195a9a5e72f09f0632e864933fd1f4fe872ddb40b1620769cb5a6feb9c071"
+    },
+    {
+      "bytes": 203300,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_200721.json",
+      "role": "pin-markets",
+      "sha256": "0c2fc0424a87f24958267bf55a914ec2113831a1968af198f638e27b7c8d0c5f"
+    },
+    {
+      "bytes": 2211,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1863.json",
+      "role": "pin-matchups",
+      "sha256": "5dd3ba9ac1280715acc37737f88953491c369d9525a742d109fe6ba3c6494e37"
+    },
+    {
+      "bytes": 14723,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1863.json",
+      "role": "pin-markets",
+      "sha256": "67254a4d742a86837323110ecbf703466a55d426eeb55ad17654de3b7787399d"
+    },
+    {
+      "bytes": 78049,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_294928.json",
+      "role": "pin-matchups",
+      "sha256": "a704b2161a5b699ac513b75dec1add3136db88397ee19efbaf3d2f311048433a"
+    },
+    {
+      "bytes": 56504,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_294928.json",
+      "role": "pin-markets",
+      "sha256": "0ff625705e5f40124c4dfa59468364f45acccd90b3d92f6c52d8f08897c986d1"
+    },
+    {
+      "bytes": 9070,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_212179.json",
+      "role": "pin-matchups",
+      "sha256": "b0bb8af3f58b6df6108b503c39f6e299df532e6b697cffbd7616d7f2559f6de2"
+    },
+    {
+      "bytes": 27257,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_212179.json",
+      "role": "pin-markets",
+      "sha256": "2582be0e7bfaeaa473617b9e8b07f6433049b899a17d3e7e649854bbee852ac4"
+    },
+    {
+      "bytes": 114022,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_5591.json",
+      "role": "pin-matchups",
+      "sha256": "cb1cad76487e4e130dbf3ea7843d7c0d16e488c96d734d5c6584f6bf91f6a46f"
+    },
+    {
+      "bytes": 131386,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_5591.json",
+      "role": "pin-markets",
+      "sha256": "e1cd263d38ef766df4e7c93603e59435882f8278fc2a82c1af201ff7c2ef986e"
+    },
+    {
+      "bytes": 20126,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_283292.json",
+      "role": "pin-matchups",
+      "sha256": "2663e95314c504712e62ef225917911505496a69482f2da120865ab74f1f3f7e"
+    },
+    {
+      "bytes": 137503,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_283292.json",
+      "role": "pin-markets",
+      "sha256": "b5cbf87a68e43299655c78b360b17dad88d6165b9eac4af44e35faba1cf1062c"
+    },
+    {
+      "bytes": 2211,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_280901.json",
+      "role": "pin-matchups",
+      "sha256": "20e39e6f4e0f96583bf66363158c0696ae3563e223692ba605cb4246173029d4"
+    },
+    {
+      "bytes": 15267,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_280901.json",
+      "role": "pin-markets",
+      "sha256": "ab54afe9083062aaf01a07766b499a2aa9e56c77b6d0a8cee1cade9de2362419"
+    },
+    {
+      "bytes": 2208,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_213328.json",
+      "role": "pin-matchups",
+      "sha256": "162b594f5f6d335bf098bd611d0daf9fdf1a7ddfc32fa7642db0bdc0c4f26e7a"
+    },
+    {
+      "bytes": 15274,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_213328.json",
+      "role": "pin-markets",
+      "sha256": "25687df3f7bc73e15b36755f960181a52c813cd2ac844aca2745231a137f50c3"
+    },
+    {
+      "bytes": 8927,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2359.json",
+      "role": "pin-matchups",
+      "sha256": "af97311799d81b406dcc4f13cf2472941442681de45929722840e152d373fdab"
+    },
+    {
+      "bytes": 71232,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2359.json",
+      "role": "pin-markets",
+      "sha256": "d55bef9d7603312d65184f011198566b47fdd9bac52d5ff316da315f431dc2e3"
+    },
+    {
+      "bytes": 4857,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2366.json",
+      "role": "pin-matchups",
+      "sha256": "6fd17ec4cd33f70931989f89a63c5bba237871dfcfb48523ebe8d2878e69e355"
+    },
+    {
+      "bytes": 12161,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2366.json",
+      "role": "pin-markets",
+      "sha256": "2885cd0b7e0a9729efc88cf0673a930bde916bd0d3c2008d8ac1e591b2e1589f"
+    },
+    {
+      "bytes": 4421,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_222241.json",
+      "role": "pin-matchups",
+      "sha256": "4f4765f256f5b49e4621eed10f9304d06293fc0e23206a4e8c98dc6bda35c2f0"
+    },
+    {
+      "bytes": 27234,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_222241.json",
+      "role": "pin-markets",
+      "sha256": "69562f827e45718d1f8e6a7d3888be97d1a7f829f7db90fc05bd94744142f3c2"
+    },
+    {
+      "bytes": 2222,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_222490.json",
+      "role": "pin-matchups",
+      "sha256": "7659af9cd7b7d0d2b152f2e0e37a731399daba134eda8e712ba3bab6fd2e5445"
+    },
+    {
+      "bytes": 14716,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_222490.json",
+      "role": "pin-markets",
+      "sha256": "f68b55c8ae64892e20959fb9713acbdc5893db6cfc140c1f53dd835e713a8c03"
+    },
+    {
+      "bytes": 149703,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_5593.json",
+      "role": "pin-matchups",
+      "sha256": "0be0629375463df9388f04662e67a35d944be7311d2e34b8859ac921a2727daf"
+    },
+    {
+      "bytes": 151178,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_5593.json",
+      "role": "pin-markets",
+      "sha256": "3d4af9eaf9faf82da665e80b4471ff43ce4fac8cb53734984ea17b9ea100c6b9"
+    },
+    {
+      "bytes": 48557,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2196.json",
+      "role": "pin-matchups",
+      "sha256": "303ed447cfff86385c11813356d684f55417e68187ea996aa40bbdfe63484e1e"
+    },
+    {
+      "bytes": 379858,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2196.json",
+      "role": "pin-markets",
+      "sha256": "ecbda22e674f769d1dc8be250c607279452062df52ba1143db2f4ba7702a59cc"
+    },
+    {
+      "bytes": 17766,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_1929.json",
+      "role": "pin-matchups",
+      "sha256": "2470273cd933043afb14d7bcafe3f8371c3dfcf30a4e017d739da4d9fc08d11c"
+    },
+    {
+      "bytes": 145594,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_1929.json",
+      "role": "pin-markets",
+      "sha256": "09bf197ea77c5623a5b927bf32c7ebb4f17f8aca2f190f9d6775609ef2acbc57"
+    },
+    {
+      "bytes": 41080,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2678.json",
+      "role": "pin-matchups",
+      "sha256": "f0fa81ca1ed05132d6d99d54e506eb6d2f4539a31bd193aa142fa0a1a2489bd7"
+    },
+    {
+      "bytes": 28291,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2678.json",
+      "role": "pin-markets",
+      "sha256": "dd34536da59c1bc6561b33e3458309da7708e625c6d1847a1e371ccdb471356d"
+    },
+    {
+      "bytes": 4930,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_208258.json",
+      "role": "pin-matchups",
+      "sha256": "847933334ff074688e5ad46fc48687866a10b932ca0a0bc23244f3200d208bea"
+    },
+    {
+      "bytes": 15270,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_208258.json",
+      "role": "pin-markets",
+      "sha256": "6ef054b0488e7a80c141aa55f68c5f8a2fd324492e849a3988b3c4b855d84a3b"
+    },
+    {
+      "bytes": 104627,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2112.json",
+      "role": "pin-matchups",
+      "sha256": "afab2808e7448b46f3d3069f6605984870241510a2a5592074dfd4032a00699f"
+    },
+    {
+      "bytes": 64547,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2112.json",
+      "role": "pin-markets",
+      "sha256": "c72eca407357a51a6dea67babdb29e8b250f22e1ffcbe77ad295abd7a8bab05e"
+    },
+    {
+      "bytes": 208477,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2090.json",
+      "role": "pin-matchups",
+      "sha256": "9074059a70f0ca41711b6661f2e312881191837f44e957fabb643e33b2850eeb"
+    },
+    {
+      "bytes": 92202,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2090.json",
+      "role": "pin-markets",
+      "sha256": "c301e3ca5c2dcf0be53b4d49d01de0f58aea61dc2d04e6de81d1151564ecc7e0"
+    },
+    {
+      "bytes": 2231,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_202503.json",
+      "role": "pin-matchups",
+      "sha256": "1f982bf8548df11d4e320e0f3557b381be7d4f911c4ba6395714a934a6dac2af"
+    },
+    {
+      "bytes": 13624,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_202503.json",
+      "role": "pin-markets",
+      "sha256": "6e0dc00f7fc24f1f8667a88f0a2ac6574a24f32faa960edc578285e108a97ac2"
+    },
+    {
+      "bytes": 2217,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_200283.json",
+      "role": "pin-matchups",
+      "sha256": "f1d8f09374aee803b5f17960d92af01f462a34c1336468a1e379335fb328182d"
+    },
+    {
+      "bytes": 13079,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_200283.json",
+      "role": "pin-markets",
+      "sha256": "b09aa6b87a9e4e0bdd1f7e033e536b2ed386783f282b090347cd1d4b85e7a2c3"
+    },
+    {
+      "bytes": 6706,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2116.json",
+      "role": "pin-matchups",
+      "sha256": "79bab571ffd590181ac87a8eb6e8e52f2f2e352693db8ab9d63655026455bc11"
+    },
+    {
+      "bytes": 12857,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2116.json",
+      "role": "pin-markets",
+      "sha256": "ba99d8214d42eae8759b280060e7823deff79452e9b0ea68c7c6d8f1eb38d555"
+    },
+    {
+      "bytes": 6681,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_11697.json",
+      "role": "pin-matchups",
+      "sha256": "e41ef411c56dd993ebd903ac6db3459032211c195c74551a4701a8094d8da909"
+    },
+    {
+      "bytes": 45289,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_11697.json",
+      "role": "pin-markets",
+      "sha256": "c5c0ba21b0589d1a7bb863a78b4f03842d78bb07ee3d761278d473bc957b251c"
+    },
+    {
+      "bytes": 2228,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2420.json",
+      "role": "pin-matchups",
+      "sha256": "1a4e2c2679d5e0c5a24c610269089eff23477d4fce13092dc0c247ba6340e12c"
+    },
+    {
+      "bytes": 15280,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2420.json",
+      "role": "pin-markets",
+      "sha256": "76a5b9ed141430cc46421ee32d71e1d9438ae981a1a78a4a895d267a84f0daa1"
+    },
+    {
+      "bytes": 11109,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_2259.json",
+      "role": "pin-matchups",
+      "sha256": "b65ce7301fb545684137d4afe65626e386e34a7122264580957faf0d6ddec371"
+    },
+    {
+      "bytes": 91854,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_2259.json",
+      "role": "pin-markets",
+      "sha256": "d9d4722920745da1e49886be039475f3d9f827189c67e3af1a11a63630943526"
+    },
+    {
+      "bytes": 2526,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_227792.json",
+      "role": "pin-matchups",
+      "sha256": "43c9c2a7cf8d85a23ccb2a29b6ce44af422680931c9b9c28c49034b8c35f3da5"
+    },
+    {
+      "bytes": 15209,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_227792.json",
+      "role": "pin-markets",
+      "sha256": "c23031f87fda374fdf615a808c48f26c909dc872c114ec6d46da9cbfa08e73e1"
+    },
+    {
+      "bytes": 600353,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/matchups_4995.json",
+      "role": "pin-matchups",
+      "sha256": "cd15f01996fcbd0590e0dfc833db3d1b9a752d678642054f51fa27d3e2c3bdd1"
+    },
+    {
+      "bytes": 356893,
+      "path": "raw/pinnacle/2026-09-29/20260929T080927Z/markets_4995.json",
+      "role": "pin-markets",
+      "sha256": "fe6d28b49595a038fa1faa1c646494756252d6a1d8f9ef75c949b6acd6eaa1c7"
+    },
+    {
+      "bytes": 77262,
+      "path": "snapshots/2026-09-29/20260929T080927Z/prospective_ledger_slice.csv",
+      "role": "ledger-slice",
+      "sha256": "9853930e0605dbf836cf27911d9cb488fb8b48b06bc1e4315b100a6acf7afd6b"
+    },
+    {
+      "bytes": 2054,
+      "path": "snapshots/2026-09-29/20260929T080927Z/invalid_prematch.csv",
+      "role": "invalid",
+      "sha256": "5bf8cf598ea86da5885ff8058b3dc192d65f95dc5d757e62a39dd777be52f2b6"
+    },
+    {
+      "bytes": 903,
+      "path": "reports/daily_quality_20260929T080927Z.json",
+      "role": "quality",
+      "sha256": "8cb0501d7eb178d772b9a63eef6c8cd565da8587be5d0ed345b01ccd11fe4796"
+    }
+  ],
+  "manifest_id": "manifest_20260929T080927Z",
+  "run_started_utc": "2026-09-29T08:09:27.387644+00:00",
+  "sources": {
+    "model": [
+      "https://footinsights.com/predictions/",
+      "https://footinsights.com/predictions/tomorrow/",
+      "https://footinsights.com/predictions/weekend/"
+    ],
+    "odds": "https://guest.api.arcadia.pinnacle.com/0.1/sports/29/leagues?brandId=0",
+    "odds_note": "Pinnacle public guest feed (Arcadia), soccer sport 29, full-match moneyline key s;0;m, American odds converted to decimal, overround removed. Snapshot time is before kickoff."
+  },
+  "strategy_file": "strategies_preregistered.json",
+  "strategy_set_sha256": "bec79c912a6e26c44d61243c0acce4ec6f8ec400e87da0ae6f4d8ba1353c76c8"
+}

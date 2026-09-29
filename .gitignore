@@ -1,0 +1,28 @@
+# secrets and sessions
+.env
+.env.*
+!.env.example
+**/api_key
+*.pem
+*.key
+cookies.txt
+*session*.json
+
+# process runtime
+*.pid
+*.lock
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+
+# captured pages, screenshots, network bodies
+*.png
+*.bin
+prospective/raw/footinsights/
+prospective/raw/pinnacle/
+backtest/raw/html/
+backtest/raw/statarea/
+staging/**/page.html
+staging/**/all.js

@@ -1,0 +1,28 @@
+2026-09-29T08:09:27Z supervisor start pid=2014 interval_seconds=10800 stall_after_seconds=21600 expires=never
+2026-09-29T08:09:27Z collect attempt 1
+{
+  "run_id": "20260929T080927Z",
+  "collected_at_utc": "2026-09-29T08:09:27.387644+00:00",
+  "manifest_sha256": "b8c8d684cb429779abcf40d47598a8bf6025592aecc25706fdab3c8c68f0a021",
+  "manifest_path": "/workspace/prospective/manifests/manifest_20260929T080927Z.json",
+  "fi_pages": 118,
+  "valid_prematch": 110,
+  "joined_pinnacle": 49,
+  "unmatched": 61,
+  "manual_review": 0,
+  "eligible": 49,
+  "invalid": 8,
+  "pinnacle_moneylines": 666,
+  "errors": 0
+}
+2026-09-29T08:09:39Z success run_id=20260929T080927Z manifest_sha256=b8c8d684cb429779abcf40d47598a8bf6025592aecc25706fdab3c8c68f0a021
+2026-09-29T08:09:39Z sleep_seconds=10799
+2026-09-29T08:09:58Z supervisor start pid=2056 interval_seconds=10800 stall_after_seconds=21600 expires=never
+2026-09-29T08:09:58Z skip duplicate snapshot last_success_age_seconds=19 next_in_seconds=10780
+2026-09-29T08:09:58Z sleep_seconds=10780
+2026-09-29T08:41:56Z supervisor start pid=2853 interval_seconds=10800 stall_after_seconds=21600 expires=never
+2026-09-29T08:41:56Z skip duplicate snapshot last_success_age_seconds=1937 next_in_seconds=8862
+2026-09-29T08:41:56Z sleep_seconds=8862
+2026-09-29T10:48:19Z supervisor start pid=3032 interval_seconds=10800 stall_after_seconds=21600 expires=never
+2026-09-29T10:48:19Z skip duplicate snapshot last_success_age_seconds=9520 next_in_seconds=1279
+2026-09-29T10:48:19Z sleep_seconds=1279

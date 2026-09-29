@@ -1,0 +1,337 @@
+{
+  "source": "elofoot",
+  "run_id": "20260929T155049Z",
+  "started_utc": "2026-09-29T15:52:05Z",
+  "entry_url": "https://www.elofoot.com/en",
+  "agent_used": false,
+  "isolated_from": "forebet-48h-20260929T153629Z",
+  "create_http": 201,
+  "create": {
+    "id": "d539b1c3-fdb8-4ce3-bd98-e223992ca0a3",
+    "status": "active",
+    "timeoutAt": "2026-09-29T15:56:05.178808Z",
+    "startedAt": "2026-09-29T15:52:05.178913Z",
+    "finishedAt": null,
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.001333333333333333333333333333"
+  },
+  "nav_http": 200,
+  "final_url": "https://www.elofoot.com/en",
+  "title": "AI football predictions & correct scores, every day · Elofoot",
+  "response_headers": {
+    "server": "cloudflare",
+    "cf-ray": "a42c2739a9774be3-MXP",
+    "content-type": "text/html; charset=utf-8"
+  },
+  "cf_ray": "a42c2739a9774be3-MXP",
+  "redirected": false,
+  "challenge_wall": false,
+  "captcha": false,
+  "paywall_language": true,
+  "login_wall_language": false,
+  "cookie_banner_language": true,
+  "screenshot_full_page": true,
+  "html_bytes": 566518,
+  "html_sha256": "bd7d379d3e97760285c5b947c1e9bfd6e24fb6f51465a0ea5111bfe715f27f23",
+  "screenshot_sha256": "cbe562a5d273dda9652322b4298dbf35f12b4391de7ab042025b54d7e11e34b4",
+  "page_errors": [],
+  "network": [
+    {
+      "url": "https://www.elofoot.com/en",
+      "status": 200,
+      "type": "document",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "url": "https://www.elofoot.com/en",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_01.bin",
+      "sha256": "8307b388b0b7bdf7a2799505e981da40ca859b5be8b105875a189c6ae034a648",
+      "bytes": 115
+    },
+    {
+      "url": "https://www.elofoot.com/api/featured-match?lang=en",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_02.bin",
+      "sha256": "c32ee48d19fa05d37c91d255d3e63cd0b198cfd4722fbf1be9e8aa33f20190d7",
+      "bytes": 5062
+    },
+    {
+      "error": "Error"
+    },
+    {
+      "url": "https://www.elofoot.com/en/onboarding?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_04.bin",
+      "sha256": "3f6812ee57bc255cffccad6ffc2d306d073b2742dac9d9d12eb55f951c4accfa",
+      "bytes": 229
+    },
+    {
+      "url": "https://www.elofoot.com/en/faq?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_05.bin",
+      "sha256": "b9411c5d23eba5269a50d085b830cac033ab9793d70d0f11ee2cf87ae814dfec",
+      "bytes": 251
+    },
+    {
+      "url": "https://www.elofoot.com/en/blog?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_06.bin",
+      "sha256": "00075b0d9dfe10b14fa7bc646b2839662c628a4bcd665982b7efbc5e31c32523",
+      "bytes": 252
+    },
+    {
+      "url": "https://www.elofoot.com/en/?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_07.bin",
+      "sha256": "76676cc5c0eddf4c88e7de8c48161d7c24c900a3b726d0f97adce7ddf17c3113",
+      "bytes": 230
+    },
+    {
+      "url": "https://www.elofoot.com/en/onboarding?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_08.bin",
+      "sha256": "3f6812ee57bc255cffccad6ffc2d306d073b2742dac9d9d12eb55f951c4accfa",
+      "bytes": 229
+    },
+    {
+      "url": "https://www.elofoot.com/en/faq?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_09.bin",
+      "sha256": "b9411c5d23eba5269a50d085b830cac033ab9793d70d0f11ee2cf87ae814dfec",
+      "bytes": 251
+    },
+    {
+      "url": "https://www.elofoot.com/en/blog?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_10.bin",
+      "sha256": "00075b0d9dfe10b14fa7bc646b2839662c628a4bcd665982b7efbc5e31c32523",
+      "bytes": 252
+    },
+    {
+      "url": "https://analytics.internal.performcode.fr/api/websites/b68f07b2-6dbd-4530-b135-0659ab450c9d/recorder",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_11.bin",
+      "sha256": "918ea70fec6ecd290b0b848265a3df1781f5c2b4eb9430b91ffe47a4087992b6",
+      "bytes": 161
+    },
+    {
+      "url": "https://www.elofoot.com/en/?_rsc=ry-B8umWgNEV4JR9",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "text/x-component",
+      "file": "net_12.bin",
+      "sha256": "76676cc5c0eddf4c88e7de8c48161d7c24c900a3b726d0f97adce7ddf17c3113",
+      "bytes": 230
+    },
+    {
+      "url": "https://analytics.internal.performcode.fr/api/send",
+      "status": 200,
+      "type": "fetch",
+      "content_type": "application/json",
+      "file": "net_13.bin",
+      "sha256": "5f7c408676c43d9f18bdb24af64033995cda750bf2746cb3f6752c834105ce3f",
+      "bytes": 439
+    },
+    {
+      "error": "TargetClosedError"
+    }
+  ],
+  "visible_text_sample": "Skip to content\nToday's predictions\nFeatures\nAI prediction\nAffiliate\nBlog\nFAQ\n🇬🇧\nEnglish\nLog in\nPredict a match for free\nUsed by the top 1% of tipsters and influencers\nFootball predictions and correct scores\nby AI, every day\nResults\nScorers & Assists\nExact scores\n\nFootball AI prediction, match by match: probabilities and a detailed analysis built on real data (xG, form, line-ups) — result, correct score, scorers and trends.\n\nPredict this match for free\nNEXT MATCH\nVS\n·\n3d 02h\n1st match on us\nNo credit card required\n200 online now\n·\nAlready 3000+ signed up\n\n0\n\nmajor leagues covered\n\n0\n\nmatches to crack every season\n\n1,199,499\n\npredictions made on Elofoot\n\nMillions of data points analysed in real time\n\nThe best football analysis AI on the market.\n\nProbabilities, scenarios and signals grounded in real data — not gut feeling.\n\nReal-time news\n\nYour teams’ and the top leagues’ news, aggregated continuously.\n\nDetailed prediction\n\nThe AI predicts the estimated scenario (winner, score) plus a Gold section: scorers, half-time, shots, xG.\n\nStats that talk\n\nxG, last-5 form, key players, recent head-to-heads.\n\nAI prediction\n\nUEFA Nations League · Fri, Oct 2, 08:45 PM\n\nUPCOMING\n\nFrance\n\nVS\n\nItaly\n\nFrance\n0%\nDraw\n0%\nItaly\n0%\n\nLikely score: 3 - 0\n\nSTARTER\n\nEstimated scorers\n\nPRO\n\nHalf-time & over 2.5\n\nPRO\nDROPPING NEXT\n\nTODAY AND TOMORROW\n\nToday's football predictions & correct scores\n\nThe biggest matches of the next 48 hours: most likely correct score and 1X2 probabilities worked out by AI. Free, no sign-up — tap a match for its detailed prediction.\n\nAll of today's predictions\nTomorrow's predictions\n17:00 UK/Lagos · UEFA Nations League\nFinland\n1 – 0\nBelarus\nPredicted score · 18% probability\n1\n56 %\nX\n27 %\n2\n17 %\n17:00 UK/Lagos · UEFA Nations League\nMoldova\n0 – 0\nFaroe Islands\nPredicted score · 18% probability\n1\n33 %\nX\n34 %\n2\n34 %\n19:45 UK/Lagos · UEFA Nations League\nSan Marino\n0 – 4\nAlbania\nPredicted score · 10% probability\n1\n2 %\nX\n4 %\n2\n94 %\n19:45 UK/Lagos · UEFA Nations League\nScotland\n0 – 1\nSwitzerland\nPredicted score · 15% probability\n1\n21 %\nX\n27 %\n2\n52 %\n19:45 UK/Lagos · UEFA Nations League\nSlovakia\n2 – 0\nKazakhstan\nPredicted score · 16% probability\n1\n77 %\nX\n16 %\n2\n7 %\n19:45 UK/Lagos · UEFA Nations League\nCzechia\n0 – 2\nEngland\nPredicted score · 15% probability\n1\n10 %\nX\n19 %\n2\n71 %\n19:45 UK/Lagos · UEFA Nations League\nSlovenia\n1 – 0\nNorth Macedonia\nPredicted score · 18% probability\n1\n59 %\nX\n26 %\n2\n15 %\n19:45 UK/Lagos · UEFA Nations League\nLuxembourg\n0 – 1\nIceland\nPredi",
+  "links_sample": [
+    {
+      "href": "https://www.elofoot.com/en#main-content",
+      "text": "Skip to content"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-du-jour",
+      "text": "Today's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/#features",
+      "text": "Features"
+    },
+    {
+      "href": "https://www.elofoot.com/en/analyse-ia-football",
+      "text": "AI prediction"
+    },
+    {
+      "href": "https://www.elofoot.com/en/#affiliate",
+      "text": "Affiliate"
+    },
+    {
+      "href": "https://www.elofoot.com/en/blog",
+      "text": "Blog"
+    },
+    {
+      "href": "https://www.elofoot.com/en/faq",
+      "text": "FAQ"
+    },
+    {
+      "href": "https://www.elofoot.com/auth/login",
+      "text": "Log in"
+    },
+    {
+      "href": "https://www.elofoot.com/onboarding",
+      "text": "Predict a match for free"
+    },
+    {
+      "href": "https://www.elofoot.com/onboarding",
+      "text": "Predict this match for free"
+    },
+    {
+      "href": "https://www.elofoot.com/en/onboarding",
+      "text": "NEXT MATCH VS · 3d 02h"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-du-jour",
+      "text": "All of today's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-demain",
+      "text": "Tomorrow's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/finland-belarus-2026-09-29",
+      "text": "17:00 UK/Lagos · UEFA Nations League Finland 1 – 0 Belarus Predicted score · 18% probabili"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/moldova-faroe-islands-2026-09-29",
+      "text": "17:00 UK/Lagos · UEFA Nations League Moldova 0 – 0 Faroe Islands Predicted score · 18% pro"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/san-marino-albania-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League San Marino 0 – 4 Albania Predicted score · 10% probab"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/scotland-switzerland-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Scotland 0 – 1 Switzerland Predicted score · 15% prob"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/slovakia-kazakhstan-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Slovakia 2 – 0 Kazakhstan Predicted score · 16% proba"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/czech-republic-england-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Czechia 0 – 2 England Predicted score · 15% probabili"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/slovenia-fyr-macedonia-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Slovenia 1 – 0 North Macedonia Predicted score · 18% "
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/luxembourg-iceland-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Luxembourg 0 – 1 Iceland Predicted score · 15% probab"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/spain-croatia-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Spain 2 – 0 Croatia Predicted score · 11% probability"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations/bulgaria-estonia-2026-09-29",
+      "text": "19:45 UK/Lagos · UEFA Nations League Bulgaria 1 – 0 Estonia Predicted score · 19% probabil"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction/ligue-des-nations",
+      "text": "UEFA Nations League"
+    },
+    {
+      "href": "https://www.elofoot.com/en/prediction",
+      "text": "All competitions"
+    },
+    {
+      "href": "https://www.elofoot.com/onboarding",
+      "text": "Predict a match for free"
+    },
+    {
+      "href": "https://www.elofoot.com/onboarding",
+      "text": "Predict a match for free"
+    },
+    {
+      "href": "https://www.elodunk.com/?utm_source=elofoot&utm_medium=referral&utm_campaign=landing",
+      "text": "Elodunk The AI that predicts basketball games: winner, score, margin and total across the "
+    },
+    {
+      "href": "https://www.elof1.com/?utm_source=elofoot&utm_medium=referral&utm_campaign=landing",
+      "text": "Elof1 The AI that predicts F1 Grands Prix: winner, podium and strategy for every race. Dis"
+    },
+    {
+      "href": "https://studi-ai.com/?utm_source=elofoot&utm_medium=referral&utm_campaign=landing",
+      "text": "Discover StudiAI"
+    },
+    {
+      "href": "https://www.elofoot.com/en/lexique/score-exact",
+      "text": "Correct score explained"
+    },
+    {
+      "href": "https://www.elofoot.com/en/lexique/1x2",
+      "text": "1X2 explained"
+    },
+    {
+      "href": "https://www.elofoot.com/en/methodologie",
+      "text": "Our methodology"
+    },
+    {
+      "href": "https://www.elofoot.com/en/pronostic-du-jour",
+      "text": "Today's predictions"
+    },
+    {
+      "href": "https://www.elofoot.com/en/faq",
+      "text": "See the full FAQ"
+    },
+    {
+      "href": "https://www.elofoot.com/auth/signup",
+      "text": "Get the result"
+    },
+    {
+      "href": "https://www.elofoot.com/onboarding",
+      "text": "See pricing"
+    },
+    {
+      "href": "https://www.elodunk.com/?utm_source=elofoot&utm_medium=referral&utm_campaign=footer",
+      "text": "Elodunk AI basketball predictions"
+    },
+    {
+      "href": "https://www.elof1.com/?utm_source=elofoot&utm_medium=referral&utm_campaign=footer",
+      "text": "Elof1 AI Formula 1 predictions"
+    },
+    {
+      "href": "https://studi-ai.com/?utm_source=elofoot&utm_medium=referral&utm_campaign=footer",
+      "text": "StudiAI Revise with AI"
+    }
+  ],
+  "stop_http": 200,
+  "session": {
+    "id": "d539b1c3-fdb8-4ce3-bd98-e223992ca0a3",
+    "status": "stopped",
+    "timeoutAt": "2026-09-29T15:56:05.178808Z",
+    "startedAt": "2026-09-29T15:52:05.178913Z",
+    "finishedAt": "2026-09-29T15:52:14.957618Z",
+    "proxyUsedMb": "0",
+    "proxyCost": "0",
+    "browserCost": "0.0003333333333333333333333333332"
+  },
+  "duration_seconds": 10.0,
+  "finished_utc": "2026-09-29T15:52:15Z"
+}
