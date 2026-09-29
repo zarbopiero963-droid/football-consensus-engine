@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hmac
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -100,11 +103,42 @@ async def healthz(_request: Request):
     )
 
 
-mcp_app = mcp.streamable_http_app(json_response=True)
+public_host = os.environ.get(
+    "MCP_PUBLIC_HOST",
+    "football-consensus-browser-bridge.onrender.com",
+).strip()
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[public_host, f"{public_host}:*"],
+    allowed_origins=[
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+    ],
+)
+
+# The MCP app is mounted at /mcp by the parent Starlette app, so its own
+# streamable path must be "/" to avoid an accidental /mcp/mcp endpoint.
+mcp_app = mcp.streamable_http_app(
+    streamable_http_path="/",
+    json_response=True,
+    stateless_http=True,
+    transport_security=transport_security,
+)
+
+
+@asynccontextmanager
+async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+    # Mounted MCP apps do not run their own lifespan. The parent must own the
+    # session manager or every MCP request fails at runtime.
+    async with mcp.session_manager.run():
+        yield
+
+
 app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
         Mount("/mcp", app=mcp_app),
-    ]
+    ],
+    lifespan=lifespan,
 )
 app.add_middleware(BearerAuthMiddleware)
