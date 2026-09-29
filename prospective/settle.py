@@ -501,11 +501,11 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
             if check_hashes and after_try != before:
                 errors.append({"where": "hash_guard", "error": "prematch files changed during settlement; result not written"})
                 break
-            append_result(results_path, stored)
             if results_path == RESULTS:
                 db_result = guarded(upsert_result, stored)
                 if not db_result["ok"]:
                     errors.append({"where": "database_result", "error": db_result["error"]})
+            append_result(results_path, stored)
             existing.append({k: str(v) for k, v in stored.items()})
             latest[snap["match_id"]] = existing[-1]
             appended += 1
