@@ -223,3 +223,30 @@ The Browser Use `cdpUrl` is treated as a bearer-like capability and is kept in p
 The bridge rejects non-HTTP(S), credential-bearing, loopback, private, link-local, multicast, reserved and unspecified destinations, including navigation redirects. It must not be used to bypass paywalls, authentication, or other access controls.
 
 PR3 adds the MCP server implementation only. Public deployment, authentication and Render configuration are intentionally deferred to the next PR.
+
+
+## Secure MCP bridge deployment
+
+The public bridge endpoint is mounted at `/mcp` and requires:
+
+```
+Authorization: Bearer <MCP_BRIDGE_TOKEN>
+```
+
+`MCP_BRIDGE_TOKEN` and `BROWSER_USE_API_KEY` are separate secrets. The first protects access to the bridge; the second is used only server-side to create Browser Use cloud sessions.
+
+Health endpoint:
+
+```
+GET /healthz
+```
+
+It returns only booleans indicating whether authentication and Browser Use are configured; it never returns secret values.
+
+Render start command for the dedicated bridge service:
+
+```bash
+uvicorn bridge.server:app --host 0.0.0.0 --port $PORT
+```
+
+The ChatGPT custom MCP URL is the dedicated Render service URL plus `/mcp`.
