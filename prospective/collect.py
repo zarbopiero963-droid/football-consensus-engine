@@ -19,6 +19,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(ROOT))
+from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E402
+
 SCRAPER_VERSION = "prospective-ledger-1"
 STRATEGY_FILE = os.path.join(ROOT, "strategies_preregistered.json")
 UA = "Mozilla/5.0 (compatible; prospective-ledger/1.0; prematch-audit)"
@@ -754,6 +757,16 @@ def main():
     seal = os.path.join(ROOT, "manifests", f"manifest_{run_id}.sha256")
     save(seal, (man_hash + "  manifest_" + run_id + ".json\n").encode(), "manifest-seal")
 
+    db_snapshots = guarded(upsert_snapshots, ledger)
+    db_state = guarded(set_runtime_state, "collector", {
+        "run_id": run_id,
+        "collected_at_utc": now.isoformat(),
+        "manifest_sha256": man_hash,
+        "eligible": quality["analysis_eligible"],
+        "valid_prematch": len(ledger),
+        "errors": len(errors),
+    })
+
     print(json.dumps({
         "run_id": run_id,
         "collected_at_utc": now.isoformat(),
@@ -768,6 +781,10 @@ def main():
         "invalid": len(invalid_rows),
         "pinnacle_moneylines": len(pin_matchups),
         "errors": len(errors),
+        "database": {
+            "snapshots": db_snapshots,
+            "runtime_state": db_state,
+        },
     }, indent=2))
 
 if __name__ == "__main__":
