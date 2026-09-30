@@ -233,6 +233,27 @@ def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetim
     }
 
 
+
+def ensure_ticket_timezones(ticket: dict) -> dict:
+    out = dict(ticket)
+    for utc_key, italy_key in (
+        ("kickoff_utc", "kickoff_italy"),
+        ("snapshot_timestamp_utc", "snapshot_timestamp_italy"),
+    ):
+        value = out.get(utc_key)
+        if not value:
+            out[italy_key] = None
+            continue
+        try:
+            dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None or dt.utcoffset() is None:
+                out[italy_key] = None
+            else:
+                out[italy_key] = to_rome_iso(dt)
+        except (TypeError, ValueError):
+            out[italy_key] = None
+    return out
+
 def _settle_ticket(ticket: dict, result: dict | None) -> dict:
     out = dict(ticket)
     if not result:
@@ -279,7 +300,10 @@ def decision_batch_view(batch_id: str) -> dict:
         tickets = list(cur.fetchall())
 
     result_map = latest_results([t["match_id"] for t in tickets])
-    settled = [_settle_ticket(dict(t["snapshot_view"]), result_map.get(t["match_id"])) for t in tickets]
+    settled = [
+        _settle_ticket(ensure_ticket_timezones(dict(t["snapshot_view"])), result_map.get(t["match_id"]))
+        for t in tickets
+    ]
     return {
         "batch_id": batch["batch_id"],
         "requested_at_utc": batch["requested_at_utc"].isoformat(),
