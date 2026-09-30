@@ -96,3 +96,41 @@ WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_active
 ON oauth_refresh_tokens (expires_at)
 WHERE revoked_at IS NULL;
+
+
+CREATE TABLE IF NOT EXISTS decision_batches (
+    batch_id TEXT PRIMARY KEY,
+    requested_at_utc TIMESTAMPTZ NOT NULL,
+    requested_date DATE NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'Europe/Rome',
+    mode TEXT NOT NULL DEFAULT 'all',
+    strategy_filter JSONB NOT NULL DEFAULT '[]'::jsonb,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_batches_date
+ON decision_batches (requested_date, requested_at_utc);
+
+CREATE TABLE IF NOT EXISTS decision_tickets (
+    batch_id TEXT NOT NULL REFERENCES decision_batches(batch_id) ON DELETE RESTRICT,
+    match_id TEXT NOT NULL,
+    snapshot_timestamp_utc TIMESTAMPTZ NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '',
+    model_pick TEXT NOT NULL DEFAULT '',
+    model_probability DOUBLE PRECISION,
+    picked_odds DOUBLE PRECISION,
+    picked_edge DOUBLE PRECISION,
+    strategies JSONB NOT NULL DEFAULT '[]'::jsonb,
+    display_status TEXT NOT NULL DEFAULT 'NO_BET',
+    snapshot_view JSONB NOT NULL,
+    shown_to_user BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (batch_id, match_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_tickets_match
+ON decision_tickets (match_id, kickoff_utc);
