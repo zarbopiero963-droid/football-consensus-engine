@@ -22,7 +22,8 @@ Friendly International
     assert rows[0]["p1"] == 54
     assert rows[0]["px"] == 25
     assert rows[0]["p2"] == 22
-    assert rows[0]["source_timezone"] == "Europe/Rome"
+    assert rows[0]["source_timezone"] == ""
+    assert rows[0]["timezone_status"] == "TIMEZONE_UNRESOLVED"
 
 
 def test_statsultra_triplet_and_extras():
