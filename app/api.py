@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.db import connect
 from app.timezones import to_rome_iso
 from app.strategy_sync import get_strategy_history, get_strategy_stats, synchronize_strategy_simulations
+from app.market_engine import freeze_market_tickets, get_batch_markets, get_market_stats
 
 ROME = ZoneInfo("Europe/Rome")
 app = FastAPI(title="Football Consensus Engine", version="0.2.0")
@@ -214,6 +215,7 @@ def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetim
         conn.commit()
 
     synchronize_strategy_simulations()
+    freeze_market_tickets(batch_id, frozen, requested_at)
 
     return {
         "batch_id": batch_id,
@@ -227,6 +229,7 @@ def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetim
         "matches": frozen,
         "count": len(frozen),
         "contract": "what_you_saw_is_what_gets_settled",
+        "markets": get_batch_markets(batch_id),
     }
 
 
@@ -402,4 +405,28 @@ def strategy_detail(strategy_id: str, limit: int = Query(default=100, ge=1, le=5
         "strategy": meta,
         "history": history,
         "history_count": len(history),
+    }
+
+
+@app.get("/decisions/{batch_id}/markets")
+def decision_market_view(batch_id: str):
+    rows = get_batch_markets(batch_id)
+    for item in rows:
+        item["kickoff_italy"] = to_rome_iso(item["kickoff_utc"])
+    return {
+        "batch_id": batch_id,
+        "timezone": "Europe/Rome",
+        "stake_model": "virtual_flat",
+        "stake_eur": 1.0,
+        "markets": rows,
+        "count": len(rows),
+    }
+
+
+@app.get("/markets/stats")
+def market_stats():
+    return {
+        "stake_model": "virtual_flat",
+        "stake_eur": 1.0,
+        "stats": get_market_stats(),
     }
