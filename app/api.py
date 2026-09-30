@@ -157,6 +157,7 @@ def day_response(day: date, include_results: bool) -> dict:
     return {
         "date": day.isoformat(),
         "timezone": "Europe/Rome",
+        "snapshot_role": "monitoring",
         "matches": matches,
         "count": len(matches),
     }
@@ -336,6 +337,11 @@ def by_date(day: str, results: bool = Query(default=True), decisions: bool = Que
             "batches": decision_report_for_day(parsed),
         }
     return day_response(parsed, include_results=results)
+
+
+@app.post("/decisions/today")
+def freeze_today(req: DecisionRequest):
+    return create_decision_batch(datetime.now(ROME).date(), req)
 
 
 @app.post("/decisions/date/{day}")
