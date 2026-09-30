@@ -176,8 +176,38 @@ def parse_kickoff_ai(text):
 
 
 def parse_vitisport(text):
-    # Homepage exposes discrete result picks / exact-score style output, not a full H/D/A vector.
-    return []
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    out = []
+    pick_tokens = {"1", "2", "0", "10", "02", "12", "-"}
+    for i in range(len(lines) - 4):
+        if not re.fullmatch(r"\d{1,2}:\d{2}", lines[i]):
+            continue
+        home = lines[i + 1]
+        score = lines[i + 2]
+        away = lines[i + 3]
+        pick = lines[i + 4]
+        if not re.fullmatch(r"\d+\s*:\s*\d+", score):
+            continue
+        if pick not in pick_tokens:
+            continue
+        row = {
+            "home_team": home,
+            "away_team": away,
+            "kickoff_raw": lines[i],
+            "source_timezone": "",
+            "timezone_status": "TIMEZONE_UNRESOLVED",
+            "p1": None,
+            "px": None,
+            "p2": None,
+            "parse_status": "PARTIAL_PICK",
+            "payload_extra": {
+                "selection": pick,
+                "correct_score": re.sub(r"\s+", "", score),
+                "source_layer": "vitisport_index",
+            },
+        }
+        out.append(row)
+    return _dedupe(out)
 
 
 def parse_clubelo(text):
@@ -246,21 +276,45 @@ def parse_scoutingstats(text):
 
 
 def parse_aipredict(text):
-    pattern = re.compile(
-        r"([A-Za-zÀ-ÿ .'-]+)\s+\d+:\d+\s+AI PREDICTION\s+\w+\s+([A-Za-zÀ-ÿ .'-]+)\s+AI\s+"
-        r"(\d+(?:\.\d+)?)%\s+(\d+(?:\.\d+)?)%\s+(\d+(?:\.\d+)?)%",
-        re.I
-    )
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
     out = []
-    for home, away, p1, px, p2 in pattern.findall(text):
-        a, b, c = float(p1), float(px), float(p2)
-        if valid_triplet(a, b, c):
-            out.append({
-                "home_team": home.strip(), "away_team": away.strip(),
-                "kickoff_raw": "", "source_timezone": "", "timezone_status": "TIMEZONE_UNRESOLVED",
-                "p1": a, "px": b, "p2": c, "parse_status": "OK",
-                "payload_extra": {"source_layer": "aipredict_ai", "market_odds_role": "sanity_check_only_claimed"},
-            })
+    for i, line in enumerate(lines):
+        if line.upper() != "AI PREDICTION":
+            continue
+        if i < 2:
+            continue
+        home = lines[i - 2]
+        score_or_time = lines[i - 1]
+        j = i + 1
+        if j >= len(lines):
+            continue
+        # Model grade/badge, e.g. A/B/C.
+        j += 1
+        if j >= len(lines):
+            continue
+        away = lines[j]
+        j += 1
+        if j < len(lines) and lines[j].upper() == "AI":
+            j += 1
+        if j + 2 >= len(lines):
+            continue
+        a, b, c = pct(lines[j]), pct(lines[j + 1]), pct(lines[j + 2])
+        if not valid_triplet(a, b, c):
+            continue
+        out.append({
+            "home_team": home,
+            "away_team": away,
+            "kickoff_raw": score_or_time if re.fullmatch(r"\d{1,2}:\d{2}", score_or_time) else "",
+            "source_timezone": "",
+            "timezone_status": "TIMEZONE_UNRESOLVED",
+            "p1": a, "px": b, "p2": c,
+            "parse_status": "OK",
+            "payload_extra": {
+                "source_layer": "aipredict_ai",
+                "market_odds_role": "sanity_check_only_claimed",
+                "display_score_or_time": score_or_time,
+            },
+        })
     return _dedupe(out)
 
 
