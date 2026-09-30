@@ -314,3 +314,36 @@ GET /decisions/{batch_id}
 After settlement, the endpoint combines the frozen pick/probability/odds with the verified result. Profit uses the frozen displayed odds, never a later quote.
 
 `GET /yesterday` now prefers decision tickets. If none were created for that date it explicitly returns `report_mode=monitoring_only` instead of pretending the latest pre-kickoff snapshot was what the user saw.
+
+
+## Timezone contract — user output is always Italy time
+
+All storage and matching remain canonical in UTC. Source-specific raw data must preserve the original timestamp and its declared/verified timezone, then normalize to UTC before joining fixtures.
+
+User-facing API/report fields are always rendered in the IANA timezone:
+
+```
+Europe/Rome
+```
+
+This automatically applies CEST (UTC+2) and CET (UTC+1) according to the calendar date.
+
+For every displayed snapshot the API includes:
+
+- `kickoff_italy`
+- `snapshot_timestamp_italy`
+- `requested_at_italy` for decision batches
+
+The corresponding `*_utc` values remain present only as canonical machine/audit timestamps.
+
+For a source that exposes a naive local time, adapters must call `normalize_source_datetime(value, source_tz)` with a verified IANA timezone. They must not guess an offset. If a source timezone cannot be verified, the fixture is `TIMEZONE_UNRESOLVED` and must not be silently joined.
+
+Example:
+
+```
+source: 2026-09-30 16:00 America/New_York
+canonical UTC: 2026-09-30 20:00Z
+shown to user in Italy: 2026-09-30 22:00 CEST
+```
+
+The daily date boundary for `/today`, `/yesterday`, `/date/...` and decision batches is also Europe/Rome, not UTC.
