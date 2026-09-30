@@ -128,6 +128,33 @@ def project_from_source_row(row: dict[str, Any]) -> list[MarketPick]:
             if top:
                 out.append(MarketPick(market_id, period, top[0], top[1], source, line=line))
 
+    for item in payload.get("goal_lines") or []:
+        line = _f(item.get("line"))
+        prob = _f(item.get("probability"))
+        sel = str(item.get("selection") or "").upper()
+        if line is None or prob is None or sel not in {"OVER", "UNDER"}:
+            continue
+        if prob > 1:
+            prob /= 100.0
+        out.append(MarketPick(f"FT_OU_{line:g}", "FT", sel, prob, source, line=line))
+
+    for item in payload.get("corner_lines") or []:
+        line = _f(item.get("line"))
+        prob = _f(item.get("probability"))
+        sel = str(item.get("selection") or "").upper()
+        if line is None or prob is None or sel not in {"OVER", "UNDER"}:
+            continue
+        if prob > 1:
+            prob /= 100.0
+        out.append(MarketPick(f"FT_CORNERS_OU_{line:g}", "FT", sel, prob, source, line=line))
+
+    htft_sel = str(payload.get("htft_selection") or "")
+    htft_prob = _f(payload.get("htft_probability"))
+    if htft_sel and htft_prob is not None:
+        if htft_prob > 1:
+            htft_prob /= 100.0
+        out.append(MarketPick("HTFT_1X2", "HTFT", htft_sel, htft_prob, source))
+
     return out
 
 
@@ -183,10 +210,16 @@ def settle_market(market_id: str, selection: str, line: float | None, result: di
         if hh is None or ha is None:
             return None
         actual = f"{hh}-{ha}"
-    elif market_id == "FT_CORNERS_OU":
+    elif market_id.startswith("FT_CORNERS_OU"):
         actual = ou(None if ch is None or ca is None else ch + ca, line)
-    elif market_id == "HT_CORNERS_OU":
+    elif market_id.startswith("HT_CORNERS_OU"):
         actual = ou(None if hch is None or hca is None else hch + hca, line)
+    elif market_id == "HTFT_1X2":
+        hr = one_x_two(hh, ha)
+        fr = one_x_two(fh, fa)
+        if hr is None or fr is None:
+            return None
+        actual = f"{hr}/{fr}"
     else:
         return None
 
