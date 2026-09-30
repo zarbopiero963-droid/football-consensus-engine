@@ -165,6 +165,168 @@ def parse_elofoot(text: str):
         })
     return out
 
+PROSOCCER_EXTRA_PAGES = {
+    "goals": "https://prosoccer.eu/football/under-over",
+    "correct_scores": "https://prosoccer.eu/football/correct-scores",
+    "half_time": "https://prosoccer.eu/football/half-time",
+    "ht_correct_scores": "https://prosoccer.eu/football/ht-correct-scores",
+    "corners": "https://prosoccer.eu/football/corners",
+    "htft": "https://prosoccer.eu/football/half-time-full-time",
+}
+
+
+def _prosoccer_blocks(text: str):
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    blocks = []
+    i = 0
+    while i < len(lines):
+        if re.fullmatch(r"\d{1,2}:\d{2}", lines[i]):
+            start = i
+            j = i + 1
+            while j < len(lines) and not re.fullmatch(r"(?:\d{1,2}:\d{2}|FT|HT)", lines[j]):
+                j += 1
+            block = lines[start:j]
+            if len(block) >= 4:
+                blocks.append(block)
+            i = j
+        else:
+            i += 1
+    return blocks
+
+
+def _pair_key(home: str, away: str):
+    return canon(home) + "|" + canon(away)
+
+
+def parse_prosoccer_goal_lines(text: str):
+    out = {}
+    for b in _prosoccer_blocks(text):
+        home, away = b[1], b[2]
+        picks = []
+        for i in range(4, len(b) - 1):
+            m = re.fullmatch(r"(Over|Under)\s+(\d+(?:\.\d+)?)", b[i], re.I)
+            p = re.fullmatch(r"(\d+(?:\.\d+)?)%", b[i + 1])
+            if m and p:
+                picks.append({
+                    "selection": m.group(1).upper(),
+                    "line": float(m.group(2)),
+                    "probability": float(p.group(1)),
+                })
+        if picks:
+            out[_pair_key(home, away)] = picks
+    return out
+
+
+def parse_prosoccer_scorelines(text: str, *, half_time=False):
+    out = {}
+    for b in _prosoccer_blocks(text):
+        home, away = b[1], b[2]
+        picks = []
+        for i in range(4, len(b) - 1):
+            m = re.fullmatch(r"(\d+)\s*[–-]\s*(\d+)", b[i])
+            p = re.fullmatch(r"(\d+(?:\.\d+)?)%", b[i + 1])
+            if m and p:
+                picks.append({
+                    "score": f"{m.group(1)}-{m.group(2)}",
+                    "probability": float(p.group(1)),
+                })
+        if picks:
+            out[_pair_key(home, away)] = picks[:3]
+    return out
+
+
+def parse_prosoccer_ht_1x2(text: str):
+    out = {}
+    for b in _prosoccer_blocks(text):
+        home, away = b[1], b[2]
+        vals = {}
+        for i in range(4, len(b) - 1):
+            m = re.fullmatch(r"HT\s+([1X2])", b[i], re.I)
+            p = re.fullmatch(r"(\d+(?:\.\d+)?)%", b[i + 1])
+            if m and p:
+                vals[m.group(1).upper()] = float(p.group(1))
+        if all(k in vals for k in ("1", "X", "2")):
+            out[_pair_key(home, away)] = vals
+    return out
+
+
+def parse_prosoccer_corners(text: str):
+    out = {}
+    for b in _prosoccer_blocks(text):
+        home, away = b[1], b[2]
+        picks = []
+        for i in range(4, len(b) - 1):
+            m = re.fullmatch(r"(Over|Under)\s+(\d+(?:\.\d+)?)", b[i], re.I)
+            p = re.fullmatch(r"(\d+(?:\.\d+)?)%", b[i + 1])
+            if m and p:
+                picks.append({
+                    "selection": m.group(1).upper(),
+                    "line": float(m.group(2)),
+                    "probability": float(p.group(1)),
+                })
+        if picks:
+            out[_pair_key(home, away)] = picks
+    return out
+
+
+def parse_prosoccer_htft(text: str):
+    out = {}
+    for b in _prosoccer_blocks(text):
+        home, away = b[1], b[2]
+        picks = []
+        for i in range(4, len(b) - 1):
+            m = re.fullmatch(r"([1X2])/([1X2])", b[i])
+            p = re.fullmatch(r"(\d+(?:\.\d+)?)%", b[i + 1])
+            if m and p:
+                picks.append({
+                    "selection": f"{m.group(1)}/{m.group(2)}",
+                    "probability": float(p.group(1)),
+                })
+        if picks:
+            out[_pair_key(home, away)] = picks[:3]
+    return out
+
+
+def enrich_prosoccer_predictions(preds, extra_text):
+    idx = {_pair_key(p["home_team"], p["away_team"]): p for p in preds}
+    goal_lines = parse_prosoccer_goal_lines(extra_text.get("goals", ""))
+    scorelines = parse_prosoccer_scorelines(extra_text.get("correct_scores", ""))
+    ht = parse_prosoccer_ht_1x2(extra_text.get("half_time", ""))
+    ht_scores = parse_prosoccer_scorelines(extra_text.get("ht_correct_scores", ""), half_time=True)
+    corners = parse_prosoccer_corners(extra_text.get("corners", ""))
+    htft = parse_prosoccer_htft(extra_text.get("htft", ""))
+
+    for key, pred in idx.items():
+        extra = pred.setdefault("payload_extra", {})
+        if key in goal_lines:
+            extra["goal_lines"] = goal_lines[key]
+        if key in scorelines:
+            extra["correct_scores"] = scorelines[key]
+            pred["correct_score"] = scorelines[key][0]["score"]
+            extra["correct_score_probability"] = scorelines[key][0]["probability"]
+        if key in ht:
+            extra["ht_p1"] = ht[key]["1"]
+            extra["ht_px"] = ht[key]["X"]
+            extra["ht_p2"] = ht[key]["2"]
+        if key in ht_scores:
+            extra["ht_correct_scores"] = ht_scores[key]
+            extra["ht_correct_score"] = ht_scores[key][0]["score"]
+            extra["ht_correct_score_probability"] = ht_scores[key][0]["probability"]
+        if key in corners:
+            extra["corner_lines"] = corners[key]
+            best = max(corners[key], key=lambda x: x["probability"])
+            extra["corners_line"] = best["line"]
+            if best["selection"] == "OVER":
+                extra["corners_over"] = best["probability"]
+            else:
+                extra["corners_under"] = best["probability"]
+        if key in htft:
+            extra["htft_top"] = htft[key]
+            extra["htft_selection"] = htft[key][0]["selection"]
+            extra["htft_probability"] = htft[key][0]["probability"]
+    return preds
+
+
 PARSERS = {
     "prosoccer": parse_prosoccer,
     "statsultra": parse_statsultra,
@@ -255,6 +417,8 @@ def collect_source(source, url, slot_no, anchors):
     final_url = url
     http_status = None
     page_errors = []
+    extra_text = {}
+    extra_page_status = {}
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -272,8 +436,27 @@ def collect_source(source, url, slot_no, anchors):
             final_url = page.url
             http_status = resp.status if resp else None
             text = page.locator("body").inner_text(timeout=30000)
-            html = page.content().encode("utf-8")
+            main_html = page.content().encode("utf-8")
             shot = page.screenshot(full_page=True, timeout=30000)
+            html_parts = [b"<!-- PAGE:main -->\n" + main_html]
+
+            if source == "prosoccer":
+                for label, page_url in PROSOCCER_EXTRA_PAGES.items():
+                    r = page.goto(page_url, wait_until="domcontentloaded", timeout=90000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                    except Exception:
+                        page.wait_for_timeout(4000)
+                    extra_text[label] = page.locator("body").inner_text(timeout=30000)
+                    raw = page.content().encode("utf-8")
+                    html_parts.append(f"\n<!-- PAGE:{label} URL:{page_url} -->\n".encode() + raw)
+                    extra_page_status[label] = {
+                        "url": page.url,
+                        "http_status": r.status if r else None,
+                        "html_sha256": sha(raw),
+                        "html_bytes": len(raw),
+                    }
+            html = b"".join(html_parts)
             browser.close()
     finally:
         browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
@@ -281,6 +464,7 @@ def collect_source(source, url, slot_no, anchors):
 
     preds = PARSERS[source](text)
     if source == "prosoccer":
+        enrich_prosoccer_predictions(preds, extra_text)
         for pred in preds:
             resolve_prosoccer_date(pred)
 
@@ -293,6 +477,7 @@ def collect_source(source, url, slot_no, anchors):
         "page_errors": page_errors[:20],
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
+        "extra_pages": extra_page_status,
     }
 
     with connect() as conn, conn.cursor() as cur:
@@ -334,8 +519,13 @@ def collect_source(source, url, slot_no, anchors):
               VALUES (%s,%s,%s,%s,%s,%s)
             """, (run_id,key,anchor_id,mstatus,confidence,reason))
         conn.commit()
-    return {"source": source, "run_id": run_id, "rows": len(preds), "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")}}
-
+    return {
+        "source": source,
+        "run_id": run_id,
+        "rows": len(preds),
+        "extra_pages": sorted(extra_page_status),
+        "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")},
+    }
 
 def main():
     if not os.environ.get("BROWSER_USE_API_KEY", "").strip():
