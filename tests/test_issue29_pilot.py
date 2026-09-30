@@ -61,3 +61,40 @@ def test_totalcorner_parser():
     rows = parse_totalcorner(text)
     assert rows[0]["parse_status"] == "CORNERS_ONLY"
     assert rows[0]["payload_extra"]["under_probability"] == 73
+
+
+def test_aipredict_line_parser():
+    from staging.issue29_pilot.pilot48 import parse_aipredict
+    text = """Argentina
+2:0
+AI PREDICTION
+B
+Bolivia
+AI
+70%
+18%
+12%
+1
+Argentina to win
+70%"""
+    rows = parse_aipredict(text)
+    assert len(rows) == 1
+    assert rows[0]["home_team"] == "Argentina"
+    assert rows[0]["away_team"] == "Bolivia"
+    assert rows[0]["p1"] == 70
+    assert rows[0]["px"] == 18
+    assert rows[0]["p2"] == 12
+
+
+def test_vitisport_partial_pick_parser():
+    from staging.issue29_pilot.pilot48 import parse_vitisport
+    text = """18:00
+Eritrea
+0 : 2
+South Africa
+2"""
+    rows = parse_vitisport(text)
+    assert len(rows) == 1
+    assert rows[0]["parse_status"] == "PARTIAL_PICK"
+    assert rows[0]["payload_extra"]["selection"] == "2"
+    assert rows[0]["payload_extra"]["correct_score"] == "0:2"
