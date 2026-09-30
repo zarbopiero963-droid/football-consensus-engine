@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.db import connect
 from app.timezones import to_rome_iso
+from app.strategy_sync import get_strategy_history, get_strategy_stats, synchronize_strategy_simulations
 
 ROME = ZoneInfo("Europe/Rome")
 app = FastAPI(title="Football Consensus Engine", version="0.2.0")
@@ -212,6 +213,8 @@ def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetim
             )
         conn.commit()
 
+    synchronize_strategy_simulations()
+
     return {
         "batch_id": batch_id,
         "requested_at_utc": requested_at.isoformat(),
@@ -368,3 +371,35 @@ def freeze_decisions(day: str, req: DecisionRequest):
 @app.get("/decisions/{batch_id}")
 def get_decision_batch(batch_id: str):
     return decision_batch_view(batch_id)
+
+
+@app.get("/strategies")
+def strategies_overview():
+    rows = get_strategy_stats()
+    return {
+        "stake_model": "virtual_flat",
+        "stake_eur": 1.0,
+        "timezone": "Europe/Rome",
+        "strategies": rows,
+        "count": len(rows),
+    }
+
+
+@app.get("/strategies/{strategy_id}")
+def strategy_detail(strategy_id: str, limit: int = Query(default=100, ge=1, le=500)):
+    sid = strategy_id.upper()
+    rows = get_strategy_stats()
+    meta = next((r for r in rows if r["strategy_id"] == sid), None)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    history = get_strategy_history(sid, limit)
+    for item in history:
+        item["kickoff_italy"] = to_rome_iso(item["kickoff_utc"])
+    return {
+        "stake_model": "virtual_flat",
+        "stake_eur": 1.0,
+        "timezone": "Europe/Rome",
+        "strategy": meta,
+        "history": history,
+        "history_count": len(history),
+    }
