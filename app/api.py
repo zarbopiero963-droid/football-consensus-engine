@@ -430,3 +430,16 @@ def market_stats():
         "stake_eur": 1.0,
         "stats": get_market_stats(),
     }
+
+
+@app.get("/results/consensus")
+def result_consensus(limit: int = Query(default=200, ge=1, le=1000)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT match_id,final_home_goals,final_away_goals,ht_home_goals,ht_away_goals,
+                   corners_home,corners_away,ht_corners_home,ht_corners_away,result_1x2,
+                   verification_status,field_verification,providers,updated_at
+            FROM result_consensus ORDER BY updated_at DESC LIMIT %s
+        """, (limit,))
+        rows=list(cur.fetchall())
+    return {"results": rows, "count": len(rows)}
