@@ -237,6 +237,13 @@ def _settle_ticket(ticket: dict, result: dict | None) -> dict:
         return out
 
     result_payload = dict(result["payload"])
+    result_ts = result_payload.get("result_timestamp_utc")
+    if result_ts:
+        try:
+            parsed_result_ts = datetime.fromisoformat(str(result_ts).replace("Z", "+00:00"))
+            result_payload["result_timestamp_italy"] = to_rome_iso(parsed_result_ts)
+        except ValueError:
+            result_payload["result_timestamp_italy"] = None
     real = result_payload.get("result_1x2") or result_payload.get("result")
     pick = out.get("model_pick")
     correct = bool(real and pick and real == pick)
