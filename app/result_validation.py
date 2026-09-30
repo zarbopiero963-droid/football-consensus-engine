@@ -12,47 +12,6 @@ def result_1x2(h,a):
 def observation_id(match_id,provider,observed_at):
     return hashlib.sha256(f"{match_id}|{provider}|{observed_at}".encode()).hexdigest()[:32]
 
-def normalize_footystats(item):
-    def iv(k):
-        v=item.get(k)
-        try: v=int(v)
-        except: return None
-        return None if v < 0 else v
-    return {
-      "provider_match_id":str(item.get("id") or ""),
-      "status":str(item.get("status") or ""),
-      "final_home_goals":iv("homeGoalCount"),"final_away_goals":iv("awayGoalCount"),
-      "ht_home_goals":iv("ht_goals_team_a"),"ht_away_goals":iv("ht_goals_team_b"),
-      "corners_home":iv("team_a_corners"),"corners_away":iv("team_b_corners"),
-      "ht_corners_home":None,"ht_corners_away":None,
-    }
-
-def normalize_api_football(fixture, stats=None, ht_stats=None):
-    score=fixture.get("score") or {}
-    full=score.get("fulltime") or {}; half=score.get("halftime") or {}
-    def stat(rows,label):
-        for team in rows or []:
-            side=team.get("_side")
-            for s in team.get("statistics") or []:
-                if s.get("type")==label:
-                    try: return side,int(s.get("value"))
-                    except: pass
-        return None
-    out={"provider_match_id":str((fixture.get("fixture") or {}).get("id") or ""),
-         "status":str(((fixture.get("fixture") or {}).get("status") or {}).get("short") or ""),
-         "final_home_goals":full.get("home"),"final_away_goals":full.get("away"),
-         "ht_home_goals":half.get("home"),"ht_away_goals":half.get("away"),
-         "corners_home":None,"corners_away":None,"ht_corners_home":None,"ht_corners_away":None}
-    for rows,prefix in ((stats,"corners"),(ht_stats,"ht_corners")):
-        for side in ("home","away"):
-            for team in rows or []:
-                if team.get("_side")!=side: continue
-                for s in team.get("statistics") or []:
-                    if s.get("type")=="Corner Kicks":
-                        try: out[f"{prefix}_{side}"]=int(s.get("value"))
-                        except: pass
-    return out
-
 def upsert_observation(match_id,provider,observed_at,kickoff,payload):
     norm=dict(payload)
     oid=observation_id(match_id,provider,observed_at)
