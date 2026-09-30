@@ -235,28 +235,16 @@ def _ticket_id(batch_id: str, match_id: str, market_id: str, source: str) -> str
 
 
 def freeze_market_tickets(batch_id: str, frozen_matches: list[dict[str, Any]], requested_at) -> int:
+    """Freeze production market tickets from production snapshots only.
+
+    Pilot/qualification tables are intentionally not read here. A source must
+    be promoted through an explicit production eligibility path before it can
+    contribute to user-visible market tickets.
+    """
     count = 0
     with connect() as conn, conn.cursor() as cur:
         for view in frozen_matches:
             picks = project_from_1x2(view)
-
-            cur.execute("""
-                SELECT spp.*, spr.started_at_utc
-                FROM source_pilot_predictions spp
-                JOIN source_pilot_runs spr ON spr.run_id=spp.run_id
-                JOIN source_pilot_matches spm
-                  ON spm.run_id=spp.run_id AND spm.source_match_key=spp.source_match_key
-                WHERE spm.anchor_match_id=%s
-                  AND spr.started_at_utc<=%s
-                  AND spm.match_status IN ('FOUND','FOUND_NAME_ONLY')
-                ORDER BY spr.started_at_utc DESC
-            """, (view["match_id"], requested_at))
-            seen_source = set()
-            for row in cur.fetchall():
-                if row["source"] in seen_source:
-                    continue
-                seen_source.add(row["source"])
-                picks.extend(project_from_source_row(row))
 
             unique = {}
             for pick in picks:
