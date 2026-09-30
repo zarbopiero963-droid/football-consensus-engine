@@ -95,3 +95,46 @@ def test_missing_ht_or_corners_stays_pending():
 def test_push_on_integer_total():
     result = {"final_home_goals": 1, "final_away_goals": 1}
     assert settle_market("FT_OU_2.0", "OVER", 2.0, result) == ("PUSH", True)
+
+
+def test_prosoccer_payload_projects_multiple_real_markets():
+    picks = project_from_source_row({
+        "source": "prosoccer",
+        "p1": 54, "px": 24, "p2": 22,
+        "over25": 51, "under25": 49,
+        "btts_yes": None, "btts_no": None,
+        "correct_score": "1-1",
+        "payload": {
+            "correct_score_probability": 11.3,
+            "goal_lines": [
+                {"selection": "OVER", "line": 1.5, "probability": 76},
+                {"selection": "OVER", "line": 2.5, "probability": 51},
+                {"selection": "UNDER", "line": 3.5, "probability": 71},
+            ],
+            "ht_p1": 34, "ht_px": 48, "ht_p2": 18,
+            "ht_correct_score": "0-0",
+            "ht_correct_score_probability": 40.3,
+            "corner_lines": [
+                {"selection": "UNDER", "line": 10.5, "probability": 92},
+                {"selection": "UNDER", "line": 9.5, "probability": 86},
+            ],
+            "htft_selection": "1/1",
+            "htft_probability": 28,
+        },
+    })
+    by_id = {p.market_id: p for p in picks}
+    assert by_id["FT_OU_1.5"].selection == "OVER"
+    assert by_id["FT_OU_2.5"].selection == "OVER"
+    assert by_id["FT_OU_3.5"].selection == "UNDER"
+    assert by_id["HT_1X2"].selection == "X"
+    assert by_id["HT_CORRECT_SCORE"].selection == "0-0"
+    assert by_id["FT_CORNERS_OU_10.5"].selection == "UNDER"
+    assert by_id["HTFT_1X2"].selection == "1/1"
+
+
+def test_htft_settlement():
+    result = {
+        "final_home_goals": 2, "final_away_goals": 1,
+        "ht_home_goals": 1, "ht_away_goals": 0,
+    }
+    assert settle_market("HTFT_1X2", "1/1", None, result) == ("1/1", True)
