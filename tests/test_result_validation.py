@@ -77,3 +77,11 @@ def test_single_source_is_not_called_verified():
     _, fields, status = compute_consensus(rows)
     assert status == "SINGLE_SOURCE"
     assert fields["final_home_goals"]["status"] == "SINGLE_SOURCE"
+
+
+def test_external_validation_skips_cleanly_without_keys(monkeypatch):
+    from prospective.validate_results import run_external_validation_if_due
+    monkeypatch.delenv("API_FOOTBALL_KEY", raising=False)
+    monkeypatch.delenv("FOOTYSTATS_API_KEY", raising=False)
+    out = run_external_validation_if_due()
+    assert out == {"configured": False, "ran": False, "reason": "no_external_result_keys"}
