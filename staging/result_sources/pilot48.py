@@ -127,6 +127,14 @@ def inspect_source(source: str, text: str, html: str) -> tuple[int, dict]:
             "corners_ft": False,
             "corners_ht": False,
         }
+    elif source == "worldfootball":
+        rows = len(re.findall(r"\b\d{1,2}:\d{1,2}\b", text))
+        caps = {
+            "ft_score": rows > 0 or "finished" in low,
+            "ht_score": "half-time" in low or "halftime" in low,
+            "corners_ft": "corners" in low,
+            "corners_ht": False,
+        }
     else:
         rows, caps = 0, {}
     return rows, caps
