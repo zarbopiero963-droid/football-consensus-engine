@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db import connect
+from app.timezones import to_rome_iso
 
 ROME = ZoneInfo("Europe/Rome")
 app = FastAPI(title="Football Consensus Engine", version="0.2.0")
@@ -100,7 +101,9 @@ def view_snapshot(row: dict) -> dict:
     return {
         "match_id": row["match_id"],
         "kickoff_utc": row["kickoff_utc"].isoformat(),
+        "kickoff_italy": to_rome_iso(row["kickoff_utc"]),
         "snapshot_timestamp_utc": row["snapshot_timestamp_utc"].isoformat(),
+        "snapshot_timestamp_italy": to_rome_iso(row["snapshot_timestamp_utc"]),
         "league": row["league"],
         "home": row["home_team"],
         "away": row["away_team"],
@@ -212,6 +215,7 @@ def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetim
     return {
         "batch_id": batch_id,
         "requested_at_utc": requested_at.isoformat(),
+        "requested_at_italy": to_rome_iso(requested_at),
         "date": day.isoformat(),
         "timezone": "Europe/Rome",
         "mode": req.mode,
@@ -266,6 +270,7 @@ def decision_batch_view(batch_id: str) -> dict:
     return {
         "batch_id": batch["batch_id"],
         "requested_at_utc": batch["requested_at_utc"].isoformat(),
+        "requested_at_italy": to_rome_iso(batch["requested_at_utc"]),
         "date": batch["requested_date"].isoformat(),
         "timezone": batch["timezone"],
         "mode": batch["mode"],
