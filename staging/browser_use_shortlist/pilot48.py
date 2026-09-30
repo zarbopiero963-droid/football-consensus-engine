@@ -6,12 +6,17 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from app.db import connect
 
