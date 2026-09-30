@@ -77,8 +77,23 @@ def sync_fifa_from_match_results():
     from datetime import datetime, timezone
     now=datetime.now(timezone.utc)
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT DISTINCT ON(match_id) match_id,kickoff_utc,payload
-                       FROM match_results ORDER BY match_id,version DESC""")
+        cur.execute("""WITH latest_results AS (
+                         SELECT DISTINCT ON(mr.match_id)
+                           mr.match_id,
+                           mr.payload
+                         FROM match_results mr
+                         ORDER BY mr.match_id, mr.version DESC
+                       ),
+                       latest_snapshots AS (
+                         SELECT DISTINCT ON(ms.match_id)
+                           ms.match_id,
+                           ms.kickoff_utc
+                         FROM model_snapshots ms
+                         ORDER BY ms.match_id, ms.snapshot_timestamp_utc DESC
+                       )
+                       SELECT r.match_id, s.kickoff_utc, r.payload
+                       FROM latest_results r
+                       LEFT JOIN latest_snapshots s USING(match_id)""")
         rows=list(cur.fetchall())
     for r in rows:
         p=dict(r["payload"])
