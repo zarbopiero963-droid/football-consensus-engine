@@ -310,3 +310,45 @@ CREATE TABLE IF NOT EXISTS market_stats (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY(market_id,source)
 );
+
+
+CREATE TABLE IF NOT EXISTS result_observations (
+    observation_id TEXT PRIMARY KEY,
+    match_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_match_id TEXT NOT NULL DEFAULT '',
+    observed_at_utc TIMESTAMPTZ NOT NULL,
+    kickoff_utc TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT '',
+    final_home_goals INTEGER,
+    final_away_goals INTEGER,
+    ht_home_goals INTEGER,
+    ht_away_goals INTEGER,
+    corners_home INTEGER,
+    corners_away INTEGER,
+    ht_corners_home INTEGER,
+    ht_corners_away INTEGER,
+    raw_sha256 TEXT NOT NULL DEFAULT '',
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE(match_id,provider,observed_at_utc)
+);
+
+CREATE INDEX IF NOT EXISTS idx_result_observations_match
+ON result_observations(match_id,provider,observed_at_utc DESC);
+
+CREATE TABLE IF NOT EXISTS result_consensus (
+    match_id TEXT PRIMARY KEY,
+    final_home_goals INTEGER,
+    final_away_goals INTEGER,
+    ht_home_goals INTEGER,
+    ht_away_goals INTEGER,
+    corners_home INTEGER,
+    corners_away INTEGER,
+    ht_corners_home INTEGER,
+    ht_corners_away INTEGER,
+    result_1x2 TEXT,
+    verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+    field_verification JSONB NOT NULL DEFAULT '{}'::jsonb,
+    providers JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

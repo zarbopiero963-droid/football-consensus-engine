@@ -24,6 +24,7 @@ from collect import canon, name_score  # noqa: E402
 from app.persist import guarded, set_runtime_state, upsert_result  # noqa: E402
 from app.strategy_sync import synchronize_strategy_simulations  # noqa: E402
 from app.market_engine import synchronize_market_settlement  # noqa: E402
+from app.result_validation import sync_fifa_from_match_results  # noqa: E402
 
 LEDGER = os.path.join(ROOT, "prospective_ledger.csv")
 RESULTS = os.path.join(ROOT, "normalized", "results.csv")
@@ -564,6 +565,11 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
             payload["errors"].append({"where": "strategy_sync", "error": db_strategy["error"]})
         else:
             payload["strategy_sync"] = db_strategy["result"]
+        db_validation = guarded(sync_fifa_from_match_results)
+        if not db_validation["ok"]:
+            payload["errors"].append({"where": "result_validation", "error": db_validation["error"]})
+        else:
+            payload["result_validation"] = {"fifa_rows": db_validation["result"]}
         db_markets = guarded(synchronize_market_settlement)
         if not db_markets["ok"]:
             payload["errors"].append({"where": "market_sync", "error": db_markets["error"]})
