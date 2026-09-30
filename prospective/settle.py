@@ -22,6 +22,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(ROOT))
 from collect import canon, name_score  # noqa: E402
 from app.persist import guarded, set_runtime_state, upsert_result  # noqa: E402
+from app.strategy_sync import synchronize_strategy_simulations  # noqa: E402
 
 LEDGER = os.path.join(ROOT, "prospective_ledger.csv")
 RESULTS = os.path.join(ROOT, "normalized", "results.csv")
@@ -557,6 +558,11 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
         })
         if not db_state["ok"]:
             payload["errors"].append({"where": "database_state", "error": db_state["error"]})
+        db_strategy = guarded(synchronize_strategy_simulations)
+        if not db_strategy["ok"]:
+            payload["errors"].append({"where": "strategy_sync", "error": db_strategy["error"]})
+        else:
+            payload["strategy_sync"] = db_strategy["result"]
         write_report(payload)
     return payload
 

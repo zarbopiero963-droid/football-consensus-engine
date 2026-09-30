@@ -347,3 +347,39 @@ shown to user in Italy: 2026-09-30 22:00 CEST
 ```
 
 The daily date boundary for `/today`, `/yesterday`, `/date/...` and decision batches is also Europe/Rome, not UTC.
+
+
+## Strategy accounting — synchronized virtual €1 flat stake
+
+The strategy ledger is derived automatically from immutable decision tickets and the latest versioned match result.
+
+For every strategy activated in a user-visible decision ticket, the system creates one simulation record with:
+
+- strategy id and descriptive name;
+- pick, probability, odds and edge frozen from the decision ticket;
+- virtual flat stake: €1.00;
+- status: `PENDING`, `WON`, or `LOST`;
+- result 1X2;
+- correct/incorrect flag;
+- profit in EUR when a price exists.
+
+Synchronization occurs automatically:
+
+1. immediately after a decision batch is created, producing `PENDING` rows;
+2. after every settlement cycle, updating the derived rows from `match_results` and recomputing aggregate strategy statistics.
+
+Aggregate statistics include signals, pending, settled, priced settled records, wins, losses, total virtual stake, cumulative profit, win rate and ROI.
+
+`sample_reliability` describes only sample maturity, not predictive quality:
+
+- <30 settled: `INSUFFICIENT_SAMPLE`
+- 30–99: `EARLY_SAMPLE`
+- 100–249: `DEVELOPING_SAMPLE`
+- 250+: `MATURE_SAMPLE`
+
+API:
+
+- `GET /strategies`
+- `GET /strategies/{strategy_id}`
+
+The simulation ledger never places a real wager and never rewrites decision tickets or match results.
