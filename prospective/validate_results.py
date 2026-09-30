@@ -103,6 +103,38 @@ def ingest_api_football(anchor_rows):
             upsert_observation(a["match_id"],"api-football",datetime.now(timezone.utc),kick,norm); inserted+=1
     return {"configured":True,"inserted":inserted}
 
+def run_external_validation_if_due(min_hours=6):
+    configured=bool(os.environ.get("API_FOOTBALL_KEY","").strip() or os.environ.get("FOOTYSTATS_API_KEY","").strip())
+    if not configured:
+        return {"configured":False,"ran":False,"reason":"no_external_result_keys"}
+    now=datetime.now(timezone.utc)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT value FROM runtime_state WHERE key='external_result_validation'")
+        row=cur.fetchone()
+        if row:
+            last=(row["value"] or {}).get("at_utc")
+            if last:
+                try:
+                    dt=datetime.fromisoformat(str(last).replace("Z","+00:00"))
+                    if now-dt < timedelta(hours=min_hours):
+                        return {"configured":True,"ran":False,"reason":"throttled","last_at_utc":dt.isoformat()}
+                except Exception:
+                    pass
+    rows=anchors()
+    out={}
+    try: out["footystats"]=ingest_footystats(rows)
+    except Exception as e: out["footystats"]={"error":f"{type(e).__name__}: {e}"}
+    try: out["api_football"]=ingest_api_football(rows)
+    except Exception as e: out["api_football"]={"error":f"{type(e).__name__}: {e}"}
+    consensus=rebuild_all()
+    out["consensus"]={"matches":len(consensus),"verified":sum(x["status"]=="VERIFIED" for x in consensus),"conflicts":sum(x["status"]=="CONFLICT" for x in consensus)}
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""INSERT INTO runtime_state(key,value,updated_at)
+        VALUES('external_result_validation',%s::jsonb,NOW())
+        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()""",(json.dumps({"at_utc":now.isoformat(),"out":out},default=str),))
+        conn.commit()
+    return {"configured":True,"ran":True,"out":out}
+
 def main():
     rows=anchors()
     out={"fifa":ingest_existing_fifa()}
