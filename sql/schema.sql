@@ -256,3 +256,57 @@ CREATE TABLE IF NOT EXISTS strategy_stats (
     sample_reliability TEXT NOT NULL DEFAULT 'INSUFFICIENT_SAMPLE',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+CREATE TABLE IF NOT EXISTS market_decision_tickets (
+    ticket_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES decision_batches(batch_id) ON DELETE RESTRICT,
+    match_id TEXT NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    period TEXT NOT NULL DEFAULT 'FT',
+    selection TEXT NOT NULL,
+    line DOUBLE PRECISION,
+    probability DOUBLE PRECISION,
+    odds DOUBLE PRECISION,
+    edge DOUBLE PRECISION,
+    derivation TEXT NOT NULL DEFAULT 'SOURCE',
+    source_snapshot_utc TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    result_value TEXT,
+    correct BOOLEAN,
+    stake_eur NUMERIC(12,2) NOT NULL DEFAULT 1.00,
+    profit_eur NUMERIC(14,4),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(batch_id,match_id,market_id,source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_decision_tickets_batch
+ON market_decision_tickets(batch_id,kickoff_utc);
+
+CREATE INDEX IF NOT EXISTS idx_market_decision_tickets_market
+ON market_decision_tickets(market_id,source,status);
+
+CREATE TABLE IF NOT EXISTS market_stats (
+    market_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    signals_total INTEGER NOT NULL DEFAULT 0,
+    pending INTEGER NOT NULL DEFAULT 0,
+    settled INTEGER NOT NULL DEFAULT 0,
+    priced_settled INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    staked_eur NUMERIC(14,2) NOT NULL DEFAULT 0,
+    profit_eur NUMERIC(14,4) NOT NULL DEFAULT 0,
+    win_rate DOUBLE PRECISION,
+    roi DOUBLE PRECISION,
+    sample_reliability TEXT NOT NULL DEFAULT 'INSUFFICIENT_SAMPLE',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(market_id,source)
+);

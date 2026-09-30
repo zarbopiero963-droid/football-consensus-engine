@@ -131,28 +131,39 @@ def parse_statsultra(text: str):
 
 
 def parse_elofoot(text: str):
-    # public list explicitly labels UK/Lagos. Use Europe/London only for rows
-    # whose date can be resolved from a nearby "Thu, Oct 1" style header.
-    flat = re.sub(r"\s+", " ", text)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
     out = []
-    pattern = re.compile(
-        r"(\d{2}:\d{2}) UK/Lagos · ([A-Za-z0-9 .'-]+?) "
-        r"([A-Za-zÀ-ÿ0-9 .'-]+?) (\d+) [–-] (\d+) "
-        r"([A-Za-zÀ-ÿ0-9 .'-]+?) Predicted score · (\d+)% probability "
-        r"1 (\d+) % X (\d+) % 2 (\d+) %"
-    )
-    for m in pattern.finditer(flat):
-        clock, league, home, sh, sa, away, scorep, p1, px, p2 = m.groups()
+    for i, line in enumerate(lines):
+        head = re.fullmatch(r"(\d{2}:\d{2}) UK/Lagos · (.+)", line)
+        if not head or i + 9 >= len(lines):
+            continue
+        score = re.fullmatch(r"(\d+)\s*[–-]\s*(\d+)", lines[i + 2])
+        published = re.fullmatch(r"Predicted score · (\d+)% probability", lines[i + 4])
+        if not score or not published:
+            continue
+        if lines[i + 5] != "1" or lines[i + 7] != "X" or lines[i + 9] != "2":
+            continue
+        p1 = re.fullmatch(r"(\d+)\s*%", lines[i + 6])
+        px = re.fullmatch(r"(\d+)\s*%", lines[i + 8])
+        p2 = re.fullmatch(r"(\d+)\s*%", lines[i + 10]) if i + 10 < len(lines) else None
+        if not (p1 and px and p2):
+            continue
+        clock, league = head.groups()
+        sh, sa = score.groups()
         out.append({
-            "home_team": home.strip(), "away_team": away.strip(), "league": league.strip(),
-            "kickoff_raw": clock + " UK/Lagos", "source_timezone": "Europe/London",
+            "home_team": lines[i + 1],
+            "away_team": lines[i + 3],
+            "league": league,
+            "kickoff_raw": clock + " UK/Lagos",
+            "source_timezone": "Europe/London",
             "timezone_status": "DATE_UNRESOLVED",
-            "p1": float(p1), "px": float(px), "p2": float(p2),
+            "p1": float(p1.group(1)),
+            "px": float(px.group(1)),
+            "p2": float(p2.group(1)),
             "correct_score": f"{sh}-{sa}",
-            "payload_extra": {"correct_score_probability": float(scorep)},
+            "payload_extra": {"correct_score_probability": float(published.group(1))},
         })
     return out
-
 
 PARSERS = {
     "prosoccer": parse_prosoccer,
