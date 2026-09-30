@@ -369,6 +369,7 @@ def main():
         errors.append({"source": "pinnacle", "url": PIN_LEAGUES, "error": str(e), "at": utcnow().isoformat()})
     leagues = []
     direct_error = None
+    pin_leagues_transport = "direct"
     if code == 200 and body:
         try:
             leagues = json.loads(body.decode())
@@ -384,14 +385,9 @@ def main():
             if not isinstance(leagues, list) or not leagues:
                 raise RuntimeError("bridge leagues payload is not a non-empty list")
             code, body = bridge_code, bridge_body
-            errors.append({
-                "source": "pinnacle",
-                "url": PIN_LEAGUES,
-                "warning": "direct fetch failed; browser bridge fallback succeeded",
-                "direct_error": direct_error,
-                "at": utcnow().isoformat(),
-            })
+            pin_leagues_transport = "browser_bridge_fallback"
         except Exception as exc:
+            pin_leagues_transport = "failed"
             errors.append({
                 "source": "pinnacle",
                 "url": PIN_LEAGUES,
@@ -770,6 +766,7 @@ def main():
         "invalid_because_kickoff_passed": n_invalid,
         "no_probability": n_no_prob,
         "pinnacle_leagues_with_matchups": len(league_ids),
+        "pinnacle_leagues_transport": pin_leagues_transport,
         "pinnacle_open_moneylines": len(pin_matchups),
         "joined": joined,
         "unmatched_model": unmatched,
@@ -823,6 +820,7 @@ def main():
         "eligible": quality["analysis_eligible"],
         "valid_prematch": len(ledger),
         "errors": len(errors),
+        "pinnacle_leagues_transport": pin_leagues_transport,
     })
 
     print(json.dumps({
@@ -838,6 +836,7 @@ def main():
         "eligible": quality["analysis_eligible"],
         "invalid": len(invalid_rows),
         "pinnacle_moneylines": len(pin_matchups),
+        "pinnacle_leagues_transport": pin_leagues_transport,
         "errors": len(errors),
         "database": {
             "snapshots": db_snapshots,
