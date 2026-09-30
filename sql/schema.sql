@@ -211,7 +211,7 @@ CREATE TABLE IF NOT EXISTS source_pilot_control (
 );
 
 
-CREATE TABLE IF NOT EXISTS strategy_bets (
+CREATE TABLE IF NOT EXISTS strategy_simulations (
     batch_id TEXT NOT NULL,
     match_id TEXT NOT NULL,
     strategy_id TEXT NOT NULL,
@@ -234,8 +234,8 @@ CREATE TABLE IF NOT EXISTS strategy_bets (
     PRIMARY KEY (batch_id, match_id, strategy_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_strategy_bets_strategy
-ON strategy_bets (strategy_id, status, kickoff_utc);
+CREATE INDEX IF NOT EXISTS idx_strategy_simulations_strategy
+ON strategy_simulations (strategy_id, status, kickoff_utc);
 
 CREATE TABLE IF NOT EXISTS strategy_stats (
     strategy_id TEXT PRIMARY KEY,
