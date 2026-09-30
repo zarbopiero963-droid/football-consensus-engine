@@ -284,13 +284,22 @@ def freeze_market_tickets(batch_id: str, frozen_matches: list[dict[str, Any]], r
 def synchronize_market_settlement() -> dict[str, int]:
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT mdt.*, mr.payload AS result_payload
+            SELECT mdt.*,
+                   CASE WHEN rc.verification_status='CONFLICT' THEN NULL
+                        ELSE jsonb_build_object(
+                          'final_home_goals',rc.final_home_goals,
+                          'final_away_goals',rc.final_away_goals,
+                          'ht_home_goals',rc.ht_home_goals,
+                          'ht_away_goals',rc.ht_away_goals,
+                          'corners_home',rc.corners_home,
+                          'corners_away',rc.corners_away,
+                          'ht_corners_home',rc.ht_corners_home,
+                          'ht_corners_away',rc.ht_corners_away,
+                          'verification_status',rc.verification_status,
+                          'field_verification',rc.field_verification
+                        ) END AS result_payload
             FROM market_decision_tickets mdt
-            LEFT JOIN LATERAL (
-                SELECT payload FROM match_results
-                WHERE match_id=mdt.match_id
-                ORDER BY version DESC LIMIT 1
-            ) mr ON TRUE
+            LEFT JOIN result_consensus rc ON rc.match_id=mdt.match_id
         """)
         rows = list(cur.fetchall())
         updated = 0
