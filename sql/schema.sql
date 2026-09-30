@@ -134,3 +134,78 @@ CREATE TABLE IF NOT EXISTS decision_tickets (
 
 CREATE INDEX IF NOT EXISTS idx_decision_tickets_match
 ON decision_tickets (match_id, kickoff_utc);
+
+
+CREATE TABLE IF NOT EXISTS source_pilot_runs (
+    run_id TEXT PRIMARY KEY,
+    pilot_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    slot_no INTEGER NOT NULL,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    finished_at_utc TIMESTAMPTZ,
+    status TEXT NOT NULL,
+    final_url TEXT NOT NULL DEFAULT '',
+    http_status INTEGER,
+    browser_session_id TEXT NOT NULL DEFAULT '',
+    browser_cost DOUBLE PRECISION,
+    proxy_cost DOUBLE PRECISION,
+    proxy_used_mb DOUBLE PRECISION,
+    captcha_cost DOUBLE PRECISION,
+    html_sha256 TEXT NOT NULL DEFAULT '',
+    screenshot_sha256 TEXT NOT NULL DEFAULT '',
+    html_gzip BYTEA,
+    screenshot_png BYTEA,
+    manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (pilot_id, source, slot_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_pilot_runs_pilot
+ON source_pilot_runs (pilot_id, source, slot_no);
+
+CREATE TABLE IF NOT EXISTS source_pilot_predictions (
+    run_id TEXT NOT NULL REFERENCES source_pilot_runs(run_id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    source_match_key TEXT NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '',
+    kickoff_raw TEXT NOT NULL DEFAULT '',
+    source_timezone TEXT NOT NULL DEFAULT '',
+    kickoff_utc TIMESTAMPTZ,
+    timezone_status TEXT NOT NULL DEFAULT 'TIMEZONE_UNRESOLVED',
+    p1 DOUBLE PRECISION,
+    px DOUBLE PRECISION,
+    p2 DOUBLE PRECISION,
+    over25 DOUBLE PRECISION,
+    under25 DOUBLE PRECISION,
+    btts_yes DOUBLE PRECISION,
+    btts_no DOUBLE PRECISION,
+    xg_home DOUBLE PRECISION,
+    xg_away DOUBLE PRECISION,
+    correct_score TEXT NOT NULL DEFAULT '',
+    parse_status TEXT NOT NULL DEFAULT 'OK',
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (run_id, source_match_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_pilot_predictions_source
+ON source_pilot_predictions (source, kickoff_utc);
+
+CREATE TABLE IF NOT EXISTS source_pilot_matches (
+    run_id TEXT NOT NULL REFERENCES source_pilot_runs(run_id) ON DELETE CASCADE,
+    source_match_key TEXT NOT NULL,
+    anchor_match_id TEXT,
+    match_status TEXT NOT NULL,
+    match_confidence DOUBLE PRECISION,
+    reason TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, source_match_key)
+);
+
+CREATE TABLE IF NOT EXISTS source_pilot_control (
+    pilot_id TEXT PRIMARY KEY,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    ends_at_utc TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'RUNNING',
+    slots_expected INTEGER NOT NULL DEFAULT 16,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
