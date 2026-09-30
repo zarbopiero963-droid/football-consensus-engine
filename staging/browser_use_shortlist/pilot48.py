@@ -327,6 +327,10 @@ def collect_source(source, url, slot_no, anchors):
 
 
 def main():
+    if not os.environ.get("BROWSER_USE_API_KEY", "").strip():
+        raise SystemExit("BROWSER_USE_API_KEY is required; pilot clock has not started")
+    if not os.environ.get("DATABASE_URL", "").strip():
+        raise SystemExit("DATABASE_URL is required; pilot clock has not started")
     control = ensure_control()
     if control["status"] == "COMPLETE" or utcnow() >= control["ends_at_utc"]:
         print(json.dumps({"pilot_id": PILOT_ID, "status": "COMPLETE"}))
