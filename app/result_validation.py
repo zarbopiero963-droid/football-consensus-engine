@@ -68,28 +68,32 @@ def upsert_observation(match_id,provider,observed_at,kickoff,payload):
          hashlib.sha256(json.dumps(norm,sort_keys=True,default=str).encode()).hexdigest(),json.dumps(norm,default=str)))
         conn.commit()
 
+def compute_consensus(rows):
+    fv={}; values={}; conflict=False
+    for f in FIELDS:
+        vals=defaultdict(list)
+        for r in rows:
+            if r.get(f) is not None:
+                vals[r.get(f)].append(r.get("provider"))
+        if not vals:
+            fv[f]={"status":"MISSING","sources":[]}; values[f]=None
+        elif len(vals)==1:
+            val,sources=next(iter(vals.items()))
+            status="VERIFIED" if len(set(sources))>=2 else "SINGLE_SOURCE"
+            fv[f]={"status":status,"sources":sources,"value":val}; values[f]=val
+        else:
+            fv[f]={"status":"CONFLICT","values":{str(k):v for k,v in vals.items()}}
+            values[f]=None; conflict=True
+    any_verified=any(v["status"]=="VERIFIED" for v in fv.values())
+    status="CONFLICT" if conflict else ("VERIFIED" if any_verified else ("SINGLE_SOURCE" if rows else "UNVERIFIED"))
+    return values,fv,status
+
 def rebuild_consensus(match_id):
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT ON(provider) * FROM result_observations
                        WHERE match_id=%s ORDER BY provider,observed_at_utc DESC""",(match_id,))
         rows=list(cur.fetchall())
-        fv={}; values={}
-        conflict=False
-        for f in FIELDS:
-            vals=defaultdict(list)
-            for r in rows:
-                if r[f] is not None: vals[r[f]].append(r["provider"])
-            if not vals:
-                fv[f]={"status":"MISSING","sources":[]}; values[f]=None
-            elif len(vals)==1:
-                val,sources=next(iter(vals.items()))
-                status="VERIFIED" if len(sources)>=2 else "SINGLE_SOURCE"
-                fv[f]={"status":status,"sources":sources,"value":val}; values[f]=val
-            else:
-                fv[f]={"status":"CONFLICT","values":{str(k):v for k,v in vals.items()}}
-                values[f]=None; conflict=True
-        any_verified=any(v["status"]=="VERIFIED" for v in fv.values())
-        status="CONFLICT" if conflict else ("VERIFIED" if any_verified else ("SINGLE_SOURCE" if rows else "UNVERIFIED"))
+        values,fv,status=compute_consensus(rows)
         r12=result_1x2(values["final_home_goals"],values["final_away_goals"])
         cur.execute("""INSERT INTO result_consensus(match_id,final_home_goals,final_away_goals,ht_home_goals,ht_away_goals,
         corners_home,corners_away,ht_corners_home,ht_corners_away,result_1x2,verification_status,field_verification,providers,updated_at)
