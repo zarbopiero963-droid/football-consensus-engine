@@ -352,3 +352,41 @@ CREATE TABLE IF NOT EXISTS result_consensus (
     providers JSONB NOT NULL DEFAULT '[]'::jsonb,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+CREATE TABLE IF NOT EXISTS result_source_pilot_control (
+    pilot_id TEXT PRIMARY KEY,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    ends_at_utc TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'RUNNING',
+    slots_expected INTEGER NOT NULL DEFAULT 16,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS result_source_pilot_runs (
+    run_id TEXT PRIMARY KEY,
+    pilot_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    slot_no INTEGER NOT NULL,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    finished_at_utc TIMESTAMPTZ,
+    status TEXT NOT NULL,
+    final_url TEXT NOT NULL DEFAULT '',
+    http_status INTEGER,
+    browser_session_id TEXT NOT NULL DEFAULT '',
+    browser_cost DOUBLE PRECISION,
+    proxy_cost DOUBLE PRECISION,
+    proxy_used_mb DOUBLE PRECISION,
+    captcha_cost DOUBLE PRECISION,
+    rows_found INTEGER NOT NULL DEFAULT 0,
+    capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+    html_sha256 TEXT NOT NULL DEFAULT '',
+    screenshot_sha256 TEXT NOT NULL DEFAULT '',
+    html_gzip BYTEA,
+    screenshot_png BYTEA,
+    manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (pilot_id, source, slot_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_result_source_pilot_runs
+ON result_source_pilot_runs (pilot_id, source, slot_no);
