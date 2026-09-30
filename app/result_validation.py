@@ -112,3 +112,27 @@ def rebuild_all():
         cur.execute("SELECT DISTINCT match_id FROM result_observations")
         ids=[r["match_id"] for r in cur.fetchall()]
     return [rebuild_consensus(x) for x in ids]
+
+
+def sync_fifa_from_match_results():
+    from datetime import datetime, timezone
+    now=datetime.now(timezone.utc)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT DISTINCT ON(match_id) match_id,kickoff_utc,payload
+                       FROM match_results ORDER BY match_id,version DESC""")
+        rows=list(cur.fetchall())
+    for r in rows:
+        p=dict(r["payload"])
+        norm={
+          "provider_match_id":str(p.get("result_source_id") or ""),
+          "status":str(p.get("status") or ""),
+          "final_home_goals":p.get("final_home_goals"),
+          "final_away_goals":p.get("final_away_goals"),
+          "ht_home_goals":p.get("ht_home_goals"),
+          "ht_away_goals":p.get("ht_away_goals"),
+          "corners_home":p.get("corners_home"),"corners_away":p.get("corners_away"),
+          "ht_corners_home":p.get("ht_corners_home"),"ht_corners_away":p.get("ht_corners_away"),
+        }
+        upsert_observation(r["match_id"],"fifa-calendar-v3",now,r["kickoff_utc"],norm)
+    rebuild_all()
+    return len(rows)
