@@ -138,3 +138,62 @@ def test_htft_settlement():
         "ht_home_goals": 1, "ht_away_goals": 0,
     }
     assert settle_market("HTFT_1X2", "1/1", None, result) == ("1/1", True)
+
+
+
+def test_freeze_market_tickets_never_reads_pilot_tables(monkeypatch):
+    import app.market_engine as market_engine
+
+    executed = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(market_engine, "connect", lambda: Connection())
+
+    frozen = [{
+        "match_id": "fi:test-a-vs-b-2026-10-01",
+        "kickoff_utc": "2026-10-01T18:00:00+00:00",
+        "snapshot_timestamp_utc": "2026-10-01T12:00:00+00:00",
+        "home": "Test A",
+        "away": "Test B",
+        "league": "Test League",
+        "p1": 0.60,
+        "px": 0.25,
+        "p2": 0.15,
+        "pinnacle_odds": {"1": 1.80, "X": 3.50, "2": 5.00},
+        "pinnacle_fair": {"1": 0.55, "X": 0.27, "2": 0.18},
+    }]
+
+    count = market_engine.freeze_market_tickets(
+        "decision-test-m01",
+        frozen,
+        "2026-10-01T12:00:00+00:00",
+    )
+
+    sql_text = "\n".join(sql for sql, _params in executed).lower()
+    assert "source_pilot_predictions" not in sql_text
+    assert "source_pilot_runs" not in sql_text
+    assert "source_pilot_matches" not in sql_text
+    assert count == 2
+    assert sum("insert into market_decision_tickets" in sql.lower() for sql, _ in executed) == 2
