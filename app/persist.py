@@ -19,16 +19,20 @@ def _b(v) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes"}
 
 
+def _present(v) -> bool:
+    return v is not None and str(v).strip() != ""
+
+
 def _f(v):
     try:
-        return float(v) if str(v or "").strip() else None
+        return float(v) if _present(v) else None
     except (TypeError, ValueError):
         return None
 
 
 def _i(v):
     try:
-        return int(v) if str(v or "").strip() else None
+        return int(v) if _present(v) else None
     except (TypeError, ValueError):
         return None
 
