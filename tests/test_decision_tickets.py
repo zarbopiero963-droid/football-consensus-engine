@@ -1,4 +1,4 @@
-from app.api import apply_decision_filter, frozen_snapshot_view, _settle_ticket
+from app.api import apply_decision_filter, frozen_snapshot_view, _settle_ticket, ensure_ticket_timezones
 
 
 def sample(probability=0.62, odds=1.72, edge=0.041):
@@ -62,3 +62,15 @@ def test_signal_filter_freezes_only_what_is_shown():
     ]
     visible = apply_decision_filter(matches, "signals", ["S2", "S4", "S6", "S8", "S9"])
     assert [m["match_id"] for m in visible] == ["match-1"]
+
+
+def test_existing_frozen_ticket_gets_italy_times_on_read():
+    ticket = {
+        "kickoff_utc": "2026-09-30T12:00:00Z",
+        "kickoff_italy": None,
+        "snapshot_timestamp_utc": "2026-09-29T08:20:36.100Z",
+        "snapshot_timestamp_italy": None,
+    }
+    out = ensure_ticket_timezones(ticket)
+    assert out["kickoff_italy"] == "2026-09-30T14:00:00+02:00"
+    assert out["snapshot_timestamp_italy"] == "2026-09-29T10:20:36.100000+02:00"
