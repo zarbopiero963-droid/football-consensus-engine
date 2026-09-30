@@ -209,3 +209,50 @@ CREATE TABLE IF NOT EXISTS source_pilot_control (
     slots_expected INTEGER NOT NULL DEFAULT 16,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+CREATE TABLE IF NOT EXISTS strategy_bets (
+    batch_id TEXT NOT NULL,
+    match_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    pick TEXT NOT NULL,
+    probability DOUBLE PRECISION,
+    odds DOUBLE PRECISION,
+    edge DOUBLE PRECISION,
+    stake_eur NUMERIC(12,2) NOT NULL DEFAULT 1.00,
+    priced BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    result_1x2 TEXT,
+    correct BOOLEAN,
+    profit_eur NUMERIC(14,4),
+    source_snapshot_timestamp_utc TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (batch_id, match_id, strategy_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_bets_strategy
+ON strategy_bets (strategy_id, status, kickoff_utc);
+
+CREATE TABLE IF NOT EXISTS strategy_stats (
+    strategy_id TEXT PRIMARY KEY,
+    strategy_name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    stake_eur NUMERIC(12,2) NOT NULL DEFAULT 1.00,
+    signals_total INTEGER NOT NULL DEFAULT 0,
+    pending INTEGER NOT NULL DEFAULT 0,
+    settled INTEGER NOT NULL DEFAULT 0,
+    priced_settled INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    staked_eur NUMERIC(14,2) NOT NULL DEFAULT 0,
+    profit_eur NUMERIC(14,4) NOT NULL DEFAULT 0,
+    cumulative_profit_eur NUMERIC(14,4) NOT NULL DEFAULT 0,
+    win_rate DOUBLE PRECISION,
+    roi DOUBLE PRECISION,
+    sample_reliability TEXT NOT NULL DEFAULT 'INSUFFICIENT_SAMPLE',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
