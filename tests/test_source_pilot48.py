@@ -189,3 +189,17 @@ X/X
     assert payload["corners_under"] == 92.0
     assert payload["htft_selection"] == "1/1"
     assert preds[0]["correct_score"] == "1-1"
+
+
+def test_prosoccer_payload_datetime_is_json_serializable():
+    import json
+    from datetime import datetime, timezone
+
+    payload = {
+        "home_team": "Mauritius",
+        "away_team": "Djibouti",
+        "kickoff_utc": datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc),
+    }
+    encoded = json.dumps(payload, default=str)
+    decoded = json.loads(encoded)
+    assert decoded["kickoff_utc"] == "2026-09-30 12:00:00+00:00"
