@@ -1,14 +1,23 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import json
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.db import connect
 
 ROME = ZoneInfo("Europe/Rome")
-app = FastAPI(title="Football Consensus Engine", version="0.1.0")
+app = FastAPI(title="Football Consensus Engine", version="0.2.0")
+
+
+class DecisionRequest(BaseModel):
+    label: str = ""
+    mode: str = Field(default="all", pattern="^(all|bet|signals)$")
+    strategies: list[str] = Field(default_factory=list)
 
 
 def _num(v):
@@ -40,18 +49,34 @@ def strategy_ids(payload: dict) -> list[str]:
     return out
 
 
-def latest_snapshots_for_day(day: date) -> list[dict]:
-    sql = """
+def latest_snapshots_for_day(
+    day: date,
+    *,
+    as_of: datetime | None = None,
+    future_only: bool = False,
+) -> list[dict]:
+    clauses = [
+        "valid_prematch = TRUE",
+        "(kickoff_utc AT TIME ZONE 'Europe/Rome')::date = %s",
+        "snapshot_timestamp_utc < kickoff_utc",
+    ]
+    params: list[object] = [day]
+    if as_of is not None:
+        clauses.append("snapshot_timestamp_utc <= %s")
+        params.append(as_of)
+        if future_only:
+            clauses.append("kickoff_utc > %s")
+            params.append(as_of)
+
+    sql = f"""
     SELECT DISTINCT ON (match_id)
         match_id, kickoff_utc, snapshot_timestamp_utc, home_team, away_team, league, payload
     FROM model_snapshots
-    WHERE valid_prematch = TRUE
-      AND (kickoff_utc AT TIME ZONE 'Europe/Rome')::date = %s
-      AND snapshot_timestamp_utc < kickoff_utc
+    WHERE {' AND '.join(clauses)}
     ORDER BY match_id, snapshot_timestamp_utc DESC
     """
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (day,))
+        cur.execute(sql, tuple(params))
         return list(cur.fetchall())
 
 
@@ -101,6 +126,25 @@ def view_snapshot(row: dict) -> dict:
     }
 
 
+def apply_decision_filter(matches: list[dict], mode: str, strategy_filter: list[str]) -> list[dict]:
+    wanted = {s.upper() for s in strategy_filter}
+    if mode == "all":
+        return matches
+    if mode == "bet":
+        return [m for m in matches if m["status"] == "BET"]
+    if mode == "signals":
+        if wanted:
+            return [m for m in matches if wanted.intersection(m["strategies"])]
+        return [m for m in matches if m["strategies"]]
+    raise ValueError("invalid decision mode")
+
+
+def frozen_snapshot_view(match: dict) -> dict:
+    # Force a deep JSON copy so the object written into decision_tickets is
+    # exactly the object returned to the caller and cannot share mutable state.
+    return json.loads(json.dumps(match, sort_keys=True))
+
+
 def day_response(day: date, include_results: bool) -> dict:
     rows = latest_snapshots_for_day(day)
     matches = [view_snapshot(r) for r in rows]
@@ -113,9 +157,138 @@ def day_response(day: date, include_results: bool) -> dict:
     return {
         "date": day.isoformat(),
         "timezone": "Europe/Rome",
+        "snapshot_role": "monitoring",
         "matches": matches,
         "count": len(matches),
     }
+
+
+def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetime | None = None) -> dict:
+    requested_at = requested_at or datetime.now(timezone.utc)
+    rows = latest_snapshots_for_day(day, as_of=requested_at, future_only=True)
+    matches = apply_decision_filter([view_snapshot(r) for r in rows], req.mode, req.strategies)
+    frozen = [frozen_snapshot_view(m) for m in matches]
+    batch_id = f"decision-{requested_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:10]}"
+
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO decision_batches
+                (batch_id,requested_at_utc,requested_date,timezone,mode,strategy_filter,label)
+            VALUES (%s,%s,%s,'Europe/Rome',%s,%s::jsonb,%s)
+            """,
+            (batch_id, requested_at, day, req.mode, json.dumps(req.strategies), req.label),
+        )
+        for m in frozen:
+            cur.execute(
+                """
+                INSERT INTO decision_tickets (
+                    batch_id,match_id,snapshot_timestamp_utc,kickoff_utc,
+                    home_team,away_team,league,model_pick,model_probability,
+                    picked_odds,picked_edge,strategies,display_status,snapshot_view,shown_to_user
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,TRUE
+                )
+                """,
+                (
+                    batch_id,
+                    m["match_id"],
+                    m["snapshot_timestamp_utc"],
+                    m["kickoff_utc"],
+                    m["home"],
+                    m["away"],
+                    m["league"],
+                    m.get("model_pick") or "",
+                    m.get("model_probability"),
+                    m.get("picked_odds"),
+                    m.get("picked_edge"),
+                    json.dumps(m.get("strategies", [])),
+                    m.get("status", "NO_BET"),
+                    json.dumps(m, separators=(",", ":")),
+                ),
+            )
+        conn.commit()
+
+    return {
+        "batch_id": batch_id,
+        "requested_at_utc": requested_at.isoformat(),
+        "date": day.isoformat(),
+        "timezone": "Europe/Rome",
+        "mode": req.mode,
+        "strategy_filter": req.strategies,
+        "label": req.label,
+        "matches": frozen,
+        "count": len(frozen),
+        "contract": "what_you_saw_is_what_gets_settled",
+    }
+
+
+def _settle_ticket(ticket: dict, result: dict | None) -> dict:
+    out = dict(ticket)
+    if not result:
+        out["settlement_status"] = "PENDING"
+        out["result"] = None
+        out["correct"] = None
+        out["profit_flat_1"] = None
+        return out
+
+    result_payload = dict(result["payload"])
+    real = result_payload.get("result_1x2") or result_payload.get("result")
+    pick = out.get("model_pick")
+    correct = bool(real and pick and real == pick)
+    odds = _num(out.get("picked_odds"))
+    out["settlement_status"] = "SETTLED"
+    out["result"] = result_payload
+    out["correct"] = correct
+    out["profit_flat_1"] = (odds - 1.0) if (correct and odds is not None) else (-1.0 if odds is not None else None)
+    return out
+
+
+def decision_batch_view(batch_id: str) -> dict:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM decision_batches WHERE batch_id=%s", (batch_id,))
+        batch = cur.fetchone()
+        if not batch:
+            raise HTTPException(status_code=404, detail="decision batch not found")
+        cur.execute(
+            """
+            SELECT match_id,snapshot_view
+            FROM decision_tickets
+            WHERE batch_id=%s AND shown_to_user=TRUE
+            ORDER BY kickoff_utc, league, home_team
+            """,
+            (batch_id,),
+        )
+        tickets = list(cur.fetchall())
+
+    result_map = latest_results([t["match_id"] for t in tickets])
+    settled = [_settle_ticket(dict(t["snapshot_view"]), result_map.get(t["match_id"])) for t in tickets]
+    return {
+        "batch_id": batch["batch_id"],
+        "requested_at_utc": batch["requested_at_utc"].isoformat(),
+        "date": batch["requested_date"].isoformat(),
+        "timezone": batch["timezone"],
+        "mode": batch["mode"],
+        "strategy_filter": list(batch["strategy_filter"]),
+        "label": batch["label"],
+        "matches": settled,
+        "count": len(settled),
+        "contract": "what_you_saw_is_what_gets_settled",
+    }
+
+
+def decision_report_for_day(day: date) -> list[dict]:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT batch_id FROM decision_batches
+            WHERE requested_date=%s
+            ORDER BY requested_at_utc
+            """,
+            (day,),
+        )
+        ids = [r["batch_id"] for r in cur.fetchall()]
+    return [decision_batch_view(batch_id) for batch_id in ids]
 
 
 @app.get("/healthz")
@@ -134,13 +307,52 @@ def today():
 @app.get("/yesterday")
 def yesterday():
     day = datetime.now(ROME).date() - timedelta(days=1)
-    return day_response(day, include_results=True)
+    batches = decision_report_for_day(day)
+    if batches:
+        return {
+            "date": day.isoformat(),
+            "timezone": "Europe/Rome",
+            "report_mode": "decision_tickets",
+            "batches": batches,
+            "count": sum(b["count"] for b in batches),
+        }
+
+    fallback = day_response(day, include_results=True)
+    fallback["report_mode"] = "monitoring_only"
+    fallback["warning"] = "No decision ticket was shown/saved for this date; these are monitoring snapshots only."
+    return fallback
 
 
 @app.get("/date/{day}")
-def by_date(day: str, results: bool = Query(default=True)):
+def by_date(day: str, results: bool = Query(default=True), decisions: bool = Query(default=False)):
     try:
         parsed = date.fromisoformat(day)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
+    if decisions:
+        return {
+            "date": parsed.isoformat(),
+            "timezone": "Europe/Rome",
+            "report_mode": "decision_tickets",
+            "batches": decision_report_for_day(parsed),
+        }
     return day_response(parsed, include_results=results)
+
+
+@app.post("/decisions/today")
+def freeze_today(req: DecisionRequest):
+    return create_decision_batch(datetime.now(ROME).date(), req)
+
+
+@app.post("/decisions/date/{day}")
+def freeze_decisions(day: str, req: DecisionRequest):
+    try:
+        parsed = date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
+    return create_decision_batch(parsed, req)
+
+
+@app.get("/decisions/{batch_id}")
+def get_decision_batch(batch_id: str):
+    return decision_batch_view(batch_id)
