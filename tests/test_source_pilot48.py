@@ -82,3 +82,110 @@ X
     assert rows[0]["away_team"] == "Liechtenstein"
     assert (rows[0]["p1"], rows[0]["px"], rows[0]["p2"]) == (84,12,4)
     assert rows[0]["correct_score"] == "2-0"
+
+
+def test_prosoccer_multimarket_parsers():
+    from staging.browser_use_shortlist.pilot48 import (
+        enrich_prosoccer_predictions,
+        parse_prosoccer_corners,
+        parse_prosoccer_goal_lines,
+        parse_prosoccer_ht_1x2,
+        parse_prosoccer_htft,
+        parse_prosoccer_scorelines,
+    )
+
+    goals = """
+08:00
+Mauritius
+Djibouti
+Friendly International
+Over 1.5
+76%
+Under 3.5
+71%
+Over 2.5
+51%
+"""
+    scores = """
+08:00
+Mauritius
+Djibouti
+Friendly International
+1 – 1
+11.3%
+1 – 0
+11.2%
+2 – 1
+9.7%
+"""
+    ht = """
+08:00
+Mauritius
+Djibouti
+Friendly International
+HT X
+48%
+HT 1
+34%
+HT 2
+18%
+"""
+    hts = """
+08:00
+Mauritius
+Djibouti
+Friendly International
+0 – 0
+40.3%
+1 – 0
+23.1%
+0 – 1
+13.6%
+"""
+    corners = """
+08:00
+Mauritius
+Djibouti
+Friendly International
+Under 10.5
+92%
+Under 9.5
+86%
+Under 8.5
+77%
+"""
+    htft = """
+08:00
+Mauritius
+Djibouti
+Friendly International
+1/1
+28%
+X/1
+21%
+X/X
+17%
+"""
+    assert parse_prosoccer_goal_lines(goals)["mauritius|djibouti"][0] == {
+        "selection": "OVER", "line": 1.5, "probability": 76.0
+    }
+    assert parse_prosoccer_scorelines(scores)["mauritius|djibouti"][0]["score"] == "1-1"
+    assert parse_prosoccer_ht_1x2(ht)["mauritius|djibouti"] == {"X": 48.0, "1": 34.0, "2": 18.0}
+    assert parse_prosoccer_corners(corners)["mauritius|djibouti"][0]["line"] == 10.5
+    assert parse_prosoccer_htft(htft)["mauritius|djibouti"][0]["selection"] == "1/1"
+
+    preds = [{
+        "home_team": "Mauritius", "away_team": "Djibouti", "payload_extra": {},
+        "correct_score": "",
+    }]
+    enrich_prosoccer_predictions(preds, {
+        "goals": goals, "correct_scores": scores, "half_time": ht,
+        "ht_correct_scores": hts, "corners": corners, "htft": htft,
+    })
+    payload = preds[0]["payload_extra"]
+    assert payload["ht_px"] == 48.0
+    assert payload["ht_correct_score"] == "0-0"
+    assert payload["corners_line"] == 10.5
+    assert payload["corners_under"] == 92.0
+    assert payload["htft_selection"] == "1/1"
+    assert preds[0]["correct_score"] == "1-1"
