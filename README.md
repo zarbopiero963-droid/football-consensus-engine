@@ -1,8 +1,249 @@
 # football-consensus-engine
 
-Ledger prospettico append-only di probabilità 1X2 pre-match. FootInsights è il modello A, Pinnacle il mercato, FIFA il settlement. Forebet e Football Charts sono pilot di staging separati: non scrivono il ledger.
+Sistema prospettico e auditabile per prediction pre-match, decision ticket immutabili, benchmark di mercato, result consensus multi-source, pilot di qualificazione e settlement.
 
-Questo repository è la copia dello stato al 2026-09-29. Non avvia processi. Il sandbox non è il runtime.
+> **OBBLIGATORIO PER QUALUNQUE AGENTE:** leggere prima [AGENTS.md](AGENTS.md) e [CLAUDE.md](CLAUDE.md). Le policy di governance prevalgono su codice storico, checklist stale e vecchie descrizioni quando esiste un conflitto documentato.
+
+## Stato operativo e source of truth
+
+Il repository contiene sia codice vivo sia artefatti storici. Non assumere che una sezione con una data passata rappresenti lo stato corrente.
+
+Source of truth operativo:
+1. codice corrente su `main`;
+2. invarianti in `AGENTS.md` / `CLAUDE.md`;
+3. stato reale Render/Neon;
+4. issue operative e relativi commenti più recenti;
+5. artefatti storici, solo come evidenza/audit.
+
+Architettura corrente:
+- **FootInsights**: source prediction primaria corrente del ledger prospettico;
+- **Pinnacle**: benchmark/mercato, separato dal modello;
+- **FIFA Calendar**: una result source/fallback, **non** un settlement universale;
+- **result sources qualificate**: devono produrre `result_observations` normalizzate prima di partecipare al consensus;
+- **pilot prediction/result**: staging isolato, non production eligibility;
+- **Neon**: persistenza operativa;
+- **Render**: runtime reale di collector/settlement/pilot;
+- **Europe/Rome**: timezone di output utente; UTC resta canonical/audit.
+
+### Deviazioni note
+
+La Issue #37 è il backlog autorevole delle remediation architetturali note. Finché una correzione non è mergiata e testata realmente, non assumere che il codice rispetti automaticamente il contratto.
+
+Tra le deviazioni già identificate:
+- pilot source non devono alimentare production ticket;
+- score `0` deve restare `0`, non `NULL`;
+- ProSoccer non può essere marcato timezone-verificato senza prova;
+- StatsUltra non deve ricostruire Under da Over nel layer source;
+- result-source #20 deve produrre observation match-level reali, non solo capability probe;
+- settlement market deve rispettare la verifica field-level;
+- observations devono essere idempotenti;
+- FIFA matching/fetch va hardenizzato;
+- migrations Neon devono essere versionate.
+
+
+## Contratto repository per nuove fonti
+
+Questa sezione è normativa. I dettagli completi sono in [AGENTS.md](AGENTS.md) e [CLAUDE.md](CLAUDE.md).
+
+### Nuova prediction source: lifecycle obbligatorio
+
+Nessun sito viene aggiunto direttamente al consensus.
+
+#### Pass 0 — Discovery
+Registrare almeno:
+- URL ufficiale;
+- ruolo candidato;
+- accesso pubblico/login;
+- eventuali limiti/permessi;
+- mercati dichiarati;
+- stato iniziale `DISCOVERY_PENDING`.
+
+Marketing, claim “AI”, Poisson, Elo, accuracy o ROI non valgono come prova.
+
+#### Pass 1 — Qualification reale
+Verificare con browser/CDP o altro metodo appropriato:
+- HTTP e final URL;
+- DOM/HTML;
+- XHR/JSON solo se realmente osservati;
+- fixture future;
+- home/away/competition/kickoff;
+- prediction realmente pre-match;
+- probability/confidence;
+- odds e loro origine;
+- timezone/structured time;
+- storico;
+- access control;
+- overlap con anchor;
+- provenance;
+- dipendenza dal mercato;
+- validità matematica.
+
+Regole:
+- niente endpoint inventati;
+- niente probability ricostruite;
+- niente odds convertite e chiamate “modello”;
+- niente dati live/FT usati per creare prediction pre-match.
+
+#### Pass 2 — Rigoroso
+Per un candidato serio è obbligatorio un secondo pass **indipendente**:
+- nuova sessione browser pulita;
+- stesso match o campione omogeneo quando possibile;
+- confronto numerico;
+- repeatability;
+- drift;
+- retroactive mutation;
+- probability <0 / >100;
+- somma vettore H/D/A;
+- contamination da odds/market movement;
+- timezone verificata di nuovo quando ambigua.
+
+Un semplice refresh nella stessa sessione non è un doppio pass rigoroso.
+
+#### Classificazione
+Usare una classificazione esplicita, ad esempio:
+- `INDEPENDENT_MODEL_CANDIDATE`
+- `PARTIAL_MODEL`
+- `HYBRID_MARKET_AWARE`
+- `BENCHMARK_MARKET_DERIVED`
+- `COMMUNITY_CONSENSUS`
+- `EDITORIAL_BENCHMARK`
+- `DATA_SOURCE_ONLY`
+- `BLOCKED_BROWSER`
+- `PAYWALLED`
+- `SOURCE_URL_UNRESOLVED`
+- `REJECTED_PREDICTION_LEAKAGE`
+- `REJECTED_PREDICTION_RETROCALC`
+- `REJECTED_INVALID_PROBABILITY`
+- `REJECTED_COVERAGE`
+
+### Nuova result source: lifecycle obbligatorio
+
+Per ogni result source verificare a livello partita:
+- FT home/away;
+- HT home/away;
+- corners FT;
+- corners HT;
+- status finale;
+- provider match id;
+- kickoff;
+- competition;
+- timezone;
+- access/ToS;
+- coverage.
+
+Anche le result source richiedono Pass 1 e Pass 2 rigoroso.
+
+Una source non è “integrata” perché `rows_found > 0` o perché una parola compare nell'HTML. Per entrare nel result consensus deve produrre `result_observations` normalizzate e auditabili.
+
+### Timezone contract
+
+- raw/source time va conservato;
+- UTC = canonical;
+- Europe/Rome = output utente;
+- browser timezone override non dimostra source timezone;
+- timezone non verificata = `TIMEZONE_UNRESOLVED`;
+- non indovinare offset;
+- non promuovere matching production basato solo su un'ora ambigua.
+
+### Matching contract
+
+Per produzione usare:
+- home;
+- away;
+- kickoff;
+- competition;
+- country;
+- category quando disponibili.
+
+`FOUND_NAME_ONLY` è un finding, non un match production-safe.
+
+Ambiguità = non match.
+
+### Pilot 48h contract
+
+Un pilot:
+- ha `pilot_id` proprio;
+- parte dal primo run reale, non dal merge;
+- conserva slot storici immutabili;
+- non riscrive slot dopo una patch;
+- misura reliability, rows, probability validity, timezone, overlap, repeatability e costi;
+- resta separato dalla produzione.
+
+Se cadence = 3h, 48h = 16 slot attesi.
+
+Tutti i pilot attivi vanno registrati nella Issue #30.
+
+### Promotion contract
+
+Per diventare production source servono:
+1. qualification;
+2. Pass 2 rigoroso;
+3. pilot completato;
+4. timezone/matching sufficienti;
+5. probability/data validity;
+6. provenance;
+7. anti-leakage;
+8. reliability/cost;
+9. owner review;
+10. registry/allowlist `production_eligible` esplicita.
+
+Prima della promozione:
+- niente decision ticket;
+- niente market ticket;
+- niente strategy simulations;
+- niente voto production nel consensus.
+
+### Result verification contract
+
+Il consensus è per **campo**, non solo per match:
+- `MISSING`
+- `SINGLE_SOURCE`
+- `VERIFIED`
+- `CONFLICT`
+
+Default:
+- VERIFIED: utilizzabile;
+- MISSING: blocca;
+- CONFLICT: blocca;
+- SINGLE_SOURCE: non automaticamente certificato senza policy esplicita.
+
+FT verificato non rende automaticamente verificati HT o corners.
+
+### Contratto immutabilità
+
+Non riscrivere:
+- snapshot pre-match;
+- decision ticket;
+- raw/hash storici;
+- slot pilot storici.
+
+Un bug fix vale dai run successivi. Gli storici vengono annotati come invalidi/parziali quando necessario, non rigenerati.
+
+### Contratto PR e test reali
+
+Ogni PR significativa deve avere:
+- Phase 0 sul codice corrente;
+- failure/finding riprodotto quando esiste;
+- test regressione;
+- test negativo;
+- CI verde;
+- review findings risolti;
+- test reale su Render/Neon/Browser quando applicabile;
+- commento nella issue con PR/commit/deploy/evidenza reale.
+
+Nessun test viene rimosso o indebolito per far diventare verde una Action.
+
+### Chiusura issue
+
+Le issue vengono chiuse solo dall'owner.
+
+L'agente, quando tutto è verificato, scrive:
+
+`READY_FOR_OWNER_REVIEW / PUÒ ESSERE CHIUSA DALL'OWNER`
+
+e lascia la issue OPEN.
+
+---
 
 ## Layout
 
@@ -16,7 +257,7 @@ backtest/        baseline storica e falsificazione (non è il ledger prospettico
 storage/         hash dei raw non versionati e registro delle redazioni
 ```
 
-## Stato Forebet da non ricreare
+## Snapshot storico Forebet — non ricreare e non usare come stato vivo
 
 | Campo | Valore |
 |---|---|
@@ -55,7 +296,7 @@ python3 prospective/bin/supervisor.py
 
 `supervisor.py` senza argomenti resta in loop ogni 3 ore, con lock esclusivo, retry a 60/180/300 secondi e alert di stallo dopo 6 ore. `--ensure` avvia il processo solo se non è già in esecuzione.
 
-Settlement FIFA (scrive solo `prospective/normalized/results.csv` e i report di settlement; non tocca ledger, raw, manifest, strategie):
+Settlement legacy/FIFA fallback (il sistema reale può usare anche result observations/consensus; FIFA non è una fonte universale):
 
 ```bash
 python3 prospective/settle.py --self-test
@@ -103,7 +344,7 @@ python3 backtest/run_falsify.py
 
 Il collector legge le pagine pubbliche FootInsights e il guest feed Pinnacle (`guest.api.arcadia.pinnacle.com`, sport 29, moneyline full-match). Non usa una API key Pinnacle. Ogni run crea una directory nuova sotto `prospective/raw/` e `prospective/snapshots/`, accoda una riga a `prospective/manifests/manifest_index.jsonl` e scrive `manifest_<run>.sha256`. Il ledger `prospective/prospective_ledger.csv` è append-only. Hash del ledger in questo snapshot: `5d5163bd6b2b09e5c32ece63170b27e301b4bc4901a15c199e295f8e787a5464`.
 
-Il settlement interroga `https://api.fifa.com/api/v3/calendar/matches` almeno 120 minuti dopo il kickoff. Uno score identico non viene riappeso. Uno score ufficiale cambiato è una versione nuova più una riga di audit. Le colonne S1–S9 e B1–B4 sono calcolate qui, non nel collector.
+Il settlement legacy interroga anche `https://api.fifa.com/api/v3/calendar/matches` almeno 120 minuti dopo il kickoff, ma FIFA è una source/fallback e non garantisce copertura universale. I risultati normalizzati e il result consensus devono mantenere provenance e verifica per campo. Uno score identico non deve creare duplicati; una correzione ufficiale è una nuova versione più audit. Le strategie restano preregistrate e non vengono ritoccate in base ai risultati.
 
 Le strategie sono congelate in `prospective/strategies_preregistered.json` (`prereg-2026-09-29`), prima di qualsiasi risultato prospettico.
 
