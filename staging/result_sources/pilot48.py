@@ -25,6 +25,7 @@ SOURCES = {
     "footiqo": "https://footiqo.com/database/leagues/brazil-serie-a/",
     "smart_soccer_stats": "https://www.smartsoccerstats.eu/game-statistics",
     "statbunker": "https://www.statbunker.com/competitions/LastMatches?comp_id=785",
+    "worldfootball": "https://www.worldfootball.net/competition/co111/italy-serie-a/all-matches/",
 }
 
 
