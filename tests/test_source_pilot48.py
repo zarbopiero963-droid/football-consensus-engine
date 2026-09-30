@@ -203,3 +203,25 @@ def test_prosoccer_payload_datetime_is_json_serializable():
     encoded = json.dumps(payload, default=str)
     decoded = json.loads(encoded)
     assert decoded["kickoff_utc"] == "2026-09-30 12:00:00+00:00"
+
+
+def test_result_source_inspection_contract():
+    from staging.result_sources.pilot48 import inspect_source
+
+    rows, caps = inspect_source(
+        "smart_soccer_stats",
+        "30 Sept 2026\nA\n1\n-\n0\nB\n(1-0)\nHalf-Time\nCorners & Fouls",
+        "",
+    )
+    assert rows == 1
+    assert caps["ft_score"] is True
+    assert caps["ht_score"] is True
+
+    rows, caps = inspect_source(
+        "statbunker",
+        "LastMatches",
+        '<a href="/competitions/MatchDetails?comp_id=785&match_id=128310">x</a>',
+    )
+    assert rows == 1
+    assert caps["ft_score"] is True
+    assert caps["ht_score"] is False
