@@ -562,3 +562,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    from staging.result_sources.pilot48 import main as result_source_pilot_main
+    result_source_pilot_main()
