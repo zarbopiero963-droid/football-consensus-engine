@@ -417,6 +417,8 @@ def collect_source(source, url, slot_no, anchors):
     final_url = url
     http_status = None
     page_errors = []
+    extra_text = {}
+    extra_page_status = {}
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -434,8 +436,27 @@ def collect_source(source, url, slot_no, anchors):
             final_url = page.url
             http_status = resp.status if resp else None
             text = page.locator("body").inner_text(timeout=30000)
-            html = page.content().encode("utf-8")
+            main_html = page.content().encode("utf-8")
             shot = page.screenshot(full_page=True, timeout=30000)
+            html_parts = [b"<!-- PAGE:main -->\n" + main_html]
+
+            if source == "prosoccer":
+                for label, page_url in PROSOCCER_EXTRA_PAGES.items():
+                    r = page.goto(page_url, wait_until="domcontentloaded", timeout=90000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                    except Exception:
+                        page.wait_for_timeout(4000)
+                    extra_text[label] = page.locator("body").inner_text(timeout=30000)
+                    raw = page.content().encode("utf-8")
+                    html_parts.append(f"\n<!-- PAGE:{label} URL:{page_url} -->\n".encode() + raw)
+                    extra_page_status[label] = {
+                        "url": page.url,
+                        "http_status": r.status if r else None,
+                        "html_sha256": sha(raw),
+                        "html_bytes": len(raw),
+                    }
+            html = b"".join(html_parts)
             browser.close()
     finally:
         browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
@@ -443,6 +464,7 @@ def collect_source(source, url, slot_no, anchors):
 
     preds = PARSERS[source](text)
     if source == "prosoccer":
+        enrich_prosoccer_predictions(preds, extra_text)
         for pred in preds:
             resolve_prosoccer_date(pred)
 
@@ -455,6 +477,7 @@ def collect_source(source, url, slot_no, anchors):
         "page_errors": page_errors[:20],
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
+        "extra_pages": extra_page_status,
     }
 
     with connect() as conn, conn.cursor() as cur:
@@ -496,8 +519,13 @@ def collect_source(source, url, slot_no, anchors):
               VALUES (%s,%s,%s,%s,%s,%s)
             """, (run_id,key,anchor_id,mstatus,confidence,reason))
         conn.commit()
-    return {"source": source, "run_id": run_id, "rows": len(preds), "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")}}
-
+    return {
+        "source": source,
+        "run_id": run_id,
+        "rows": len(preds),
+        "extra_pages": sorted(extra_page_status),
+        "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")},
+    }
 
 def main():
     if not os.environ.get("BROWSER_USE_API_KEY", "").strip():
