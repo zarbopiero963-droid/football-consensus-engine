@@ -280,3 +280,37 @@ Authentication: OAuth
 ```
 
 OAuth metadata is discovered automatically from the server. No client secret is manually entered in ChatGPT.
+
+
+## Decision tickets: what you saw is what gets settled
+
+Automatic snapshots remain monitoring data. A user-facing recommendation must be frozen separately before it is shown.
+
+Create an immutable decision batch:
+
+```http
+POST /decisions/date/2026-09-30
+Content-Type: application/json
+
+{"label":"17:00 daily picks","mode":"all","strategies":[]}
+```
+
+Supported modes:
+
+- `all`: freeze every still-future match returned to the user.
+- `bet`: freeze only rows currently classified BET.
+- `signals`: freeze only rows activating at least one requested strategy; for example `["S2","S4","S6","S8","S9"]`.
+
+The batch selects the latest valid snapshot that already existed at `requested_at_utc`, excludes matches that have already kicked off, stores the exact response in `decision_tickets.snapshot_view`, and returns that same object to the caller.
+
+Later automatic snapshots never update decision tickets.
+
+Read a frozen batch:
+
+```http
+GET /decisions/{batch_id}
+```
+
+After settlement, the endpoint combines the frozen pick/probability/odds with the verified result. Profit uses the frozen displayed odds, never a later quote.
+
+`GET /yesterday` now prefers decision tickets. If none were created for that date it explicitly returns `report_mode=monitoring_only` instead of pretending the latest pre-kickoff snapshot was what the user saw.
