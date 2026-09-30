@@ -97,8 +97,8 @@ def parse_prosoccer(text: str):
                 home, away, league = names[0], names[1], names[2]
                 out.append({
                     "home_team": home, "away_team": away, "league": league,
-                    "kickoff_raw": clock, "source_timezone": "Europe/Rome",
-                    "timezone_status": "VERIFIED_BROWSER_TZ",
+                    "kickoff_raw": clock, "source_timezone": "",
+                    "timezone_status": "TIMEZONE_UNRESOLVED",
                     "p1": pct[0], "px": pct[1], "p2": pct[2],
                     "over25": pct[3], "under25": pct[4],
                 })
@@ -399,14 +399,6 @@ def match_anchor(pred, anchors):
     return a["match_id"], "FOUND_NAME_ONLY", 0.7, "kickoff unresolved"
 
 
-def resolve_prosoccer_date(pred, day_offset=0, base_time=None):
-    now_it = (base_time or datetime.now(ROME)).astimezone(ROME)
-    target_day = (now_it + timedelta(days=day_offset)).date()
-    hh, mm = map(int, pred["kickoff_raw"].split(":"))
-    local = datetime(target_day.year, target_day.month, target_day.day, hh, mm, tzinfo=ROME)
-    pred["kickoff_utc"] = local.astimezone(timezone.utc)
-
-
 def prosoccer_status_counts(text):
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     return {
@@ -518,12 +510,15 @@ def collect_source(source, url, slot_no, anchors):
         for day_offset, forecast_text in prosoccer_forecast_texts:
             page_preds = parse_prosoccer(forecast_text)
             for pred in page_preds:
-                resolve_prosoccer_date(pred, day_offset=day_offset, base_time=started)
+                # ProSoccer's displayed HH:MM timezone is not verified. Keep the
+                # source clock and page-day offset as raw evidence, but do not
+                # fabricate a canonical UTC kickoff from the browser timezone.
+                pred["kickoff_utc"] = None
                 pred.setdefault("payload_extra", {})["forecast_day_offset"] = day_offset
             preds.extend(page_preds)
-        # Anti-leakage: only create new pilot predictions for fixtures whose kickoff
-        # was still in the future when this collection run began.
-        preds = [p for p in preds if p.get("kickoff_utc") and p["kickoff_utc"] > started]
+        # parse_prosoccer only accepts scheduled HH:MM blocks; LIVE/HT/FT rows
+        # are excluded. Canonical future filtering remains disabled until the
+        # source timezone or a structured timestamp is independently verified.
         enrich_prosoccer_predictions(preds, extra_text)
     else:
         preds = PARSERS[source](text)
