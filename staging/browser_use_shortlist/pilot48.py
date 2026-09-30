@@ -30,6 +30,11 @@ SOURCES = {
     "elofoot": "https://www.elofoot.com/en",
 }
 
+PROSOCCER_FORECAST_PAGES = (
+    ("today", "https://prosoccer.eu/predictions/today", 0),
+    ("tomorrow", "https://prosoccer.eu/predictions/tomorrow", 1),
+)
+
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -394,11 +399,21 @@ def match_anchor(pred, anchors):
     return a["match_id"], "FOUND_NAME_ONLY", 0.7, "kickoff unresolved"
 
 
-def resolve_prosoccer_date(pred):
-    now_it = datetime.now(ROME)
+def resolve_prosoccer_date(pred, day_offset=0, base_time=None):
+    now_it = (base_time or datetime.now(ROME)).astimezone(ROME)
+    target_day = (now_it + timedelta(days=day_offset)).date()
     hh, mm = map(int, pred["kickoff_raw"].split(":"))
-    local = datetime(now_it.year, now_it.month, now_it.day, hh, mm, tzinfo=ROME)
+    local = datetime(target_day.year, target_day.month, target_day.day, hh, mm, tzinfo=ROME)
     pred["kickoff_utc"] = local.astimezone(timezone.utc)
+
+
+def prosoccer_status_counts(text):
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    return {
+        "ft": sum(1 for x in lines if x == "FT"),
+        "ht": sum(1 for x in lines if x == "HT"),
+        "live": sum(1 for x in lines if re.fullmatch(r"\d{1,3}[′']", x)),
+    }
 
 
 def collect_source(source, url, slot_no, anchors):
@@ -424,6 +439,8 @@ def collect_source(source, url, slot_no, anchors):
     page_errors = []
     extra_text = {}
     extra_page_status = {}
+    prosoccer_forecast_texts = []
+    prosoccer_status = {"ft": 0, "ht": 0, "live": 0}
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -446,6 +463,35 @@ def collect_source(source, url, slot_no, anchors):
             html_parts = [b"<!-- PAGE:main -->\n" + main_html]
 
             if source == "prosoccer":
+                prosoccer_forecast_texts.append((0, text))
+                first_counts = prosoccer_status_counts(text)
+                for key in prosoccer_status:
+                    prosoccer_status[key] += first_counts[key]
+
+                # Keep a stable prospective window as today's matches age into LIVE/FT.
+                # We only persist predictions whose resolved kickoff is still in the future.
+                tomorrow_url = PROSOCCER_FORECAST_PAGES[1][1]
+                r = page.goto(tomorrow_url, wait_until="domcontentloaded", timeout=90000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                except Exception:
+                    page.wait_for_timeout(4000)
+                tomorrow_text = page.locator("body").inner_text(timeout=30000)
+                tomorrow_raw = page.content().encode("utf-8")
+                prosoccer_forecast_texts.append((1, tomorrow_text))
+                tomorrow_counts = prosoccer_status_counts(tomorrow_text)
+                for key in prosoccer_status:
+                    prosoccer_status[key] += tomorrow_counts[key]
+                html_parts.append(
+                    f"\n<!-- PAGE:tomorrow URL:{tomorrow_url} -->\n".encode() + tomorrow_raw
+                )
+                extra_page_status["tomorrow"] = {
+                    "url": page.url,
+                    "http_status": r.status if r else None,
+                    "html_sha256": sha(tomorrow_raw),
+                    "html_bytes": len(tomorrow_raw),
+                }
+
                 for label, page_url in PROSOCCER_EXTRA_PAGES.items():
                     r = page.goto(page_url, wait_until="domcontentloaded", timeout=90000)
                     try:
@@ -467,11 +513,20 @@ def collect_source(source, url, slot_no, anchors):
         browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
         _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
 
-    preds = PARSERS[source](text)
     if source == "prosoccer":
+        preds = []
+        for day_offset, forecast_text in prosoccer_forecast_texts:
+            page_preds = parse_prosoccer(forecast_text)
+            for pred in page_preds:
+                resolve_prosoccer_date(pred, day_offset=day_offset, base_time=started)
+                pred.setdefault("payload_extra", {})["forecast_day_offset"] = day_offset
+            preds.extend(page_preds)
+        # Anti-leakage: only create new pilot predictions for fixtures whose kickoff
+        # was still in the future when this collection run began.
+        preds = [p for p in preds if p.get("kickoff_utc") and p["kickoff_utc"] > started]
         enrich_prosoccer_predictions(preds, extra_text)
-        for pred in preds:
-            resolve_prosoccer_date(pred)
+    else:
+        preds = PARSERS[source](text)
 
     manifest = {
         "pilot_id": PILOT_ID,
@@ -479,6 +534,15 @@ def collect_source(source, url, slot_no, anchors):
         "slot_no": slot_no,
         "browser_timezone_override": "Europe/Rome",
         "visible_rows": len(preds),
+        "rows_visible_total": (
+            sum(len(parse_prosoccer(t)) for _, t in prosoccer_forecast_texts)
+            if source == "prosoccer" else len(preds)
+        ),
+        "rows_future_eligible": len(preds) if source == "prosoccer" else len(preds),
+        "rows_ft": prosoccer_status["ft"] if source == "prosoccer" else 0,
+        "rows_ht": prosoccer_status["ht"] if source == "prosoccer" else 0,
+        "rows_live": prosoccer_status["live"] if source == "prosoccer" else 0,
+        "rows_parsed": len(preds),
         "page_errors": page_errors[:20],
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
