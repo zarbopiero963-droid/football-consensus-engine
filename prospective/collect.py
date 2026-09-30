@@ -81,6 +81,34 @@ def http_get(url: str, timeout=45, headers=None):
     except URLError as e:
         raise RuntimeError(f"urlerror {url} {e}") from e
 
+
+def fetch_pinnacle_leagues_via_bridge():
+    token = os.environ.get("COLLECTOR_BRIDGE_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("COLLECTOR_BRIDGE_TOKEN is not configured")
+    base = os.environ.get(
+        "BROWSER_BRIDGE_URL",
+        "https://football-consensus-browser-bridge.onrender.com",
+    ).rstrip("/")
+    req = Request(
+        base + "/internal/pinnacle/leagues",
+        headers={
+            "User-Agent": UA,
+            "Accept": "application/json",
+            "X-Collector-Token": token,
+        },
+    )
+    with urlopen(req, timeout=75) as r:
+        payload = json.loads(r.read().decode("utf-8"))
+    if payload.get("http_status") != 200 or payload.get("truncated"):
+        raise RuntimeError(
+            f"bridge pinnacle leagues failed status={payload.get('http_status')} truncated={payload.get('truncated')}"
+        )
+    body = str(payload.get("body") or "").encode("utf-8")
+    if not body:
+        raise RuntimeError("bridge pinnacle leagues returned empty body")
+    return 200, body
+
 def strip_accents(s):
     s = unicodedata.normalize("NFKD", s or "")
     return "".join(c for c in s if not unicodedata.combining(c))
@@ -340,11 +368,41 @@ def main():
         code, body = 0, b""
         errors.append({"source": "pinnacle", "url": PIN_LEAGUES, "error": str(e), "at": utcnow().isoformat()})
     leagues = []
+    direct_error = None
     if code == 200 and body:
-        save(os.path.join(run_dir_pin, "leagues.json"), body, "pin-leagues")
-        leagues = json.loads(body.decode())
+        try:
+            leagues = json.loads(body.decode())
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            direct_error = f"bad direct leagues payload: {exc}"
     else:
-        errors.append({"source": "pinnacle", "url": PIN_LEAGUES, "status": code, "at": utcnow().isoformat()})
+        direct_error = f"direct leagues status={code}"
+
+    if not isinstance(leagues, list) or not leagues:
+        try:
+            bridge_code, bridge_body = fetch_pinnacle_leagues_via_bridge()
+            leagues = json.loads(bridge_body.decode())
+            if not isinstance(leagues, list) or not leagues:
+                raise RuntimeError("bridge leagues payload is not a non-empty list")
+            code, body = bridge_code, bridge_body
+            errors.append({
+                "source": "pinnacle",
+                "url": PIN_LEAGUES,
+                "warning": "direct fetch failed; browser bridge fallback succeeded",
+                "direct_error": direct_error,
+                "at": utcnow().isoformat(),
+            })
+        except Exception as exc:
+            errors.append({
+                "source": "pinnacle",
+                "url": PIN_LEAGUES,
+                "status": code,
+                "error": f"{direct_error}; bridge fallback failed: {type(exc).__name__}: {exc}",
+                "at": utcnow().isoformat(),
+            })
+            leagues = []
+
+    if leagues and body:
+        save(os.path.join(run_dir_pin, "leagues.json"), body, "pin-leagues")
 
     league_ids = [L["id"] for L in leagues if L.get("matchupCount")]
 

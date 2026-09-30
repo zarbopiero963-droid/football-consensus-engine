@@ -22,3 +22,10 @@ def test_mcp_requires_bearer_token():
     client = TestClient(app)
     response = client.post("/mcp")
     assert response.status_code == 401
+
+
+def test_internal_pinnacle_endpoint_requires_shared_token(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_BRIDGE_TOKEN", "secret-test-token")
+    client = TestClient(app)
+    response = client.get("/internal/pinnacle/leagues")
+    assert response.status_code == 401
