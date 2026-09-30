@@ -516,7 +516,7 @@ def collect_source(source, url, slot_no, anchors):
                 pred.get("timezone_status","TIMEZONE_UNRESOLVED"),
                 pred.get("p1"),pred.get("px"),pred.get("p2"),pred.get("over25"),pred.get("under25"),
                 pred.get("btts_yes"),pred.get("btts_no"),pred.get("xg_home"),pred.get("xg_away"),
-                pred.get("correct_score",""),json.dumps(payload)
+                pred.get("correct_score",""),json.dumps(payload, default=str)
             ))
             anchor_id, mstatus, confidence, reason = match_anchor(pred, anchors)
             cur.execute("""
