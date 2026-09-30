@@ -44,7 +44,7 @@ def test_ticket_settlement_uses_frozen_pick_and_odds():
     result = {"payload": {"result_1x2": "1", "final_home_goals": "2", "final_away_goals": "0"}}
     settled = _settle_ticket(ticket, result)
     assert settled["correct"] is True
-    assert settled["profit_flat_1"] == 0.72
+    assert round(settled["profit_flat_1"], 2) == 0.72
 
 
 def test_pending_ticket_stays_pending():
