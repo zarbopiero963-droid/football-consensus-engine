@@ -1,17 +1,10 @@
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from staging.browser_use_shortlist.pilot48 import (
     parse_prosoccer,
     prosoccer_status_counts,
-    resolve_prosoccer_date,
 )
 
 
-ROME = ZoneInfo("Europe/Rome")
-
-
-def test_prosoccer_parser_ignores_ft_but_keeps_future_rows():
+def test_prosoccer_parser_ignores_ft_but_keeps_scheduled_rows():
     text = """
 FT
 United States
@@ -38,27 +31,34 @@ Friendly International
 """
     rows = parse_prosoccer(text)
     assert len(rows) == 1
-    assert rows[0]["home_team"] == "Mauritius"
-    assert rows[0]["away_team"] == "Djibouti"
-    assert rows[0]["p1"] == 54
-    assert rows[0]["px"] == 24
-    assert rows[0]["p2"] == 22
+    row = rows[0]
+    assert row["home_team"] == "Mauritius"
+    assert row["away_team"] == "Djibouti"
+    assert row["p1"] == 54
+    assert row["px"] == 24
+    assert row["p2"] == 22
+    assert row["kickoff_raw"] == "14:00"
+    assert row["source_timezone"] == ""
+    assert row["timezone_status"] == "TIMEZONE_UNRESOLVED"
+    assert "kickoff_utc" not in row
     assert prosoccer_status_counts(text)["ft"] == 1
 
 
-def test_prosoccer_tomorrow_resolves_to_next_calendar_day():
-    pred = {
-        "kickoff_raw": "02:00",
-    }
-    base = datetime(2026, 9, 30, 20, 0, tzinfo=ROME)
-    resolve_prosoccer_date(pred, day_offset=1, base_time=base)
-    assert pred["kickoff_utc"].isoformat() == "2026-10-01T00:00:00+00:00"
-
-
-def test_prosoccer_today_resolves_in_browser_timezone():
-    pred = {
-        "kickoff_raw": "21:00",
-    }
-    base = datetime(2026, 9, 30, 12, 0, tzinfo=ROME)
-    resolve_prosoccer_date(pred, day_offset=0, base_time=base)
-    assert pred["kickoff_utc"].isoformat() == "2026-09-30T19:00:00+00:00"
+def test_prosoccer_browser_locale_does_not_create_verified_timezone():
+    rows = parse_prosoccer("""
+21:00
+Team A
+Team B
+Test League
+50%
+25%
+25%
+55%
+45%
+""")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["kickoff_raw"] == "21:00"
+    assert row["source_timezone"] == ""
+    assert row["timezone_status"] == "TIMEZONE_UNRESOLVED"
+    assert row.get("kickoff_utc") is None
