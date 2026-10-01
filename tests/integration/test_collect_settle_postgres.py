@@ -78,6 +78,8 @@ def pipeline(monkeypatch, tmp_path):
     # A fallback is forbidden in this controlled fixture, so no unnoticed network escapes.
     monkeypatch.setattr(collect, 'fetch_pinnacle_leagues_via_bridge',
                         lambda: (_ for _ in ()).throw(AssertionError('Unexpected bridge fallback')))
+    monkeypatch.setattr(collect, 'fetch_pinnacle_batch_via_bridge',
+                        lambda ids: (_ for _ in ()).throw(AssertionError('Unexpected batch fallback')))
 
     def cycle(matches, at=None):
         return settle.run_cycle(now=at or kickoff + timedelta(hours=3),
@@ -89,12 +91,62 @@ def pipeline(monkeypatch, tmp_path):
             'Home': {'TeamName': [{'Description': 'Czech Republic'}]},
             'Away': {'TeamName': [{'Description': 'England'}]}}
     return {'connect': connect, 'root': tmp_path, 'now': now, 'kickoff': kickoff,
-            'page': page, 'html': html, 'cycle': cycle, 'fifa': fifa}
+            'page': page, 'html': html, 'cycle': cycle, 'fifa': fifa, 'http_fixture':http_fixture}
 
 
 def read(pipeline, sql):
     with pipeline['connect']() as conn:
         return list(conn.execute(sql).fetchall())
+
+
+def test_collector_recovers_league_documents_preserves_quote_raw_and_strict_matching(pipeline,monkeypatch,capsys):
+    original=pipeline['http_fixture']
+    def direct(url,**kwargs):
+        if '/leagues/1/' in url:return 403,b'public source transport denied',{}
+        return original(url,**kwargs)
+    monkeypatch.setattr(collect,'http_get',direct)
+    batches=[]
+    def fallback(ids):
+        batches.append(ids)
+        assert ids==[1]
+        mu=original('https://guest.api.arcadia.pinnacle.com/0.1/leagues/1/matchups?brandId=0')
+        mk=original('https://guest.api.arcadia.pinnacle.com/0.1/leagues/1/markets/straight')
+        return [{'id':1,'err':None,'matchups':mu[:2],'markets':mk[:2],
+                 'captured_at':pipeline['now'],'transport':'browser_bridge_fallback'}]
+    monkeypatch.setattr(collect,'fetch_pinnacle_batch_via_bridge',fallback)
+    collect.main();summary=json.loads(capsys.readouterr().out)
+    assert batches==[[1]] and summary['joined_pinnacle']==1
+    rows=read(pipeline,'SELECT * FROM model_snapshots')
+    assert len(rows)==1 and rows[0]['picked_odds']==2
+    p=rows[0]['payload']
+    assert p['pin_transport']=='browser_bridge_fallback' and p['name_score_note']==collect.MATCH_CONTRACT
+    raw=next(pipeline['root'].rglob('markets_1.json')).read_bytes()
+    assert hashlib.sha256(raw).hexdigest()==p['sha256_odds_raw']
+    audit=json.loads(next(pipeline['root'].rglob('transport_audit.json')).read_text())
+    assert audit[0]['matchups_direct_status']==audit[0]['markets_direct_status']==403
+    assert audit[0]['final_transport']=='browser_bridge_fallback' and audit[0]['final_error'] is None
+    quality=json.loads(next((pipeline['root']/'reports').glob('daily_quality_*.json')).read_text())
+    assert quality['pinnacle_direct_leagues_recovered']==1
+    assert quality['pinnacle_league_transports']=={'direct':0,'browser_bridge_fallback':1,'failed':0}
+    for table in ('market_decision_tickets','decision_tickets','source_pilot_predictions'):
+        assert read(pipeline,f'SELECT count(*) AS n FROM {table}')[0]['n']==0
+
+
+def test_failed_league_fallback_is_not_priced_or_hidden(pipeline,monkeypatch,capsys):
+    original=pipeline['http_fixture']
+    def direct(url,**kwargs):
+        if '/leagues/1/' in url:return 403,b'denied',{}
+        return original(url,**kwargs)
+    def fallback(ids):raise RuntimeError('upstream unavailable')
+    monkeypatch.setattr(collect,'http_get',direct)
+    monkeypatch.setattr(collect,'fetch_pinnacle_batch_via_bridge',fallback)
+    collect.main();summary=json.loads(capsys.readouterr().out)
+    assert summary['joined_pinnacle']==0 and summary['errors']>=1
+    rows=read(pipeline,'SELECT * FROM model_snapshots')
+    assert len(rows)==1 and rows[0]['picked_odds'] is None
+    assert rows[0]['payload']['pin_matchup_id']=='' and rows[0]['payload']['pin_transport']==''
+    audit=json.loads(next(pipeline['root'].rglob('transport_audit.json')).read_text())
+    assert audit[0]['final_transport']=='failed' and audit[0]['final_error']
 
 
 def test_collect_freeze_settle_retry_correction_and_field_verification(pipeline, capsys):

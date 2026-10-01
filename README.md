@@ -800,3 +800,12 @@ VERIFIED FT outcomes. Real zeros remain in the sample, raw probabilities remain
 unchanged, and clipping is recorded separately. Empty samples have null scores,
 not a promotion verdict. The real settled comparison DoD remains pending;
 this implementation does not preregister production thresholds or policies.
+
+Pinnacle matchup/market transport now falls back to the authenticated browser
+bridge when direct responses fail. The fixed guest endpoints use complete JSON
+document bytes (5 MiB/document, 20 MiB/batch), up to 12 league IDs/session and at
+most two concurrent fallback sessions. Source response hash/size/time and direct
+failure/recovery remain in an append-only transport audit; browser stop must be
+confirmed. Collector acquisition time after batch delivery is a conservative
+prematch cutoff. Exact matching, model/price separation and historical snapshots
+are unchanged. Available feed data alone does not certify a cross-source join.

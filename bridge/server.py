@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -125,32 +126,68 @@ async def internal_pinnacle_leagues(request: Request):
     if not expected or not supplied or not hmac.compare_digest(expected, supplied):
         return JSONResponse({"detail": "unauthorized"}, status_code=401)
 
-    session_id = None
+    session_id = None; result = None; failure = None
     try:
-        created = await bridge.create()
-        session_id = created["session_id"]
-        nav = await bridge.open_url(
-            session_id,
-            "https://guest.api.arcadia.pinnacle.com/0.1/sports/29/leagues?brandId=0",
-            "domcontentloaded",
-            45000,
-            False,
-        )
-        body = await bridge.dom_text(session_id, "body", 500000)
-        return JSONResponse({
-            "http_status": nav.get("http_status"),
-            "final_url": nav.get("final_url"),
-            "body": body.get("text", ""),
-            "truncated": body.get("truncated", False),
-        })
+        created = await bridge.create(); session_id = created['session_id']
+        result = await bridge.json_document(session_id,
+            'https://guest.api.arcadia.pinnacle.com/0.1/sports/29/leagues?brandId=0')
     except Exception as exc:
-        return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=502)
+        failure = type(exc).__name__
     finally:
         if session_id:
             try:
-                await bridge.stop(session_id)
-            except Exception:
-                pass
+                stopped = await bridge.stop(session_id)
+                if stopped.get('status') != 'stopped':
+                    raise RuntimeError('browser stop not confirmed')
+            except Exception as exc:
+                failure = 'STOP_FAILED:' + type(exc).__name__
+    if failure:
+        return JSONResponse({'detail': failure}, status_code=502)
+    return JSONResponse(result)
+
+
+async def internal_pinnacle_league_batch(request: Request):
+    expected = os.environ.get('COLLECTOR_BRIDGE_TOKEN', '').strip()
+    supplied = request.headers.get('x-collector-token', '')
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        return JSONResponse({'detail': 'unauthorized'}, status_code=401)
+    raw = request.query_params.get('ids', '')
+    if not re.fullmatch(r'[1-9][0-9]{0,8}(?:,[1-9][0-9]{0,8}){0,11}', raw):
+        return JSONResponse({'detail': '1..12 positive league IDs required'}, status_code=400)
+    ids = [int(x) for x in raw.split(',')]
+    if len(set(ids)) != len(ids):
+        return JSONResponse({'detail': 'duplicate league IDs'}, status_code=400)
+    session_id = None; items = []; failure = None; total_bytes = 0
+    try:
+        async with asyncio.timeout(140):
+            created = await bridge.create(); session_id = created['session_id']
+            for lid in ids:
+                item = {'id': lid}
+                try:
+                    for kind, suffix in (('matchups','matchups?brandId=0'), ('markets','markets/straight')):
+                        result = await bridge.json_document(session_id,
+                            f'https://guest.api.arcadia.pinnacle.com/0.1/leagues/{lid}/{suffix}')
+                        total_bytes += result['bytes_utf8']
+                        if total_bytes > 20 * 1024 * 1024:
+                            raise RuntimeError('batch document size limit exceeded')
+                        item[kind] = result
+                except Exception as exc:
+                    # A failing league stays explicit; it cannot hide other league results.
+                    item = {'id': lid, 'error': type(exc).__name__}
+                items.append(item)
+    except Exception as exc:
+        failure = type(exc).__name__
+    finally:
+        if session_id:
+            try:
+                result = await bridge.stop(session_id)
+                if result.get('status') != 'stopped':
+                    raise RuntimeError('browser stop not confirmed')
+            except Exception as exc:
+                failure = 'STOP_FAILED:' + type(exc).__name__
+    if failure:
+        return JSONResponse({'detail': failure}, status_code=502)
+    return JSONResponse({'items': items, 'transport': 'BROWSER_JSON_DOCUMENT', 'session_stopped': True})
 
 
 public_host = os.environ.get(
@@ -196,6 +233,7 @@ app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
         Route("/internal/pinnacle/leagues", internal_pinnacle_leagues, methods=["GET"]),
+        Route('/internal/pinnacle/league-batch', internal_pinnacle_league_batch, methods=['GET']),
         Route("/.well-known/oauth-protected-resource", oauth.protected_resource, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth.auth_metadata, methods=["GET"]),
         Route("/oauth/authorize", oauth.authorize_get, methods=["GET"]),
