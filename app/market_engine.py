@@ -186,6 +186,12 @@ def result_fields_verified(market_id: str, result: dict[str, Any]) -> bool:
 
 
 
+def should_reset_unverified_market_ticket(status: str, market_id: str, result: dict[str, Any]) -> bool:
+    return status in {"WON", "LOST", "PUSH"} and (
+        not result or not result_fields_verified(market_id, result)
+    )
+
+
 def settle_market(market_id: str, selection: str, line: float | None, result: dict[str, Any]) -> tuple[str, bool] | None:
     fh = result.get("final_home_goals")
     fa = result.get("final_away_goals")
@@ -322,6 +328,13 @@ def synchronize_market_settlement() -> dict[str, int]:
         for row in rows:
             result = dict(row.get("result_payload") or {})
             if not result or not result_fields_verified(row["market_id"], result):
+                if should_reset_unverified_market_ticket(row.get("status") or "", row["market_id"], result):
+                    cur.execute("""
+                        UPDATE market_decision_tickets
+                        SET status='PENDING',result_value=NULL,correct=NULL,profit_eur=NULL,updated_at=NOW()
+                        WHERE ticket_id=%s
+                    """, (row["ticket_id"],))
+                    updated += 1
                 continue
             settled = settle_market(row["market_id"], row["selection"], row["line"], result)
             if settled is None:

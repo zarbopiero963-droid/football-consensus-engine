@@ -4,6 +4,7 @@ from app.market_engine import (
     required_result_fields,
     result_fields_verified,
     settle_market,
+    should_reset_unverified_market_ticket,
 )
 
 
@@ -233,3 +234,23 @@ def test_single_source_ft_cannot_settle_market():
         },
     }
     assert result_fields_verified("FT_1X2", result) is False
+
+
+def test_stale_settled_market_ticket_reverts_when_result_is_not_verified():
+    single_source = {
+        "field_verification": {
+            "final_home_goals": {"status": "SINGLE_SOURCE"},
+            "final_away_goals": {"status": "SINGLE_SOURCE"},
+        }
+    }
+    verified = {
+        "field_verification": {
+            "final_home_goals": {"status": "VERIFIED"},
+            "final_away_goals": {"status": "VERIFIED"},
+        }
+    }
+    assert should_reset_unverified_market_ticket("WON", "FT_1X2", single_source) is True
+    assert should_reset_unverified_market_ticket("LOST", "FT_1X2", single_source) is True
+    assert should_reset_unverified_market_ticket("PUSH", "FT_OU_2.0", single_source) is True
+    assert should_reset_unverified_market_ticket("PENDING", "FT_1X2", single_source) is False
+    assert should_reset_unverified_market_ticket("WON", "FT_1X2", verified) is False
