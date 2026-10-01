@@ -418,6 +418,14 @@ uvicorn app.api:app --host 0.0.0.0 --port 10000
 Endpoints:
 
 - `GET /healthz` — database connectivity.
+- `GET /health/invariants` — read-only readiness and audit counts. Critical
+  pilot leakage, unsafe production time or settlements without required VERIFIED
+  fields return `FAIL` / HTTP 503. Coverage, parser, pilot timezone and stale or
+  unobserved worker warnings return `DEGRADED` with `ready=false`; connectivity
+  alone never certifies readiness. Pending ratio uses shown tickets at least two
+  hours after kickoff, warns above 0.5 and stays null when there are none. Worker
+  age limits are six hours for collector and one hour for settlement. These
+  operational thresholds do not alter strategy rules or promote sources.
 - `GET /today` — latest valid pre-match snapshot per match for today's Europe/Rome calendar date.
 - `GET /yesterday` — same snapshots plus latest settled result when available.
 - `GET /date/YYYY-MM-DD?results=true` — explicit date query.
