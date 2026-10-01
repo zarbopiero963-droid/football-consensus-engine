@@ -17,6 +17,7 @@ from app.timezones import to_rome_iso
 from app.strategy_sync import get_strategy_history, get_strategy_stats, synchronize_strategy_simulations
 from app.market_engine import freeze_market_tickets, get_batch_markets, get_market_stats
 from app.runtime_health import runtime_health
+from app.market_reference import get_market_reference, utc as market_utc
 
 ROME = ZoneInfo("Europe/Rome")
 app = FastAPI(title="Football Consensus Engine", version="0.2.0")
@@ -531,3 +532,10 @@ def result_consensus(limit: int = Query(default=200, ge=1, le=1000)):
         """, (limit,))
         rows=list(cur.fetchall())
     return {"results": rows, "count": len(rows)}
+
+
+@app.get("/market-reference/{match_id}")
+def market_reference(match_id: str, known_at: datetime | None = None):
+    if known_at is not None and market_utc(known_at) is None:
+        raise HTTPException(status_code=422, detail="TIMEZONE_UNRESOLVED")
+    return get_market_reference(match_id, known_at=known_at)

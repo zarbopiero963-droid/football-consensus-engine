@@ -429,6 +429,26 @@ Endpoints:
 - `GET /today` — latest valid pre-match snapshot per match for today's Europe/Rome calendar date.
 - `GET /yesterday` — same snapshots plus latest settled result when available.
 - `GET /date/YYYY-MM-DD?results=true` — explicit date query.
+- `GET /market-reference/{match_id}?known_at=<ISO-offset-time>` — read-only
+  Pinnacle FT 1X2 series. `q_open` is the first observed quote, not an asserted
+  bookmaker opening price. `q_close` is the latest observed pre-kickoff proxy,
+  exposed only after kickoff; before then the reference is `PROVISIONAL`.
+  Capture and database sealing must both precede kickoff and the requested
+  knowledge time. The response includes decimal odds, proportional inverse-odds
+  fair probabilities, overround, timestamps, raw hash and seconds to kickoff.
+  A three-hour collector cadence can yield a stale close proxy; no missing price
+  is reconstructed. Provider ID/kickoff ambiguity blocks the series. Historical
+  quotes without the new matching contract remain `LEGACY_UNCERTIFIED` diagnostics
+  with `q_open`/`q_close` missing; reading them never changes frozen tickets.
+
+New collector quotes require an exact ordered name pair (NFKC/case/whitespace
+only), kickoff within 15 minutes, explicit timezone and agreeing competition.
+Available country/category metadata must agree. Cross-source naming variants
+need evidenced registry bindings before adoption; fuzzy/containment never prices
+a production snapshot. Competition names that differ remain unmatched. Each
+source response carries its own acquisition timestamp, so a run started before
+kickoff cannot backdate a response received afterwards. No historical ledger
+headers or rows are changed; the existing `name_score_note` records the contract.
 
 The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
 
