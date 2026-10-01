@@ -41,7 +41,15 @@ def test_decision_snapshot_is_frozen_when_later_monitor_snapshot_changes():
 
 def test_ticket_settlement_uses_frozen_pick_and_odds():
     ticket = frozen_snapshot_view(sample(probability=0.62, odds=1.72))
-    result = {"payload": {"result_1x2": "1", "final_home_goals": "2", "final_away_goals": "0"}}
+    result = {"payload": {
+        "result_1x2": "1",
+        "final_home_goals": "2",
+        "final_away_goals": "0",
+        "field_verification": {
+            "final_home_goals": {"status": "VERIFIED"},
+            "final_away_goals": {"status": "VERIFIED"},
+        },
+    }}
     settled = _settle_ticket(ticket, result)
     assert settled["correct"] is True
     assert round(settled["profit_flat_1"], 2) == 0.72
@@ -74,3 +82,20 @@ def test_existing_frozen_ticket_gets_italy_times_on_read():
     out = ensure_ticket_timezones(ticket)
     assert out["kickoff_italy"] == "2026-09-30T14:00:00+02:00"
     assert out["snapshot_timestamp_italy"] == "2026-09-29T10:20:36.100000+02:00"
+
+
+def test_single_source_result_keeps_ticket_pending():
+    ticket = frozen_snapshot_view(sample(probability=0.62, odds=1.72))
+    result = {"payload": {
+        "result_1x2": "1",
+        "final_home_goals": "2",
+        "final_away_goals": "0",
+        "field_verification": {
+            "final_home_goals": {"status": "SINGLE_SOURCE"},
+            "final_away_goals": {"status": "SINGLE_SOURCE"},
+        },
+    }}
+    settled = _settle_ticket(ticket, result)
+    assert settled["settlement_status"] == "PENDING"
+    assert settled["correct"] is None
+    assert settled["profit_flat_1"] is None
