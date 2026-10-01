@@ -322,6 +322,13 @@ def synchronize_market_settlement() -> dict[str, int]:
         for row in rows:
             result = dict(row.get("result_payload") or {})
             if not result or not result_fields_verified(row["market_id"], result):
+                if row.get("status") in {"WON", "LOST", "PUSH"}:
+                    cur.execute("""
+                        UPDATE market_decision_tickets
+                        SET status='PENDING',result_value=NULL,correct=NULL,profit_eur=NULL,updated_at=NOW()
+                        WHERE ticket_id=%s
+                    """, (row["ticket_id"],))
+                    updated += 1
                 continue
             settled = settle_market(row["market_id"], row["selection"], row["line"], result)
             if settled is None:
