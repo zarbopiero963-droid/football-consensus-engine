@@ -819,6 +819,15 @@ See [the staging contract](staging/market_vectors/README.md). SQL is enforced
 read-only; run completion is not a server seal, and no output is prematch-certified
 or production eligible.
 
+Same-market bookmaker staging (M27) is available in
+[staging/same_market](staging/same_market/README.md). It replays complete hashed
+Pinnacle documents for published FT goal-total half-goal prices, including exact
+alternate lines. A diagnostic join requires the same market, period, line,
+resolved time and exact fixture context at an explicit knowledge cutoff. BTTS
+and push/split lines remain unsupported. The real capture yields 43 quotes;
+none is server-sealed or production eligible, and no open/close series or model
+probability is invented. The matched prospective benchmark DoD remains pending.
+
 Competition coverage (M28) is available as
 `python -m analysis.coverage.run --neon --known-at <explicit-offset-time>`.
 The [read-only coverage report](analysis/coverage/README.md) separates source
