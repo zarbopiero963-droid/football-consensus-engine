@@ -772,3 +772,11 @@ Missing Under/NG remain null; old stored complements are diagnostics only.
 See [the staging contract](staging/market_vectors/README.md). SQL is enforced
 read-only; run completion is not a server seal, and no output is prematch-certified
 or production eligible.
+
+Competition coverage (M28) is available as
+`python -m analysis.coverage.run --neon --known-at <explicit-offset-time>`.
+The [read-only coverage report](analysis/coverage/README.md) separates source
+vector/time/matching rates, observed production/pilot result providers, VERIFIED
+FT counts and settled fixtures per market in the trailing seven days. It retains
+missing context and audit gaps, uses explicit source-row denominators and does
+not invent a canonical binding or production eligibility policy.

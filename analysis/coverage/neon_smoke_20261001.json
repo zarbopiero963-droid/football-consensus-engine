@@ -1,0 +1,2557 @@
+{
+  "competitions": [
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "UNRESOLVED",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        ""
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "aipredict_io",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 17,
+          "latest_source_rows": 17,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "clubelo",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 8,
+          "latest_source_rows": 8,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "kickform",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 8,
+          "latest_source_rows": 8,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "kickoff_ai",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 25,
+          "latest_source_rows": 25,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "opta_analyst",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "scoutingstats_ai",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 7,
+          "latest_source_rows": 7,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "statsultra",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 39,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "thedatabetics",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 18,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "vitisport",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 11,
+          "latest_source_rows": 11,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "xgtoday",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "afcon 2027 qualifiers",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "AFCON 2027 Qualifiers"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "elofoot",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "africa cup of nations qualification",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [
+        "pilot:smart_soccer_stats"
+      ],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Africa Cup of Nations Qualification"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 19,
+          "latest_source_rows": 19,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 7,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "amichevoli europa",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Amichevoli Europa"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "amichevoli per club resto del mondo",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Amichevoli per club resto del mondo"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "argentina - campionato nazionale riserve",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Argentina - Campionato nazionale riserve"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "argentina - liga profesional riserve",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Argentina - Liga Profesional riserve"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 5,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "botola pro",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Botola Pro"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 7,
+          "latest_source_rows": 7,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 7,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "brasile - serie b",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Brasile - Serie B"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 2,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "colombia - primera a",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Colombia - Primera A"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "concacaf nations league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [
+        "fifa-calendar-v3"
+      ],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "CONCACAF Nations League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 20,
+          "latest_source_rows": 20,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 20,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 2,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "coppa del golfo",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Coppa del Golfo"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "coppa delle nazioni africane - qual.",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Coppa delle Nazioni Africane - Qual."
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "coppa delle nazioni africane u20 - qual.",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Coppa delle Nazioni Africane U20 - Qual."
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 2,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "coppa di norvegia",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Coppa di Norvegia"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "eerste divisie",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Eerste Divisie"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 8,
+          "latest_source_rows": 8,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 8,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "egitto - 2a divisione",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Egitto - 2\u00aa Divisione"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "el salvador - apertura",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "El Salvador - Apertura"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "elite league u20",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Elite League U20"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "friendly international",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Friendly International"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 10,
+          "latest_source_rows": 10,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "ghana premier league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [
+        "fifa-calendar-v3"
+      ],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Ghana Premier League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 3,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 3,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "giordania - divisione 1",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Giordania - Divisione 1"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "guatemala - primera division",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Guatemala - Primera Division"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "gulf cup of nations",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Gulf Cup of Nations"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 4,
+          "latest_source_rows": 4,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 4,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "hong kong - campionato u22",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Hong Kong - Campionato U22"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "hong kong - coppa di lega",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Hong Kong - Coppa di Lega"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "incontri tra nazionali",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Incontri tra nazionali"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "incontri tra nazionali u19",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Incontri tra nazionali U19"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "india - ifa shield",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "India - IFA Shield"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "india - mizoram premier league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "India - Mizoram Premier League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "inghilterra - league cup femminile",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Inghilterra - League Cup femminile"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 4,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "international friendlies",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [
+        "pilot:smart_soccer_stats"
+      ],
+      "production_eligible": false,
+      "result_providers_observed": [
+        "fifa-calendar-v3"
+      ],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "International Friendlies"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 27,
+          "latest_source_rows": 27,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 25,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "israele - liga leumit",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Israele - Liga Leumit"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "k3 league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "K3 League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "kenyan premier league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Kenyan Premier League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 10,
+          "latest_source_rows": 10,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 10,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "la liga 2",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "La Liga 2"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "league one",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "League One"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 4,
+          "latest_source_rows": 4,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 4,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "liga portugal 2",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Liga Portugal 2"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 1,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "liga profesional argentina",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Liga Profesional Argentina"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 9,
+          "latest_source_rows": 9,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 9,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "ligue 1",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Ligue 1"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 8,
+          "latest_source_rows": 8,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "ligue 2",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Ligue 2"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 6,
+          "latest_source_rows": 6,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "major league soccer",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Major League Soccer"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 1,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "montenegro - druga liga",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Montenegro - Druga Liga"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 2,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "nigeria - premier league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Nigeria - Premier League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "npfl",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [
+        "fifa-calendar-v3"
+      ],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "NPFL"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 4,
+          "latest_source_rows": 4,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 4,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "paraguay - coppa",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Paraguay - Coppa"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "paraguay - primera b",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Paraguay - Primera B"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "per\u00f9 - liga 1",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Per\u00f9 - Liga 1"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "premier league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Premier League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 3,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "qualificazioni campionato europeo u21",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Qualificazioni Campionato Europeo U21"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "segunda divisi\u00f3n",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Segunda Divisi\u00f3n"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 10,
+          "latest_source_rows": 10,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 10,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "serie a",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Serie A"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "serie b",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Serie B"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 1,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uefa nations league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [
+        "fifa-calendar-v3"
+      ],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "UEFA Nations League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 11,
+          "latest_source_rows": 11,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "elofoot",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 42,
+          "latest_source_rows": 42,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 40,
+          "source": "footinsights",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 2,
+          "latest_source_rows": 2,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uefa nations league a",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "UEFA Nations League A"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 3,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uefa nations league d",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "UEFA Nations League D"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uefa u21 championship qualification",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "UEFA U21 Championship Qualification"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 10,
+          "latest_source_rows": 10,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uefa women's champions league",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "UEFA Women's Champions League"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 1.0,
+          "full_vectors": 9,
+          "latest_source_rows": 9,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "prosoccer",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        },
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 4,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uefa women's europa cup - qual.",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "UEFA Women's Europa Cup - Qual."
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 6,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "uruguay - clausura",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "Uruguay - Clausura"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "usa - usl championship",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "USA - USL Championship"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    },
+    {
+      "blockers": [
+        "NO_APPROVED_COMPETITION_COVERAGE_POLICY",
+        "CANONICAL_BINDING_NOT_ASSERTED",
+        "NO_VERIFIED_FT_IN_LAST_7D",
+        "NO_SAFE_SOURCE_ROWS"
+      ],
+      "canonical_competition_id": null,
+      "category": null,
+      "competition_label": "usa - usl league one",
+      "country": null,
+      "label_scope": "DESCRIPTIVE_EXACT_LABEL_ONLY",
+      "pilot_result_providers_observed": [],
+      "production_eligible": false,
+      "result_providers_observed": [],
+      "settled_fixtures_by_market": {},
+      "settled_fixtures_last7d": 0,
+      "source_labels_observed": [
+        "USA - USL League One"
+      ],
+      "sources": [
+        {
+          "full_vector_rate": 0.0,
+          "full_vectors": 0,
+          "latest_source_rows": 1,
+          "production_eligible": false,
+          "safe_match_rate": 0.0,
+          "safe_matches": 0,
+          "sealed_prematch": 0,
+          "source": "totalcorner",
+          "timezone_resolved": 0,
+          "timezone_resolved_rate": 0.0
+        }
+      ],
+      "state": "MONITORING_ONLY",
+      "unverified_settled_tickets": 0,
+      "verified_ft_fixtures_last7d": 0
+    }
+  ],
+  "denominators": {
+    "competition_labels": 62,
+    "input_prediction_rows": 435,
+    "latest_source_rows": 435
+  },
+  "environment": "NEON_READ_ONLY",
+  "excluded": {},
+  "input_projection": "only consumed observation fields; connector bigint fixture_versions converted to Python int",
+  "input_sha256": "ae39121a62e4b22c77e3e7b3c003f9e451068919ea432e691958e2cb0c96f508",
+  "known_at": "2026-10-01T13:49:22.166000+00:00",
+  "mode": "READ_ONLY_DIAGNOSTIC",
+  "production_eligible": false,
+  "report_version": "competition-coverage-v1",
+  "week_start_utc": "2026-09-24T13:49:22.166000+00:00",
+  "weekly_definition": "DISTINCT_FIXTURES_WITH_KICKOFF_IN_TRAILING_7D"
+}
