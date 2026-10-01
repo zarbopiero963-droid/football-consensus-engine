@@ -9,12 +9,29 @@ def result_1x2(h,a):
     if h is None or a is None: return None
     return "1" if h>a else ("X" if h==a else "2")
 
-def observation_id(match_id,provider,observed_at):
-    return hashlib.sha256(f"{match_id}|{provider}|{observed_at}".encode()).hexdigest()[:32]
+def observation_fingerprint(provider_match_id, status, payload):
+    semantic = {
+        "provider_match_id": str(provider_match_id or ""),
+        "status": str(status or ""),
+        **{field: payload.get(field) for field in FIELDS},
+    }
+    return hashlib.sha256(
+        json.dumps(semantic, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+def observation_id(match_id, provider, provider_match_id, status, payload):
+    fingerprint = observation_fingerprint(provider_match_id, status, payload)
+    return hashlib.sha256(
+        f"{match_id}|{provider}|{fingerprint}".encode()
+    ).hexdigest()[:32]
+
 
 def upsert_observation(match_id,provider,observed_at,kickoff,payload):
     norm=dict(payload)
-    oid=observation_id(match_id,provider,observed_at)
+    provider_match_id=norm.get("provider_match_id","")
+    status=norm.get("status","")
+    oid=observation_id(match_id,provider,provider_match_id,status,norm)
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""INSERT INTO result_observations(
         observation_id,match_id,provider,provider_match_id,observed_at_utc,kickoff_utc,status,
@@ -22,7 +39,7 @@ def upsert_observation(match_id,provider,observed_at,kickoff,payload):
         ht_corners_home,ht_corners_away,raw_sha256,payload)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
         ON CONFLICT(observation_id) DO NOTHING""",
-        (oid,match_id,provider,norm.get("provider_match_id",""),observed_at,kickoff,norm.get("status",""),
+        (oid,match_id,provider,provider_match_id,observed_at,kickoff,status,
          *[norm.get(f) for f in FIELDS],
          hashlib.sha256(json.dumps(norm,sort_keys=True,default=str).encode()).hexdigest(),json.dumps(norm,default=str)))
         conn.commit()
