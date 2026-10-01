@@ -1,0 +1,26 @@
+{
+  "checks": {
+    "missing_under_ng_and_cs_probability_preserved": true,
+    "raw_over_btts_equal_normalized_x100": true,
+    "six_dc_same_source_no_new_vote": true,
+    "zero_production_eligibility": true
+  },
+  "environment": "NEON_READ_ONLY_PILOT_SAMPLE",
+  "input_sha256": "6d626ff86cd6e16b8931af45721a225904a8c3e8de78908a3573e535348b5275",
+  "rows": 6,
+  "run_id": "source-pilot-48h-issue1-v1-statsultra-s08-6ea4dc69",
+  "source_match_keys": [
+    "1406e4c5af560c944f6c679f",
+    "279d2393ee85436bb0097a3a",
+    "47fc74dea4957fda7e116f08",
+    "5b948051bb323ee61ab4c610",
+    "6d117762a1146d1dec6e945c",
+    "94725f95e12f5449e88887e4"
+  ],
+  "status_counts": {
+    "FULL": 6,
+    "PARTIAL": 12,
+    "PICK_ONLY": 6
+  },
+  "vectors": 24
+}
