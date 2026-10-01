@@ -30,9 +30,9 @@ def observation_id(match_id, provider, provider_match_id, status, payload):
 def upsert_observation(match_id,provider,observed_at,kickoff,payload, *, cursor=None):
     if cursor is None:
         with connect() as conn, conn.cursor() as cur:
-            oid = upsert_observation(match_id,provider,observed_at,kickoff,payload,cursor=cur)
+            inserted = upsert_observation(match_id,provider,observed_at,kickoff,payload,cursor=cur)
             conn.commit()
-            return oid
+            return inserted
     norm=dict(payload)
     provider_match_id=norm.get("provider_match_id","")
     status=norm.get("status","")
@@ -46,7 +46,7 @@ def upsert_observation(match_id,provider,observed_at,kickoff,payload, *, cursor=
         (oid,match_id,provider,provider_match_id,observed_at,kickoff,status,
          *[norm.get(f) for f in FIELDS],
          hashlib.sha256(json.dumps(norm,sort_keys=True,default=str).encode()).hexdigest(),json.dumps(norm,default=str)))
-    return oid
+    return cursor.rowcount > 0
 
 def compute_consensus(rows):
     production_rows=[

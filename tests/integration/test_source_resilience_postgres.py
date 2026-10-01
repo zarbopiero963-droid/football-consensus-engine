@@ -145,6 +145,15 @@ def test_current_run_fallback_evidence_is_persisted_and_duplicate_slot_does_not_
     monkeypatch.setattr(results, 'browser_api', lambda *a: pytest.fail('immutable slot refetched'))
     duplicate = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 1)
     assert duplicate['status'] == 'ALREADY_DONE' and duplicate['run_id'] == outcome['run_id']
+    browser_fixture(monkeypatch, results, Page([TEXT]))
+    repeated = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 2)
+    assert repeated['normalized_observations'] == {'parsed': 1, 'matched': 1, 'persisted': 0}
+    with pipeline['connect']() as conn:
+        assert conn.execute('SELECT count(*) AS n FROM result_observations').fetchone()['n'] == 1
+        assert conn.execute('SELECT count(*) AS n FROM result_source_pilot_runs').fetchone()['n'] == 2
+        fresh = conn.execute('SELECT manifest FROM result_source_pilot_runs WHERE slot_no=2').fetchone()['manifest']
+        assert fresh['fallback_candidates'][0]['observed_at_utc']
+        assert fresh['normalized_observations']['persisted'] == 0
 
 
 def test_actual_pilot_adapters_route_worldfootball_ft_when_smart_is_down_without_production_vote(pipeline, monkeypatch):

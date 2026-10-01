@@ -273,7 +273,7 @@ def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_s
             "raw_page_sha256": raw_sha256,
             "production_eligible": False,
         }
-        upsert_observation(
+        inserted = upsert_observation(
             anchor["match_id"],
             provider,
             observed_at,
@@ -281,7 +281,7 @@ def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_s
             payload,
             cursor=cursor,
         )
-        persisted += 1
+        persisted += int(inserted)
     return {"parsed": len(rows), "matched": matched, "persisted": persisted}
 
 
