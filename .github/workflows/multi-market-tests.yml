@@ -43,4 +43,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: pytest -q tests/integration/test_decision_postgres.py
+      - run: pytest -q tests/integration/test_decision_postgres.py tests/integration/test_browser_leases_postgres.py

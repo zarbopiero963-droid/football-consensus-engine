@@ -492,6 +492,15 @@ uvicorn bridge.server:app --host 0.0.0.0 --port $PORT
 
 The ChatGPT custom MCP URL is the dedicated Render service URL plus `/mcp`.
 
+The bridge records only its own allocated browser IDs in `browser_session_leases`.
+It never persists CDP URLs or enumerates unrelated provider browsers. Operations
+renew a five-minute lease, serialize per session and have a three-minute timeout.
+A background reaper checks every minute for expired idle leases; active leases
+and busy local operations are excluded. A failed remote stop remains durable and
+retries after a one-minute backoff, including after worker restart. Shutdown stops
+owned local sessions. `browser_reap` offers an explicit idle cleanup (minimum 60
+seconds, default 300); it uses the same ownership and lease guards.
+
 
 ## ChatGPT OAuth 2.1
 
