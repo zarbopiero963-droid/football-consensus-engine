@@ -16,7 +16,7 @@ COOLDOWNS = (3 * 3600, 6 * 3600, 12 * 3600)
 def source_key(role, pilot_id, source):
     if role not in {'prediction', 'result'}:
         raise ValueError('unknown source role')
-    if any(not re.fullmatch(r'[A-Za-z0-9_.:-]{1,150}', v) for v in (pilot_id, source)):
+    if any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,150}', v) for v in (pilot_id, source)):
         raise ValueError('invalid source identity')
     return f'source_circuit:v1:{role}:{pilot_id}:{source}'
 

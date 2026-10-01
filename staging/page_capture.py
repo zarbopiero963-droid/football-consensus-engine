@@ -272,6 +272,6 @@ def confirmed_browser_stop(browser_api, base_url, session_id):
         raise BrowserStopError("provider stop verification unconfirmed", session_id) from exc
     if status in (404, 410):
         return {"status": "stopped", "provider_missing": True}
-    if status != 200 or session.get("status") != "stopped":
+    if status != 200 or not isinstance(session, dict) or session.get("status") != "stopped":
         raise BrowserStopError("provider stop unconfirmed", session_id)
     return session

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.source_resilience import admit_state, capture_fault, finish_state, initial_state, source_key
-from staging.page_capture import capture_summary, page_state
+from staging.page_capture import BrowserStopError, capture_summary, confirmed_browser_stop, page_state
 
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 
@@ -63,6 +63,7 @@ def test_identity_isolated_by_role_and_pilot_and_invalid_registry_inputs_fail():
     assert source_key('result', 'pilot-a', 'source') != source_key('result', 'pilot-b', 'source')
     with pytest.raises(ValueError): source_key('unknown', 'pilot', 'source')
     with pytest.raises(ValueError): source_key('result', 'pilot', '../bad')
+    with pytest.raises(ValueError): source_key('result', 'pilot:a', 'source')
 
 
 def test_live_maintenance_dom_fixture_trips_circuit_without_retrying_or_inventing_rows():
@@ -84,3 +85,12 @@ def test_empty_or_existing_slot_does_not_certify_half_open_recovery():
     assert empty['mode'] == 'OPEN' and empty['failures'] == 1
     done = finish_state(state, NOW + timedelta(hours=3), capture_fault({'status': 'ALREADY_DONE'}))
     assert done['mode'] == 'OPEN' and done['failures'] == 1
+
+
+@pytest.mark.parametrize('payload', [None, [], 'stopped'])
+def test_invalid_stop_payload_keeps_browser_id_for_durable_cleanup(payload):
+    def api(method, url, body=None):
+        return 200, payload if method == 'GET' else {'status': 'stopped'}
+    with pytest.raises(BrowserStopError) as raised:
+        confirmed_browser_stop(api, 'https://provider.example/browsers', 'opaque-id')
+    assert raised.value.session_id == 'opaque-id'
