@@ -119,3 +119,20 @@ def test_http_error_with_finished_dom_is_preserved_but_not_ingested(pipeline, mo
         assert gzip.decompress(bytes(run['html_gzip'])) == raw.encode()
         assert run['manifest']['page_capture']['state'] == 'HTTP_ERROR'
         assert conn.execute('SELECT count(*) AS n FROM result_observations').fetchone()['n'] == 0
+
+
+def test_parser_limit_failure_preserves_raw_without_observation_or_fallback(pipeline, monkeypatch):
+    # Controlled oversized page exercises the actual bounded parser, rather
+    # than mocking its error or weakening the shared capture limits.
+    raw = html() + ' ' * (5 * 1024 * 1024)
+    setup(pipeline, monkeypatch, raw)
+    out = results.collect_source('worldfootball', results.SOURCES['worldfootball'], 1)
+    assert out['normalized_observations'] == {'parsed': 0, 'matched': 0, 'persisted': 0}
+    with pipeline['connect']() as conn:
+        run = conn.execute('SELECT * FROM result_source_pilot_runs').fetchone()
+        assert gzip.decompress(bytes(run['html_gzip'])) == raw.encode()
+        assert run['html_sha256'] == hashlib.sha256(raw.encode()).hexdigest()
+        assert run['manifest']['page_capture']['state'] == 'PARSER_ERROR'
+        assert run['manifest']['result_parser_audit']['error_class'] == 'ValueError'
+        assert run['manifest']['fallback_candidates'] == []
+        assert conn.execute('SELECT count(*) AS n FROM result_observations').fetchone()['n'] == 0

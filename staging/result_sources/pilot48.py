@@ -25,7 +25,8 @@ from app.result_validation import upsert_observation
 from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
 from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
 from app.source_fallback import pilot_fallback_report
-from staging.result_sources.worldfootball import parse_html as parse_worldfootball_html, parse_document as worldfootball_document
+from staging.result_sources.worldfootball import (CONTRACT as WORLDFOOTBALL_CONTRACT,
+    parse_html as parse_worldfootball_html, parse_document as worldfootball_document)
 
 RESULT_MATCH_CONTRACT = "RESULT_PAIR_DATE_COMPETITION_V1"
 
@@ -421,6 +422,19 @@ def _collect_source(source, url, slot_no, claim):
 
     rows_found, capabilities = inspect_source(source, body_text, html.decode("utf-8", "replace"))
     normalized_rows = capture.parsed if capture.accepted else []
+    parser_audit = None
+    if source == "worldfootball":
+        try:
+            parser_audit = worldfootball_document(html)["audit"]
+        except Exception as exc:
+            # Audit must not throw away the raw already captured on a parser
+            # fault (including the bounded DOM/HTML limits).
+            normalized_rows = []
+            capture.audit["state"] = "PARSER_ERROR"
+            capture.audit["parser_error_class"] = type(exc).__name__
+            parser_audit = {"contract": WORLDFOOTBALL_CONTRACT,
+                "state": "PARSER_ERROR", "rows_accepted": 0,
+                "error_class": type(exc).__name__}
     observed_at = datetime.fromisoformat(capture.audit["captured_at_utc"])
     fallback_candidates = []
     anchors = result_anchor_rows() if normalized_rows else []
@@ -455,7 +469,7 @@ def _collect_source(source, url, slot_no, claim):
             "rejection_counts": dict(match_rejections), "production_safe": False},
     }
     if source == "worldfootball":
-        manifest["result_parser_audit"] = worldfootball_document(html)["audit"]
+        manifest["result_parser_audit"] = parser_audit
 
     with connect() as conn, conn.cursor() as cur:
         assert_owner(cur, claim)
