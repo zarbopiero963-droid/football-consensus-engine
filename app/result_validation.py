@@ -28,10 +28,14 @@ def upsert_observation(match_id,provider,observed_at,kickoff,payload):
         conn.commit()
 
 def compute_consensus(rows):
+    production_rows=[
+        r for r in rows
+        if not str(r.get("provider") or "").startswith("pilot:")
+    ]
     fv={}; values={}; conflict=False
     for f in FIELDS:
         vals=defaultdict(list)
-        for r in rows:
+        for r in production_rows:
             if r.get(f) is not None:
                 vals[r.get(f)].append(r.get("provider"))
         if not vals:
@@ -44,7 +48,7 @@ def compute_consensus(rows):
             fv[f]={"status":"CONFLICT","values":{str(k):v for k,v in vals.items()}}
             values[f]=None; conflict=True
     any_verified=any(v["status"]=="VERIFIED" for v in fv.values())
-    status="CONFLICT" if conflict else ("VERIFIED" if any_verified else ("SINGLE_SOURCE" if rows else "UNVERIFIED"))
+    status="CONFLICT" if conflict else ("VERIFIED" if any_verified else ("SINGLE_SOURCE" if production_rows else "UNVERIFIED"))
     return values,fv,status
 
 def rebuild_consensus(match_id):
@@ -62,7 +66,10 @@ def rebuild_consensus(match_id):
         corners_away=EXCLUDED.corners_away,ht_corners_home=EXCLUDED.ht_corners_home,ht_corners_away=EXCLUDED.ht_corners_away,
         result_1x2=EXCLUDED.result_1x2,verification_status=EXCLUDED.verification_status,
         field_verification=EXCLUDED.field_verification,providers=EXCLUDED.providers,updated_at=NOW()""",
-        (match_id,*[values[f] for f in FIELDS],r12,status,json.dumps(fv),json.dumps(sorted({r["provider"] for r in rows}))))
+        (match_id,*[values[f] for f in FIELDS],r12,status,json.dumps(fv),json.dumps(sorted({
+            r["provider"] for r in rows
+            if not str(r.get("provider") or "").startswith("pilot:")
+        }))))
         conn.commit()
     return {"match_id":match_id,"status":status,"fields":fv}
 
