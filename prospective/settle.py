@@ -299,27 +299,38 @@ def match_fifa(row, matches):
     except (ValueError, TypeError, AttributeError, KeyError):
         return None, "kickoff_timezone_unresolved"
     hits = []
+    rejected = set()
     for m in matches:
         if not isinstance(m, dict):
             continue
         if not isinstance(m.get("Home"), dict) or not isinstance(m.get("Away"), dict):
             continue
+        home, away = fifa_name(m.get("Home")), fifa_name(m.get("Away"))
+        if not (strong(row["home_team"], home) and strong(row["away_team"], away)):
+            continue
+        if not (_category_compatible(row["home_team"], home, m.get("Home"))
+                and _category_compatible(row["away_team"], away, m.get("Away"))):
+            rejected.add("category_mismatch")
+            continue
+        if not _competition_compatible(row, m):
+            rejected.add("competition_mismatch")
+            continue
         try:
             when = _explicit_kickoff(m.get("Date") or "")
         except (ValueError, TypeError, AttributeError):
+            rejected.add("source_kickoff_timezone_unresolved")
             continue
         if abs((when - kick).total_seconds()) > FIFA_MATCH_WINDOW_SECONDS:
+            rejected.add("kickoff_mismatch")
             continue
-        if not _competition_compatible(row, m):
-            continue
-        home, away = fifa_name(m.get("Home")), fifa_name(m.get("Away"))
-        if not (_category_compatible(row["home_team"], home, m.get("Home"))
-                and _category_compatible(row["away_team"], away, m.get("Away"))):
-            continue
-        if strong(row["home_team"], home) and strong(row["away_team"], away):
-            hits.append(m)
-    if len(hits) != 1:
-        return None, ("ambiguous" if len(hits) > 1 else "no_unique_source_match")
+        hits.append(m)
+    if len(hits) > 1:
+        return None, "ambiguous"
+    if not hits:
+        # Coverage describes this complete fetched interval, never the provider
+        # globally. A present but unsafe pair must not masquerade as missing.
+        reason = next(iter(rejected)) if len(rejected) == 1 else "no_safe_source_match"
+        return None, reason if rejected else "out_of_coverage"
     return hits[0], None
 
 def grade(row, hg, ag):
@@ -522,6 +533,8 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
         "finished_on_source": 0,
         "not_final_on_source": 0,
         "finished_without_prematch_snapshot": 0,
+        "safe_matches": 0,
+        "matching_rejections": {},
     }
     fifa_err = None
     matches = fifa_matches
@@ -535,6 +548,8 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
         source["fetched"] = fifa_err is None
         if fifa_err:
             errors.append({"where": "fifa", "error": fifa_err, "retry": "next_cycle_in_600s"})
+            pending.extend({"match_id": snap["match_id"], "reason": "source_fetch_failed",
+                            "kickoff_utc": snap["kickoff_utc"]} for snap in due)
             matches = []
     else:
         source["fetched"] = True
@@ -564,9 +579,11 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
         for snap in due:
             found, why = match_fifa(snap, matches)
             if found is None:
+                source["matching_rejections"][why] = source["matching_rejections"].get(why, 0) + 1
                 errors.append({"match_id": snap["match_id"], "error": why})
                 pending.append({"match_id": snap["match_id"], "reason": why, "kickoff_utc": snap["kickoff_utc"]})
                 continue
+            source["safe_matches"] += 1
             if not fifa_finished(found):
                 pending.append({"match_id": snap["match_id"], "reason": "source_not_final", "kickoff_utc": snap["kickoff_utc"]})
                 continue
@@ -651,6 +668,7 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
         "skipped_identical": skipped,
         "errors": errors,
         "result_source": source,
+        "source_pending": pending,
         "pending_reason": "not_finished" if due == [] and not fifa_err else "",
         "prematch_hashes_unchanged": unchanged,
         "hashes_before": before,
@@ -667,6 +685,8 @@ def run_cycle(now=None, results_path=RESULTS, audit_path=AUDIT, ledger_path=LEDG
             "appended": payload["appended"],
             "corrections": payload["corrections"],
             "classification": payload["classification"],
+            "result_source": source,
+            "source_pending": pending,
         })
         if not db_state["ok"]:
             payload["errors"].append({"where": "database_state", "error": db_state["error"]})
