@@ -8,6 +8,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.db import connect
@@ -15,6 +16,7 @@ from app.decision_requests import KEY_PATTERN, request_fingerprint, request_lock
 from app.timezones import to_rome_iso
 from app.strategy_sync import get_strategy_history, get_strategy_stats, synchronize_strategy_simulations
 from app.market_engine import freeze_market_tickets, get_batch_markets, get_market_stats
+from app.runtime_health import runtime_health
 
 ROME = ZoneInfo("Europe/Rome")
 app = FastAPI(title="Football Consensus Engine", version="0.2.0")
@@ -395,6 +397,12 @@ def healthz():
         cur.execute("SELECT 1 AS ok")
         row = cur.fetchone()
     return {"ok": bool(row and row["ok"] == 1)}
+
+
+@app.get("/health/invariants")
+def health_invariants():
+    report = runtime_health()
+    return JSONResponse(report, status_code=503 if report['status'] == 'FAIL' else 200)
 
 
 @app.get("/today")
