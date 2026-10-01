@@ -1,0 +1,266 @@
+{
+  "clv": {
+    "reason": "REQUIRES_FROZEN_SELECTION_AND_PRICE_SEPARATE_FROM_PROPER_SCORES",
+    "status": "NOT_COMPUTED"
+  },
+  "common_match_ids": [],
+  "excluded": {
+    "forecast:TIMEZONE_OR_SEAL_UNRESOLVED": 1352,
+    "result:FT_NOT_VERIFIED": 26,
+    "result:PILOT_ONLY": 9
+  },
+  "input_sha256": "cb2c67fe493265faf289075da80e5f77e6bea919787a43bebc61bc4a5ed4b963",
+  "known_at": "2026-10-01T14:11:13.602000+00:00",
+  "market_id": "FT_1X2",
+  "methods": {
+    "footinsights": {
+      "calibration": {
+        "1": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "2": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "X": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      },
+      "eligible_forecasts": 0,
+      "extreme_probability_rows": 0,
+      "metrics": {
+        "brier": {
+          "ci": null,
+          "mean": null
+        },
+        "log_loss": {
+          "ci": null,
+          "mean": null
+        },
+        "rps": {
+          "ci": null,
+          "mean": null
+        }
+      },
+      "n": 0,
+      "per_outcome_brier": {
+        "1": null,
+        "2": null,
+        "X": null
+      },
+      "scored_rows": [],
+      "verified_overlap_before_common_set": 0
+    },
+    "pinnacle_close": {
+      "calibration": {
+        "1": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "2": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "X": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      },
+      "eligible_forecasts": 0,
+      "extreme_probability_rows": 0,
+      "metrics": {
+        "brier": {
+          "ci": null,
+          "mean": null
+        },
+        "log_loss": {
+          "ci": null,
+          "mean": null
+        },
+        "rps": {
+          "ci": null,
+          "mean": null
+        }
+      },
+      "n": 0,
+      "per_outcome_brier": {
+        "1": null,
+        "2": null,
+        "X": null
+      },
+      "scored_rows": [],
+      "verified_overlap_before_common_set": 0
+    },
+    "pinnacle_open": {
+      "calibration": {
+        "1": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "2": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "X": {
+          "bins": [],
+          "ece": null,
+          "murphy": null,
+          "n": 0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      },
+      "eligible_forecasts": 0,
+      "extreme_probability_rows": 0,
+      "metrics": {
+        "brier": {
+          "ci": null,
+          "mean": null
+        },
+        "log_loss": {
+          "ci": null,
+          "mean": null
+        },
+        "rps": {
+          "ci": null,
+          "mean": null
+        }
+      },
+      "n": 0,
+      "per_outcome_brier": {
+        "1": null,
+        "2": null,
+        "X": null
+      },
+      "scored_rows": [],
+      "verified_overlap_before_common_set": 0
+    }
+  },
+  "mode": "READ_ONLY_DIAGNOSTIC",
+  "n": 0,
+  "outcome_reference": {
+    "frequencies": {
+      "1": null,
+      "2": null,
+      "X": null
+    },
+    "kind": "IN_SAMPLE_BASE_RATE_REFERENCE",
+    "predictive_baseline": false
+  },
+  "paired_comparisons": [
+    {
+      "difference_definition": "LEFT_MINUS_RIGHT_LOWER_IS_BETTER",
+      "left": "footinsights",
+      "n": 0,
+      "paired": {
+        "brier": {
+          "ci": null,
+          "mean": null
+        },
+        "log_loss": {
+          "ci": null,
+          "mean": null
+        },
+        "rps": {
+          "ci": null,
+          "mean": null
+        }
+      },
+      "right": "pinnacle_open"
+    },
+    {
+      "difference_definition": "LEFT_MINUS_RIGHT_LOWER_IS_BETTER",
+      "left": "footinsights",
+      "n": 0,
+      "paired": {
+        "brier": {
+          "ci": null,
+          "mean": null
+        },
+        "log_loss": {
+          "ci": null,
+          "mean": null
+        },
+        "rps": {
+          "ci": null,
+          "mean": null
+        }
+      },
+      "right": "pinnacle_close"
+    },
+    {
+      "difference_definition": "LEFT_MINUS_RIGHT_LOWER_IS_BETTER",
+      "left": "pinnacle_open",
+      "n": 0,
+      "paired": {
+        "brier": {
+          "ci": null,
+          "mean": null
+        },
+        "log_loss": {
+          "ci": null,
+          "mean": null
+        },
+        "rps": {
+          "ci": null,
+          "mean": null
+        }
+      },
+      "right": "pinnacle_close"
+    }
+  ],
+  "policy": {
+    "bin_edges": [
+      0,
+      0.25,
+      0.5,
+      0.75,
+      1
+    ],
+    "bootstrap_replicates": 1000,
+    "bootstrap_seed": 43,
+    "bootstrap_unit": "PAIRED_FIXTURE_IID_DIAGNOSTIC",
+    "brier_rps_probabilities": "RAW_UNIT_SCALE",
+    "confidence_level": 0.95,
+    "epsilon": 1e-06,
+    "log_clip": "COMPONENT_FLOOR_CEILING_THEN_RENORMALIZE",
+    "min_bin_count": 2,
+    "scope": "EXPLICIT_DIAGNOSTIC_POLICY_NOT_PRODUCTION_PREREGISTRATION",
+    "sha256": "45fd8e8c7e79afe229fc1eb91e1a6e061f80cb89aa9dbfd45a08d740eda05391"
+  },
+  "production_eligible": false,
+  "promotion_verdict": null,
+  "report_version": "proper-scoring-v1",
+  "requested_methods": [
+    "footinsights",
+    "pinnacle_open",
+    "pinnacle_close"
+  ],
+  "sample_definition": "SAME_COMPLETE_SAFE_SEALED_PREMATCH_FIXTURES_WITH_VERIFIED_FT",
+  "status": "INSUFFICIENT_SAMPLE"
+}
