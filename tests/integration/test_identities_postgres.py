@@ -84,7 +84,9 @@ def test_database_enforces_immutability_and_revision_identity(database):
         args = dict(entity_id=entity, kind='TEAM', source='test', name='United',
                     country='GB', category=CATEGORY, valid_from=START, provenance=PROVENANCE)
         for table in ['canonical_entities', 'canonical_alias_versions']:
-            for sql in [f'DELETE FROM {table}', f'TRUNCATE {table}',
+            # Include FK dependents so the TRUNCATE trigger, rather than an
+            # earlier PostgreSQL foreign-key refusal, is actually exercised.
+            for sql in [f'DELETE FROM {table}', f'TRUNCATE {table} CASCADE',
                         f'UPDATE {table} SET recorded_at=NOW()']:
                 with pytest.raises(psycopg.errors.RaiseException, match='append-only'):
                     with conn.transaction():
