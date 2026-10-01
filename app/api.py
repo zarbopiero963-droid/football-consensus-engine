@@ -4,17 +4,21 @@ import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from app.db import connect
+from app.decision_requests import KEY_PATTERN, request_fingerprint, request_lock_id, validate_key
 from app.timezones import to_rome_iso
 from app.strategy_sync import get_strategy_history, get_strategy_stats, synchronize_strategy_simulations
 from app.market_engine import freeze_market_tickets, get_batch_markets, get_market_stats
 
 ROME = ZoneInfo("Europe/Rome")
 app = FastAPI(title="Football Consensus Engine", version="0.2.0")
+DecisionKey = Annotated[str, Header(min_length=1, max_length=128, pattern=KEY_PATTERN)]
 
 
 class DecisionRequest(BaseModel):
@@ -57,6 +61,7 @@ def latest_snapshots_for_day(
     *,
     as_of: datetime | None = None,
     future_only: bool = False,
+    cursor=None,
 ) -> list[dict]:
     clauses = [
         "valid_prematch = TRUE",
@@ -78,9 +83,11 @@ def latest_snapshots_for_day(
     WHERE {' AND '.join(clauses)}
     ORDER BY match_id, snapshot_timestamp_utc DESC
     """
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, tuple(params))
-        return list(cur.fetchall())
+    if cursor is None:
+        with connect() as conn, conn.cursor() as cur:
+            return latest_snapshots_for_day(day, as_of=as_of, future_only=future_only, cursor=cur)
+    cursor.execute(sql, tuple(params))
+    return list(cursor.fetchall())
 
 
 def latest_results(match_ids: list[str]) -> dict[str, dict]:
@@ -178,56 +185,79 @@ def day_response(day: date, include_results: bool) -> dict:
     }
 
 
-def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetime | None = None) -> dict:
+def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetime | None = None, *, idempotency_key: str) -> dict:
+    try:
+        validate_key(idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    fingerprint = request_fingerprint(day, req)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT pg_advisory_xact_lock(%s)', (request_lock_id(idempotency_key),))
+        cur.execute('SELECT request_sha256,response FROM decision_requests WHERE idempotency_key=%s', (idempotency_key,))
+        existing = cur.fetchone()
+        if existing:
+            if existing['request_sha256'] != fingerprint:
+                raise HTTPException(status_code=409, detail='Idempotency-Key already used for a different request')
+            response = existing['response']
+        else:
+            response = _freeze_new_batch(cur, day, req, requested_at)
+            cur.execute('''INSERT INTO decision_requests(idempotency_key,request_sha256,batch_id,response)
+                           VALUES (%s,%s,%s,%s::jsonb)''',
+                        (idempotency_key, fingerprint, response['batch_id'], json.dumps(response)))
+        conn.commit()
+    # Recoverable derived projection: a failure after commit is retried against
+    # the same frozen batch/response, never by generating another batch/stake.
+    synchronize_strategy_simulations()
+    return response
+
+
+def _freeze_new_batch(cur, day, req, requested_at):
     requested_at = requested_at or datetime.now(timezone.utc)
-    rows = latest_snapshots_for_day(day, as_of=requested_at, future_only=True)
+    rows = latest_snapshots_for_day(day, as_of=requested_at, future_only=True, cursor=cur)
     matches = apply_decision_filter([view_snapshot(r) for r in rows], req.mode, req.strategies)
     frozen = [frozen_snapshot_view(m) for m in matches]
     batch_id = f"decision-{requested_at.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:10]}"
 
-    with connect() as conn, conn.cursor() as cur:
+    cur.execute(
+        """
+        INSERT INTO decision_batches
+            (batch_id,requested_at_utc,requested_date,timezone,mode,strategy_filter,label)
+        VALUES (%s,%s,%s,'Europe/Rome',%s,%s::jsonb,%s)
+        """,
+        (batch_id, requested_at, day, req.mode, json.dumps(req.strategies), req.label),
+    )
+    for m in frozen:
         cur.execute(
             """
-            INSERT INTO decision_batches
-                (batch_id,requested_at_utc,requested_date,timezone,mode,strategy_filter,label)
-            VALUES (%s,%s,%s,'Europe/Rome',%s,%s::jsonb,%s)
-            """,
-            (batch_id, requested_at, day, req.mode, json.dumps(req.strategies), req.label),
-        )
-        for m in frozen:
-            cur.execute(
-                """
-                INSERT INTO decision_tickets (
-                    batch_id,match_id,snapshot_timestamp_utc,kickoff_utc,
-                    home_team,away_team,league,model_pick,model_probability,
-                    picked_odds,picked_edge,strategies,display_status,snapshot_view,shown_to_user
-                ) VALUES (
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,TRUE
-                )
-                """,
-                (
-                    batch_id,
-                    m["match_id"],
-                    m["snapshot_timestamp_utc"],
-                    m["kickoff_utc"],
-                    m["home"],
-                    m["away"],
-                    m["league"],
-                    m.get("model_pick") or "",
-                    m.get("model_probability"),
-                    m.get("picked_odds"),
-                    m.get("picked_edge"),
-                    json.dumps(m.get("strategies", [])),
-                    m.get("status", "NO_BET"),
-                    json.dumps(m, separators=(",", ":")),
-                ),
+            INSERT INTO decision_tickets (
+                batch_id,match_id,snapshot_timestamp_utc,kickoff_utc,
+                home_team,away_team,league,model_pick,model_probability,
+                picked_odds,picked_edge,strategies,display_status,snapshot_view,shown_to_user
+            ) VALUES (
+                %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,TRUE
             )
-        conn.commit()
+            """,
+            (
+                batch_id,
+                m["match_id"],
+                m["snapshot_timestamp_utc"],
+                m["kickoff_utc"],
+                m["home"],
+                m["away"],
+                m["league"],
+                m.get("model_pick") or "",
+                m.get("model_probability"),
+                m.get("picked_odds"),
+                m.get("picked_edge"),
+                json.dumps(m.get("strategies", [])),
+                m.get("status", "NO_BET"),
+                json.dumps(m, separators=(",", ":")),
+            ),
+        )
 
-    synchronize_strategy_simulations()
-    freeze_market_tickets(batch_id, frozen, requested_at)
+    freeze_market_tickets(batch_id, frozen, requested_at, cursor=cur)
 
-    return {
+    return jsonable_encoder({
         "batch_id": batch_id,
         "requested_at_utc": requested_at.isoformat(),
         "requested_at_italy": to_rome_iso(requested_at),
@@ -239,8 +269,8 @@ def create_decision_batch(day: date, req: DecisionRequest, requested_at: datetim
         "matches": frozen,
         "count": len(frozen),
         "contract": "what_you_saw_is_what_gets_settled",
-        "markets": get_batch_markets(batch_id),
-    }
+        "markets": get_batch_markets(batch_id, cursor=cur),
+    })
 
 
 
@@ -408,17 +438,17 @@ def by_date(day: str, results: bool = Query(default=True), decisions: bool = Que
 
 
 @app.post("/decisions/today")
-def freeze_today(req: DecisionRequest):
-    return create_decision_batch(datetime.now(ROME).date(), req)
+def freeze_today(req: DecisionRequest, idempotency_key: DecisionKey):
+    return create_decision_batch(datetime.now(ROME).date(), req, idempotency_key=idempotency_key)
 
 
 @app.post("/decisions/date/{day}")
-def freeze_decisions(day: str, req: DecisionRequest):
+def freeze_decisions(day: str, req: DecisionRequest, idempotency_key: DecisionKey):
     try:
         parsed = date.fromisoformat(day)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD") from exc
-    return create_decision_batch(parsed, req)
+    return create_decision_batch(parsed, req, idempotency_key=idempotency_key)
 
 
 @app.get("/decisions/{batch_id}")
