@@ -733,3 +733,33 @@ fixtures have a SHA-256 manifest. Run `python -m staging.consensus_robustness.ru
 strategies, migrations or source promotion occur. Unsafe matching/timezone,
 incomplete vectors and missing sealing audit are excluded rather than repaired.
 Insufficient clean overlap is reported as `INSUFFICIENT_SAMPLE`.
+
+## Market vector contract
+
+`app.market_vectors.make_vector` is a pure adapter helper (M25 / issue43-B).
+It records `FULL`, `PARTIAL`, `PICK_ONLY`, `ABSENT` or `BROKEN` separately from
+parse status, matching, kickoff timezone and lifecycle. Source scale (1 or 100)
+is explicit; raw components and acquisition time are retained. Normalization of
+a complete distribution uses a fixed 1% rounding tolerance; missing components
+remain null and true zero stays zero. Nonfinite raw numbers are diagnostic
+string literals so a BROKEN result remains JSON-serializable.
+
+Market identity includes period and exact line. O/U can use an explicitly
+encoded line in its ID; a corners family without a supplied/encoded line is
+BROKEN. FT/HT and 2.5/3.5 never share an ID. A complete native two-way vector is
+a data contract, not a certification of scoring/settlement rules for Asian
+push/split lines. No result or bookmaker price is inferred by this helper.
+
+Correct score uses ASCII H-A without leading zeros. A single pick, with or
+without its published probability, stays PICK_ONLY. Observed score probabilities
+stay PARTIAL unless an explicit complete outcome universe is supplied. HTFT
+requires nine components. Double chance has overlapping selections (sum 2),
+not a simplex distribution to feed ordinary multiclass scoring. Its allowed
+`derive_double_chance` product retains the FT 1X2 parent, raw scale and same
+source; native DC and `DERIVED_FROM_1X2` remain distinct.
+
+Every helper result has `production_eligible=false` and `adds_source_vote=false`.
+FULL never certifies timezone, safe matching, source independence or promotion.
+The helper does not alter existing MarketPick projection/frozen strategy behavior,
+write a database, or automatically ingest pilot data. Native ingestion (M26),
+same-market odds (M27) and production consensus have separate gates.
