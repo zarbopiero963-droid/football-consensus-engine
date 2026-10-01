@@ -32,7 +32,7 @@ SOURCES = {
     "clubelo": "https://clubelo.com/Fixtures",
     "opta_analyst": "https://theanalyst.com/football/",
     "scoutingstats_ai": "https://scoutingstats.ai/",
-    "aipredict_io": "https://aipredict.io/",
+    "aipredict_io": "https://aipredict.io/football/",
     "totalcorner": "https://www.totalcorner.com/",
 }
 
@@ -278,6 +278,36 @@ def parse_scoutingstats(text):
 def parse_aipredict(text):
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     out = []
+    # The current public free card labels AI probabilities explicitly. Adjacent
+    # locked cards expose ODDS bars instead; never parse those as model vectors.
+    for i,line in enumerate(lines):
+        if line != 'FREE TIP OF THE DAY' or lines.count('FREE TIP OF THE DAY') != 1: continue
+        end = next((j for j in range(i+1,len(lines)) if lines[j] == 'Full AI analysis →'),None)
+        if end is None: continue
+        card = lines[i+1:end]
+        if (card.count('AI PREDICTION') != 1 or card.count('AI') != 1 or
+                any(x.upper() in ('ODDS','LIVE','HT','FT') for x in card)):
+            continue
+        ai = card.index('AI')
+        if (ai < 2 or ai+3 >= len(card) or
+                sum(bool(re.match(r'[1X2]\s*·',x)) for x in card) != 3): continue
+        values=[]
+        for label,value in zip(('1','X','2'),card[ai+1:ai+4]):
+            match=re.fullmatch(re.escape(label)+r'\s*·\s*(\d+(?:\.\d+)?)%',value)
+            if match is None: break
+            values.append(float(match[1]))
+        if len(values) != 3 or not valid_triplet(*values): continue
+        home,away=card[0],card[ai-1]
+        if not any(c.isalpha() for c in home) or not any(c.isalpha() for c in away): continue
+        kickoff=lines[i-2] if i>=2 and re.fullmatch(r'\d{1,2}:\d{2}',lines[i-2]) else ''
+        out.append({'home_team':home,'away_team':away,'league':lines[i-1] if i else '',
+            'kickoff_raw':kickoff,'source_timezone':'','timezone_status':'TIMEZONE_UNRESOLVED',
+            'p1':values[0],'px':values[1],'p2':values[2],'parse_status':'OK',
+            'payload_extra':{'source_layer':'aipredict_ai_free_tip',
+                'probability_evidence':'PUBLIC_AI_LABELLED_1_X_2',
+                'market_odds_role':'sanity_check_only_claimed',
+                'source_time_policy':'OWN_DEVICE_TIME_ZONE_NOT_CANONICAL',
+                'display_prediction_raw':card[1:card.index('AI PREDICTION')]}})
     for i, line in enumerate(lines):
         if line.upper() != "AI PREDICTION":
             continue
@@ -285,17 +315,20 @@ def parse_aipredict(text):
             continue
         home = lines[i - 2]
         score_or_time = lines[i - 1]
+        if not any(c.isalpha() for c in home) or score_or_time.upper() in ('LIVE','HT','FT'):
+            continue
         j = i + 1
         if j >= len(lines):
             continue
-        # Model grade/badge, e.g. A/B/C.
+        # Legacy public layout had a single-letter badge and explicit AI role.
+        if not re.fullmatch(r'[A-Z]',lines[j]): continue
         j += 1
         if j >= len(lines):
             continue
         away = lines[j]
         j += 1
-        if j < len(lines) and lines[j].upper() == "AI":
-            j += 1
+        if j >= len(lines) or lines[j].upper() != 'AI': continue
+        j += 1
         if j + 2 >= len(lines):
             continue
         a, b, c = pct(lines[j]), pct(lines[j + 1]), pct(lines[j + 2])

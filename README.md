@@ -809,3 +809,10 @@ failure/recovery remain in an append-only transport audit; browser stop must be
 confirmed. Collector acquisition time after batch delivery is a conservative
 prematch cutoff. Exact matching, model/price separation and historical snapshots
 are unchanged. Available feed data alone does not certify a cross-source join.
+
+AIPredict pilot capture uses the observed public `/football/` route. Only its
+public labelled AI 1/X/2 distribution is a native model vector; adjacent ODDS
+bars and locked tip confidence do not become model components. Homepage market
+bars stay excluded. Source kickoff is converted to the device timezone, so raw
+clocks remain TIMEZONE_UNRESOLVED. This fix applies to future pilot slots only;
+old zero-row slots, source promotion and production tickets are unchanged.
