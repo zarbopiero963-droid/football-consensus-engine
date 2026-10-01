@@ -763,3 +763,12 @@ FULL never certifies timezone, safe matching, source independence or promotion.
 The helper does not alter existing MarketPick projection/frozen strategy behavior,
 write a database, or automatically ingest pilot data. Native ingestion (M26),
 same-market odds (M27) and production consensus have separate gates.
+
+Native O/U and BTTS staging (M26) is available through
+`python -m staging.market_vectors.run --neon --known-at <explicit-offset-time>`.
+The initial StatsUltra adapter verifies saved raw HTML hashes, extracts published
+values inside individual cards, and compares them with stored pilot columns.
+Missing Under/NG remain null; old stored complements are diagnostics only.
+See [the staging contract](staging/market_vectors/README.md). SQL is enforced
+read-only; run completion is not a server seal, and no output is prematch-certified
+or production eligible.
