@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -78,6 +79,12 @@ async def browser_get_network_responses(session_id: str) -> dict[str, Any]:
 async def browser_stop(session_id: str) -> dict[str, Any]:
     """Stop the Browser Use cloud browser and remove its in-memory CDP capability."""
     return await bridge.stop(session_id)
+
+
+@mcp.tool()
+async def browser_reap(idle_seconds: int = 300) -> dict[str, Any]:
+    """Stop only bridge-owned expired idle leases; active operations are excluded."""
+    return await bridge.reap(idle_seconds)
 
 
 class OAuthBearerMiddleware(BaseHTTPMiddleware):
@@ -170,7 +177,19 @@ mcp_app = mcp.streamable_http_app(
 @asynccontextmanager
 async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     async with mcp.session_manager.run():
-        yield
+        reaper = asyncio.create_task(bridge.reaper_loop())
+        try:
+            yield
+        finally:
+            reaper.cancel()
+            try:
+                await reaper
+            except asyncio.CancelledError:
+                pass
+            result = await bridge.stop_all()
+            if result['failed']:
+                from bridge.browser_use import LOG
+                LOG.error('Bridge shutdown could not stop %s owned sessions', len(result['failed']))
 
 
 app = Starlette(
