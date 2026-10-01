@@ -59,3 +59,11 @@ def test_pilot_flags_cannot_self_promote_and_production_has_no_qualified_alterna
     report = route([{**ROW, 'production_eligible': True, 'channel': 'PRODUCTION'}], 'PRODUCTION')
     assert all(f['status'] == 'NO_QUALIFIED_FALLBACK' for f in report['fields'].values())
     with pytest.raises(ValueError): route([], 'UNKNOWN')
+
+
+def test_normalized_finished_adapter_status_is_accepted_but_live_or_ht_is_rejected():
+    assert route([{**ROW, 'status': 'FINISHED'}])['fields']['final_away_goals']['value'] == 0
+    for status in ('HT', 'LIVE', 'SCHEDULED', ''):
+        report = route([{**ROW, 'status': status}])
+        assert report['fields']['final_away_goals']['value'] is None
+        assert report['rejected'][0]['reason'] == 'EVIDENCE_INCOMPLETE'

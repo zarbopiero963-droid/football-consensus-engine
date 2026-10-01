@@ -36,7 +36,7 @@ def select_result_fallback(primary, candidates, *, channel, match_id, now):
             reason = 'STALE_OR_UNOBSERVED'
         elif row.get('http_status') != 200 or row.get('capture_state') != 'READY_PARSED':
             reason = 'CAPTURE_UNACCEPTED'
-        elif not row.get('raw_page_sha256') or row.get('status') != 'FT':
+        elif not row.get('raw_page_sha256') or row.get('status') not in {'FT', 'FINISHED'}:
             reason = 'EVIDENCE_INCOMPLETE'
         elif channel == 'PILOT' and row.get('match_status') != 'EXACT_PAIR_DATE':
             reason = 'MATCH_UNSAFE'
