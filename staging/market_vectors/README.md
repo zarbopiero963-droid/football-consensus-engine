@@ -35,6 +35,9 @@ The source capture timestamp uses run completion conservatively; this is not
 a server seal or proof of kickoff timezone. The SQL knowledge cutoff selects
 finished acquisitions, not a certified database import-time history. The
 existing timezone/matching status is retained and every record explicitly has
-`prematch_certified=false`, `SERVER_SEAL_UNAVAILABLE`, no additional source
-vote and `production_eligible=false`. Native completeness alone never supplies
+`prematch_certified=false`, no additional source vote and
+`production_eligible=false`. Migration 0005 gives new run/row inserts a server
+seal; legacy evidence remains `SERVER_SEAL_UNAVAILABLE`. A new seal is reported
+only when both server columns exist and are known at the cutoff; it does not
+resolve StatsUltra kickoff time or prove prematch eligibility. Native completeness alone never supplies
 promotion, consensus eligibility, settlement or scoring readiness.
