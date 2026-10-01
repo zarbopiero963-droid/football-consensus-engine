@@ -7,6 +7,7 @@ import time
 import uuid
 import logging
 from contextlib import asynccontextmanager
+from collections import deque
 from functools import wraps
 from dataclasses import dataclass, field
 from typing import Any
@@ -140,11 +141,7 @@ class BrowserUseBridge:
         if session.browser is not None and session.browser.is_connected() and session.page is not None:
             return session.page
 
-        if session.playwright is not None:
-            try:
-                await session.playwright.stop()
-            except Exception:
-                pass
+        await self._drop_local(session)
 
         session.playwright = await async_playwright().start()
         session.browser = await session.playwright.chromium.connect_over_cdp(session.cdp_url)
@@ -173,7 +170,9 @@ class BrowserUseBridge:
         timeout_ms = max(1000, min(int(timeout_ms), 120000))
         session = await self._session(session_id)
         page = await self._page(session)
-        network: list[dict[str, Any]] = []
+        network = deque(maxlen=500)
+        session.last_network = []
+        on_response = None
 
         if capture_network:
             def on_response(resp):
@@ -189,19 +188,24 @@ class BrowserUseBridge:
 
             page.on("response", on_response)
 
-        response = await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-        final_url = page.url
-        await asyncio.to_thread(validate_public_http_url, final_url)
-        session.last_network = network[-500:]
-
-        return {
-            "session_id": session_id,
-            "requested_url": url,
-            "final_url": final_url,
-            "title": await page.title(),
-            "http_status": response.status if response else None,
-            "network_events": len(session.last_network),
-        }
+        try:
+            response = await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            final_url = page.url
+            await asyncio.to_thread(validate_public_http_url, final_url)
+            return {
+                "session_id": session_id,
+                "requested_url": url,
+                "final_url": final_url,
+                "title": await page.title(),
+                "http_status": response.status if response else None,
+                "network_events": len(network),
+            }
+        finally:
+            # Includes timeout, cancellation and rejected redirects. Remove
+            # only this navigation's handler, preserving other consumers.
+            if on_response is not None:
+                page.remove_listener("response", on_response)
+            session.last_network = list(network)
 
     @session_operation
     async def html(self, session_id: str, selector: str | None = None) -> dict[str, Any]:

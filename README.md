@@ -501,6 +501,11 @@ retries after a one-minute backoff, including after worker restart. Shutdown sto
 owned local sessions. `browser_reap` offers an explicit idle cleanup (minimum 60
 seconds, default 300); it uses the same ownership and lease guards.
 
+Each navigation captures at most 500 response metadata records and removes its
+own response listener on success, failure or cancellation. A disabled capture
+clears the previous one. Reconnecting CDP installs the URL guard on the new
+context; local disconnect errors are surfaced.
+
 
 ## ChatGPT OAuth 2.1
 
