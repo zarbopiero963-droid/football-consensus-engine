@@ -44,8 +44,10 @@ def test_native_adapter_selectonly_and_no_history_rewrite():
             with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
                 conn.execute("INSERT INTO runtime_state(key,value) VALUES ('forbidden','{}')")
             conn.rollback()
-    dataset = load_dataset(known_at=now, connection_factory=readonly)
-    result = normalize(dataset, known_at=now)
+    with connect() as conn:
+        known = conn.execute('SELECT clock_timestamp() AS at').fetchone()['at']
+    dataset = load_dataset(known_at=known, connection_factory=readonly)
+    result = normalize(dataset, known_at=known)
     assert result['records'][0]['vector']['normalized_vector'] == {'OVER': 0, 'UNDER': None}
     assert result['unpublished_opposite_count'] == 1
     assert result['status_counts'] == {'PARTIAL': 1, 'ABSENT': 1}

@@ -11,7 +11,8 @@ PREDICTION_SQL = '''WITH revisions AS (
     WHERE s.snapshot_timestamp_utc<=%s AND s.imported_at<=%s
     ORDER BY s.match_id,s.snapshot_timestamp_utc DESC
 ), pilot AS (
-    SELECT DISTINCT ON (p.source,p.source_match_key) p.*,r.finished_at_utc,m.match_status
+    SELECT DISTINCT ON (p.source,p.source_match_key) p.*,r.finished_at_utc,
+        r.sealed_at_utc AS run_sealed_at_utc,m.match_status
     FROM source_pilot_predictions p JOIN source_pilot_runs r USING(run_id)
     LEFT JOIN source_pilot_matches m USING(run_id,source_match_key)
     WHERE r.finished_at_utc<=%s ORDER BY p.source,p.source_match_key,r.finished_at_utc DESC,p.run_id DESC
@@ -29,8 +30,10 @@ SELECT match_id AS source_match_key,match_id,COALESCE(payload->>'source','footin
 FROM anchor
 UNION ALL
 SELECT source_match_key,NULL AS match_id,source,league,payload->>'country',payload->>'category',
-    kickoff_utc,finished_at_utc,NULL AS sealed_at_utc,timezone_status,match_status,
-    FALSE AS valid_prematch,1 AS fixture_versions,jsonb_build_array(p1,px,p2),100,parse_status,FALSE AS is_anchor
+    kickoff_utc,finished_at_utc,CASE WHEN run_sealed_at_utc IS NOT NULL THEN sealed_at_utc END,
+    timezone_status,match_status,
+    (kickoff_utc IS NOT NULL AND finished_at_utc < kickoff_utc AND sealed_at_utc < kickoff_utc)
+        AS valid_prematch,1 AS fixture_versions,jsonb_build_array(p1,px,p2),100,parse_status,FALSE AS is_anchor
 FROM pilot'''
 OBSERVATION_SQL = '''SELECT * FROM result_observations WHERE observed_at_utc<=%s
     ORDER BY match_id,provider,observed_at_utc'''

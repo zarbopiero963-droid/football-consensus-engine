@@ -52,8 +52,10 @@ def test_coverage_sql_gates_readonly_and_no_promotion():
             with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
                 conn.execute("INSERT INTO runtime_state(key,value) VALUES ('forbidden','{}')")
             conn.rollback()
-    data=load_dataset(known_at=now,connection_factory=audited)
-    result=report(data,known_at=now);competition=result['competitions'][0]
+    with connect() as conn:
+        known=conn.execute('SELECT clock_timestamp() AS at').fetchone()['at']
+    data=load_dataset(known_at=known,connection_factory=audited)
+    result=report(data,known_at=known);competition=result['competitions'][0]
     assert result['denominators']['latest_source_rows']==2
     assert competition['verified_ft_fixtures_last7d']==1
     assert competition['settled_fixtures_last7d']==0

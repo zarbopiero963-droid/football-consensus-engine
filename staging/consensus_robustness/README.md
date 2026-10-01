@@ -24,9 +24,9 @@ Cross-source matches require explicit `EXACT_PAIR_TIME_CONTEXT` or
 `ANCHOR_NATIVE` refers only to an anchor's own fixture, never a pilot join.
 Timezone requires source proof or an explicit offset; `VERIFIED_BROWSER_TZ`
 is rejected. Acquisition and sealing must precede kickoff and knowledge time.
-The current pilot schema has no server sealing timestamp, so the adapter keeps
-that missing unless an explicit audit value exists; run finish does not fill it.
-Adding reliable pilot sealing audit is separate future schema work, not backfill.
+Migration 0005 supplies server-owned sealing timestamps for new pilot inserts.
+The adapter requires both run and row server seals; legacy NULLs stay missing,
+and client JSON or run completion cannot substitute for them. No backfill occurs.
 
 Complete finite triplets permit genuine zero probabilities. Missing stays missing.
 Input sum tolerance is fixed at 1% for published rounding; complete vectors are

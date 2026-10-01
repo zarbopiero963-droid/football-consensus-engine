@@ -20,8 +20,8 @@ has separate complete-vector, timezone-resolved and safe-match counts/rates.
 1X2 scale is explicit, invalid/partial vectors are not FULL, and safe matching
 requires a recognized strict match status, documented source timezone, valid
 prematch acquisition and sealing, and unambiguous fixture revisions. The source
-timezone is not inferred from a UTC database column. Pilot server sealing is
-unavailable and remains null; a JSON client timestamp cannot substitute for it.
+timezone is not inferred from a UTC database column. Legacy pilot server seals
+remain null; a JSON client timestamp cannot substitute for a server column.
 
 Result provider coverage is observation presence, not qualification or
 independence proof. `pilot:` providers are separate diagnostics and cannot
@@ -50,3 +50,7 @@ ticket-only groups are INSUFFICIENT; empty input returns empty groups and
 explicit zero denominators. `production_eligible` is always false, even with
 synthetic perfect coverage. Future PRODUCTION_ELIGIBLE classification requires
 approved policy, source promotion, canonical bindings and clean real evidence.
+Pilot server seals introduced in migration 0005 apply only to new inserts. Both
+run and prediction must have a server seal; existing legacy NULLs stay missing.
+Future rows still need actual source time/matching and prematch proof before
+they can improve the safe-match diagnostic; no promotion follows from a seal.

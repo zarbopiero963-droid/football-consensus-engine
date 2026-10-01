@@ -780,3 +780,15 @@ vector/time/matching rates, observed production/pilot result providers, VERIFIED
 FT counts and settled fixtures per market in the trailing seven days. It retains
 missing context and audit gaps, uses explicit source-row denominators and does
 not invent a canonical binding or production eligibility policy.
+
+New collector snapshots preserve the published `SportsEvent.startDate` as
+`kickoff_raw`, with explicit-offset status/evidence. Conflicting source events
+are unresolved. New run slices and Neon payloads carry these audit fields;
+the cumulative CSV retains an existing header/column order and historical bytes.
+Legacy rows receive no retroactive timezone proof.
+
+Migration 0005 adds server-owned sealing timestamps to prediction pilot runs
+and rows. New inserts use the PostgreSQL clock; supplied timestamps and evidence
+updates/deletes/truncates are rejected. Existing rows remain NULL, so no old
+pilot slot is retrospectively certified. A seal does not confer source promotion,
+kickoff timezone, matching or production eligibility.

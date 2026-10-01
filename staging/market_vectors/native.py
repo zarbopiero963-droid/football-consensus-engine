@@ -144,7 +144,8 @@ def normalize(dataset, *, known_at):
             if run.get('status') != 'OK' or run.get('http_status') != 200:
                 raise ValueError('RUN_NOT_OK')
             stamp = utc(run.get('finished_at_utc'))
-            if stamp is None or stamp > known:
+            run_seal = utc(run.get('sealed_at_utc'))
+            if stamp is None or stamp > known or (run_seal and run_seal > known):
                 raise ValueError('CAPTURE_TIME_UNAVAILABLE')
             cards = published_cards(_raw(run))
         except ValueError as exc:
@@ -159,6 +160,10 @@ def normalize(dataset, *, known_at):
             key = (normalize_alias(row.get('home_team')), normalize_alias(row.get('away_team')))
             candidates = pairs[key]
             row_id = run_id + ':' + row['source_match_key']
+            row_seal = utc(row.get('sealed_at_utc'))
+            if row_seal and row_seal > known:
+                excluded.append({'row_id':row_id,'reason':'NOT_SEALED_AT_CUTOFF'})
+                continue
             if row.get('source') != 'statsultra' or len(candidates) != 1 or seen[key] != 1:
                 excluded.append({'row_id': row_id, 'reason': 'SOURCE_OR_CARD_AMBIGUOUS'})
                 continue
@@ -182,7 +187,9 @@ def normalize(dataset, *, known_at):
                     'stored_value': row.get(stored_key), 'stored_opposite': row.get(opposite),
                     'stored_value_matches_raw': row.get(stored_key) == value,
                     'unpublished_opposite_in_storage': row.get(opposite) is not None,
-                    'prematch_certified': False, 'sealing_status': 'SERVER_SEAL_UNAVAILABLE',
+                    'prematch_certified': False,
+                    'sealed_at_utc':row_seal.isoformat() if row_seal else None,
+                    'sealing_status':'SERVER_SEALED' if run_seal and row_seal else 'SERVER_SEAL_UNAVAILABLE',
                     'capture_time_basis': 'RUN_FINISHED_CONSERVATIVE',
                     'legacy_parse_status': row.get('parse_status')})
     missing_runs = set(by_run) - set(ids)

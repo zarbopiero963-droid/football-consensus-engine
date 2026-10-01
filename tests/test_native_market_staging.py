@@ -123,3 +123,16 @@ def test_html_entities_case_and_exact_source_pair():
                    home_team='SYNTHETIC & HOME')
     assert report(data)['records'][0]['vector']['vector_status'] == 'PARTIAL'
     assert published_cards(card())[0]['home_team'] == 'Synthetic Home'
+
+
+def test_server_seal_cutoff_and_no_prematch_or_promotion_from_sealing_alone():
+    data=dataset();data['runs'][0]['sealed_at_utc']='2026-10-01T12:01:00Z'
+    data['rows'][0]['sealed_at_utc']='2026-10-01T12:02:00Z'
+    result=report(data)
+    assert all(r['sealing_status']=='SERVER_SEALED' and not r['prematch_certified']
+               and not r['vector']['production_eligible'] for r in result['records'])
+    data['rows'][0]['sealed_at_utc']='2026-10-01T14:00:00Z'
+    assert not report(data)['records']
+    data['rows'][0]['sealed_at_utc']='2026-10-01T12:02:00Z'
+    data['runs'][0]['sealed_at_utc']='2026-10-01T14:00:00Z'
+    assert not report(data)['records']

@@ -106,6 +106,9 @@ def test_collect_freeze_settle_retry_correction_and_field_verification(pipeline,
     assert len(snapshots) == 1 and snapshots[0]['model_pick_probability'] == .6
     assert snapshots[0]['picked_odds'] == 2.0
     row = snapshots[0]['payload']
+    assert row['kickoff_raw'] == pipeline['kickoff'].isoformat()
+    assert row['timezone_status'] == 'EXPLICIT_OFFSET'
+    assert row['source_time_evidence'] == 'SportsEvent.startDate'
     assert persist.upsert_snapshots([row]) == 0
     frozen = api.create_decision_batch(pipeline['kickoff'].date(), api.DecisionRequest(),
                                        requested_at=pipeline['now'] + timedelta(minutes=1),
@@ -173,6 +176,30 @@ def test_required_database_failure_is_fatal_to_collector(pipeline, monkeypatch):
     with pytest.raises(RuntimeError, match='test database unavailable'):
         collect.main()
     assert not read(pipeline, 'SELECT * FROM model_snapshots')
+
+
+def test_new_time_audit_does_not_corrupt_legacy_cumulative_csv(pipeline,capsys):
+    path=pipeline['root']/'prospective_ledger.csv'
+    old_fields=['match_id','snapshot_timestamp_utc','sha256_model_raw','model_pick',
+                'p_home_normalized','p_draw_normalized','p_away_normalized']
+    with path.open('w',newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=old_fields);writer.writeheader()
+        writer.writerow({'match_id':'synthetic-legacy','snapshot_timestamp_utc':'old','sha256_model_raw':'old'})
+    original=path.read_bytes()
+    collect.main();capsys.readouterr()
+    assert path.read_bytes().startswith(original)
+    with path.open() as f:
+        reader=csv.DictReader(f);rows=list(reader)
+        assert reader.fieldnames==old_fields and len(rows)==2 and all(None not in r for r in rows)
+        assert rows[1]['model_pick']=='1' and rows[1]['p_home_normalized']=='0.6'
+    snapshot=read(pipeline,'SELECT payload FROM model_snapshots')[0]['payload']
+    assert snapshot['timezone_status']=='EXPLICIT_OFFSET'
+    slices=list(pipeline['root'].glob('snapshots/*/prospective_ledger_slice.csv'))
+    # Slice path is discovered rather than replacing the existing ledger/header.
+    if not slices:slices=list(pipeline['root'].rglob('prospective_ledger_slice.csv'))
+    assert slices
+    with slices[0].open() as f:
+        row=next(csv.DictReader(f));assert row['kickoff_raw']==pipeline['kickoff'].isoformat()
 
 
 def test_market_reference_real_postgres_preserves_sealed_rows(pipeline, monkeypatch, capsys):

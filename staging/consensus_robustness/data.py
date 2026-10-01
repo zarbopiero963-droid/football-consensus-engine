@@ -7,7 +7,7 @@ LOAD_SQL = """
 SELECT p.run_id || ':' || p.source_match_key AS row_id,p.source,
        m.anchor_match_id AS match_id,p.kickoff_utc,
        r.finished_at_utc AS captured_at_utc,
-       p.payload->>'sealed_at_utc' AS sealed_at_utc,
+       CASE WHEN r.sealed_at_utc IS NOT NULL THEN p.sealed_at_utc::text END AS sealed_at_utc,
        jsonb_build_array(p.p1,p.px,p.p2) AS probabilities,
        100 AS raw_scale,p.parse_status,p.timezone_status,
        CASE WHEN m.match_status='ANCHOR_NATIVE' THEN 'UNVERIFIED_MATCH'

@@ -25,7 +25,7 @@ from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E4
 from app.identities import category_flags
 from app.market_reference import exact_market_match, MATCH_CONTRACT  # noqa: E402
 
-SCRAPER_VERSION = "prospective-ledger-1"
+SCRAPER_VERSION = "prospective-ledger-2"
 STRATEGY_FILE = os.path.join(ROOT, "strategies_preregistered.json")
 UA = "Mozilla/5.0 (compatible; prospective-ledger/1.0; prematch-audit)"
 FI_INDEXES = [
@@ -195,7 +195,9 @@ def parse_fi_html(html: str, url: str):
         for o in objs:
             if isinstance(o, dict) and o.get("@type") == "SportsEvent":
                 events.append(o)
-    ev = events[0] if events else {}
+    # The published timestamp must belong to one unambiguous source event.
+    # Do not choose the first event when a page contains conflicting fixtures.
+    ev = events[0] if len(events) == 1 else {}
     home = ((ev.get("homeTeam") or {}).get("name")) or ""
     away = ((ev.get("awayTeam") or {}).get("name")) or ""
     league = ((ev.get("organizer") or {}).get("name")) or ""
@@ -228,6 +230,9 @@ def parse_fi_html(html: str, url: str):
         "away": away,
         "league": league,
         "kickoff": kick,
+        "kickoff_raw": ev.get("startDate") or "",
+        "timezone_status": "EXPLICIT_OFFSET" if kick else "TIMEZONE_UNRESOLVED",
+        "source_time_evidence": "SportsEvent.startDate" if kick else "",
         "raw": raw,
         "prob_source": source,
         "legend_pct": legend[:3],
@@ -535,6 +540,9 @@ def main():
             "country": "",
             "season": "",
             "kickoff_utc": kick.isoformat(),
+            "kickoff_raw": p["kickoff_raw"],
+            "timezone_status": p["timezone_status"],
+            "source_time_evidence": p["source_time_evidence"],
             "home_team": p["home"],
             "away_team": p["away"],
             "home_canon": canon(p["home"]),
@@ -677,9 +685,12 @@ def main():
 
     grow = os.path.join(ROOT, "prospective_ledger.csv")
     existing = set()
+    grow_fields = fields
     if os.path.exists(grow) and os.path.getsize(grow):
         with open(grow, newline="", encoding="utf-8") as f:
-            for prev in csv.DictReader(f):
+            reader = csv.DictReader(f)
+            grow_fields = reader.fieldnames or fields
+            for prev in reader:
                 existing.add((prev.get("match_id"), prev.get("snapshot_timestamp_utc"), prev.get("sha256_model_raw")))
     fresh = []
     for rec in ledger:
@@ -692,7 +703,9 @@ def main():
     ledger = fresh
     new_file = not os.path.exists(grow) or os.path.getsize(grow) == 0
     with open(grow, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        # Preserve an existing CSV header/column order without rewriting history.
+        # New audit columns still live in the versioned slice and DB payload.
+        w = csv.DictWriter(f, fieldnames=grow_fields, extrasaction="ignore")
         if new_file and fields:
             w.writeheader()
         if ledger:
