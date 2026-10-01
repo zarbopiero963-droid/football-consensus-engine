@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -20,7 +21,7 @@ from urllib.request import Request, urlopen
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(ROOT))
-from collect import canon, name_score, women_or_youth  # noqa: E402
+from collect import canon  # noqa: E402
 from app.persist import guarded, set_runtime_state, upsert_result  # noqa: E402
 from app.strategy_sync import synchronize_strategy_simulations  # noqa: E402
 from app.market_engine import synchronize_market_settlement  # noqa: E402
@@ -34,9 +35,10 @@ HISTORY = os.path.join(ROOT, "reports", "settlement_history.jsonl")
 UA = "Mozilla/5.0 (compatible; prospective-ledger/1.0; results-only)"
 FIFA = "https://api.fifa.com/api/v3/calendar/matches"
 MIN_AFTER_KICKOFF = 120
-NAME_MIN = 2  # exact canon or containment; token-only matches are refused
 FIFA_MATCH_WINDOW_SECONDS = 90 * 60
 FIFA_FETCH_CHUNK_HOURS = 12
+FIFA_FETCH_LIMIT = 200
+FIFA_FETCH_MIN_SECONDS = 60
 
 ALIASES = {
     "czechia": "czech republic",
@@ -107,7 +109,8 @@ def alias(name):
     return ALIASES.get(c, c)
 
 def strong(a, b):
-    return name_score(alias(a), alias(b)) >= NAME_MIN
+    # Containment/fuzzy evidence must never settle a production match.
+    return bool(alias(a)) and alias(a) == alias(b)
 
 def num(v):
     if v is None or v == "":
@@ -173,7 +176,7 @@ def fifa_finished(m):
 def _fetch_fifa_chunk(start, end):
     url = (
         f"{FIFA}?from={start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-        f"&to={end.strftime('%Y-%m-%dT%H:%M:%SZ')}&language=en&count=200"
+        f"&to={end.strftime('%Y-%m-%dT%H:%M:%SZ')}&language=en&count={FIFA_FETCH_LIMIT}"
     )
     last_err = None
     for delay in (0, 20, 60):
@@ -190,14 +193,34 @@ def _fetch_fifa_chunk(start, end):
             if not isinstance(data, dict):
                 last_err = f"unexpected payload {type(data).__name__}"
                 continue
-            return data.get("Results") or [], None
+            rows = data.get("Results")
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                return [], "invalid_results_payload"
+            if (len(rows) >= FIFA_FETCH_LIMIT or data.get("ContinuationToken")
+                    or data.get("ContinuationHash")):
+                return [], "saturated_window"
+            return rows, None
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
             last_err = f"{type(e).__name__}: {e}"
     return [], last_err
 
 
+def _fetch_fifa_window(start, end):
+    rows, err = _fetch_fifa_chunk(start, end)
+    if err != "saturated_window":
+        return rows, err
+    if (end - start).total_seconds() <= FIFA_FETCH_MIN_SECONDS:
+        return [], "saturated_window_at_minimum_resolution"
+    midpoint = start + timedelta(seconds=int((end - start).total_seconds() // 2))
+    left, left_error = _fetch_fifa_window(start, midpoint)
+    right, right_error = _fetch_fifa_window(midpoint, end)
+    if left_error or right_error:
+        return [], "; ".join(e for e in (left_error, right_error) if e)
+    return left + right, None
+
+
 def fetch_fifa(start, end):
-    """Fetch FIFA results in bounded chunks so count=200 cannot silently truncate a broad window."""
+    """Fetch bounded, adaptively split windows; incomplete coverage fails closed."""
     start = start.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
     end = end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     merged = []
@@ -206,7 +229,7 @@ def fetch_fifa(start, end):
     errors = []
     while cursor < end:
         chunk_end = min(cursor + timedelta(hours=FIFA_FETCH_CHUNK_HOURS), end)
-        rows, err = _fetch_fifa_chunk(cursor, chunk_end)
+        rows, err = _fetch_fifa_window(cursor, chunk_end)
         if err:
             errors.append(f"{cursor.isoformat()}..{chunk_end.isoformat()}: {err}")
         for row in rows:
@@ -220,28 +243,78 @@ def fetch_fifa(start, end):
             seen.add(key)
             merged.append(row)
         cursor = chunk_end
-    return merged, ("; ".join(errors) if errors else None)
+    return ([], "; ".join(errors)) if errors else (merged, None)
 
 
-def _category_compatible(a: str, b: str) -> bool:
-    af, bf = women_or_youth(a), women_or_youth(b)
-    if not af and not bf:
+def _category_signature(name: str):
+    n = canon(name)
+    women = bool(re.search(r"\b(women|woman|ladies|femenino|femminile|frauen)\b", n))
+    age = tuple(re.findall(r"\bu\s?(\d{2})\b", n))
+    reserve = tuple(re.findall(r"\b(reserves|reserve|ii|b)\b", n))
+    return women, age, reserve
+
+
+def _category_compatible(a: str, b: str, side=None) -> bool:
+    af, bf = _category_signature(a), _category_signature(b)
+    if af != bf:
+        return False
+    # FIFA can omit category markers in TeamName. Use explicit metadata too.
+    side = side or {}
+    gender = side.get("Gender")
+    if gender is not None and gender != (2 if af[0] else 1):
+        return False
+    if not af[1] and side.get("AgeType") not in (None, 7):
+        return False
+    return True
+
+
+def _explicit_kickoff(value):
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError("TIMEZONE_UNRESOLVED")
+    return dt.astimezone(timezone.utc)
+
+
+def _competition_compatible(row, match):
+    league = canon(row.get("league") or "")
+    names = match.get("CompetitionName") or []
+    if not league or not names:
         return True
-    return af == bf
+    source_names = {canon(n.get("Description") or "") for n in names if isinstance(n, dict)}
+    if league == "international friendlies":
+        league = "friendlies"
+    if league == "ghana premier league":
+        # Verified source-specific alias; never generalize across Premier Leagues.
+        if (match.get("Home") or {}).get("IdCountry") != "GHA":
+            return False
+        if (match.get("Away") or {}).get("IdCountry") != "GHA":
+            return False
+        league = "premier league"
+    return league in source_names
 
 
 def match_fifa(row, matches):
-    kick = parse_iso(row["kickoff_utc"])
+    try:
+        kick = _explicit_kickoff(row["kickoff_utc"])
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return None, "kickoff_timezone_unresolved"
     hits = []
     for m in matches:
+        if not isinstance(m, dict):
+            continue
+        if not isinstance(m.get("Home"), dict) or not isinstance(m.get("Away"), dict):
+            continue
         try:
-            when = parse_iso(m.get("Date") or "")
-        except (ValueError, TypeError):
+            when = _explicit_kickoff(m.get("Date") or "")
+        except (ValueError, TypeError, AttributeError):
             continue
         if abs((when - kick).total_seconds()) > FIFA_MATCH_WINDOW_SECONDS:
             continue
+        if not _competition_compatible(row, m):
+            continue
         home, away = fifa_name(m.get("Home")), fifa_name(m.get("Away"))
-        if not (_category_compatible(row["home_team"], home) and _category_compatible(row["away_team"], away)):
+        if not (_category_compatible(row["home_team"], home, m.get("Home"))
+                and _category_compatible(row["away_team"], away, m.get("Away"))):
             continue
         if strong(row["home_team"], home) and strong(row["away_team"], away):
             hits.append(m)
