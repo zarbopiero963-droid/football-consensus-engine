@@ -259,3 +259,13 @@ def test_source_key_preserves_fixture_identity_and_normalized_kickoff_without_ch
     assert prediction_key('elofoot', row) != prediction_key('elofoot', changed)
     old = {'home_team': 'A', 'away_team': 'B', 'kickoff_raw': '12:00'}
     assert prediction_key('legacy', old) == hashlib.sha256(b'legacy|A|B|12:00').hexdigest()[:24]
+
+
+@pytest.mark.parametrize('raw', ['0001-01-01T00:00:00+01:00', '9999-12-31T23:00:00-01:00'])
+def test_synthetic_datetime_overflow_is_unresolved_instead_of_crashing_other_cards(raw):
+    import re
+    assert explicit_time(raw) is None
+    html = re.sub(r'datetime="[^"]*"', f'datetime="{raw}"', card('elofoot'))
+    rows, audit = select_prematch(parse_elofoot_html(html + card('elofoot', 1)),
+                                  datetime(2026, 10, 1, tzinfo=timezone.utc))
+    assert len(rows) == 1 and audit['rejection_counts'] == {'TIME_UNRESOLVED': 1}
