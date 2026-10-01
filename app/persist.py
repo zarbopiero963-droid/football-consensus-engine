@@ -81,7 +81,7 @@ def upsert_snapshots(rows: Iterable[dict]) -> int:
                     "payload": json.dumps(r, separators=(",", ":")),
                 },
             )
-            inserted += 1
+            inserted += cur.rowcount
         conn.commit()
     return inserted
 
