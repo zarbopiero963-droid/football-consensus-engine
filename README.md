@@ -792,3 +792,11 @@ and rows. New inserts use the PostgreSQL clock; supplied timestamps and evidence
 updates/deletes/truncates are rejected. Existing rows remain NULL, so no old
 pilot slot is retrospectively certified. A seal does not confer source promotion,
 kickoff timezone, matching or production eligibility.
+
+Proper scoring (M24 / issue43-A) has a read-only implementation in
+[analysis/scoring](analysis/scoring/README.md). An explicit diagnostic policy is
+required; comparisons use the same complete safe prematch fixture set and
+VERIFIED FT outcomes. Real zeros remain in the sample, raw probabilities remain
+unchanged, and clipping is recorded separately. Empty samples have null scores,
+not a promotion verdict. The real settled comparison DoD remains pending;
+this implementation does not preregister production thresholds or policies.
