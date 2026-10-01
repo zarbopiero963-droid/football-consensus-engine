@@ -113,7 +113,14 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
     monkeypatch.setattr(browser_use, 'async_playwright', Mock(return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))))
     assert asyncio.run(bridge._page(session)) is new_page
     old_playwright.stop.assert_awaited_once()
-    context.route.assert_awaited_once_with('**/*', bridge._navigation_guard)
+    context.route.assert_awaited_once()
+    pattern, guard = context.route.await_args.args
+    assert pattern == '**/*'
+    handler = AsyncMock()
+    monkeypatch.setattr(bridge, '_navigation_guard', handler)
+    route = object()
+    asyncio.run(guard(route))
+    handler.assert_awaited_once_with(route, session)
     assert asyncio.run(bridge._page(session)) is new_page
     context.route.assert_awaited_once()
 

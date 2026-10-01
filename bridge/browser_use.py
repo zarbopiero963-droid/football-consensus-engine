@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from playwright.async_api import Browser, BrowserContext, Page, Playwright, Route, async_playwright
+from playwright.async_api import Browser, BrowserContext, Error as PlaywrightError, Page, Playwright, Route, async_playwright
 
 from bridge.security import UnsafeURL, validate_public_http_url
 from bridge import session_leases
@@ -130,15 +130,22 @@ class BrowserUseBridge:
             finally:
                 await asyncio.to_thread(session_leases.renew, session.id, self._owner_id)
 
-    async def _navigation_guard(self, route: Route) -> None:
-        request = route.request
-        if request.is_navigation_request():
-            try:
-                await asyncio.to_thread(validate_public_http_url, request.url)
-            except UnsafeURL:
-                await route.abort("blockedbyclient")
-                return
-        await route.continue_()
+    async def _navigation_guard(self, route: Route, session: Session | None = None) -> None:
+        try:
+            request = route.request
+            if request.is_navigation_request():
+                try:
+                    await asyncio.to_thread(validate_public_http_url, request.url)
+                except UnsafeURL:
+                    await route.abort("blockedbyclient")
+                    return
+            await route.continue_()
+        except PlaywrightError as exc:
+            # Provider stop can close a target while an existing route callback
+            # is pending. Only this expected shutdown cancellation is terminal.
+            if session is None or not session.closing or type(exc).__name__ != 'TargetClosedError':
+                raise
+            LOG.info('Navigation route cancelled during session shutdown: session=%s', session.id)
 
     async def _page(self, session: Session) -> Page:
         if session.browser is not None and session.browser.is_connected() and session.page is not None:
@@ -154,7 +161,9 @@ class BrowserUseBridge:
         session.page = pages[0] if pages else await session.context.new_page()
 
         if not session.navigation_guard_installed:
-            await session.context.route("**/*", self._navigation_guard)
+            async def guard(route):
+                await self._navigation_guard(route, session)
+            await session.context.route("**/*", guard)
             session.navigation_guard_installed = True
         return session.page
 
