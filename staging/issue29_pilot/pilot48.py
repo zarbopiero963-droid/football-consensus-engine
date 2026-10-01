@@ -18,6 +18,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from app.db import connect
+from staging.page_capture import capture_page
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 ROME = ZoneInfo("Europe/Rome")
@@ -475,7 +476,6 @@ def collect_source(source, url, slot_no, anchors):
     sid, cdp = created["id"], created["cdpUrl"]
     html = b""
     shot = b""
-    text = ""
     final_url = url
     http_status = None
     page_errors = []
@@ -489,21 +489,17 @@ def collect_source(source, url, slot_no, anchors):
             session.send("Emulation.setTimezoneOverride", {"timezoneId": "Europe/Rome"})
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
             resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=25000)
-            except Exception:
-                page.wait_for_timeout(5000)
-            final_url = page.url
             http_status = resp.status if resp else None
-            text = page.locator("body").inner_text(timeout=30000)
-            html = page.content().encode("utf-8")
+            capture = capture_page(page, http_status, PARSERS[source], evidence_kind="prediction_rows")
+            final_url = page.url
+            html = capture.html
             shot = page.screenshot(full_page=True, timeout=30000)
             browser.close()
     finally:
         browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
         _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
 
-    preds = PARSERS[source](text)
+    preds = capture.parsed if capture.accepted else []
     invalid_triplets = 0
     for pred in preds:
         if all(pred.get(k) is not None for k in ("p1", "px", "p2")) and not valid_triplet(pred["p1"], pred["px"], pred["p2"]):
@@ -516,6 +512,7 @@ def collect_source(source, url, slot_no, anchors):
         "page_errors": page_errors[:20], "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot), "http_status": http_status,
         **run_quality(http_status, len(preds)),
+        "page_capture": capture.audit,
     }
 
     with connect() as conn, conn.cursor() as cur:
@@ -562,6 +559,7 @@ def collect_source(source, url, slot_no, anchors):
     return {
         "source": source, "run_id": run_id, "rows": len(preds),
         "http_status": http_status,
+        "page_capture": capture.audit,
         "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")},
     }
 

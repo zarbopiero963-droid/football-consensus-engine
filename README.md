@@ -466,6 +466,24 @@ and collector runtime state retain safe HTTP attempt timestamps and league
 failure type/status, without tokens, headers or response bodies, so a failed
 Pinnacle fallback can be diagnosed after a Render restart.
 
+Prediction pilots #1/#29 and result pilot #20 share bounded content readiness
+in `staging.page_capture`. After DOMContentLoaded, source-specific parsers must
+produce two identical nonempty outputs, one second apart, without an explicit
+Loading signal. The readiness polling budget is 20 seconds per page; navigation,
+screenshots and provider cleanup retain their separate timeouts. There is no
+reload or additional browser allocation during polling. HTTP errors/unobserved
+status, strong maintenance/access-wall signals, parser/capture errors, unstable
+output and unconfirmed empty pages retain diagnostic raw but ingest no rows.
+An empty page does not prove schema drift or a valid zero-match schedule.
+Footiqo/StatBunker remain capability-only captures, without normalized result
+rows. Each future manifest records `page_capture`, including safe error classes,
+visible-text sample hashes and final acquisition time; only final HTML is stored
+as raw. Extra ProSoccer pages have independent capture audits and gates.
+`failed_pilot_content` degrades readiness for rejected main/extra captures even
+when HTTP is 200. Old manifests are not backfilled or certified by this change.
+Stable parser output establishes acquisition readiness, not source qualification,
+complete coverage, verified timezone, matching, mathematical validity or promotion.
+
 The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
 
 

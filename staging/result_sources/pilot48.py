@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from app.db import connect
 from app.result_validation import upsert_observation
+from staging.page_capture import capture_page
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 PILOT_ID = os.environ.get("RESULT_SOURCE_PILOT_ID", "result-source-pilot-48h-issue20-v1")
@@ -359,14 +360,14 @@ def collect_source(source: str, url: str, slot_no: int):
             page = context.pages[0] if context.pages else context.new_page()
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
             resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=30000)
-            except Exception:
-                page.wait_for_timeout(5000)
-            final_url = page.url
             http_status = resp.status if resp else None
-            body_text = page.locator("body").inner_text(timeout=30000)
-            html = page.content().encode("utf-8")
+            parser = {"smart_soccer_stats": parse_smart_soccer_stats_results,
+                      "worldfootball": parse_worldfootball_results}.get(source)
+            capture = capture_page(page, http_status, parser,
+                                   evidence_kind="normalized_result_rows" if parser else "capability_only")
+            final_url = page.url
+            body_text = capture.raw_text
+            html = capture.html
             shot = page.screenshot(full_page=True, timeout=30000)
             browser.close()
     finally:
@@ -374,14 +375,9 @@ def collect_source(source: str, url: str, slot_no: int):
         _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
 
     rows_found, capabilities = inspect_source(source, body_text, html.decode("utf-8", "replace"))
-    normalized_rows = (
-        parse_smart_soccer_stats_results(body_text)
-        if source == "smart_soccer_stats"
-        else parse_worldfootball_results(body_text)
-        if source == "worldfootball"
-        else []
-    )
-    observation_stats = persist_pilot_observations(source, normalized_rows, started, sha(html))
+    normalized_rows = capture.parsed if capture.accepted else []
+    observed_at = datetime.fromisoformat(capture.audit["captured_at_utc"])
+    observation_stats = persist_pilot_observations(source, normalized_rows, observed_at, sha(html))
     manifest = {
         "pilot_id": PILOT_ID,
         "source": source,
@@ -392,6 +388,7 @@ def collect_source(source: str, url: str, slot_no: int):
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
         "normalized_observations": observation_stats,
+        "page_capture": capture.audit,
     }
 
     with connect() as conn, conn.cursor() as cur:
@@ -434,6 +431,7 @@ def collect_source(source: str, url: str, slot_no: int):
         "rows_found": rows_found,
         "capabilities": capabilities,
         "normalized_observations": observation_stats,
+        "page_capture": capture.audit,
         "session": {k: sess.get(k) for k in ("browserCost", "proxyCost", "proxyUsedMb", "captchaCost")},
     }
 
