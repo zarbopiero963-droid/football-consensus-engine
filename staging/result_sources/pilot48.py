@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 from app.db import connect
 from app.result_validation import upsert_observation
-from staging.page_capture import capture_page
+from staging.page_capture import navigate_capture, confirmed_browser_stop
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 PILOT_ID = os.environ.get("RESULT_SOURCE_PILOT_ID", "result-source-pilot-48h-issue20-v1")
@@ -343,7 +343,7 @@ def collect_source(source: str, url: str, slot_no: int):
         },
     )
     if status not in (200, 201) or not created.get("cdpUrl"):
-        raise RuntimeError(f"Browser create failed: {status} {created}")
+        raise RuntimeError(f"Browser create failed HTTP status={status}")
     sid, cdp = created["id"], created["cdpUrl"]
     html = b""
     shot = b""
@@ -359,20 +359,18 @@ def collect_source(source: str, url: str, slot_no: int):
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.new_page()
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
-            resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            http_status = resp.status if resp else None
             parser = {"smart_soccer_stats": parse_smart_soccer_stats_results,
                       "worldfootball": parse_worldfootball_results}.get(source)
-            capture = capture_page(page, http_status, parser,
-                                   evidence_kind="normalized_result_rows" if parser else "capability_only")
+            capture = navigate_capture(page, url, parser,
+                                       evidence_kind="normalized_result_rows" if parser else "capability_only")
+            http_status = capture.audit["http_status"]
             final_url = page.url
             body_text = capture.raw_text
             html = capture.html
             shot = page.screenshot(full_page=True, timeout=30000)
             browser.close()
     finally:
-        browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
-        _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
+        sess = confirmed_browser_stop(browser_api, BROWSER_API, sid)
 
     rows_found, capabilities = inspect_source(source, body_text, html.decode("utf-8", "replace"))
     normalized_rows = capture.parsed if capture.accepted else []
@@ -464,7 +462,7 @@ def main():
                     "source": source,
                     "slot_no": slot_no,
                     "status": "ERROR",
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error_class": type(exc).__name__,
                 }
             )
     with connect() as conn, conn.cursor() as cur:

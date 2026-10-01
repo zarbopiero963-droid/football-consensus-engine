@@ -19,7 +19,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from app.db import connect
-from staging.page_capture import capture_page
+from staging.page_capture import navigate_capture, confirmed_browser_stop
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 ROME = ZoneInfo("Europe/Rome")
@@ -422,7 +422,7 @@ def collect_source(source, url, slot_no, anchors):
         "metadata": {"purpose": f"{PILOT_ID}-{source}-s{slot_no:02d}"},
     })
     if status not in (200, 201) or not created.get("cdpUrl"):
-        raise RuntimeError(f"Browser create failed: {status} {created}")
+        raise RuntimeError(f"Browser create failed HTTP status={status}")
     sid, cdp = created["id"], created["cdpUrl"]
     html = b""
     shot = b""
@@ -443,9 +443,12 @@ def collect_source(source, url, slot_no, anchors):
             cdp_session = context.new_cdp_session(page)
             cdp_session.send("Emulation.setTimezoneOverride", {"timezoneId": "Europe/Rome"})
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
-            resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            http_status = resp.status if resp else None
-            capture = capture_page(page, http_status, PARSERS[source], evidence_kind="prediction_rows")
+            source_deadline = time.monotonic() + 360
+            def capture_url(page_url, parser, kind):
+                return navigate_capture(page, page_url, parser, evidence_kind=kind,
+                                        budget_ms=int((source_deadline - time.monotonic()) * 1000))
+            capture = capture_url(url, PARSERS[source], "prediction_rows")
+            http_status = capture.audit["http_status"]
             final_url = page.url
             text = capture.text
             main_html = capture.html
@@ -461,9 +464,7 @@ def collect_source(source, url, slot_no, anchors):
                 # Keep a stable prospective window as today's matches age into LIVE/FT.
                 # We only persist predictions whose resolved kickoff is still in the future.
                 tomorrow_url = PROSOCCER_FORECAST_PAGES[1][1]
-                r = page.goto(tomorrow_url, wait_until="domcontentloaded", timeout=90000)
-                tomorrow_capture = capture_page(page, r.status if r else None, parse_prosoccer,
-                                                evidence_kind="prediction_rows")
+                tomorrow_capture = capture_url(tomorrow_url, parse_prosoccer, "prediction_rows")
                 tomorrow_text = tomorrow_capture.text
                 tomorrow_raw = tomorrow_capture.html
                 prosoccer_forecast_texts.append((1, tomorrow_text))
@@ -475,14 +476,14 @@ def collect_source(source, url, slot_no, anchors):
                 )
                 extra_page_status["tomorrow"] = {
                     "url": page.url,
-                    "http_status": r.status if r else None,
+                    "http_status": tomorrow_capture.audit["http_status"],
                     "html_sha256": sha(tomorrow_raw),
                     "html_bytes": len(tomorrow_raw),
                     "page_capture": tomorrow_capture.audit,
                 }
 
-                for label, page_url in PROSOCCER_EXTRA_PAGES.items():
-                    r = page.goto(page_url, wait_until="domcontentloaded", timeout=90000)
+                extra_urls = PROSOCCER_EXTRA_PAGES if any(t for _, t in prosoccer_forecast_texts) else {}
+                for label, page_url in extra_urls.items():
                     extra_parser = {
                         "goals": parse_prosoccer_goal_lines,
                         "correct_scores": parse_prosoccer_scorelines,
@@ -491,14 +492,13 @@ def collect_source(source, url, slot_no, anchors):
                         "corners": parse_prosoccer_corners,
                         "htft": parse_prosoccer_htft,
                     }[label]
-                    extra_capture = capture_page(page, r.status if r else None, extra_parser,
-                                                 evidence_kind="native_market_rows")
+                    extra_capture = capture_url(page_url, extra_parser, "native_market_rows")
                     extra_text[label] = extra_capture.text
                     raw = extra_capture.html
                     html_parts.append(f"\n<!-- PAGE:{label} URL:{page_url} -->\n".encode() + raw)
                     extra_page_status[label] = {
                         "url": page.url,
-                        "http_status": r.status if r else None,
+                        "http_status": extra_capture.audit["http_status"],
                         "html_sha256": sha(raw),
                         "html_bytes": len(raw),
                         "page_capture": extra_capture.audit,
@@ -506,8 +506,7 @@ def collect_source(source, url, slot_no, anchors):
             html = b"".join(html_parts)
             browser.close()
     finally:
-        browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
-        _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
+        sess = confirmed_browser_stop(browser_api, BROWSER_API, sid)
 
     if source == "prosoccer":
         preds = []
@@ -618,7 +617,7 @@ def main():
         try:
             results.append(collect_source(source,url,slot_no,anchors))
         except Exception as exc:
-            results.append({"source":source,"slot_no":slot_no,"status":"ERROR","error":f"{type(exc).__name__}: {exc}"})
+            results.append({"source":source,"slot_no":slot_no,"status":"ERROR","error_class":type(exc).__name__})
     with connect() as conn, conn.cursor() as cur:
         cur.execute("UPDATE source_pilot_control SET updated_at=NOW() WHERE pilot_id=%s", (PILOT_ID,))
         conn.commit()

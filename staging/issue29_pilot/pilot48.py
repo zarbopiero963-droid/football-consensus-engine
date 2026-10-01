@@ -18,7 +18,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from app.db import connect
-from staging.page_capture import capture_page
+from staging.page_capture import navigate_capture, confirmed_browser_stop
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 ROME = ZoneInfo("Europe/Rome")
@@ -472,7 +472,7 @@ def collect_source(source, url, slot_no, anchors):
         "metadata": {"purpose": f"{PILOT_ID}-{source}-s{slot_no:02d}"},
     })
     if status not in (200, 201) or not created.get("cdpUrl"):
-        raise RuntimeError(f"Browser create failed: {status} {created}")
+        raise RuntimeError(f"Browser create failed HTTP status={status}")
     sid, cdp = created["id"], created["cdpUrl"]
     html = b""
     shot = b""
@@ -488,16 +488,14 @@ def collect_source(source, url, slot_no, anchors):
             session = context.new_cdp_session(page)
             session.send("Emulation.setTimezoneOverride", {"timezoneId": "Europe/Rome"})
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
-            resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            http_status = resp.status if resp else None
-            capture = capture_page(page, http_status, PARSERS[source], evidence_kind="prediction_rows")
+            capture = navigate_capture(page, url, PARSERS[source], evidence_kind="prediction_rows")
+            http_status = capture.audit["http_status"]
             final_url = page.url
             html = capture.html
             shot = page.screenshot(full_page=True, timeout=30000)
             browser.close()
     finally:
-        browser_api("PATCH", f"{BROWSER_API}/{sid}", {"action": "stop"})
-        _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
+        sess = confirmed_browser_stop(browser_api, BROWSER_API, sid)
 
     preds = capture.parsed if capture.accepted else []
     invalid_triplets = 0
@@ -590,7 +588,7 @@ def main():
         try:
             results.append(collect_source(source, url, slot_no, anchors))
         except Exception as exc:
-            results.append({"source": source, "slot_no": slot_no, "status": "ERROR", "error": f"{type(exc).__name__}: {exc}"})
+            results.append({"source": source, "slot_no": slot_no, "status": "ERROR", "error_class": type(exc).__name__})
 
     with connect() as conn, conn.cursor() as cur:
         cur.execute("UPDATE source_pilot_control SET updated_at=NOW() WHERE pilot_id=%s", (PILOT_ID,))

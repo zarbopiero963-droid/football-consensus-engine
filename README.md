@@ -484,6 +484,18 @@ when HTTP is 200. Old manifests are not backfilled or certified by this change.
 Stable parser output establishes acquisition readiness, not source qualification,
 complete coverage, verified timezone, matching, mathematical validity or promotion.
 
+Public pilot page GETs now retry at most twice in the same browser after 3/10s,
+with a 30s minimum on HTTP 429 and respect for valid Retry-After. Only navigation
+timeouts, HTTP 408/429/500/502/503/504 and Loading timeouts are retry candidates.
+Maintenance, access blocks, wrong routes, parser faults and unconfirmed empty or
+unstable content remain terminal. A single-page budget is 210s; ProSoccer's entire
+multi-page acquisition has a 360s budget and omits extra markets when neither
+base page yielded accepted fixtures. Retry-After beyond the remaining budget is
+deferred, never slept through. Failed retried attempts keep full gzip/base64 raw,
+hash/size and acquisition time in the manifest (5 MiB limit per attempt); final
+HTML stays in the existing raw column. Provider stop must be confirmed before
+ingestion. No browser creation POST, historical slot or production write is retried.
+
 The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
 
 
