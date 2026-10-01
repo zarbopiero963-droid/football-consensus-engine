@@ -30,7 +30,7 @@ def test_match_fifa_rejects_old_six_hour_window_false_match():
     too_far = _match("far", "2026-10-01T20:00:00Z")
     found, reason = settle.match_fifa(row, [too_far])
     assert found is None
-    assert reason == "no_unique_source_match"
+    assert reason == "kickoff_mismatch"
 
 
 def test_match_fifa_accepts_unique_close_exact_pair():
@@ -54,7 +54,7 @@ def test_match_fifa_rejects_category_mismatch():
     senior = _match("senior", "2026-10-01T18:00:00Z", "Italy", "Germany")
     found, reason = settle.match_fifa(row, [senior])
     assert found is None
-    assert reason == "no_unique_source_match"
+    assert reason == "out_of_coverage"
 
 
 def test_match_fifa_rejects_ambiguous_close_candidates():
@@ -186,3 +186,51 @@ def test_ghana_competition_alias_requires_both_country_ids():
     assert settle._competition_compatible(row, match)
     match['Away']['IdCountry'] = 'ENG'
     assert not settle._competition_compatible(row, match)
+
+
+def test_coverage_is_distinct_from_present_but_unsafe_candidates():
+    row = {'kickoff_utc': '2026-10-01T18:00:00Z', 'home_team': 'Lithuania', 'away_team': 'Andorra'}
+    assert settle.match_fifa(row, [])[1] == 'out_of_coverage'
+    assert settle.match_fifa(row, [_match('other', row['kickoff_utc'], 'Bahrain', 'Yemen')])[1] == 'out_of_coverage'
+    assert settle.match_fifa(row, [_match('far', '2026-10-01T22:00:00Z')])[1] == 'kickoff_mismatch'
+    assert settle.match_fifa(row, [_match('naive', '2026-10-01T18:00:00')])[1] == 'source_kickoff_timezone_unresolved'
+    wrong = _match('women', row['kickoff_utc'])
+    wrong['Home']['Gender'] = 2
+    assert settle.match_fifa(row, [wrong])[1] == 'category_mismatch'
+    league = _match('league', row['kickoff_utc'])
+    league['CompetitionName'] = [{'Description': 'World Cup'}]
+    assert settle.match_fifa({**row, 'league': 'Friendlies'}, [league])[1] == 'competition_mismatch'
+    assert settle.match_fifa(row, [wrong, _match('far', '2026-10-01T22:00:00Z')])[1] == 'no_safe_source_match'
+
+
+def _cycle_fixture(tmp_path):
+    import csv
+    row = {'match_id': 'coverage-test', 'kickoff_utc': '2026-10-01T12:00:00Z',
+           'home_team': 'Lithuania', 'away_team': 'Andorra', 'valid_prematch': '1',
+           'snapshot_timestamp_utc': '2026-10-01T09:00:00Z'}
+    path = tmp_path / 'ledger.csv'
+    with path.open('w') as f:
+        writer = csv.DictWriter(f, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+    return dict(now=datetime(2026, 10, 1, 18, tzinfo=timezone.utc),
+                ledger_path=str(path), results_path=str(tmp_path / 'results.csv'),
+                audit_path=str(tmp_path / 'audit.jsonl'), check_hashes=False)
+
+
+def test_complete_empty_feed_records_scoped_coverage_and_keeps_match_open(tmp_path):
+    report = settle.run_cycle(**_cycle_fixture(tmp_path), fifa_matches=[])
+    assert report['open_matches'] == 1 and report['appended'] == 0
+    assert report['result_source']['fetched'] is True
+    assert report['result_source']['matching_rejections'] == {'out_of_coverage': 1}
+    assert report['source_pending'][0]['reason'] == 'out_of_coverage'
+
+
+def test_incomplete_fetch_is_pending_and_never_mislabelled_as_no_coverage(tmp_path, monkeypatch):
+    monkeypatch.setattr(settle, 'fetch_fifa', lambda *args: ([], 'transport_failure'))
+    report = settle.run_cycle(**_cycle_fixture(tmp_path))
+    assert report['open_matches'] == 1 and report['appended'] == 0
+    assert report['result_source']['fetched'] is False
+    assert report['result_source']['matching_rejections'] == {}
+    assert report['source_pending'][0]['reason'] == 'source_fetch_failed'
+    assert any(e['error'] == 'transport_failure' for e in report['errors'])
