@@ -25,7 +25,7 @@ from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E4
 from app.identities import category_flags
 from app.market_reference import exact_market_match, MATCH_CONTRACT  # noqa: E402
 
-SCRAPER_VERSION = "prospective-ledger-2"
+SCRAPER_VERSION = "prospective-ledger-3"
 STRATEGY_FILE = os.path.join(ROOT, "strategies_preregistered.json")
 UA = "Mozilla/5.0 (compatible; prospective-ledger/1.0; prematch-audit)"
 FI_INDEXES = [
@@ -34,6 +34,7 @@ FI_INDEXES = [
     "https://footinsights.com/predictions/weekend/",
 ]
 PIN_LEAGUES = "https://guest.api.arcadia.pinnacle.com/0.1/sports/29/leagues?brandId=0"
+PIN_FALLBACK_BATCH_SIZE = 12
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -111,6 +112,62 @@ def fetch_pinnacle_leagues_via_bridge():
     if not body:
         raise RuntimeError("bridge pinnacle leagues returned empty body")
     return 200, body
+
+
+def valid_pinnacle_response(pair):
+    if not pair or pair[0] != 200 or not pair[1]:
+        return False
+    try:
+        def invalid_constant(value): raise ValueError('nonfinite JSON constant')
+        rows = json.loads(pair[1],parse_constant=invalid_constant)
+        return isinstance(rows, list) and all(isinstance(r, dict) for r in rows)
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+
+def fetch_pinnacle_batch_via_bridge(league_ids):
+    if (not league_ids or len(league_ids) > PIN_FALLBACK_BATCH_SIZE or
+            len(set(league_ids)) != len(league_ids) or
+            any(type(x) is not int or not 1 <= x <= 999999999 for x in league_ids)):
+        raise ValueError('invalid fallback league IDs')
+    token = os.environ.get('COLLECTOR_BRIDGE_TOKEN', '').strip()
+    if not token: raise RuntimeError('COLLECTOR_BRIDGE_TOKEN is not configured')
+    base = os.environ.get('BROWSER_BRIDGE_URL',
+        'https://football-consensus-browser-bridge.onrender.com').rstrip('/')
+    req = Request(base+'/internal/pinnacle/league-batch?ids='+','.join(map(str,league_ids)),
+        headers={'User-Agent':UA,'Accept':'application/json','X-Collector-Token':token})
+    with urlopen(req,timeout=210) as response:
+        # The 20 MiB raw batch can grow when JSON strings are escaped in the envelope.
+        raw=response.read(45*1024*1024+1)
+        if len(raw) > 45*1024*1024: raise RuntimeError('fallback response too large')
+        payload = json.loads(raw)
+    if payload.get('session_stopped') is not True or payload.get('transport') != 'BROWSER_JSON_DOCUMENT':
+        raise RuntimeError('unconfirmed browser transport/stop')
+    items = payload.get('items')
+    if (not isinstance(items,list) or any(not isinstance(x,dict) or type(x.get('id')) is not int for x in items) or
+            sorted(x['id'] for x in items) != sorted(league_ids)):
+        raise RuntimeError('fallback league identity mismatch')
+    out = []
+    for item in items:
+        row = {'id':item['id'],'err':item.get('error'),'transport':'browser_bridge_fallback',
+               'captured_at':utcnow(),'matchups':None,'markets':None,'response_audit':{}}
+        if not row['err']:
+            try:
+                for kind,suffix in (('matchups','matchups?brandId=0'),('markets','markets/straight')):
+                    d=item[kind];body=d['body'].encode('utf-8')
+                    url=f"https://guest.api.arcadia.pinnacle.com/0.1/leagues/{item['id']}/{suffix}"
+                    if (d.get('http_status') != 200 or d.get('truncated') is not False or
+                            d.get('final_url') != url or d.get('requested_url') != url or
+                            d.get('bytes_utf8') != len(body) or len(body) > 5*1024*1024 or
+                            d.get('sha256') != sha256_bytes(body) or not parse_iso(d.get('captured_at_utc')) or
+                            not valid_pinnacle_response((200,body))):
+                        raise ValueError('invalid complete fallback document')
+                    row[kind]=(200,body)
+                    row['response_audit'][kind]={k:d[k] for k in ('captured_at_utc','bytes_utf8','sha256')}
+            except (KeyError,ValueError,TypeError,AttributeError) as exc:
+                row['err']='invalid fallback document:'+type(exc).__name__
+        out.append(row)
+    return out
 
 def strip_accents(s):
     s = unicodedata.normalize("NFKD", s or "")
@@ -406,7 +463,7 @@ def main():
     league_ids = [L["id"] for L in leagues if L.get("matchupCount")]
 
     def fetch_league(lid):
-        out = {"id": lid, "matchups": None, "markets": None, "m_code": None, "k_code": None, "err": None}
+        out = {"id": lid, "matchups": None, "markets": None, "err": None, "transport": "direct"}
         mu = f"https://guest.api.arcadia.pinnacle.com/0.1/leagues/{lid}/matchups?brandId=0"
         mk = f"https://guest.api.arcadia.pinnacle.com/0.1/leagues/{lid}/markets/straight"
         try:
@@ -419,90 +476,124 @@ def main():
 
     pin_matchups = []  # dicts ready to match
     league_name = {L["id"]: L.get("name") for L in leagues}
+    league_items = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = [ex.submit(fetch_league, lid) for lid in league_ids]
         for fut in as_completed(futs):
-            item = fut.result()
-            lid = item["id"]
-            if item["err"]:
-                errors.append({"source": "pinnacle", "league": lid, "error": item["err"], "at": utcnow().isoformat()})
-                continue
-            (c1, b1) = item["matchups"]
-            (c2, b2) = item["markets"]
-            if c1 == 200 and b1:
-                save(os.path.join(run_dir_pin, f"matchups_{lid}.json"), b1, "pin-matchups")
-            else:
-                errors.append({"source": "pinnacle", "league": lid, "what": "matchups", "status": c1, "at": utcnow().isoformat()})
-                continue
-            if c2 == 200 and b2:
-                save(os.path.join(run_dir_pin, f"markets_{lid}.json"), b2, "pin-markets")
-            else:
-                errors.append({"source": "pinnacle", "league": lid, "what": "markets", "status": c2, "at": utcnow().isoformat()})
-                b2 = b""
+            item = fut.result(); league_items[item['id']] = item
+    transport_audit = []
+    failed_ids = []
+    for lid in league_ids:
+        item=league_items[lid]
+        valid = not item['err'] and all(valid_pinnacle_response(item[k]) for k in ('matchups','markets'))
+        audit={'id':lid,'direct_error':item['err'],'direct_complete':valid}
+        for kind in ('matchups','markets'):
+            pair=item[kind]
+            audit[kind+'_direct_status']=pair[0] if pair else None
+            audit[kind+'_direct_sha256']=sha256_bytes(pair[1]) if pair else None
+        transport_audit.append(audit)
+        if not valid: failed_ids.append(lid)
+    batches=[failed_ids[i:i+PIN_FALLBACK_BATCH_SIZE] for i in range(0,len(failed_ids),PIN_FALLBACK_BATCH_SIZE)]
+    # At most two remote browsers at once; each batch reuses one managed session.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures={ex.submit(fetch_pinnacle_batch_via_bridge,batch):batch for batch in batches}
+        for future in as_completed(futures):
+            batch=futures[future]
             try:
-                mus = json.loads(b1.decode())
-                mks = json.loads(b2.decode()) if b2 else []
-            except json.JSONDecodeError:
-                errors.append({"source": "pinnacle", "league": lid, "error": "bad json", "at": utcnow().isoformat()})
+                for item in future.result(): league_items[item['id']]=item
+            except Exception as exc:
+                for lid in batch:
+                    league_items[lid]={'id':lid,'err':'bridge fallback failed:'+type(exc).__name__,
+                                      'transport':'failed','matchups':None,'markets':None}
+    for audit in transport_audit:
+        item=league_items[audit['id']]
+        audit.update(final_transport=item['transport'],final_error=item['err'])
+        if item.get('response_audit'):audit['browser_responses']=item['response_audit']
+        if item.get('captured_at'):audit['collector_acquired_at_utc']=item['captured_at'].isoformat()
+    if transport_audit:
+        save(os.path.join(run_dir_pin,'transport_audit.json'),json.dumps(transport_audit,indent=2).encode(),
+             'pin-transport-audit')
+    for lid in league_ids:
+        item = league_items[lid]
+        if item["err"]:
+            errors.append({"source": "pinnacle", "league": lid, "error": item["err"], "at": utcnow().isoformat()})
+            continue
+        (c1, b1) = item["matchups"]
+        (c2, b2) = item["markets"]
+        if c1 == 200 and b1:
+            save(os.path.join(run_dir_pin, f"matchups_{lid}.json"), b1, "pin-matchups")
+        else:
+            errors.append({"source": "pinnacle", "league": lid, "what": "matchups", "status": c1, "at": utcnow().isoformat()})
+            continue
+        if c2 == 200 and b2:
+            save(os.path.join(run_dir_pin, f"markets_{lid}.json"), b2, "pin-markets")
+        else:
+            errors.append({"source": "pinnacle", "league": lid, "what": "markets", "status": c2, "at": utcnow().isoformat()})
+            b2 = b""
+        try:
+            mus = json.loads(b1.decode())
+            mks = json.loads(b2.decode()) if b2 else []
+        except json.JSONDecodeError:
+            errors.append({"source": "pinnacle", "league": lid, "error": "bad json", "at": utcnow().isoformat()})
+            continue
+        ml = {}
+        duplicate_markets = set()
+        for m in mks:
+            if m.get("type") != "moneyline" or m.get("period") != 0 or m.get("isAlternate"):
                 continue
-            ml = {}
-            duplicate_markets = set()
-            for m in mks:
-                if m.get("type") != "moneyline" or m.get("period") != 0 or m.get("isAlternate"):
-                    continue
-                if m.get("key") not in (None, "s;0;m") and not str(m.get("key", "")).endswith(";m"):
-                    continue
-                prices = {p.get("designation"): p.get("price") for p in m.get("prices") or []}
-                if not all(k in prices for k in ("home", "draw", "away")):
-                    continue
-                matchup_id = m.get("matchupId")
-                if matchup_id in ml:
-                    duplicate_markets.add(matchup_id)
-                ml[matchup_id] = m
-            for mu in mus:
-                if mu.get("type") not in (None, "matchup"):
-                    continue
-                if mu.get("parentId") or mu.get("parent") or mu.get("isLive"):
-                    continue
-                start = parse_iso(mu.get("startTime"))
-                if not start or start <= item["captured_at"]:
-                    continue
-                parts = mu.get("participants") or []
-                home = next((p.get("name") for p in parts if p.get("alignment") == "home"), None)
-                away = next((p.get("name") for p in parts if p.get("alignment") == "away"), None)
-                if not home or not away:
-                    continue
-                if mu.get("id") in duplicate_markets:
-                    continue
-                market = ml.get(mu.get("id"))
-                if not market or market.get("status") != "open":
-                    continue
-                prices = {p["designation"]: p["price"] for p in market["prices"]}
-                try:
-                    dec = [american_to_decimal(prices["home"]), american_to_decimal(prices["draw"]), american_to_decimal(prices["away"])]
-                except (TypeError, ValueError, OverflowError):
-                    dec = []
-                if len(dec) != 3 or not all(o is not None and math.isfinite(o) and o > 1 for o in dec):
-                    errors.append({"source": "pinnacle", "league": lid, "what": "invalid_prices", "at": utcnow().isoformat()})
-                    continue
-                fair, over = fair_from_odds(*dec)
-                pin_matchups.append({
-                    "matchup_id": mu.get("id"),
-                    "captured_at": item["captured_at"],
-                    "league_id": lid,
-                    "league": league_name.get(lid) or "",
-                    "home": home,
-                    "away": away,
-                    "start": start,
-                    "dec": dec,
-                    "fair": fair,
-                    "overround": over,
-                    "american": [prices["home"], prices["draw"], prices["away"]],
-                    "market_version": market.get("version"),
-                    "cutoff": market.get("cutoffAt"),
-                    "raw_file": f"markets_{lid}.json",
-                })
-
+            if m.get("key") not in (None, "s;0;m") and not str(m.get("key", "")).endswith(";m"):
+                continue
+            prices = {p.get("designation"): p.get("price") for p in m.get("prices") or []}
+            if not all(k in prices for k in ("home", "draw", "away")):
+                continue
+            matchup_id = m.get("matchupId")
+            if matchup_id in ml:
+                duplicate_markets.add(matchup_id)
+            ml[matchup_id] = m
+        for mu in mus:
+            if mu.get("type") not in (None, "matchup"):
+                continue
+            if mu.get("parentId") or mu.get("parent") or mu.get("isLive"):
+                continue
+            start = parse_iso(mu.get("startTime"))
+            if not start or start <= item["captured_at"]:
+                continue
+            parts = mu.get("participants") or []
+            home = next((p.get("name") for p in parts if p.get("alignment") == "home"), None)
+            away = next((p.get("name") for p in parts if p.get("alignment") == "away"), None)
+            if not home or not away:
+                continue
+            if mu.get("id") in duplicate_markets:
+                continue
+            market = ml.get(mu.get("id"))
+            if not market or market.get("status") != "open":
+                continue
+            prices = {p["designation"]: p["price"] for p in market["prices"]}
+            try:
+                dec = [american_to_decimal(prices["home"]), american_to_decimal(prices["draw"]), american_to_decimal(prices["away"])]
+            except (TypeError, ValueError, OverflowError):
+                dec = []
+            if len(dec) != 3 or not all(o is not None and math.isfinite(o) and o > 1 for o in dec):
+                errors.append({"source": "pinnacle", "league": lid, "what": "invalid_prices", "at": utcnow().isoformat()})
+                continue
+            fair, over = fair_from_odds(*dec)
+            pin_matchups.append({
+                "matchup_id": mu.get("id"),
+                "captured_at": item["captured_at"],
+                "league_id": lid,
+                "league": league_name.get(lid) or "",
+                "home": home,
+                "away": away,
+                "start": start,
+                "dec": dec,
+                "fair": fair,
+                "overround": over,
+                "american": [prices["home"], prices["draw"], prices["away"]],
+                "market_version": market.get("version"),
+                "cutoff": market.get("cutoffAt"),
+                "raw_file": f"markets_{lid}.json",
+                "transport": item['transport'],
+            })
     # --- match ---
     manual = []
     joined = 0
@@ -610,6 +701,7 @@ def main():
                 "odds_raw_file": chosen["raw_file"],
                 "analysis_eligible": 1,
                 "name_score_note": MATCH_CONTRACT,
+                "pin_transport": chosen['transport'],
             })
         else:
             rec.update({
@@ -643,6 +735,7 @@ def main():
                 "sha256_odds_raw": "",
                 "odds_raw_file": "",
                 "name_score_note": "unmatched_or_review",
+                "pin_transport": "",
             })
         # result columns exist but stay empty. Filling them later is a different file.
         rec.update({
@@ -769,6 +862,9 @@ def main():
         "no_probability": n_no_prob,
         "pinnacle_leagues_with_matchups": len(league_ids),
         "pinnacle_leagues_transport": pin_leagues_transport,
+        "pinnacle_league_transports": {kind:sum(i['transport']==kind for i in league_items.values())
+                                      for kind in ('direct','browser_bridge_fallback','failed')},
+        "pinnacle_direct_leagues_recovered": sum(not a['direct_complete'] and not a['final_error'] for a in transport_audit),
         "pinnacle_open_moneylines": len(pin_matchups),
         "joined": joined,
         "unmatched_model": unmatched,
@@ -823,6 +919,7 @@ def main():
         "valid_prematch": len(ledger),
         "errors": len(errors),
         "pinnacle_leagues_transport": pin_leagues_transport,
+        "pinnacle_league_transports": quality['pinnacle_league_transports'],
     })
 
     print(json.dumps({
