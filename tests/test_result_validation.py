@@ -40,3 +40,30 @@ def test_single_source_is_not_called_verified():
     _, fields, status = compute_consensus(rows)
     assert status == "SINGLE_SOURCE"
     assert fields["final_home_goals"]["status"] == "SINGLE_SOURCE"
+
+
+def test_pilot_result_observations_do_not_enter_production_consensus():
+    rows = [
+        {"provider": "pilot:smart_soccer_stats", "final_home_goals": 3, "final_away_goals": 0,
+         "ht_home_goals": 2, "ht_away_goals": 0, "corners_home": None, "corners_away": None,
+         "ht_corners_home": None, "ht_corners_away": None}
+    ]
+    values, fields, status = compute_consensus(rows)
+    assert status == "UNVERIFIED"
+    assert values["final_home_goals"] is None
+    assert fields["final_home_goals"]["status"] == "MISSING"
+
+
+def test_pilot_observation_cannot_override_production_provider():
+    rows = [
+        {"provider": "fifa-calendar-v3", "final_home_goals": 1, "final_away_goals": 0,
+         "ht_home_goals": None, "ht_away_goals": None, "corners_home": None, "corners_away": None,
+         "ht_corners_home": None, "ht_corners_away": None},
+        {"provider": "pilot:smart_soccer_stats", "final_home_goals": 9, "final_away_goals": 9,
+         "ht_home_goals": 4, "ht_away_goals": 4, "corners_home": None, "corners_away": None,
+         "ht_corners_home": None, "ht_corners_away": None},
+    ]
+    values, _fields, status = compute_consensus(rows)
+    assert status == "SINGLE_SOURCE"
+    assert values["final_home_goals"] == 1
+    assert values["final_away_goals"] == 0
