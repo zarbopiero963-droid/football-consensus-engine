@@ -10,6 +10,8 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
+import unicodedata
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -23,6 +25,10 @@ from app.result_validation import upsert_observation
 from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
 from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
 from app.source_fallback import pilot_fallback_report
+from staging.result_sources.worldfootball import (CONTRACT as WORLDFOOTBALL_CONTRACT,
+    parse_html as parse_worldfootball_html, parse_document as worldfootball_document)
+
+RESULT_MATCH_CONTRACT = "RESULT_PAIR_DATE_COMPETITION_V1"
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 PILOT_ID = os.environ.get("RESULT_SOURCE_PILOT_ID", "result-source-pilot-48h-issue20-v1")
@@ -111,6 +117,20 @@ def canon(value: str) -> str:
     return " ".join(value.split())
 
 
+def exact_label(value):
+    return " ".join(unicodedata.normalize("NFKC", value or "").casefold().split())
+
+
+def competition_name(row):
+    # The explorer publishes a separate competition/country/season label. Keep
+    # those literal values; this is no alias from Friendlies to International.
+    raw = row.get("competition_name") or row.get("competition") or ""
+    if row.get("competition_name"):
+        return raw
+    label = re.fullmatch(r"(.+) - ([^,]+), (\d{4}(?:/\d{2,4})?)", raw)
+    return label.group(1) if label else raw
+
+
 def _parse_source_date(value: str):
     normalized = value.replace("Sept", "Sep")
     for fmt in ("%d %b %Y", "%d.%m.%Y"):
@@ -168,44 +188,8 @@ def parse_smart_soccer_stats_results(text: str) -> list[dict]:
 
 
 def parse_worldfootball_results(text: str) -> list[dict]:
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    out = []
-    current_date = None
-    date_re = re.compile(r"\d{2}\.\d{2}\.\d{4}")
-    score_re = re.compile(r"(\d{1,2}):(\d{1,2})")
-    for i, line in enumerate(lines):
-        if line == "Standing":
-            break
-        if date_re.fullmatch(line):
-            current_date = _parse_source_date(line)
-            continue
-        m = score_re.fullmatch(line)
-        if not m or current_date is None or i == 0 or i + 1 >= len(lines):
-            continue
-        hg, ag = int(m.group(1)), int(m.group(2))
-        # Fixture times on this page share the same H:MM shape; values above a
-        # plausible football score are treated as scheduled clocks, not scores.
-        if hg > 12 or ag > 12:
-            continue
-        home, away = lines[i - 1], lines[i + 1]
-        if home in {"Matchday 1", "Matchday 2"} or away.startswith("Matchday "):
-            continue
-        out.append({
-            "home_team": home,
-            "away_team": away,
-            "competition": "Serie A",
-            "source_date": current_date,
-            "status": "FINISHED",
-            "final_home_goals": hg,
-            "final_away_goals": ag,
-            "ht_home_goals": None,
-            "ht_away_goals": None,
-            "corners_home": None,
-            "corners_away": None,
-            "ht_corners_home": None,
-            "ht_corners_away": None,
-        })
-    return out
+    """Legacy text input cannot prove lifecycle; require the published HTML."""
+    return parse_worldfootball_html(text)
 
 
 def result_anchor_rows():
@@ -224,37 +208,75 @@ def match_result_anchor(row: dict, anchors: list[dict]):
     source_date = row.get("source_date")
     if source_date is None:
         return None, "DATE_UNRESOLVED"
-    home, away = canon(row.get("home_team")), canon(row.get("away_team"))
+    home, away = exact_label(row.get("home_team")), exact_label(row.get("away_team"))
+    league = exact_label(competition_name(row))
+    if not home or not away or home == away:
+        return None, "PAIR_UNRESOLVED"
+    if not league:
+        return None, "COMPETITION_UNRESOLVED"
+    native_kickoff = row.get("source_kickoff_utc")
+    if native_kickoff is not None and (not isinstance(native_kickoff, datetime) or native_kickoff.tzinfo is None):
+        return None, "TIMEZONE_UNRESOLVED"
     candidates = []
+    rejected = []
     for anchor in anchors:
-        if canon(anchor.get("home_team")) != home or canon(anchor.get("away_team")) != away:
+        if exact_label(anchor.get("home_team")) != home or exact_label(anchor.get("away_team")) != away:
             continue
         kickoff = anchor.get("kickoff_utc")
-        if kickoff is None:
+        if not isinstance(kickoff, datetime) or kickoff.tzinfo is None:
+            rejected.append("ANCHOR_TIME_UNRESOLVED")
             continue
-        if kickoff.astimezone(ROME).date() != source_date:
+        if native_kickoff is not None:
+            if abs((kickoff - native_kickoff).total_seconds()) > 15 * 60:
+                rejected.append("KICKOFF_MISMATCH")
+                continue
+        elif kickoff.astimezone(ROME).date() != source_date:
+            rejected.append("DATE_MISMATCH")
+            continue
+        if not anchor.get("league"):
+            rejected.append("ANCHOR_COMPETITION_UNRESOLVED")
+            continue
+        if exact_label(anchor["league"]) != league:
+            rejected.append("COMPETITION_MISMATCH")
             continue
         candidates.append(anchor)
     if len(candidates) == 1:
-        return candidates[0], "EXACT_PAIR_DATE"
+        status = "EXACT_PAIR_KICKOFF_COMPETITION_DIAGNOSTIC" if native_kickoff is not None else "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+        return candidates[0], status
     if not candidates:
-        return None, "NOT_FOUND"
+        return None, rejected[0] if rejected else "NOT_FOUND"
     return None, "AMBIGUOUS"
 
 
-def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_sha256: str, *, cursor=None) -> dict:
+def result_match(row, anchors, observed_at):
+    if row.get("status") not in {"FT", "FINISHED"}:
+        return None, "NOT_FINISHED"
+    if any(type(row.get(f)) is not int or row[f] < 0 for f in ("final_home_goals", "final_away_goals")):
+        return None, "INVALID_FT_SCORE"
+    if row.get("source_kickoff_utc") is not None:
+        kickoff = row['source_kickoff_utc']
+        if not isinstance(kickoff, datetime) or kickoff.tzinfo is None:
+            return None, "TIMEZONE_UNRESOLVED"
+        end = row.get("source_end_utc")
+        if (not isinstance(end, datetime) or end.tzinfo is None or observed_at.tzinfo is None
+                or end > observed_at or kickoff >= end):
+            return None, "END_NOT_OBSERVED"
+    return match_result_anchor(row, anchors)
+
+
+def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_sha256: str, *, cursor=None, anchors=None) -> dict:
     if source not in {"smart_soccer_stats", "worldfootball"}:
         return {"parsed": len(rows), "matched": 0, "persisted": 0}
-    anchors = result_anchor_rows()
+    anchors = result_anchor_rows() if anchors is None else anchors
     matched = persisted = 0
     provider = f"pilot:{source}"
     for row in rows:
-        anchor, match_status = match_result_anchor(row, anchors)
+        anchor, match_status = result_match(row, anchors, observed_at)
         if anchor is None:
             continue
         matched += 1
         payload = {
-            "provider_match_id": f"{source}|{row['source_date']}|{canon(row['home_team'])}|{canon(row['away_team'])}",
+            "provider_match_id": row.get("source_match_id") or f"{source}|{row['source_date']}|{canon(row['home_team'])}|{canon(row['away_team'])}",
             "status": row["status"],
             "final_home_goals": row.get("final_home_goals"),
             "final_away_goals": row.get("final_away_goals"),
@@ -270,6 +292,19 @@ def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_s
             "home_team": row["home_team"],
             "away_team": row["away_team"],
             "match_status": match_status,
+            "result_match_contract": RESULT_MATCH_CONTRACT,
+            "competition_name": competition_name(row),
+            "source_kickoff_raw": row.get("source_kickoff_raw"),
+            "source_kickoff_utc": row.get("source_kickoff_utc").isoformat() if row.get("source_kickoff_utc") is not None else None,
+            "source_end_raw": row.get("source_end_raw"),
+            "source_end_utc": row.get("source_end_utc").isoformat() if row.get("source_end_utc") is not None else None,
+            "lifecycle_evidence": row.get("lifecycle_evidence"),
+            "timezone_status": row.get("timezone_status", "TIMEZONE_UNRESOLVED"),
+            "source_parser_contract": row.get("source_parser_contract"),
+            "source_competition_id": row.get("source_competition_id"),
+            "source_gender": row.get("source_gender"),
+            "source_competition_type": row.get("source_competition_type"),
+            "anchor_kickoff_utc": anchor["kickoff_utc"].isoformat(),
             "raw_page_sha256": raw_sha256,
             "production_eligible": False,
         }
@@ -277,7 +312,7 @@ def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_s
             anchor["match_id"],
             provider,
             observed_at,
-            anchor["kickoff_utc"],
+            row.get("source_kickoff_utc") or anchor["kickoff_utc"],
             payload,
             cursor=cursor,
         )
@@ -370,10 +405,11 @@ def _collect_source(source, url, slot_no, claim):
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else context.new_page()
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
-            parser = {"smart_soccer_stats": parse_smart_soccer_stats_results,
-                      "worldfootball": parse_worldfootball_results}.get(source)
+            parser = {"smart_soccer_stats": parse_smart_soccer_stats_results}.get(source)
+            html_parser = parse_worldfootball_html if source == "worldfootball" else None
             capture = navigate_capture(page, url, parser,
-                                       evidence_kind="normalized_result_rows" if parser else "capability_only")
+                                       html_parser=html_parser,
+                                       evidence_kind="normalized_result_rows" if parser or html_parser else "capability_only")
             http_status = capture.audit["http_status"]
             final_url = page.url
             body_text = capture.raw_text
@@ -386,17 +422,34 @@ def _collect_source(source, url, slot_no, claim):
 
     rows_found, capabilities = inspect_source(source, body_text, html.decode("utf-8", "replace"))
     normalized_rows = capture.parsed if capture.accepted else []
+    parser_audit = None
+    if source == "worldfootball":
+        try:
+            parser_audit = worldfootball_document(html)["audit"]
+        except Exception as exc:
+            # Audit must not throw away the raw already captured on a parser
+            # fault (including the bounded DOM/HTML limits).
+            normalized_rows = []
+            capture.audit["state"] = "PARSER_ERROR"
+            capture.audit["parser_error_class"] = type(exc).__name__
+            parser_audit = {"contract": WORLDFOOTBALL_CONTRACT,
+                "state": "PARSER_ERROR", "rows_accepted": 0,
+                "error_class": type(exc).__name__}
     observed_at = datetime.fromisoformat(capture.audit["captured_at_utc"])
     fallback_candidates = []
     anchors = result_anchor_rows() if normalized_rows else []
+    match_rejections = Counter()
     for row in normalized_rows:
-        anchor, match_status = match_result_anchor(row, anchors)
+        anchor, match_status = result_match(row, anchors, observed_at)
         if anchor is not None:
             fallback_candidates.append({**row, 'match_id': anchor['match_id'],
                 'provider': f'pilot:{source}', 'channel': 'PILOT',
                 'production_eligible': False, 'match_status': match_status,
+                'result_match_contract': RESULT_MATCH_CONTRACT,
                 'observed_at_utc': observed_at.isoformat(), 'raw_page_sha256': sha(html),
                 'http_status': http_status, 'capture_state': capture.audit['state']})
+        else:
+            match_rejections[match_status] += 1
     observation_stats = {"parsed": len(normalized_rows), "matched": 0, "persisted": 0}
     manifest = {
         "source_resilience": public_state(claim["state"]),
@@ -411,11 +464,16 @@ def _collect_source(source, url, slot_no, claim):
         "normalized_observations": observation_stats,
         "fallback_candidates": json.loads(json.dumps(fallback_candidates, default=str)),
         "page_capture": capture.audit,
+        "result_match_audit": {"contract": RESULT_MATCH_CONTRACT,
+            "rows_checked": len(normalized_rows), "matched": len(fallback_candidates),
+            "rejection_counts": dict(match_rejections), "production_safe": False},
     }
+    if source == "worldfootball":
+        manifest["result_parser_audit"] = parser_audit
 
     with connect() as conn, conn.cursor() as cur:
         assert_owner(cur, claim)
-        observation_stats = persist_pilot_observations(source, normalized_rows, observed_at, sha(html), cursor=cur)
+        observation_stats = persist_pilot_observations(source, normalized_rows, observed_at, sha(html), cursor=cur, anchors=anchors)
         manifest["normalized_observations"] = observation_stats
         cur.execute(
             """INSERT INTO result_source_pilot_runs(

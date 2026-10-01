@@ -491,6 +491,26 @@ when HTTP is 200. Old manifests are not backfilled or certified by this change.
 Stable parser output establishes acquisition readiness, not source qualification,
 complete coverage, verified timezone, matching, mathematical validity or promotion.
 
+Future result pilot slots require the `RESULT_PAIR_DATE_COMPETITION_V1` matching
+contract: exact ordered names (NFKC/case/whitespace only), literal competition and
+either native UTC kickoff within 15 minutes of the anchor or an explicitly
+diagnostic date match. No club-prefix removal or competition alias is inferred.
+Smart's published competition/country/season label is split structurally; its
+date-only matches remain `TIMEZONE_UNRESOLVED`. A borrowed anchor kickoff is
+recorded separately and never certifies source time. Legacy matches and reports
+remain immutable and are not certified by the new fallback gate.
+
+The worldfootball adapter reads the same captured HTML sample and requires own
+finished/Ended lifecycle, native match ID, ordered names, competition/gender
+context, explicit-offset kickoff and end time, and numeric score. Live, scheduled,
+ambiguous or conflicting cards and a future end time cannot create observations.
+Visible clocks alone never prove a final score. Published zeros remain zeros;
+missing HT/corners remain missing. Future manifests retain parser and matching
+rejection counts, while observations retain native timestamps and source context.
+Both matching outcomes remain PILOT diagnostics, excluded from production votes.
+Real capture replay evidence and its limitations are documented in
+`staging/result_sources/evidence/README.md`.
+
 Public pilot page GETs now retry at most twice in the same browser after 3/10s,
 with a 30s minimum on HTTP 429 and respect for valid Retry-After. Only navigation
 timeouts, HTTP 408/429/500/502/503/504 and Loading timeouts are retry candidates.

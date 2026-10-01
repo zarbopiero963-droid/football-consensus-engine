@@ -21,8 +21,9 @@ PRED = '12:00\nLithuania\nAndorra\nFriendly International\n54%\n25%\n22%\n48%\n5
 
 
 class Page:
-    def __init__(self, texts, http_status=200):
+    def __init__(self, texts, http_status=200, html=None):
         self.texts, self.http_status = texts, http_status
+        self.html = html
         self.index, self.clock = 0, 0
         self.url = 'https://public-source.example/fixture'
 
@@ -36,7 +37,7 @@ class Page:
     def locator(self, _): return self
     def inner_text(self, **kwargs): return self.texts[self.index]
     def title(self): return 'Source Fixture'
-    def content(self): return '<html>' + self.texts[self.index] + '</html>'
+    def content(self): return self.html if self.html is not None else '<html>' + self.texts[self.index] + '</html>'
     def screenshot(self, **kwargs): return b'synthetic-screenshot'
     def wait_for_timeout(self, ms):
         self.clock += ms / 1000
@@ -71,7 +72,7 @@ def test_result_loading_recovers_then_failure_is_append_only_and_not_ingested(pi
     monkeypatch.setattr(runtime_health, 'connect', pipeline['connect'])
     monkeypatch.setattr(results, 'PILOT_ID', 'synthetic-content-results')
     monkeypatch.setattr(results, 'result_anchor_rows', lambda: [{
-        'match_id': 'synthetic-lithuania-andorra', 'home_team': 'Lithuania', 'away_team': 'Andorra',
+        'match_id': 'synthetic-lithuania-andorra', 'home_team': 'Lithuania', 'away_team': 'Andorra', 'league': 'Friendlies',
         'kickoff_utc': datetime(2026, 9, 30, 16, tzinfo=timezone.utc)}])
     # A run started much earlier must not backdate an observation captured later.
     monkeypatch.setattr(results, 'utcnow', lambda: datetime(2026, 10, 1, tzinfo=timezone.utc))

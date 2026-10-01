@@ -113,7 +113,7 @@ def test_result_observations_rollback_with_rejected_parent_raw_and_no_pilot_vote
     monkeypatch.setattr(results, 'connect', pipeline['connect'])
     monkeypatch.setattr(results, 'PILOT_ID', 'rollback-test')
     monkeypatch.setattr(results, 'result_anchor_rows', lambda: [{'match_id': 'fixture',
-        'home_team': 'Lithuania', 'away_team': 'Andorra',
+        'home_team': 'Lithuania', 'away_team': 'Andorra', 'league': 'Friendlies',
         'kickoff_utc': datetime(2026, 9, 30, 16, tzinfo=timezone.utc)}])
     browser_fixture(monkeypatch, results, Page([TEXT]))
     with pipeline['connect']() as conn:
@@ -131,7 +131,7 @@ def test_current_run_fallback_evidence_is_persisted_and_duplicate_slot_does_not_
     monkeypatch.setattr(results, 'connect', pipeline['connect'])
     monkeypatch.setattr(results, 'PILOT_ID', 'fallback-test')
     monkeypatch.setattr(results, 'result_anchor_rows', lambda: [{'match_id': 'fixture',
-        'home_team': 'Lithuania', 'away_team': 'Andorra',
+        'home_team': 'Lithuania', 'away_team': 'Andorra', 'league': 'Friendlies',
         'kickoff_utc': datetime(2026, 9, 30, 16, tzinfo=timezone.utc)}])
     browser_fixture(monkeypatch, results, Page([TEXT]))
     outcome = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 1)
@@ -165,7 +165,16 @@ def test_actual_pilot_adapters_route_worldfootball_ft_when_smart_is_down_without
     browser_fixture(monkeypatch, results, Page(['Under maintenance'], http_status=502))
     primary = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 1)
     assert primary['source_resilience']['mode'] == 'OPEN'
-    browser_fixture(monkeypatch, results, Page(['30.09.2026\nJuventus\n2:0\nMilan\nStanding']))
+    # Explicitly synthetic completed HTML fixture: source UTC/lifecycle, no
+    # numeric text-to-score shortcut and no borrowed browser timezone.
+    html = '''<h2 class="item-competition" data-gender="male">
+      <div class="competition-name_extended">Serie A</div></h2>
+      <div class="module-gameplan"><div class="round-head" data-competition_id="111"></div>
+      <div class="match finished" data-match_id="123" data-competition_id="111" data-gender="male"
+       data-datetime="2026-09-30T16:00:00Z" data-datetime_end="2026-09-30T18:00:00Z">
+       <div class="team-name-home">Juventus</div><div class="team-name-away">Milan</div>
+       <div class="match-result">2:0</div><div class="match-status">Ended</div></div></div>'''
+    browser_fixture(monkeypatch, results, Page(['30.09.2026\nJuventus\n2:0\nMilan\nStanding'], html=html))
     alternative = results.collect_source('worldfootball', results.SOURCES['worldfootball'], 1)
     assert alternative['normalized_observations'] == {'parsed': 1, 'matched': 1, 'persisted': 1}
     with pipeline['connect']() as conn:

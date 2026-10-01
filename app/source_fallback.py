@@ -38,7 +38,10 @@ def select_result_fallback(primary, candidates, *, channel, match_id, now):
             reason = 'CAPTURE_UNACCEPTED'
         elif not row.get('raw_page_sha256') or row.get('status') not in {'FT', 'FINISHED'}:
             reason = 'EVIDENCE_INCOMPLETE'
-        elif channel == 'PILOT' and row.get('match_status') != 'EXACT_PAIR_DATE':
+        elif channel == 'PILOT' and (row.get('match_status') not in {
+                'EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC', 'EXACT_PAIR_KICKOFF_COMPETITION_DIAGNOSTIC'}
+                or row.get('result_match_contract') != 'RESULT_PAIR_DATE_COMPETITION_V1'
+                or not row.get('competition') or not row.get('home_team') or not row.get('away_team')):
             reason = 'MATCH_UNSAFE'
         elif channel == 'PRODUCTION' and (row.get('production_eligible') is not True or
                 row.get('match_status') != 'EXACT_PAIR_KICKOFF_COMPETITION' or
