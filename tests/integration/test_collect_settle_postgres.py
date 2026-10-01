@@ -332,10 +332,18 @@ def test_market_reference_real_postgres_preserves_sealed_rows(pipeline, monkeypa
              'Czechia', 'England', 'Test league', pipeline['kickoff'] + timedelta(seconds=1),
              json.dumps(payload)))
     original = read(pipeline, 'SELECT * FROM model_snapshots ORDER BY snapshot_timestamp_utc')
-    result = get_market_reference(sealed['match_id'], known_at=pipeline['kickoff'] + timedelta(hours=1))
+    # Include the real DB seal in knowledge time before testing the separate
+    # pre-kickoff gate. A fixed 17:00 knowledge time becomes stale after 17:00.
+    known_at = max(pipeline['kickoff'] + timedelta(hours=1),
+                   sealed['imported_at'] + timedelta(seconds=1))
+    result = get_market_reference(sealed['match_id'], known_at=known_at)
     assert result['status'] == 'CLOSED_OBSERVED_PROXY'
     assert result['q_close']['odds']['1'] == 2.1
     assert result['rejected']['NOT_SEALED_PRE_KICKOFF'] == 1 + int(sealed['imported_at'] >= pipeline['kickoff'])
+    unseen_at = min(sealed['imported_at'], later) - timedelta(seconds=1)
+    unseen = get_market_reference(sealed['match_id'], known_at=unseen_at)
+    assert unseen['rejected']['NOT_KNOWN_AT'] == len(original)
+    assert unseen['q_open'] is None and unseen['q_close'] is None
     early = get_market_reference(sealed['match_id'], known_at=later - timedelta(seconds=1))
     assert early['q_close'] is None
     assert early['latest_pre_kickoff'] is None or early['latest_pre_kickoff']['odds']['1'] == 2

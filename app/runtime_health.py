@@ -75,7 +75,13 @@ SELECT
      EXISTS (SELECT 1 FROM jsonb_each(COALESCE(manifest->'extra_pages','{}'::jsonb)) e
        WHERE e.value->'page_capture'->>'state' NOT IN ('READY_PARSED','CAPABILITY_ONLY'))
   ) AS failed_pilot_content,
-  (SELECT COALESCE(sum(unresolved_rows),0) FROM pilot_quality) AS unresolved_pilot_timezone_rows
+  (SELECT COALESCE(sum(unresolved_rows),0) FROM pilot_quality) AS unresolved_pilot_timezone_rows,
+  (SELECT count(*) FROM runtime_state WHERE key LIKE 'source_circuit:v1:%%' AND
+     value->>'mode' IN ('OPEN','HALF_OPEN')) AS suspended_pilot_sources,
+  (SELECT count(*) FROM runtime_state WHERE key LIKE 'source_circuit:v1:%%' AND
+     (value->>'stop_pending_id' IS NOT NULL OR
+      (value->>'active_browser_id' IS NOT NULL AND
+       (value->>'lease_until_utc')::timestamptz<=NOW()))) AS pending_pilot_browser_stops
 """
 
 RUNTIME_SQL = "SELECT key,updated_at FROM runtime_state WHERE key IN ('collector','settlement')"
@@ -92,6 +98,8 @@ def evaluate(counters, workers, now=None):
     warnings = [name for name in ('broken_pilot_parsers', 'zero_row_pilot_parsers',
                                   'failed_pilot_transports', 'failed_pilot_content',
                                   'unresolved_pilot_timezone_rows') if counters[name] > 0]
+    warnings += [name for name in ('suspended_pilot_sources', 'pending_pilot_browser_stops')
+                 if counters.get(name, 0) > 0]
     due = counters['due_tickets']
     ratio = counters['pending_due_tickets'] / due if due else None
     if ratio is not None and ratio > .5:

@@ -1,0 +1,11 @@
+{
+  "evidence_kind": "LIVE_BROWSER_DOM",
+  "captured_on_utc": "2026-10-01",
+  "session_id": "6cc64bbd-6609-4a6a-8350-5d67e26ee5ae",
+  "http_status": 502,
+  "title": "SmartSoccerStats — Under maintenance",
+  "url": "https://www.smartsoccerstats.eu/game-statistics",
+  "text": "We’ll be right back\n\nSmart Soccer Stats is undergoing scheduled maintenance.\n\nWe’re deploying improvements and will be back online shortly.\n\nUnder maintenance",
+  "truncated": false,
+  "stop_confirmed": true
+}
