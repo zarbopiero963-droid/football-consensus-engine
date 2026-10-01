@@ -457,6 +457,13 @@ a production snapshot. Competition names that differ remain unmatched. Each
 source response carries its own acquisition timestamp, so a run started before
 kickoff cannot backdate a response received afterwards. No historical ledger
 headers or rows are changed; the existing `name_score_note` records the contract.
+Future runs also seal `market_match_audit.json` in the manifest and persist a
+`market_match_audit` JSON string in each new snapshot payload. The audit separates
+missing quotes, absent exact ordered pairs, rejected exact pairs and ambiguous
+matches. Candidate counts are quote counts; each rejection names the first failed
+gate in contract order. Quality reports and collector runtime state expose those
+counts. Candidate league names, kickoff/capture times and raw filenames support
+review against the manifest; they do not certify aliases or relax matching.
 
 Bridge requests retry only an HTTP 503 response, at most three times after
 3/10/30 seconds. Authentication errors, HTTP 502/failed browser stop, timeouts,

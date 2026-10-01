@@ -122,6 +122,9 @@ def test_collector_recovers_league_documents_preserves_quote_raw_and_strict_matc
     assert len(rows)==1 and rows[0]['picked_odds']==2
     p=rows[0]['payload']
     assert p['pin_transport']=='browser_bridge_fallback' and p['name_score_note']==collect.MATCH_CONTRACT
+    match_audit=json.loads(p['market_match_audit'])
+    assert match_audit['status']=='UNIQUE_EXACT_MATCH'
+    assert match_audit['matched_candidates']==1 and match_audit['candidate_first_rejections']=={}
     raw=next(pipeline['root'].rglob('markets_1.json')).read_bytes()
     assert hashlib.sha256(raw).hexdigest()==p['sha256_odds_raw']
     audit=json.loads(next(pipeline['root'].rglob('transport_audit.json')).read_text())
@@ -147,8 +150,67 @@ def test_failed_league_fallback_is_not_priced_or_hidden(pipeline,monkeypatch,cap
     rows=read(pipeline,'SELECT * FROM model_snapshots')
     assert len(rows)==1 and rows[0]['picked_odds'] is None
     assert rows[0]['payload']['pin_matchup_id']=='' and rows[0]['payload']['pin_transport']==''
+    assert json.loads(rows[0]['payload']['market_match_audit'])['status']=='NO_MARKET_QUOTES'
     audit=json.loads(next(pipeline['root'].rglob('transport_audit.json')).read_text())
     assert audit[0]['final_transport']=='failed' and audit[0]['final_error']
+
+
+@pytest.mark.parametrize('case,status,rejections', [
+    ('competition', 'EXACT_PAIR_REJECTED', {'LEAGUE_MISMATCH': 1}),
+    ('time', 'EXACT_PAIR_REJECTED', {'KICKOFF_MISMATCH': 1}),
+    ('pair', 'NO_EXACT_PAIR', {}),
+    ('ambiguous', 'AMBIGUOUS_EXACT_MATCH', {}),
+])
+def test_rejected_matching_audit_is_sealed_persisted_and_never_priced(pipeline, monkeypatch, capsys, case, status, rejections):
+    original = pipeline['http_fixture']
+
+    def http(url, **kwargs):
+        code, body, headers = original(url, **kwargs)
+        if url == collect.PIN_LEAGUES and case == 'competition':
+            body = json.dumps([{'id': 1, 'name': 'Other league', 'matchupCount': 1}]).encode()
+        elif '/matchups?' in url:
+            rows = json.loads(body)
+            if case == 'time':
+                rows[0]['startTime'] = (pipeline['kickoff'] + timedelta(minutes=16)).isoformat()
+            if case == 'pair':
+                rows[0]['participants'][0]['name'] = 'Czechia Women'
+            if case == 'ambiguous':
+                rows.append(dict(rows[0], id=2))
+            body = json.dumps(rows).encode()
+        elif '/markets/straight' in url and case == 'ambiguous':
+            rows = json.loads(body)
+            rows.append(dict(rows[0], matchupId=2))
+            body = json.dumps(rows).encode()
+        return code, body, headers
+
+    monkeypatch.setattr(collect, 'http_get', http)
+    # Preserve an older CSV header and record byte for byte.
+    ledger = pipeline['root'] / 'prospective_ledger.csv'
+    historic = b'match_id,snapshot_timestamp_utc,sha256_model_raw\nold,2026-09-01T00:00:00Z,old-hash\n'
+    ledger.write_bytes(historic)
+    collect.main()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary['joined_pinnacle'] == summary['eligible'] == 0
+    row = read(pipeline, 'SELECT * FROM model_snapshots')[0]
+    payload = row['payload']
+    assert row['picked_odds'] is None and payload['pin_matchup_id'] == ''
+    audit = json.loads(payload['market_match_audit'])
+    assert audit['status'] == status and audit['candidate_first_rejections'] == rejections
+    state = read(pipeline, "SELECT value FROM runtime_state WHERE key='collector'")[0]['value']
+    assert state['market_matching'] == summary['market_matching']
+    assert state['market_matching']['model_status_counts'] == {status: 1}
+    assert state['market_matching']['candidate_first_rejections'] == rejections
+    manifest = json.loads((pipeline['root'] / 'manifests' / ('manifest_' + summary['run_id'] + '.json')).read_text())
+    entry = next(f for f in manifest['files'] if f['role'] == 'market-match-audit')
+    raw = (pipeline['root'] / entry['path']).read_bytes()
+    assert entry['sha256'] == hashlib.sha256(raw).hexdigest() and entry['bytes'] == len(raw)
+    report = json.loads(raw)
+    assert report['summary'] == state['market_matching']
+    assert report['models'][0]['model_raw_sha256'] == row['sha256_model_raw']
+    assert report['models'][0]['candidates'] == audit['candidates']
+    assert ledger.read_bytes().startswith(historic)
+    for table in ('decision_tickets', 'market_decision_tickets', 'source_pilot_predictions'):
+        assert read(pipeline, f'SELECT count(*) AS n FROM {table}')[0]['n'] == 0
 
 
 @pytest.mark.parametrize('bridge_code', [200, 401, 503])

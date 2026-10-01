@@ -20,26 +20,66 @@ def utc(value):
     return value.astimezone(timezone.utc)
 
 
-def exact_market_match(model, quote, captured_at):
-    """Exact source names only until evidenced cross-source aliases are bound."""
+def market_match_rejection(model, quote, captured_at):
+    """First failed gate in EXACT_PAIR_TIME_CONTEXT_V1; None means accepted."""
     kickoff, start, captured = utc(model.get('kickoff')), utc(quote.get('start')), utc(captured_at)
-    if not all((kickoff, start, captured)) or captured >= min(kickoff, start):
-        return False
+    if not all((kickoff, start, captured)):
+        return 'TIMEZONE_OR_TIME_MISSING'
+    if captured >= min(kickoff, start):
+        return 'CAPTURE_NOT_PREMATCH'
     if abs((kickoff - start).total_seconds()) > 15 * 60:
-        return False
+        return 'KICKOFF_MISMATCH'
     for side in ('home', 'away'):
         name = normalize_alias(model.get(side))
         if not name or name != normalize_alias(quote.get(side)):
-            return False
+            return 'PAIR_MISMATCH'
     # A competition is required. Missing country/category is still missing;
     # any metadata supplied by either adapter must agree on both sides.
     if not normalize_alias(model.get('league')) or not normalize_alias(quote.get('league')):
-        return False
+        return 'COMPETITION_MISSING'
     for field in ('league', 'country', 'category'):
         left, right = normalize_alias(model.get(field)), normalize_alias(quote.get(field))
         if (left or right) and left != right:
-            return False
-    return True
+            return field.upper() + '_MISMATCH'
+    return None
+
+
+def exact_market_match(model, quote, captured_at):
+    """Exact source names only until evidenced cross-source aliases are bound."""
+    return market_match_rejection(model, quote, captured_at) is None
+
+
+def audit_market_candidates(model, quotes):
+    """Explain exact ordered-name candidates; never propose aliases or prices.
+
+    Counts refer to quote candidates, not distinct fixtures. Each rejection is
+    the first failed gate in contract order; unrelated/reversed pairs are not
+    evidence of a missing competition alias.
+    """
+    pair = tuple(normalize_alias(model.get(side)) for side in ('home', 'away'))
+    candidates, rejected, matched = [], {}, 0
+    for quote in quotes:
+        if not all(pair) or pair != tuple(normalize_alias(quote.get(side)) for side in ('home', 'away')):
+            continue
+        reason = market_match_rejection(model, quote, quote.get('captured_at'))
+        if reason:
+            rejected[reason] = rejected.get(reason, 0) + 1
+        else:
+            matched += 1
+        candidates.append({
+            'provider_match_id': quote.get('matchup_id'),
+            'league': quote.get('league'), 'country': quote.get('country'),
+            'category': quote.get('category'),
+            'kickoff_utc': utc(quote.get('start')).isoformat() if utc(quote.get('start')) else None,
+            'captured_at_utc': utc(quote.get('captured_at')).isoformat() if utc(quote.get('captured_at')) else None,
+            'raw_file': quote.get('raw_file'), 'transport': quote.get('transport'),
+            'first_rejection': reason,
+        })
+    status = ('UNIQUE_EXACT_MATCH' if matched == 1 else 'AMBIGUOUS_EXACT_MATCH' if matched > 1
+              else 'EXACT_PAIR_REJECTED' if candidates else 'NO_EXACT_PAIR' if quotes else 'NO_MARKET_QUOTES')
+    return {'contract': MATCH_CONTRACT, 'status': status,
+            'exact_pair_candidates': len(candidates), 'matched_candidates': matched,
+            'candidate_first_rejections': rejected, 'candidates': candidates}
 
 
 def _quote(row, known_at):

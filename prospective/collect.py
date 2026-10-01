@@ -24,7 +24,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(ROOT))
 from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E402
 from app.identities import category_flags
-from app.market_reference import exact_market_match, MATCH_CONTRACT  # noqa: E402
+from app.market_reference import audit_market_candidates, exact_market_match, MATCH_CONTRACT  # noqa: E402
 
 SCRAPER_VERSION = "prospective-ledger-3"
 STRATEGY_FILE = os.path.join(ROOT, "strategies_preregistered.json")
@@ -633,6 +633,9 @@ def main():
     joined = 0
     unmatched = 0
     ledger = []
+    match_audits = []
+    match_status_counts = {}
+    candidate_rejections = {}
     # Use a single odds batch timestamp: end of pinnacle pull is more honest.
     odds_stamp = utcnow()
 
@@ -642,6 +645,14 @@ def main():
         p = row["parsed"]
         kick = p["kickoff"]
         cands = [o for o in pin_matchups if exact_market_match(p, o, o["captured_at"])]
+        audit = audit_market_candidates(p, pin_matchups)
+        match_status_counts[audit['status']] = match_status_counts.get(audit['status'], 0) + 1
+        for reason, count in audit['candidate_first_rejections'].items():
+            candidate_rejections[reason] = candidate_rejections.get(reason, 0) + count
+        match_audits.append({'match_id': 'fi:' + row['slug'],
+                             'model_raw_sha256': row['sha256'],
+                             'home': p['home'], 'away': p['away'], 'league': p['league'],
+                             'kickoff_utc': kick.isoformat(), **audit})
         chosen = None
         if len(cands) == 1:
             chosen = cands[0]
@@ -697,6 +708,7 @@ def main():
             "page_odds_away": p["page_odds"][2] if len(p["page_odds"]) > 2 else "",
             "valid_prematch": 1,
             "analysis_eligible": 0,
+            "market_match_audit": json.dumps(audit, separators=(',', ':')),
         }
         if chosen:
             fair = chosen["fair"]
@@ -881,6 +893,11 @@ def main():
         append_text(os.path.join(ROOT, "raw", "errors", "errors.jsonl"), json.dumps({"run_id": run_id, "errors": errors}) + "\n")
 
     strategy_hash = load_strategy_hash()
+    match_summary = {'contract': MATCH_CONTRACT, 'model_status_counts': match_status_counts,
+                     'candidate_first_rejections': candidate_rejections}
+    save(os.path.join(run_dir_snap, 'market_match_audit.json'),
+         json.dumps({'summary': match_summary, 'models': match_audits}, indent=2).encode(),
+         'market-match-audit')
     quality = {
         "run_id": run_id,
         "collected_at_utc": now.isoformat(),
@@ -902,6 +919,7 @@ def main():
                                       for kind in ('direct','browser_bridge_fallback','failed')},
         "pinnacle_direct_leagues_recovered": sum(not a['direct_complete'] and not a['final_error'] for a in transport_audit),
         "pinnacle_open_moneylines": len(pin_matchups),
+        "market_matching": match_summary,
         "joined": joined,
         "unmatched_model": unmatched,
         "manual_review": len(manual),
@@ -958,6 +976,7 @@ def main():
         "pinnacle_leagues_bridge_requests": pin_leagues_requests,
         "pinnacle_leagues_failure": pin_leagues_failure,
         "pinnacle_league_transports": quality['pinnacle_league_transports'],
+        "market_matching": match_summary,
     })
 
     print(json.dumps({
@@ -973,6 +992,7 @@ def main():
         "eligible": quality["analysis_eligible"],
         "invalid": len(invalid_rows),
         "pinnacle_moneylines": len(pin_matchups),
+        "market_matching": match_summary,
         "pinnacle_leagues_transport": pin_leagues_transport,
         "errors": len(errors),
         "database": {
