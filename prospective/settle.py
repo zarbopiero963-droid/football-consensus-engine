@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(ROOT))
-from collect import canon, name_score  # noqa: E402
+from collect import canon, name_score, women_or_youth  # noqa: E402
 from app.persist import guarded, set_runtime_state, upsert_result  # noqa: E402
 from app.strategy_sync import synchronize_strategy_simulations  # noqa: E402
 from app.market_engine import synchronize_market_settlement  # noqa: E402
@@ -35,6 +35,8 @@ UA = "Mozilla/5.0 (compatible; prospective-ledger/1.0; results-only)"
 FIFA = "https://api.fifa.com/api/v3/calendar/matches"
 MIN_AFTER_KICKOFF = 120
 NAME_MIN = 2  # exact canon or containment; token-only matches are refused
+FIFA_MATCH_WINDOW_SECONDS = 90 * 60
+FIFA_FETCH_CHUNK_HOURS = 12
 
 ALIASES = {
     "czechia": "czech republic",
@@ -168,9 +170,7 @@ def fifa_finished(m):
         return False
     return m.get("MatchStatus") == 0 and m.get("OfficialityStatus") == 2 and m.get("ResultType") == 1
 
-def fetch_fifa(start, end):
-    start = start.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    end = end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+def _fetch_fifa_chunk(start, end):
     url = (
         f"{FIFA}?from={start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
         f"&to={end.strftime('%Y-%m-%dT%H:%M:%SZ')}&language=en&count=200"
@@ -195,17 +195,54 @@ def fetch_fifa(start, end):
             last_err = f"{type(e).__name__}: {e}"
     return [], last_err
 
+
+def fetch_fifa(start, end):
+    """Fetch FIFA results in bounded chunks so count=200 cannot silently truncate a broad window."""
+    start = start.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    end = end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    merged = []
+    seen = set()
+    cursor = start
+    errors = []
+    while cursor < end:
+        chunk_end = min(cursor + timedelta(hours=FIFA_FETCH_CHUNK_HOURS), end)
+        rows, err = _fetch_fifa_chunk(cursor, chunk_end)
+        if err:
+            errors.append(f"{cursor.isoformat()}..{chunk_end.isoformat()}: {err}")
+        for row in rows:
+            key = str(row.get("IdMatch") or "")
+            if not key:
+                key = hashlib.sha256(
+                    json.dumps(row, sort_keys=True, default=str).encode()
+                ).hexdigest()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+        cursor = chunk_end
+    return merged, ("; ".join(errors) if errors else None)
+
+
+def _category_compatible(a: str, b: str) -> bool:
+    af, bf = women_or_youth(a), women_or_youth(b)
+    if not af and not bf:
+        return True
+    return af == bf
+
+
 def match_fifa(row, matches):
     kick = parse_iso(row["kickoff_utc"])
     hits = []
     for m in matches:
         try:
             when = parse_iso(m.get("Date") or "")
-        except ValueError:
+        except (ValueError, TypeError):
             continue
-        if abs((when - kick).total_seconds()) > 6 * 3600:
+        if abs((when - kick).total_seconds()) > FIFA_MATCH_WINDOW_SECONDS:
             continue
         home, away = fifa_name(m.get("Home")), fifa_name(m.get("Away"))
+        if not (_category_compatible(row["home_team"], home) and _category_compatible(row["away_team"], away)):
+            continue
         if strong(row["home_team"], home) and strong(row["away_team"], away):
             hits.append(m)
     if len(hits) != 1:
