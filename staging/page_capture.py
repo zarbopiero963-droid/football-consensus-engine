@@ -52,7 +52,8 @@ class PageCapture:
 
 
 def capture_page(page, http_status, parser, *, timeout_ms=20000, poll_ms=1000,
-                 evidence_kind="source_rows", monotonic=time.monotonic):
+                 evidence_kind="source_rows", monotonic=time.monotonic,
+                 html_parser=None):
     """Wait for two identical nonempty parser outputs with no Loading signal.
 
     A zero-row page remains EMPTY_UNCONFIRMED, not a proven layout regression.
@@ -70,11 +71,14 @@ def capture_page(page, http_status, parser, *, timeout_ms=20000, poll_ms=1000,
     parser_error = None
     capture_error = None
     text = ""
+    html = b""
     while True:
         remaining = max(1, int(timeout_ms - (monotonic() - start) * 1000))
         try:
             text = page.locator("body").inner_text(timeout=min(2000, remaining))
             title = page.title()
+            if html_parser is not None:
+                html = page.content().encode("utf-8")
         except Exception as exc:
             capture_error = type(exc).__name__
             state = "CAPTURE_ERROR"
@@ -83,15 +87,18 @@ def capture_page(page, http_status, parser, *, timeout_ms=20000, poll_ms=1000,
         at = datetime.now(timezone.utc).isoformat()
         sample = {"at_utc": at, "state": signal,
                   "text_sha256": hashlib.sha256(text.encode()).hexdigest()}
+        if html_parser is not None:
+            sample["html_sha256"] = hashlib.sha256(html).hexdigest()
         samples.append(sample)
         if signal not in {"CONTENT", "LOADING"}:
             state = signal
             break
-        if parser is None and signal == "CONTENT":
+        if parser is None and html_parser is None and signal == "CONTENT":
             state = "CAPABILITY_ONLY"
             break
         try:
-            candidate = parser(text) if parser is not None else []
+            candidate = (html_parser(html) if html_parser is not None else
+                         parser(text) if parser is not None else [])
             if not isinstance(candidate, (list, dict)):
                 raise TypeError("readiness parser must return rows or a mapping")
             fingerprint = hashlib.sha256(json.dumps(
@@ -122,12 +129,15 @@ def capture_page(page, http_status, parser, *, timeout_ms=20000, poll_ms=1000,
             capture_error = type(exc).__name__
             state = "CAPTURE_ERROR"
             break
-    try:
-        html = page.content().encode("utf-8")
-    except Exception as exc:
-        html = b""
-        capture_error = type(exc).__name__
-        state = "CAPTURE_ERROR"
+    # For HTML adapters, preserve exactly the final sample used by the parser.
+    # A subsequent content() read could belong to a different source update.
+    if html_parser is None:
+        try:
+            html = page.content().encode("utf-8")
+        except Exception as exc:
+            html = b""
+            capture_error = type(exc).__name__
+            state = "CAPTURE_ERROR"
     if state != "READY_PARSED":
         parsed = []
     audit = {"contract": "PILOT_CONTENT_READINESS_V1", "state": state,
@@ -136,6 +146,8 @@ def capture_page(page, http_status, parser, *, timeout_ms=20000, poll_ms=1000,
              "captured_at_utc": datetime.now(timezone.utc).isoformat(),
              "parser_error_class": parser_error,
              "capture_error_class": capture_error}
+    if html_parser is not None:
+        audit["parser_input"] = "HTML_SAME_SAMPLE"
     return PageCapture(text, html, parsed, audit)
 
 
@@ -163,7 +175,7 @@ def retry_after_seconds(value, now):
 
 def navigate_capture(page, url, parser, *, evidence_kind="source_rows",
                      budget_ms=210000, monotonic=time.monotonic,
-                     capture=capture_page):
+                     capture=capture_page, html_parser=None):
     """Retry known public document GETs, never browser creation or ingestion.
 
     At most three navigations in the same browser with 3/10s minimum backoff;
@@ -189,9 +201,11 @@ def navigate_capture(page, url, parser, *, evidence_kind="source_rows",
                                  timeout=max(1, min(45000, int(budget_ms - (monotonic() - start) * 1000))))
         except (NavigationTimeout, TimeoutError) as exc:
             error = type(exc).__name__
+        html_options = {"html_parser": html_parser} if html_parser is not None else {}
         result = capture(page, response.status if response else None,
                          parser if response else None, evidence_kind=evidence_kind,
-                         timeout_ms=max(0, min(20000, int(budget_ms - (monotonic() - start) * 1000))))
+                         timeout_ms=max(0, min(20000, int(budget_ms - (monotonic() - start) * 1000))),
+                         **html_options)
         attempt = {"attempt": index + 1, "http_status": result.audit["http_status"],
                    "state": result.audit["state"], "navigation_error_class": error,
                    "captured_at_utc": result.audit["captured_at_utc"],
