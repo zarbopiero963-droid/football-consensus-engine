@@ -171,6 +171,8 @@ def parse_worldfootball_results(text: str) -> list[dict]:
     date_re = re.compile(r"\d{2}\.\d{2}\.\d{4}")
     score_re = re.compile(r"(\d{1,2}):(\d{1,2})")
     for i, line in enumerate(lines):
+        if line == "Standing":
+            break
         if date_re.fullmatch(line):
             current_date = _parse_source_date(line)
             continue
