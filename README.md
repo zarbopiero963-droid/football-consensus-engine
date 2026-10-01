@@ -878,3 +878,19 @@ bars and locked tip confidence do not become model components. Homepage market
 bars stay excluded. Source kickoff is converted to the device timezone, so raw
 clocks remain TIMEZONE_UNRESOLVED. This fix applies to future pilot slots only;
 old zero-row slots, source promotion and production tickets are unchanged.
+
+Future Elofoot, Opta and ClubElo pilot slots use source-specific HTML adapters.
+Readiness compares two identical parsed HTML samples and retains the exact final
+sample used by the parser. Each card/table row owns its team pair, competition,
+source ID, native 1/X/2 values, display clock and explicit `datetime` or
+`data-utc-time`; unrelated cards and browser timezone cannot supply missing time.
+After confirmed browser cleanup, ingestion rechecks the future kickoff against
+the database/application cutoff. New #29 rows persist actual UTC instead of a
+forced null. The run's `structured_prediction_audit` retains card counts, rejected
+source IDs/reasons and cutoff. LIVE/HT/FT, incomplete/invalid vectors, missing or
+conflicting time/context and conflicting source IDs ingest no prediction.
+ClubElo uses native desktop decimals and all observed paired fixture rows;
+responsive duplicates and title/promotion columns are not extra model outputs.
+Strict pair/time/league hints still remain `FOUND_NAME_ONLY` until canonical and
+category qualification. Historical columns/slots and promotion gates are unchanged.
+See [real DOM regression evidence](staging/structured_predictions_evidence/README.md).

@@ -19,6 +19,7 @@ if ROOT not in sys.path:
 
 from app.db import connect
 from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
+from staging.structured_predictions import HTML_PARSERS, captured_prematch, diagnostic_match, prediction_key
 from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
@@ -451,6 +452,8 @@ def anchor_rows():
 
 
 def match_anchor(pred, anchors):
+    if pred.get("payload_extra", {}).get("source_parser_contract"):
+        return diagnostic_match(pred, anchors)
     home, away = canon(pred["home_team"]), canon(pred["away_team"])
     candidates = [a for a in anchors if canon(a["home_team"]) == home and canon(a["away_team"]) == away]
     if not candidates:
@@ -497,7 +500,8 @@ def _collect_source(source, url, slot_no, anchors, claim):
             session = context.new_cdp_session(page)
             session.send("Emulation.setTimezoneOverride", {"timezoneId": "Europe/Rome"})
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
-            capture = navigate_capture(page, url, PARSERS[source], evidence_kind="prediction_rows")
+            capture = navigate_capture(page, url, PARSERS[source], evidence_kind="prediction_rows",
+                                       html_parser=HTML_PARSERS.get(source))
             http_status = capture.audit["http_status"]
             final_url = page.url
             html = capture.html
@@ -526,6 +530,12 @@ def _collect_source(source, url, slot_no, anchors, claim):
 
     with connect() as conn, conn.cursor() as cur:
         assert_owner(cur, claim)
+        if source in HTML_PARSERS:
+            cur.execute("SELECT clock_timestamp() AS cutoff")
+            cutoff = max(cur.fetchone()["cutoff"], utcnow())
+            preds, structured_audit = captured_prematch(capture, cutoff)
+            manifest.update(structured_prediction_audit=structured_audit,
+                            rows_parsed=len(preds), **run_quality(http_status, len(preds)))
         cur.execute("""
           INSERT INTO source_pilot_runs(
             run_id,pilot_id,source,slot_no,started_at_utc,finished_at_utc,status,
@@ -541,9 +551,7 @@ def _collect_source(source, url, slot_no, anchors, claim):
             sha(html),sha(shot),gzip.compress(html, compresslevel=6),shot,json.dumps(manifest)
         ))
         for pred in preds:
-            key = hashlib.sha256(
-                f"{source}|{pred['home_team']}|{pred['away_team']}|{pred.get('kickoff_raw','')}".encode()
-            ).hexdigest()[:24]
+            key = prediction_key(source, pred)
             extra = pred.get("payload_extra", {})
             payload = {**pred, **extra}
             cur.execute("""
@@ -551,10 +559,11 @@ def _collect_source(source, url, slot_no, anchors, claim):
                 run_id,source,source_match_key,home_team,away_team,league,kickoff_raw,
                 source_timezone,kickoff_utc,timezone_status,p1,px,p2,over25,under25,
                 btts_yes,btts_no,xg_home,xg_away,correct_score,parse_status,payload
-              ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s,%s,NULL,NULL,NULL,NULL,NULL,NULL,'',%s,%s::jsonb)
+              ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL,NULL,NULL,NULL,NULL,'',%s,%s::jsonb)
             """, (
                 run_id,source,key,pred["home_team"],pred["away_team"],pred.get("league",""),
                 pred.get("kickoff_raw",""),pred.get("source_timezone",""),
+                pred.get("kickoff_utc"),
                 pred.get("timezone_status","TIMEZONE_UNRESOLVED"),
                 pred.get("p1"),pred.get("px"),pred.get("p2"),
                 pred.get("parse_status","OK"),json.dumps(payload, default=str)

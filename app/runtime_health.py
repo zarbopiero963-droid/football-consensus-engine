@@ -29,7 +29,7 @@ WITH tickets AS (
   SELECT r.*,count(p.source_match_key) AS rows,
     count(*) FILTER(WHERE p.parse_status='BROKEN') AS broken_rows,
     count(*) FILTER(WHERE p.source_match_key IS NOT NULL AND
-      (p.kickoff_utc IS NULL OR p.timezone_status<>'VERIFIED_SOURCE_TZ')) AS unresolved_rows
+      (p.kickoff_utc IS NULL OR p.timezone_status NOT IN ('VERIFIED_SOURCE_TZ','EXPLICIT_OFFSET'))) AS unresolved_rows
   FROM latest_pilot r LEFT JOIN source_pilot_predictions p USING(run_id)
   GROUP BY r.run_id,r.source,r.status,r.manifest,r.http_status
 )

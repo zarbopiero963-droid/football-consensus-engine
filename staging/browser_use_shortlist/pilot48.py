@@ -20,6 +20,7 @@ if ROOT not in sys.path:
 
 from app.db import connect
 from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
+from staging.structured_predictions import HTML_PARSERS, captured_prematch, diagnostic_match, prediction_key
 from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
@@ -386,6 +387,8 @@ def anchor_rows():
 
 
 def match_anchor(pred, anchors):
+    if pred.get("payload_extra", {}).get("source_parser_contract"):
+        return diagnostic_match(pred, anchors)
     home, away = canon(pred["home_team"]), canon(pred["away_team"])
     candidates = [a for a in anchors if canon(a["home_team"]) == home and canon(a["away_team"]) == away]
     if not candidates:
@@ -455,7 +458,8 @@ def _collect_source(source, url, slot_no, anchors, claim):
             source_deadline = time.monotonic() + 360
             def capture_url(page_url, parser, kind):
                 return navigate_capture(page, page_url, parser, evidence_kind=kind,
-                                        budget_ms=int((source_deadline - time.monotonic()) * 1000))
+                                        budget_ms=int((source_deadline - time.monotonic()) * 1000),
+                                        html_parser=HTML_PARSERS.get(source))
             capture = capture_url(url, PARSERS[source], "prediction_rows")
             http_status = capture.audit["http_status"]
             final_url = page.url
@@ -536,6 +540,10 @@ def _collect_source(source, url, slot_no, anchors, claim):
     else:
         preds = capture.parsed if capture.accepted else []
 
+    structured_audit = None
+    if source in HTML_PARSERS:
+        preds, structured_audit = captured_prematch(capture, utcnow())
+
     manifest = {
         "source_resilience": public_state(claim["state"]),
         "pilot_id": PILOT_ID,
@@ -561,6 +569,14 @@ def _collect_source(source, url, slot_no, anchors, claim):
 
     with connect() as conn, conn.cursor() as cur:
         assert_owner(cur, claim)
+        if source in HTML_PARSERS:
+            cur.execute("SELECT clock_timestamp() AS cutoff")
+            cutoff = max(cur.fetchone()["cutoff"], utcnow())
+            preds, structured_audit = captured_prematch(capture, cutoff)
+            manifest.update(structured_prediction_audit=structured_audit,
+                            rows_visible_total=structured_audit["cards_seen"],
+                            rows_future_eligible=len(preds), rows_parsed=len(preds),
+                            visible_rows=len(preds))
         cur.execute("""
           INSERT INTO source_pilot_runs(
             run_id,pilot_id,source,slot_no,started_at_utc,finished_at_utc,status,
@@ -576,8 +592,8 @@ def _collect_source(source, url, slot_no, anchors, claim):
             sha(html),sha(shot),gzip.compress(html, compresslevel=6),shot,json.dumps(manifest)
         ))
         for pred in preds:
-            key = hashlib.sha256(f"{source}|{pred['home_team']}|{pred['away_team']}|{pred.get('kickoff_raw','')}".encode()).hexdigest()[:24]
-            extra = pred.pop("payload_extra", {})
+            key = prediction_key(source, pred)
+            extra = pred.get("payload_extra", {})
             payload = {**pred, **extra}
             cur.execute("""
               INSERT INTO source_pilot_predictions(
