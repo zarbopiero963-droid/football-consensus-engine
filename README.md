@@ -426,6 +426,14 @@ Endpoints:
   hours after kickoff, warns above 0.5 and stays null when there are none. Worker
   age limits are six hours for collector and one hour for settlement. These
   operational thresholds do not alter strategy rules or promote sources.
+  `failed_pilot_transports` counts the latest run per pilot/source in both
+  prediction and result pilots whose document HTTP status is not 200 or is
+  unobserved. A parsable HTTP 404 still degrades readiness. The #29 pilot
+  manifest records `transport_status` separately from `content_parse_status`;
+  run `status=OK` alone denotes completion, not successful HTTP acquisition or
+  production eligibility. Historical manifests and HTTP evidence stay immutable.
+  Future Opta slots use the observed HTTP 200 official homepage match centre;
+  the old `/football/` route's HTTP 404 evidence is retained without backfilling.
 - `GET /today` — latest valid pre-match snapshot per match for today's Europe/Rome calendar date.
 - `GET /yesterday` — same snapshots plus latest settled result when available.
 - `GET /date/YYYY-MM-DD?results=true` — explicit date query.

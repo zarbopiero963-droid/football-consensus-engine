@@ -30,7 +30,7 @@ SOURCES = {
     "kickoff_ai": "https://kickoff.ai/",
     "vitisport": "https://www.vitisport.it/",
     "clubelo": "https://clubelo.com/Fixtures",
-    "opta_analyst": "https://theanalyst.com/football/",
+    "opta_analyst": "https://theanalyst.com/",
     "scoutingstats_ai": "https://scoutingstats.ai/",
     "aipredict_io": "https://aipredict.io/football/",
     "totalcorner": "https://www.totalcorner.com/",
@@ -84,6 +84,15 @@ def pct(s):
 def valid_triplet(a, b, c):
     vals = [a, b, c]
     return all(v is not None and 0 <= v <= 100 for v in vals) and 98 <= sum(vals) <= 102
+
+
+def run_quality(http_status, rows_parsed):
+    """Acquisition and parsing are distinct; neither establishes eligibility."""
+    return {
+        "transport_status": ("HTTP_OK" if http_status == 200 else
+                             "HTTP_UNOBSERVED" if http_status is None else "HTTP_ERROR"),
+        "content_parse_status": "PARSED" if rows_parsed else "EMPTY",
+    }
 
 
 def parse_xgtoday(text):
@@ -506,6 +515,7 @@ def collect_source(source, url, slot_no, anchors):
         "rows_parsed": len(preds), "invalid_triplets": invalid_triplets,
         "page_errors": page_errors[:20], "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot), "http_status": http_status,
+        **run_quality(http_status, len(preds)),
     }
 
     with connect() as conn, conn.cursor() as cur:

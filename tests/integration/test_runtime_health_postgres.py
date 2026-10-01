@@ -47,3 +47,34 @@ def test_health_transaction_rejects_accidental_write(pipeline, monkeypatch):
         health.runtime_health()
     with pipeline['connect']() as conn:
         assert conn.execute("SELECT count(*) AS n FROM runtime_state WHERE key='illegal'").fetchone()['n'] == 0
+
+
+def test_latest_prediction_and_result_http_failures_are_visible_despite_parsed_rows(pipeline, monkeypatch):
+    monkeypatch.setattr(health, 'connect', pipeline['connect'])
+    with pipeline['connect']() as conn:
+        conn.execute("""INSERT INTO source_pilot_runs(run_id,pilot_id,source,slot_no,
+                        started_at_utc,status,http_status,manifest)
+                        VALUES ('opta404','http-test','opta',1,NOW(),'OK',404,'{"rows_parsed":24}')""")
+        conn.execute("""INSERT INTO source_pilot_predictions(run_id,source,source_match_key,
+                        home_team,away_team,parse_status)
+                        VALUES ('opta404','opta','public-shell-row','Home','Away','OK')""")
+        conn.execute("""INSERT INTO result_source_pilot_runs(run_id,pilot_id,source,slot_no,
+                        started_at_utc,status,http_status,rows_found)
+                        VALUES ('result403','http-test','result',1,NOW(),'OK',403,20),
+                               ('result-null','http-test','unobserved',1,NOW(),'OK',NULL,20)""")
+    first = health.runtime_health()
+    assert first['counts']['failed_pilot_transports'] == 3
+    assert first['counts']['broken_pilot_parsers'] == first['counts']['zero_row_pilot_parsers'] == 0
+    assert 'failed_pilot_transports' in first['warnings']
+    with pipeline['connect']() as conn:
+        conn.execute("""INSERT INTO source_pilot_runs(run_id,pilot_id,source,slot_no,
+                        started_at_utc,status,http_status)
+                        VALUES ('opta200','http-test','opta',2,NOW(),'OK',200)""")
+        conn.execute("""INSERT INTO result_source_pilot_runs(run_id,pilot_id,source,slot_no,
+                        started_at_utc,status,http_status)
+                        VALUES ('result200','http-test','result',2,NOW(),'OK',200),
+                               ('observed200','http-test','unobserved',2,NOW(),'OK',200)""")
+    assert health.runtime_health()['counts']['failed_pilot_transports'] == 0
+    with pipeline['connect']() as conn:
+        assert conn.execute("SELECT http_status FROM source_pilot_runs WHERE run_id='opta404'").fetchone()['http_status'] == 404
+        assert conn.execute("SELECT count(*) AS n FROM source_pilot_predictions").fetchone()['n'] == 1
