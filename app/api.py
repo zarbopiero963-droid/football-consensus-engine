@@ -84,13 +84,23 @@ def latest_snapshots_for_day(
 
 
 def latest_results(match_ids: list[str]) -> dict[str, dict]:
+    """Return only FT results whose two score fields are independently VERIFIED."""
     if not match_ids:
         return {}
     sql = """
-    SELECT DISTINCT ON (match_id) match_id, version, payload
-    FROM match_results
+    SELECT match_id,
+           jsonb_build_object(
+             'result_1x2', result_1x2,
+             'final_home_goals', final_home_goals,
+             'final_away_goals', final_away_goals,
+             'verification_status', verification_status,
+             'field_verification', field_verification,
+             'providers', providers
+           ) AS payload
+    FROM result_consensus
     WHERE match_id = ANY(%s)
-    ORDER BY match_id, version DESC
+      AND field_verification->'final_home_goals'->>'status'='VERIFIED'
+      AND field_verification->'final_away_goals'->>'status'='VERIFIED'
     """
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, (match_ids,))
@@ -254,6 +264,15 @@ def ensure_ticket_timezones(ticket: dict) -> dict:
             out[italy_key] = None
     return out
 
+def _ft_result_verified(result_payload: dict) -> bool:
+    verification = dict(result_payload.get("field_verification") or {})
+    return all(
+        isinstance(verification.get(field), dict)
+        and verification[field].get("status") == "VERIFIED"
+        for field in ("final_home_goals", "final_away_goals")
+    )
+
+
 def _settle_ticket(ticket: dict, result: dict | None) -> dict:
     out = dict(ticket)
     if not result:
@@ -264,6 +283,13 @@ def _settle_ticket(ticket: dict, result: dict | None) -> dict:
         return out
 
     result_payload = dict(result["payload"])
+    if not _ft_result_verified(result_payload):
+        out["settlement_status"] = "PENDING"
+        out["result"] = result_payload
+        out["correct"] = None
+        out["profit_flat_1"] = None
+        return out
+
     result_ts = result_payload.get("result_timestamp_utc")
     if result_ts:
         try:

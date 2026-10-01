@@ -158,6 +158,34 @@ def project_from_source_row(row: dict[str, Any]) -> list[MarketPick]:
     return out
 
 
+
+def required_result_fields(market_id: str) -> tuple[str, ...]:
+    if market_id == "HTFT_1X2":
+        return ("ht_home_goals", "ht_away_goals", "final_home_goals", "final_away_goals")
+    if market_id.startswith("HT_CORNERS_OU"):
+        return ("ht_corners_home", "ht_corners_away")
+    if market_id.startswith("FT_CORNERS_OU"):
+        return ("corners_home", "corners_away")
+    if market_id.startswith("HT_"):
+        return ("ht_home_goals", "ht_away_goals")
+    if market_id.startswith("FT_"):
+        return ("final_home_goals", "final_away_goals")
+    return ()
+
+
+def result_fields_verified(market_id: str, result: dict[str, Any]) -> bool:
+    fields = required_result_fields(market_id)
+    if not fields:
+        return False
+    verification = dict(result.get("field_verification") or {})
+    return all(
+        isinstance(verification.get(field), dict)
+        and verification[field].get("status") == "VERIFIED"
+        for field in fields
+    )
+
+
+
 def settle_market(market_id: str, selection: str, line: float | None, result: dict[str, Any]) -> tuple[str, bool] | None:
     fh = result.get("final_home_goals")
     fa = result.get("final_away_goals")
@@ -273,7 +301,7 @@ def synchronize_market_settlement() -> dict[str, int]:
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT mdt.*,
-                   CASE WHEN rc.verification_status='CONFLICT' THEN NULL
+                   CASE WHEN rc.match_id IS NULL THEN NULL
                         ELSE jsonb_build_object(
                           'final_home_goals',rc.final_home_goals,
                           'final_away_goals',rc.final_away_goals,
@@ -293,7 +321,7 @@ def synchronize_market_settlement() -> dict[str, int]:
         updated = 0
         for row in rows:
             result = dict(row.get("result_payload") or {})
-            if not result:
+            if not result or not result_fields_verified(row["market_id"], result):
                 continue
             settled = settle_market(row["market_id"], row["selection"], row["line"], result)
             if settled is None:

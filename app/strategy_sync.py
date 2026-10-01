@@ -22,15 +22,14 @@ def synchronize_strategy_simulations():
         cur.execute("""
             SELECT dt.batch_id,dt.match_id,dt.kickoff_utc,dt.home_team,dt.away_team,
                    dt.strategies,dt.snapshot_view,dt.snapshot_timestamp_utc,
-                   mr.result_1x2
+                   CASE
+                     WHEN rc.field_verification->'final_home_goals'->>'status'='VERIFIED'
+                      AND rc.field_verification->'final_away_goals'->>'status'='VERIFIED'
+                     THEN rc.result_1x2
+                     ELSE NULL
+                   END AS result_1x2
             FROM decision_tickets dt
-            LEFT JOIN LATERAL (
-                SELECT result_1x2
-                FROM match_results
-                WHERE match_id=dt.match_id
-                ORDER BY version DESC
-                LIMIT 1
-            ) mr ON TRUE
+            LEFT JOIN result_consensus rc ON rc.match_id=dt.match_id
             WHERE dt.shown_to_user=TRUE
         """)
         tickets = list(cur.fetchall())

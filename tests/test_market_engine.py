@@ -1,4 +1,10 @@
-from app.market_engine import project_from_1x2, project_from_source_row, settle_market
+from app.market_engine import (
+    project_from_1x2,
+    project_from_source_row,
+    required_result_fields,
+    result_fields_verified,
+    settle_market,
+)
 
 
 def test_double_chance_is_derived_from_complete_1x2():
@@ -197,3 +203,33 @@ def test_freeze_market_tickets_never_reads_pilot_tables(monkeypatch):
     assert "source_pilot_matches" not in sql_text
     assert count == 2
     assert sum("insert into market_decision_tickets" in sql.lower() for sql, _ in executed) == 2
+
+
+def test_market_settlement_requires_verified_fields_for_each_market():
+    ft = {
+        "field_verification": {
+            "final_home_goals": {"status": "VERIFIED"},
+            "final_away_goals": {"status": "VERIFIED"},
+            "ht_home_goals": {"status": "SINGLE_SOURCE"},
+            "ht_away_goals": {"status": "SINGLE_SOURCE"},
+            "corners_home": {"status": "MISSING"},
+            "corners_away": {"status": "MISSING"},
+        }
+    }
+    assert required_result_fields("FT_1X2") == ("final_home_goals", "final_away_goals")
+    assert result_fields_verified("FT_1X2", ft) is True
+    assert result_fields_verified("FT_OU_2.5", ft) is True
+    assert result_fields_verified("HT_1X2", ft) is False
+    assert result_fields_verified("FT_CORNERS_OU", ft) is False
+
+
+def test_single_source_ft_cannot_settle_market():
+    result = {
+        "final_home_goals": 2,
+        "final_away_goals": 0,
+        "field_verification": {
+            "final_home_goals": {"status": "SINGLE_SOURCE"},
+            "final_away_goals": {"status": "SINGLE_SOURCE"},
+        },
+    }
+    assert result_fields_verified("FT_1X2", result) is False
