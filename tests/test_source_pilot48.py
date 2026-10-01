@@ -252,3 +252,95 @@ OVER 2.5
     row = rows[0]
     assert row["over25"] == 72
     assert row["under25"] is None
+
+
+def test_smart_soccer_stats_parser_produces_real_ft_ht_observations():
+    from staging.result_sources.pilot48 import parse_smart_soccer_stats_results
+
+    rows = parse_smart_soccer_stats_results("""
+30 Sept 2026
+Lithuania
+3
+-
+0
+Andorra
+(2-0)
+Friendlies - World, 2026
+30 Sept 2026
+Eritrea
+0
+-
+5
+South Africa
+(0-2)
+Africa Cup of Nations - Qualification - World, 2027
+""")
+    assert len(rows) == 2
+    assert rows[0]["home_team"] == "Lithuania"
+    assert rows[0]["final_home_goals"] == 3
+    assert rows[0]["final_away_goals"] == 0
+    assert rows[0]["ht_home_goals"] == 2
+    assert rows[0]["ht_away_goals"] == 0
+    assert rows[0]["corners_home"] is None
+    assert rows[1]["final_home_goals"] == 0
+    assert rows[1]["final_away_goals"] == 5
+
+
+def test_worldfootball_parser_only_takes_finished_scores():
+    from staging.result_sources.pilot48 import parse_worldfootball_results
+
+    rows = parse_worldfootball_results("""
+Matchday 1
+22.08.2026
+Inter
+4:1
+AC Monza
+Udinese Calcio
+1:1
+Como 1907
+Matchday 6
+10.10.2026
+Genoa CFC
+15:00
+ACF Fiorentina
+Standing
+AS Roma
+5
+14:3
+11
+13
+""")
+    assert len(rows) == 2
+    assert rows[0]["home_team"] == "Inter"
+    assert rows[0]["away_team"] == "AC Monza"
+    assert rows[0]["final_home_goals"] == 4
+    assert rows[0]["final_away_goals"] == 1
+    assert rows[1]["home_team"] == "Udinese Calcio"
+    assert rows[1]["final_home_goals"] == 1
+    assert rows[1]["final_away_goals"] == 1
+
+
+def test_result_anchor_match_requires_exact_pair_and_date():
+    from datetime import datetime, timezone
+    from staging.result_sources.pilot48 import match_result_anchor
+
+    row = {
+        "home_team": "Lithuania",
+        "away_team": "Andorra",
+        "source_date": datetime(2026, 9, 30).date(),
+    }
+    anchors = [{
+        "match_id": "fi:lithuania-vs-andorra-2026-09-30",
+        "home_team": "Lithuania",
+        "away_team": "Andorra",
+        "league": "Friendlies",
+        "kickoff_utc": datetime(2026, 9, 30, 16, 0, tzinfo=timezone.utc),
+    }]
+    anchor, status = match_result_anchor(row, anchors)
+    assert anchor["match_id"] == "fi:lithuania-vs-andorra-2026-09-30"
+    assert status == "EXACT_PAIR_DATE"
+
+    row["source_date"] = datetime(2026, 10, 1).date()
+    anchor, status = match_result_anchor(row, anchors)
+    assert anchor is None
+    assert status == "NOT_FOUND"

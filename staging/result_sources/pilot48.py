@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,9 +19,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.db import connect
+from app.result_validation import upsert_observation
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 PILOT_ID = os.environ.get("RESULT_SOURCE_PILOT_ID", "result-source-pilot-48h-issue20-v1")
+ROME = ZoneInfo("Europe/Rome")
 SOURCES = {
     "footiqo": "https://footiqo.com/database/leagues/brazil-serie-a/",
     "smart_soccer_stats": "https://www.smartsoccerstats.eu/game-statistics",
@@ -95,6 +98,188 @@ def ensure_control():
 def current_slot(start):
     delta = utcnow() - start
     return max(1, min(16, int(delta.total_seconds() // (3 * 3600)) + 1))
+
+
+
+def canon(value: str) -> str:
+    value = (value or "").lower()
+    value = re.sub(r"\b(fc|cf|afc|sc|calcio|club|the)\b", " ", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def _parse_source_date(value: str):
+    normalized = value.replace("Sept", "Sep")
+    for fmt in ("%d %b %Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(normalized, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def parse_smart_soccer_stats_results(text: str) -> list[dict]:
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    out = []
+    date_re = re.compile(r"\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+\d{4}")
+    i = 0
+    while i + 7 < len(lines):
+        if not date_re.fullmatch(lines[i]):
+            i += 1
+            continue
+        try:
+            home = lines[i + 1]
+            hg = int(lines[i + 2])
+            sep = lines[i + 3]
+            ag = int(lines[i + 4])
+            away = lines[i + 5]
+        except (ValueError, IndexError):
+            i += 1
+            continue
+        if sep != "-":
+            i += 1
+            continue
+        ht_home = ht_away = None
+        ht = re.fullmatch(r"\((\d+)\s*-\s*(\d+)\)", lines[i + 6])
+        if ht:
+            ht_home, ht_away = int(ht.group(1)), int(ht.group(2))
+        competition = lines[i + 7] if i + 7 < len(lines) else ""
+        source_date = _parse_source_date(lines[i])
+        out.append({
+            "home_team": home,
+            "away_team": away,
+            "competition": competition,
+            "source_date": source_date,
+            "status": "FINISHED",
+            "final_home_goals": hg,
+            "final_away_goals": ag,
+            "ht_home_goals": ht_home,
+            "ht_away_goals": ht_away,
+            "corners_home": None,
+            "corners_away": None,
+            "ht_corners_home": None,
+            "ht_corners_away": None,
+        })
+        i += 8
+    return out
+
+
+def parse_worldfootball_results(text: str) -> list[dict]:
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    out = []
+    current_date = None
+    date_re = re.compile(r"\d{2}\.\d{2}\.\d{4}")
+    score_re = re.compile(r"(\d{1,2}):(\d{1,2})")
+    for i, line in enumerate(lines):
+        if line == "Standing":
+            break
+        if date_re.fullmatch(line):
+            current_date = _parse_source_date(line)
+            continue
+        m = score_re.fullmatch(line)
+        if not m or current_date is None or i == 0 or i + 1 >= len(lines):
+            continue
+        hg, ag = int(m.group(1)), int(m.group(2))
+        # Fixture times on this page share the same H:MM shape; values above a
+        # plausible football score are treated as scheduled clocks, not scores.
+        if hg > 12 or ag > 12:
+            continue
+        home, away = lines[i - 1], lines[i + 1]
+        if home in {"Matchday 1", "Matchday 2"} or away.startswith("Matchday "):
+            continue
+        out.append({
+            "home_team": home,
+            "away_team": away,
+            "competition": "Serie A",
+            "source_date": current_date,
+            "status": "FINISHED",
+            "final_home_goals": hg,
+            "final_away_goals": ag,
+            "ht_home_goals": None,
+            "ht_away_goals": None,
+            "corners_home": None,
+            "corners_away": None,
+            "ht_corners_home": None,
+            "ht_corners_away": None,
+        })
+    return out
+
+
+def result_anchor_rows():
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+          SELECT DISTINCT ON(match_id)
+            match_id,home_team,away_team,league,kickoff_utc
+          FROM model_snapshots
+          WHERE valid_prematch=TRUE
+          ORDER BY match_id,snapshot_timestamp_utc DESC
+        """)
+        return list(cur.fetchall())
+
+
+def match_result_anchor(row: dict, anchors: list[dict]):
+    source_date = row.get("source_date")
+    if source_date is None:
+        return None, "DATE_UNRESOLVED"
+    home, away = canon(row.get("home_team")), canon(row.get("away_team"))
+    candidates = []
+    for anchor in anchors:
+        if canon(anchor.get("home_team")) != home or canon(anchor.get("away_team")) != away:
+            continue
+        kickoff = anchor.get("kickoff_utc")
+        if kickoff is None:
+            continue
+        if kickoff.astimezone(ROME).date() != source_date:
+            continue
+        candidates.append(anchor)
+    if len(candidates) == 1:
+        return candidates[0], "EXACT_PAIR_DATE"
+    if not candidates:
+        return None, "NOT_FOUND"
+    return None, "AMBIGUOUS"
+
+
+def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_sha256: str) -> dict:
+    if source not in {"smart_soccer_stats", "worldfootball"}:
+        return {"parsed": len(rows), "matched": 0, "persisted": 0}
+    anchors = result_anchor_rows()
+    matched = persisted = 0
+    provider = f"pilot:{source}"
+    for row in rows:
+        anchor, match_status = match_result_anchor(row, anchors)
+        if anchor is None:
+            continue
+        matched += 1
+        payload = {
+            "provider_match_id": f"{source}|{row['source_date']}|{canon(row['home_team'])}|{canon(row['away_team'])}",
+            "status": row["status"],
+            "final_home_goals": row.get("final_home_goals"),
+            "final_away_goals": row.get("final_away_goals"),
+            "ht_home_goals": row.get("ht_home_goals"),
+            "ht_away_goals": row.get("ht_away_goals"),
+            "corners_home": row.get("corners_home"),
+            "corners_away": row.get("corners_away"),
+            "ht_corners_home": row.get("ht_corners_home"),
+            "ht_corners_away": row.get("ht_corners_away"),
+            "pilot_id": PILOT_ID,
+            "source_date": str(row["source_date"]),
+            "competition": row.get("competition") or "",
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "match_status": match_status,
+            "raw_page_sha256": raw_sha256,
+            "production_eligible": False,
+        }
+        upsert_observation(
+            anchor["match_id"],
+            provider,
+            observed_at,
+            anchor["kickoff_utc"],
+            payload,
+        )
+        persisted += 1
+    return {"parsed": len(rows), "matched": matched, "persisted": persisted}
+
 
 
 def inspect_source(source: str, text: str, html: str) -> tuple[int, dict]:
@@ -189,6 +374,14 @@ def collect_source(source: str, url: str, slot_no: int):
         _, sess = browser_api("GET", f"{BROWSER_API}/{sid}")
 
     rows_found, capabilities = inspect_source(source, body_text, html.decode("utf-8", "replace"))
+    normalized_rows = (
+        parse_smart_soccer_stats_results(body_text)
+        if source == "smart_soccer_stats"
+        else parse_worldfootball_results(body_text)
+        if source == "worldfootball"
+        else []
+    )
+    observation_stats = persist_pilot_observations(source, normalized_rows, started, sha(html))
     manifest = {
         "pilot_id": PILOT_ID,
         "source": source,
@@ -198,6 +391,7 @@ def collect_source(source: str, url: str, slot_no: int):
         "capabilities": capabilities,
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
+        "normalized_observations": observation_stats,
     }
 
     with connect() as conn, conn.cursor() as cur:
@@ -239,6 +433,7 @@ def collect_source(source: str, url: str, slot_no: int):
         "run_id": run_id,
         "rows_found": rows_found,
         "capabilities": capabilities,
+        "normalized_observations": observation_stats,
         "session": {k: sess.get(k) for k in ("browserCost", "proxyCost", "proxyUsedMb", "captchaCost")},
     }
 
