@@ -25,6 +25,12 @@ Architettura corrente:
 - **Render**: runtime reale di collector/settlement/pilot;
 - **Europe/Rome**: timezone di output utente; UTC resta canonical/audit.
 
+La valutazione dei pronostici mostrati è descritta in
+[`analysis/decisions/README.md`](analysis/decisions/README.md): probabilità e
+quote esattamente congelate nel ticket, risultati FT verificati e protocollo
+registrato prima del campione futuro. L'analisi delle fonti `analysis/scoring`
+resta distinta dal report dei ticket mostrati.
+
 ### Deviazioni note
 
 La Issue #37 è il backlog autorevole delle remediation architetturali note. Finché una correzione non è mergiata e testata realmente, non assumere che il codice rispetti automaticamente il contratto.

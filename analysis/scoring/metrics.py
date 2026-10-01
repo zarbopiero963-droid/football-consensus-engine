@@ -41,18 +41,20 @@ class ScorePolicy:
                 'bootstrap_unit': 'PAIRED_FIXTURE_IID_DIAGNOSTIC'}
 
 
-def simplex(probabilities):
+def simplex(probabilities, *, sum_tolerance=1e-9):
     p = tuple(probabilities)
     if len(p) < 2 or any(isinstance(x, bool) or not isinstance(x, (int, float)) or
             not math.isfinite(x) or not 0 <= x <= 1 for x in p):
         raise ValueError('INVALID_UNIT_SCALE_VECTOR')
-    if not math.isclose(sum(p), 1, rel_tol=0, abs_tol=1e-9):
+    if not 0 < sum_tolerance <= 1e-5:
+        raise ValueError('INVALID_SIMPLEX_TOLERANCE')
+    if not math.isclose(sum(p), 1, rel_tol=0, abs_tol=sum_tolerance):
         raise ValueError('INCOMPLETE_OR_NON_SIMPLEX_VECTOR')
     return p
 
 
-def multiclass_scores(probabilities, outcome_index, policy):
-    p = simplex(probabilities)
+def multiclass_scores(probabilities, outcome_index, policy, *, sum_tolerance=1e-9):
+    p = simplex(probabilities, sum_tolerance=sum_tolerance)
     if type(outcome_index) is not int or not 0 <= outcome_index < len(p):
         raise ValueError('INVALID_OUTCOME_INDEX')
     clipped = tuple(max(policy.epsilon, min(1-policy.epsilon, x)) for x in p)
@@ -64,12 +66,12 @@ def multiclass_scores(probabilities, outcome_index, policy):
             'brier': sum(components), 'brier_components': components}
 
 
-def scores_1x2(probabilities, outcome, policy, *, order=('1', 'X', '2')):
+def scores_1x2(probabilities, outcome, policy, *, order=('1', 'X', '2'), sum_tolerance=1e-9):
     if tuple(order) != ('1', 'X', '2') or outcome not in order:
         raise ValueError('EXPLICIT_1X2_ORDER_REQUIRED')
     if len(probabilities) != 3:
         raise ValueError('INVALID_1X2_VECTOR')
-    result = multiclass_scores(probabilities, order.index(outcome), policy)
+    result = multiclass_scores(probabilities, order.index(outcome), policy, sum_tolerance=sum_tolerance)
     p = result['p_raw']; index = result['outcome_index']
     result['rps'] = sum((sum(p[:j+1]) - int(index <= j))**2 for j in range(2)) / 2
     result['rps_order'] = list(order)
