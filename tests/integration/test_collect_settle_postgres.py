@@ -76,8 +76,9 @@ def pipeline(monkeypatch, tmp_path):
     page = {'body': html()}
     monkeypatch.setattr(collect, 'http_get', http_fixture)
     # A fallback is forbidden in this controlled fixture, so no unnoticed network escapes.
+    real_fetch_leagues = collect.fetch_pinnacle_leagues_via_bridge
     monkeypatch.setattr(collect, 'fetch_pinnacle_leagues_via_bridge',
-                        lambda: (_ for _ in ()).throw(AssertionError('Unexpected bridge fallback')))
+                        lambda **kwargs: (_ for _ in ()).throw(AssertionError('Unexpected bridge fallback')))
     monkeypatch.setattr(collect, 'fetch_pinnacle_batch_via_bridge',
                         lambda ids: (_ for _ in ()).throw(AssertionError('Unexpected batch fallback')))
 
@@ -91,7 +92,8 @@ def pipeline(monkeypatch, tmp_path):
             'Home': {'TeamName': [{'Description': 'Czech Republic'}]},
             'Away': {'TeamName': [{'Description': 'England'}]}}
     return {'connect': connect, 'root': tmp_path, 'now': now, 'kickoff': kickoff,
-            'page': page, 'html': html, 'cycle': cycle, 'fifa': fifa, 'http_fixture':http_fixture}
+            'page': page, 'html': html, 'cycle': cycle, 'fifa': fifa, 'http_fixture':http_fixture,
+            'fetch_leagues': real_fetch_leagues}
 
 
 def read(pipeline, sql):
@@ -147,6 +149,55 @@ def test_failed_league_fallback_is_not_priced_or_hidden(pipeline,monkeypatch,cap
     assert rows[0]['payload']['pin_matchup_id']=='' and rows[0]['payload']['pin_transport']==''
     audit=json.loads(next(pipeline['root'].rglob('transport_audit.json')).read_text())
     assert audit[0]['final_transport']=='failed' and audit[0]['final_error']
+
+
+@pytest.mark.parametrize('bridge_code', [200, 401, 503])
+def test_initial_bridge_transport_recovery_or_failure_has_safe_persistent_diagnostics(pipeline, monkeypatch, capsys, bridge_code):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    original = pipeline['http_fixture']
+    def direct(url, **kwargs):
+        if url == collect.PIN_LEAGUES:return 403, b'direct denied', {}
+        return original(url, **kwargs)
+    monkeypatch.setattr(collect, 'http_get', direct)
+    monkeypatch.setattr(collect, 'fetch_pinnacle_leagues_via_bridge',
+                        pipeline['fetch_leagues'])
+    # The pipeline fixture forbids fallback; restore the real function for this test.
+    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN', 'synthetic-token')
+    calls = []
+    def open(req, timeout):
+        calls.append(timeout)
+        if len(calls) == 1 or bridge_code != 200:
+            code = 503 if bridge_code == 200 else bridge_code
+            raise HTTPError(req.full_url, code, 'private error message', {}, BytesIO(b'private body'))
+        data = {'http_status':200, 'truncated':False,
+                'body':json.dumps([{'id':1,'name':'Test league','matchupCount':1}])}
+        class Response:
+            status = 200
+            def __enter__(self):return self
+            def __exit__(self, *args):pass
+            def read(self):return json.dumps(data).encode()
+        return Response()
+    monkeypatch.setattr(collect, 'urlopen', open)
+    monkeypatch.setattr(collect.time, 'sleep', lambda seconds:None)
+    collect.main(); summary = json.loads(capsys.readouterr().out)
+    state = read(pipeline, "SELECT value FROM runtime_state WHERE key='collector'")[0]['value']
+    assert 'synthetic-token' not in json.dumps(state)
+    assert 'private error message' not in json.dumps(state) and 'private body' not in json.dumps(state)
+    attempts = state['pinnacle_leagues_bridge_requests']
+    if bridge_code == 200:
+        assert [a['http_status'] for a in attempts] == [503,200]
+        assert state['pinnacle_leagues_failure'] is None
+        assert summary['joined_pinnacle'] == 1
+        assert read(pipeline, 'SELECT picked_odds FROM model_snapshots')[0]['picked_odds'] == 2
+    else:
+        assert len(attempts) == (4 if bridge_code == 503 else 1)
+        assert state['pinnacle_leagues_failure'] == {'direct_http_status':403,
+            'bridge_error_type':'HTTPError', 'bridge_http_status':bridge_code}
+        assert summary['joined_pinnacle'] == 0
+        assert read(pipeline, 'SELECT picked_odds FROM model_snapshots')[0]['picked_odds'] is None
+    audit = json.loads(next(pipeline['root'].rglob('leagues_transport_audit.json')).read_text())
+    assert audit['bridge_requests'] == attempts and audit['failure'] == state['pinnacle_leagues_failure']
 
 
 def test_collect_freeze_settle_retry_correction_and_field_verification(pipeline, capsys):

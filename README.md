@@ -458,6 +458,14 @@ source response carries its own acquisition timestamp, so a run started before
 kickoff cannot backdate a response received afterwards. No historical ledger
 headers or rows are changed; the existing `name_score_note` records the contract.
 
+Bridge requests retry only an HTTP 503 response, at most three times after
+3/10/30 seconds. Authentication errors, HTTP 502/failed browser stop, timeouts,
+unknown delivery and invalid response bodies are not retried. Successful quote
+capture still uses the time after the valid response arrives. The run manifest
+and collector runtime state retain safe HTTP attempt timestamps and league
+failure type/status, without tokens, headers or response bodies, so a failed
+Pinnacle fallback can be diagnosed after a Render restart.
+
 The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
 
 
