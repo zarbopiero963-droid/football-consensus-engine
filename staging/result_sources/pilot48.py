@@ -20,7 +20,9 @@ if str(ROOT) not in sys.path:
 
 from app.db import connect
 from app.result_validation import upsert_observation
-from staging.page_capture import navigate_capture, confirmed_browser_stop
+from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
+from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
+from app.source_fallback import pilot_fallback_report
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 PILOT_ID = os.environ.get("RESULT_SOURCE_PILOT_ID", "result-source-pilot-48h-issue20-v1")
@@ -240,7 +242,7 @@ def match_result_anchor(row: dict, anchors: list[dict]):
     return None, "AMBIGUOUS"
 
 
-def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_sha256: str) -> dict:
+def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_sha256: str, *, cursor=None) -> dict:
     if source not in {"smart_soccer_stats", "worldfootball"}:
         return {"parsed": len(rows), "matched": 0, "persisted": 0}
     anchors = result_anchor_rows()
@@ -277,6 +279,7 @@ def persist_pilot_observations(source: str, rows: list[dict], observed_at, raw_s
             observed_at,
             anchor["kickoff_utc"],
             payload,
+            cursor=cursor,
         )
         persisted += 1
     return {"parsed": len(rows), "matched": matched, "persisted": persisted}
@@ -327,6 +330,12 @@ def inspect_source(source: str, text: str, html: str) -> tuple[int, dict]:
 
 
 def collect_source(source: str, url: str, slot_no: int):
+    return run_source(connect, "result", PILOT_ID, source, url, slot_no,
+        lambda claim: _collect_source(source, url, slot_no, claim),
+        lambda sid: confirmed_browser_stop(browser_api, BROWSER_API, sid))
+
+
+def _collect_source(source, url, slot_no, claim):
     started = utcnow()
     run_id = f"{PILOT_ID}-{source}-s{slot_no:02d}-{uuid.uuid4().hex[:8]}"
     status, created = browser_api(
@@ -351,7 +360,9 @@ def collect_source(source: str, url: str, slot_no: int):
     final_url = url
     http_status = None
     page_errors = []
+    circuit = SourceCircuit(connect, claim["key"])
     try:
+        circuit.register_browser(claim, sid)
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as p:
@@ -371,12 +382,24 @@ def collect_source(source: str, url: str, slot_no: int):
             browser.close()
     finally:
         sess = confirmed_browser_stop(browser_api, BROWSER_API, sid)
+        circuit.clear_stopped_browser(claim)
 
     rows_found, capabilities = inspect_source(source, body_text, html.decode("utf-8", "replace"))
     normalized_rows = capture.parsed if capture.accepted else []
     observed_at = datetime.fromisoformat(capture.audit["captured_at_utc"])
-    observation_stats = persist_pilot_observations(source, normalized_rows, observed_at, sha(html))
+    fallback_candidates = []
+    anchors = result_anchor_rows() if normalized_rows else []
+    for row in normalized_rows:
+        anchor, match_status = match_result_anchor(row, anchors)
+        if anchor is not None:
+            fallback_candidates.append({**row, 'match_id': anchor['match_id'],
+                'provider': f'pilot:{source}', 'channel': 'PILOT',
+                'production_eligible': False, 'match_status': match_status,
+                'observed_at_utc': observed_at.isoformat(), 'raw_page_sha256': sha(html),
+                'http_status': http_status, 'capture_state': capture.audit['state']})
+    observation_stats = {"parsed": len(normalized_rows), "matched": 0, "persisted": 0}
     manifest = {
+        "source_resilience": public_state(claim["state"]),
         "pilot_id": PILOT_ID,
         "source": source,
         "slot_no": slot_no,
@@ -386,10 +409,14 @@ def collect_source(source: str, url: str, slot_no: int):
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
         "normalized_observations": observation_stats,
+        "fallback_candidates": json.loads(json.dumps(fallback_candidates, default=str)),
         "page_capture": capture.audit,
     }
 
     with connect() as conn, conn.cursor() as cur:
+        assert_owner(cur, claim)
+        observation_stats = persist_pilot_observations(source, normalized_rows, observed_at, sha(html), cursor=cur)
+        manifest["normalized_observations"] = observation_stats
         cur.execute(
             """INSERT INTO result_source_pilot_runs(
                  run_id,pilot_id,source,slot_no,started_at_utc,finished_at_utc,status,
@@ -429,7 +456,8 @@ def collect_source(source: str, url: str, slot_no: int):
         "rows_found": rows_found,
         "capabilities": capabilities,
         "normalized_observations": observation_stats,
-        "page_capture": capture.audit,
+        "fallback_candidates": fallback_candidates,
+        "page_capture": capture_summary(capture.audit),
         "session": {k: sess.get(k) for k in ("browserCost", "proxyCost", "proxyUsedMb", "captchaCost")},
     }
 
@@ -465,13 +493,26 @@ def main():
                     "error_class": type(exc).__name__,
                 }
             )
+    for outcome in results:
+        outcome.pop('fallback_candidates', None)
     with connect() as conn, conn.cursor() as cur:
+        cur.execute('SELECT manifest FROM result_source_pilot_runs WHERE pilot_id=%s AND slot_no=%s',
+                    (PILOT_ID, slot_no))
+        candidates = [row for run in cur.fetchall() for row in run['manifest'].get('fallback_candidates', [])]
+        fallback = pilot_fallback_report(candidates)
+        if any(outcome.get('status') == 'CIRCUIT_BUSY' for outcome in results):
+            fallback['status'] = 'DEFERRED_CONCURRENT_ACQUISITION'
+        else:
+            cur.execute('''INSERT INTO runtime_state(key,value) VALUES (%s,%s::jsonb)
+                         ON CONFLICT(key) DO NOTHING''',
+                        (f'result_source_fallback:v1:{PILOT_ID}:{slot_no}', json.dumps(fallback, default=str)))
         cur.execute(
             "UPDATE result_source_pilot_control SET updated_at=NOW() WHERE pilot_id=%s",
             (PILOT_ID,),
         )
         conn.commit()
-    print(json.dumps({"result_source_pilot_id": PILOT_ID, "slot_no": slot_no, "results": results}, default=str))
+    print(json.dumps({"result_source_pilot_id": PILOT_ID, "slot_no": slot_no, "results": results,
+                      "fallback": fallback}, default=str))
 
 
 if __name__ == "__main__":

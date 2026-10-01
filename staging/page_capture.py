@@ -1,7 +1,7 @@
 """Bounded content readiness, shared by pilots; source parsers own semantics.
 
-No navigation retries, inference, promotion or timezone/matching decisions.
-Only the final HTML is a stored raw; sample hashes describe visible text.
+Public GET retries are bounded; no inference, promotion or timezone decisions.
+Final HTML and prior retried attempts are stored raw; samples retain text hashes.
 """
 from __future__ import annotations
 
@@ -242,19 +242,36 @@ def navigate_capture(page, url, parser, *, evidence_kind="source_rows",
 
 
 class BrowserStopError(RuntimeError):
-    pass
+    def __init__(self, message, session_id=None):
+        super().__init__(message)
+        self.session_id = session_id
+
+
+def capture_summary(audit):
+    """Keep full attempt raw in the manifest, never in collector stdout."""
+    if isinstance(audit, dict):
+        return {k: capture_summary(v) for k, v in audit.items() if k != 'html_gzip_base64'}
+    if isinstance(audit, list):
+        return [capture_summary(v) for v in audit]
+    return audit
 
 
 def confirmed_browser_stop(browser_api, base_url, session_id):
     """Do not ingest a source run while its provider browser is still running."""
-    status, stopped = browser_api("PATCH", f"{base_url}/{session_id}", {"action": "stop"})
+    try:
+        status, stopped = browser_api("PATCH", f"{base_url}/{session_id}", {"action": "stop"})
+    except Exception as exc:
+        raise BrowserStopError("provider stop delivery unconfirmed", session_id) from exc
     if status in (404, 410):
         return {"status": "stopped", "provider_missing": True}
     if status not in (200, 201, 204):
-        raise BrowserStopError("provider stop HTTP failure")
-    status, session = browser_api("GET", f"{base_url}/{session_id}")
+        raise BrowserStopError("provider stop HTTP failure", session_id)
+    try:
+        status, session = browser_api("GET", f"{base_url}/{session_id}")
+    except Exception as exc:
+        raise BrowserStopError("provider stop verification unconfirmed", session_id) from exc
     if status in (404, 410):
         return {"status": "stopped", "provider_missing": True}
     if status != 200 or session.get("status") != "stopped":
-        raise BrowserStopError("provider stop unconfirmed")
+        raise BrowserStopError("provider stop unconfirmed", session_id)
     return session

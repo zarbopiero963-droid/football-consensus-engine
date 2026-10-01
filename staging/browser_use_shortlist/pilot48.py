@@ -19,7 +19,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from app.db import connect
-from staging.page_capture import navigate_capture, confirmed_browser_stop
+from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
+from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 ROME = ZoneInfo("Europe/Rome")
@@ -410,6 +411,12 @@ def prosoccer_status_counts(text):
 
 
 def collect_source(source, url, slot_no, anchors):
+    return run_source(connect, "prediction", PILOT_ID, source, url, slot_no,
+        lambda claim: _collect_source(source, url, slot_no, anchors, claim),
+        lambda sid: confirmed_browser_stop(browser_api, BROWSER_API, sid))
+
+
+def _collect_source(source, url, slot_no, anchors, claim):
     started = utcnow()
     run_id = f"{PILOT_ID}-{source}-s{slot_no:02d}-{uuid.uuid4().hex[:8]}"
     status, created = browser_api("POST", BROWSER_API, {
@@ -434,7 +441,9 @@ def collect_source(source, url, slot_no, anchors):
     extra_page_status = {}
     prosoccer_forecast_texts = []
     prosoccer_status = {"ft": 0, "ht": 0, "live": 0}
+    circuit = SourceCircuit(connect, claim["key"])
     try:
+        circuit.register_browser(claim, sid)
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(cdp)
@@ -507,6 +516,7 @@ def collect_source(source, url, slot_no, anchors):
             browser.close()
     finally:
         sess = confirmed_browser_stop(browser_api, BROWSER_API, sid)
+        circuit.clear_stopped_browser(claim)
 
     if source == "prosoccer":
         preds = []
@@ -527,6 +537,7 @@ def collect_source(source, url, slot_no, anchors):
         preds = capture.parsed if capture.accepted else []
 
     manifest = {
+        "source_resilience": public_state(claim["state"]),
         "pilot_id": PILOT_ID,
         "source": source,
         "slot_no": slot_no,
@@ -549,6 +560,7 @@ def collect_source(source, url, slot_no, anchors):
     }
 
     with connect() as conn, conn.cursor() as cur:
+        assert_owner(cur, claim)
         cur.execute("""
           INSERT INTO source_pilot_runs(
             run_id,pilot_id,source,slot_no,started_at_utc,finished_at_utc,status,
@@ -592,7 +604,8 @@ def collect_source(source, url, slot_no, anchors):
         "run_id": run_id,
         "rows": len(preds),
         "extra_pages": sorted(extra_page_status),
-        "page_capture": capture.audit,
+        "extra_page_captures": {k: capture_summary(v["page_capture"]) for k, v in extra_page_status.items()},
+        "page_capture": capture_summary(capture.audit),
         "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")},
     }
 

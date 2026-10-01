@@ -186,8 +186,11 @@ def test_recovered_get_attempt_raw_is_persisted_and_failed_stop_blocks_ingestion
         if method == 'GET': return 200, {'status': 'active'}
         return original_api(method, url, body)
     monkeypatch.setattr(results, 'browser_api', unconfirmed)
-    with pytest.raises(BrowserStopError):
-        results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 2)
+    failed = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 2)
+    assert failed["status"] == "ERROR" and failed["rows"] == 0
+    assert failed["source_resilience"]["stop_pending_id"] == "synthetic-browser"
+    assert failed["source_resilience"]["mode"] == "OPEN"
     with pipeline['connect']() as conn:
-        assert conn.execute('SELECT count(*) AS n FROM result_source_pilot_runs').fetchone()['n'] == 1
+        assert conn.execute('SELECT count(*) AS n FROM result_source_pilot_runs').fetchone()['n'] == 2
+        assert conn.execute("SELECT status FROM result_source_pilot_runs WHERE slot_no=2").fetchone()['status'] == 'ERROR'
         assert conn.execute('SELECT count(*) AS n FROM result_observations').fetchone()['n'] == 0
