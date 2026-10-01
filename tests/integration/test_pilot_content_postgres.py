@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import runtime_health
-from staging.page_capture import capture_page
+from staging.page_capture import capture_page, navigate_capture
 from staging.result_sources import pilot48 as results
 from staging.issue29_pilot import pilot48 as predictions
 from staging.browser_use_shortlist import pilot48 as shortlist
@@ -32,7 +32,7 @@ class Page:
         self.index = 0
         if url.endswith('/tomorrow') and hasattr(self, 'tomorrow_text'):
             self.texts = [self.tomorrow_text]
-        return SimpleNamespace(status=self.http_status)
+        return SimpleNamespace(status=self.http_status, header_value=lambda _: None)
     def locator(self, _): return self
     def inner_text(self, **kwargs): return self.texts[self.index]
     def title(self): return 'Source Fixture'
@@ -58,8 +58,11 @@ def browser_fixture(monkeypatch, module, page):
         if method == 'GET': return 200, {'status': 'stopped', 'browserCost': 0}
         raise AssertionError('unexpected browser request')
     monkeypatch.setattr(module, 'browser_api', browser_api)
-    monkeypatch.setattr(module, 'capture_page', lambda p, h, parser, **kw:
-                        capture_page(p, h, parser, monotonic=lambda: page.clock, **kw))
+    def navigate(p, url, parser, **kw):
+        def capture(p, h, parser, **kw):
+            return capture_page(p, h, parser, monotonic=lambda: page.clock, **kw)
+        return navigate_capture(p, url, parser, monotonic=lambda: page.clock, capture=capture, **kw)
+    monkeypatch.setattr(module, 'navigate_capture', navigate)
     return stopped
 
 
@@ -152,3 +155,39 @@ def test_health_latest_http200_content_failures_and_extra_pages_recover_without_
     assert runtime_health.runtime_health()['counts']['failed_pilot_content'] == 0
     with pipeline['connect']() as conn:
         assert conn.execute("SELECT manifest->'page_capture'->>'state' AS state FROM result_source_pilot_runs WHERE run_id='result-1'").fetchone()['state'] == 'MAINTENANCE'
+
+
+def test_recovered_get_attempt_raw_is_persisted_and_failed_stop_blocks_ingestion(pipeline, monkeypatch):
+    import base64
+    from staging.page_capture import BrowserStopError
+    monkeypatch.setattr(results, 'connect', pipeline['connect'])
+    monkeypatch.setattr(results, 'result_anchor_rows', lambda: [])
+    page = Page([TEXT])
+    original = page.goto
+    navigations = []
+    def goto(url, **kwargs):
+        response = original(url, **kwargs)
+        navigations.append(url)
+        response.status = 504 if len(navigations) == 1 else 200
+        return response
+    page.goto = goto
+    stopped = browser_fixture(monkeypatch, results, page)
+    outcome = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 1)
+    assert len(navigations) == 2 and stopped == [{'action': 'stop'}]
+    assert outcome['normalized_observations']['parsed'] == 1
+    with pipeline['connect']() as conn:
+        run = conn.execute('SELECT * FROM result_source_pilot_runs').fetchone()
+        attempts = run['manifest']['page_capture']['navigation_attempts']
+        assert [a['http_status'] for a in attempts] == [504, 200]
+        first = gzip.decompress(base64.b64decode(attempts[0]['html_gzip_base64']))
+        assert hashlib.sha256(first).hexdigest() == attempts[0]['html_sha256']
+    original_api = results.browser_api
+    def unconfirmed(method, url, body=None):
+        if method == 'GET': return 200, {'status': 'active'}
+        return original_api(method, url, body)
+    monkeypatch.setattr(results, 'browser_api', unconfirmed)
+    with pytest.raises(BrowserStopError):
+        results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 2)
+    with pipeline['connect']() as conn:
+        assert conn.execute('SELECT count(*) AS n FROM result_source_pilot_runs').fetchone()['n'] == 1
+        assert conn.execute('SELECT count(*) AS n FROM result_observations').fetchone()['n'] == 0
