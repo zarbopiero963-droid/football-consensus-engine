@@ -132,7 +132,7 @@ def parse_statsultra(text: str):
             "p1": float(p1), "px": float(px), "p2": float(p2),
             "btts_yes": fnum(btts.group(1)) if btts else None,
             "over25": fnum(o25.group(1)) if o25 else None,
-            "under25": 100.0-fnum(o25.group(1)) if o25 else None,
+            "under25": None,
             "xg_home": fnum(xg.group(1)) if xg else None,
             "xg_away": fnum(xg.group(2)) if xg else None,
             "correct_score": cs.group(1) if cs else "",
