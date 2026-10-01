@@ -9,6 +9,7 @@ import csv
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -21,7 +22,8 @@ from urllib.request import Request, urlopen
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(ROOT))
 from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E402
-from app.identities import category_flags  # noqa: E402
+from app.identities import category_flags
+from app.market_reference import exact_market_match, MATCH_CONTRACT  # noqa: E402
 
 SCRAPER_VERSION = "prospective-ledger-1"
 STRATEGY_FILE = os.path.join(ROOT, "strategies_preregistered.json")
@@ -170,7 +172,7 @@ def parse_iso(s):
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        return None  # No verified source timezone: never invent UTC.
     return dt.astimezone(timezone.utc)
 
 def extract_urls(html: str):
@@ -294,9 +296,9 @@ def main():
         url = f"https://footinsights.com/predictions/{slug}/"
         try:
             code, body, _ = http_get(url)
-            return slug, url, code, body, None
+            return slug, url, code, body, None, utcnow()
         except Exception as e:
-            return slug, url, 0, b"", str(e)
+            return slug, url, 0, b"", str(e), utcnow()
 
     pages = []
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -308,7 +310,7 @@ def main():
     n_fi_pages = 0
     n_invalid = 0
     n_no_prob = 0
-    for slug, url, code, body, err in sorted(pages, key=lambda x: x[0]):
+    for slug, url, code, body, err, captured_at in sorted(pages, key=lambda x: x[0]):
         if err or code != 200 or not body:
             errors.append({"source": "footinsights", "url": url, "status": code, "error": err, "at": utcnow().isoformat()})
             if body:
@@ -318,7 +320,7 @@ def main():
         n_fi_pages += 1
         parsed = parse_fi_html(body.decode("utf-8", "replace"), url)
         kick = parsed["kickoff"]
-        valid = bool(kick and kick > now and parsed["raw"])
+        valid = bool(kick and kick > captured_at and parsed["raw"])
         reason = ""
         if not parsed["raw"]:
             reason = "NO_PROBABILITY"
@@ -327,11 +329,11 @@ def main():
         elif not kick:
             reason = "NO_KICKOFF"
             valid = False
-        elif kick <= now:
+        elif kick <= captured_at:
             reason = "INVALID_PREMATCH"
             n_invalid += 1
             valid = False
-        minutes = (kick - now).total_seconds() / 60.0 if kick else None
+        minutes = (kick - captured_at).total_seconds() / 60.0 if kick else None
         raw = parsed["raw"]
         if raw:
             s = sum(raw)
@@ -349,6 +351,7 @@ def main():
             "valid": valid,
             "invalid_reason": reason,
             "parsed": parsed,
+            "captured_at": captured_at,
             "norm": norm,
             "pick": pick,
             "pick_label": labels[pick] if pick is not None else "",
@@ -404,7 +407,7 @@ def main():
         try:
             c1, b1, _ = http_get(mu, headers=pin_headers)
             c2, b2, _ = http_get(mk, headers=pin_headers)
-            out.update(matchups=(c1, b1), markets=(c2, b2))
+            out.update(matchups=(c1, b1), markets=(c2, b2), captured_at=utcnow())
         except Exception as e:
             out["err"] = str(e)
         return out
@@ -438,6 +441,7 @@ def main():
                 errors.append({"source": "pinnacle", "league": lid, "error": "bad json", "at": utcnow().isoformat()})
                 continue
             ml = {}
+            duplicate_markets = set()
             for m in mks:
                 if m.get("type") != "moneyline" or m.get("period") != 0 or m.get("isAlternate"):
                     continue
@@ -446,30 +450,40 @@ def main():
                 prices = {p.get("designation"): p.get("price") for p in m.get("prices") or []}
                 if not all(k in prices for k in ("home", "draw", "away")):
                     continue
-                ml[m.get("matchupId")] = m
+                matchup_id = m.get("matchupId")
+                if matchup_id in ml:
+                    duplicate_markets.add(matchup_id)
+                ml[matchup_id] = m
             for mu in mus:
                 if mu.get("type") not in (None, "matchup"):
                     continue
-                if mu.get("parentId") or mu.get("parent"):
+                if mu.get("parentId") or mu.get("parent") or mu.get("isLive"):
                     continue
                 start = parse_iso(mu.get("startTime"))
-                if not start or start <= now:
+                if not start or start <= item["captured_at"]:
                     continue
                 parts = mu.get("participants") or []
                 home = next((p.get("name") for p in parts if p.get("alignment") == "home"), None)
                 away = next((p.get("name") for p in parts if p.get("alignment") == "away"), None)
                 if not home or not away:
                     continue
+                if mu.get("id") in duplicate_markets:
+                    continue
                 market = ml.get(mu.get("id"))
                 if not market or market.get("status") != "open":
                     continue
                 prices = {p["designation"]: p["price"] for p in market["prices"]}
-                dec = [american_to_decimal(prices["home"]), american_to_decimal(prices["draw"]), american_to_decimal(prices["away"])]
-                if not all(dec):
+                try:
+                    dec = [american_to_decimal(prices["home"]), american_to_decimal(prices["draw"]), american_to_decimal(prices["away"])]
+                except (TypeError, ValueError, OverflowError):
+                    dec = []
+                if len(dec) != 3 or not all(o is not None and math.isfinite(o) and o > 1 for o in dec):
+                    errors.append({"source": "pinnacle", "league": lid, "what": "invalid_prices", "at": utcnow().isoformat()})
                     continue
                 fair, over = fair_from_odds(*dec)
                 pin_matchups.append({
                     "matchup_id": mu.get("id"),
+                    "captured_at": item["captured_at"],
                     "league_id": lid,
                     "league": league_name.get(lid) or "",
                     "home": home,
@@ -489,7 +503,6 @@ def main():
     joined = 0
     unmatched = 0
     ledger = []
-    odds_now = utcnow()  # odds were fetched during this run; stamp is the run start for the batch.
     # Use a single odds batch timestamp: end of pinnacle pull is more honest.
     odds_stamp = utcnow()
 
@@ -498,37 +511,17 @@ def main():
             continue
         p = row["parsed"]
         kick = p["kickoff"]
-        cands = []
-        for j, o in enumerate(pin_matchups):
-            if abs((o["start"] - kick).total_seconds()) > 6 * 3600:
-                continue
-            if women_or_youth(p["home"]) != women_or_youth(o["home"]) and women_or_youth(p["home"] + " " + p["away"]) != women_or_youth(o["home"] + " " + o["away"]):
-                # flag mismatch only when one side is explicitly women and the other is not
-                fw = women_or_youth(p["home"] + " " + p["away"])
-                ow = women_or_youth(o["home"] + " " + o["away"])
-                if ("women" in fw) != ("women" in ow):
-                    continue
-            hs = name_score(p["home"], o["home"])
-            as_ = name_score(p["away"], o["away"])
-            if hs == 0 or as_ == 0:
-                continue
-            cands.append((hs + as_, hs, as_, j))
-        cands.sort(reverse=True)
+        cands = [o for o in pin_matchups if exact_market_match(p, o, o["captured_at"])]
         chosen = None
-        if cands:
-            top = cands[0][0]
-            tied = [c for c in cands if c[0] == top]
-            if len(tied) > 1 or top < 4:
-                manual.append({
-                    "slug": row["slug"],
-                    "fi": f"{p['home']} vs {p['away']}",
-                    "kickoff": kick.isoformat(),
-                    "reason": "ambiguous" if len(tied) > 1 else "weak_name",
-                    "cands": [f"{pin_matchups[c[3]]['home']} vs {pin_matchups[c[3]]['away']} ({pin_matchups[c[3]]['league']}) score={c[0]}" for c in tied[:4]],
-                })
-            else:
-                chosen = pin_matchups[tied[0][3]]
-                joined += 1
+        if len(cands) == 1:
+            chosen = cands[0]
+            joined += 1
+        elif cands:
+            manual.append({
+                "slug": row["slug"], "fi": f"{p['home']} vs {p['away']}",
+                "kickoff": kick.isoformat(), "reason": "ambiguous_exact_pair",
+                "cands": [f"{o['home']} vs {o['away']} ({o['league']})" for o in cands[:4]],
+            })
         else:
             unmatched += 1
 
@@ -548,7 +541,7 @@ def main():
             "away_canon": canon(p["away"]),
             "team_flags": ",".join(sorted(set(filter(None,
                 (women_or_youth(p["home"]) + "," + women_or_youth(p["away"])).split(","))))),
-            "snapshot_timestamp_utc": now.isoformat(),
+            "snapshot_timestamp_utc": row["captured_at"].isoformat(),
             "minutes_before_kickoff": round(row["minutes"], 2) if row["minutes"] is not None else "",
             "model_version": "not-exposed-on-page",
             "prediction_published_date": p["predicted_date"] or "",
@@ -582,7 +575,7 @@ def main():
                 "pin_league": chosen["league"],
                 "pin_home": chosen["home"],
                 "pin_away": chosen["away"],
-                "pin_snapshot_timestamp_utc": odds_stamp.isoformat(),
+                "pin_snapshot_timestamp_utc": chosen["captured_at"].isoformat(),
                 "pin_kickoff_utc": chosen["start"].isoformat(),
                 "odds_home": dec[0],
                 "odds_draw": dec[1],
@@ -608,7 +601,7 @@ def main():
                 "sha256_odds_raw": sha256_file(os.path.join(run_dir_pin, chosen["raw_file"])),
                 "odds_raw_file": chosen["raw_file"],
                 "analysis_eligible": 1,
-                "name_score_note": "auto",
+                "name_score_note": MATCH_CONTRACT,
             })
         else:
             rec.update({
@@ -669,7 +662,7 @@ def main():
             "kickoff_utc": p["kickoff"].isoformat() if p["kickoff"] else "",
             "home_team": p["home"],
             "away_team": p["away"],
-            "snapshot_timestamp_utc": now.isoformat(),
+            "snapshot_timestamp_utc": row["captured_at"].isoformat(),
             "sha256_model_raw": row["sha256"],
         })
 

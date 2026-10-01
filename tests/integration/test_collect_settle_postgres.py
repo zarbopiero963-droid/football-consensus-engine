@@ -15,6 +15,7 @@ import pytest
 from app import api, market_engine, persist, result_validation, strategy_sync
 from app.migrations import apply_migrations
 from prospective import collect, settle
+from app.market_reference import get_market_reference
 
 
 @pytest.fixture
@@ -66,6 +67,7 @@ def pipeline(monkeypatch, tmp_path):
 
     def html(kick=kickoff, probabilities=True):
         event = {'@type': 'SportsEvent', 'startDate': kick.isoformat(),
+                 'organizer': {'name': 'Test league'},
                  'homeTeam': {'name': 'Czechia'}, 'awayTeam': {'name': 'England'}}
         bars = ''.join(f'<div class="model" style="width: {value}%"></div>' for value in [60, 25, 15])
         return ('<script type="application/ld+json">' + json.dumps(event) + '</script>' +
@@ -170,4 +172,103 @@ def test_required_database_failure_is_fatal_to_collector(pipeline, monkeypatch):
     monkeypatch.setattr(persist, 'connect', lambda: (_ for _ in ()).throw(RuntimeError('test database unavailable')))
     with pytest.raises(RuntimeError, match='test database unavailable'):
         collect.main()
+    assert not read(pipeline, 'SELECT * FROM model_snapshots')
+
+
+def test_market_reference_real_postgres_preserves_sealed_rows(pipeline, monkeypatch, capsys):
+    from app import market_reference
+    monkeypatch.setattr(market_reference, 'connect', pipeline['connect'])
+    collect.main()
+    capsys.readouterr()
+    sealed = read(pipeline, 'SELECT * FROM model_snapshots')[0]
+    later = pipeline['now'] + timedelta(hours=5)
+    payload = {**sealed['payload'], 'pin_snapshot_timestamp_utc': later.isoformat(),
+               'odds_home': 2.1, 'snapshot_timestamp_utc': later.isoformat()}
+    # Synthetic timestamps explicitly controlled, including knowledge time.
+    with pipeline['connect']() as conn:
+        conn.execute('''INSERT INTO model_snapshots
+            (match_id,snapshot_timestamp_utc,kickoff_utc,home_team,away_team,league,
+             valid_prematch,imported_at,payload)
+            VALUES (%s,%s,%s,%s,%s,%s,TRUE,%s,%s::jsonb)''',
+            (sealed['match_id'], later, pipeline['kickoff'], 'Czechia', 'England',
+             'Test league', later + timedelta(seconds=1), json.dumps(payload)))
+        # A backfill captured before kickoff but sealed afterwards is excluded.
+        payload['pin_snapshot_timestamp_utc'] = (pipeline['kickoff'] - timedelta(seconds=1)).isoformat()
+        conn.execute('''INSERT INTO model_snapshots
+            (match_id,snapshot_timestamp_utc,kickoff_utc,home_team,away_team,league,
+             valid_prematch,imported_at,payload)
+            VALUES (%s,%s,%s,%s,%s,%s,TRUE,%s,%s::jsonb)''',
+            (sealed['match_id'], pipeline['kickoff'] - timedelta(seconds=1), pipeline['kickoff'],
+             'Czechia', 'England', 'Test league', pipeline['kickoff'] + timedelta(seconds=1),
+             json.dumps(payload)))
+    original = read(pipeline, 'SELECT * FROM model_snapshots ORDER BY snapshot_timestamp_utc')
+    result = get_market_reference(sealed['match_id'], known_at=pipeline['kickoff'] + timedelta(hours=1))
+    assert result['status'] == 'CLOSED_OBSERVED_PROXY'
+    assert result['q_close']['odds']['1'] == 2.1
+    assert result['rejected']['NOT_SEALED_PRE_KICKOFF'] == 1 + int(sealed['imported_at'] >= pipeline['kickoff'])
+    early = get_market_reference(sealed['match_id'], known_at=later - timedelta(seconds=1))
+    assert early['q_close'] is None
+    assert early['latest_pre_kickoff'] is None or early['latest_pre_kickoff']['odds']['1'] == 2
+    assert get_market_reference('missing', known_at=pipeline['kickoff'])['status'] == 'MISSING'
+    assert read(pipeline, 'SELECT * FROM model_snapshots ORDER BY snapshot_timestamp_utc') == original
+
+
+def test_naive_collector_time_cannot_enter_ledger(pipeline, capsys):
+    pipeline['page']['body'] = pipeline['html'](kick=pipeline['kickoff'].replace(tzinfo=None))
+    collect.main()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary['valid_prematch'] == 0 and summary['database']['snapshots']['result'] == 0
+    assert not read(pipeline, 'SELECT * FROM model_snapshots')
+
+
+@pytest.mark.parametrize('case', ['containment', 'shifted', 'league', 'duplicate', 'late_odds', 'invalid_odds'])
+def test_unsafe_market_cannot_price_production_snapshot(pipeline, monkeypatch, capsys, case):
+    original_http = collect.http_get
+
+    def http(url, **kwargs):
+        status, body, headers = original_http(url, **kwargs)
+        if '/matchups?' in url:
+            data = json.loads(body)
+            if case == 'containment':
+                data[0]['participants'][0]['name'] = 'Czechia U21'
+            if case == 'shifted':
+                data[0]['startTime'] = (pipeline['kickoff'] + timedelta(hours=5)).isoformat()
+            body = json.dumps(data).encode()
+        if url == collect.PIN_LEAGUES and case == 'league':
+            data = json.loads(body)
+            data[0]['name'] = 'Different league'
+            body = json.dumps(data).encode()
+        if '/markets/straight' in url:
+            if case == 'invalid_odds':
+                data = json.loads(body)
+                data[0]['prices'][0]['price'] = 'NaN'
+                body = json.dumps(data).encode()
+            if case == 'duplicate':
+                data = json.loads(body)
+                body = json.dumps(data + data).encode()
+            if case == 'late_odds':
+                monkeypatch.setattr(collect, 'utcnow', lambda: pipeline['kickoff'])
+        return status, body, headers
+
+    monkeypatch.setattr(collect, 'http_get', http)
+    collect.main()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary['valid_prematch'] == 1 and summary['joined_pinnacle'] == 0
+    row = read(pipeline, 'SELECT * FROM model_snapshots')[0]
+    assert row['picked_odds'] is None and row['analysis_eligible'] is False
+
+
+def test_prediction_fetched_at_kickoff_cannot_be_backdated(pipeline, monkeypatch, capsys):
+    original_http = collect.http_get
+
+    def http(url, **kwargs):
+        response = original_http(url, **kwargs)
+        if url.startswith('https://footinsights.com/predictions/test-'):
+            monkeypatch.setattr(collect, 'utcnow', lambda: pipeline['kickoff'])
+        return response
+
+    monkeypatch.setattr(collect, 'http_get', http)
+    collect.main()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary['valid_prematch'] == 0 and summary['database']['snapshots']['result'] == 0
     assert not read(pipeline, 'SELECT * FROM model_snapshots')
