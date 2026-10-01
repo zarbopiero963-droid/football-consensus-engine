@@ -672,3 +672,32 @@ missing versions and SQL errors fail visibly; a failed upgrade rolls back the
 whole transaction. Never edit an applied SQL file. Use a direct database
 connection for migrations and test each upgrade on a Neon branch before applying
 it to production.
+
+## Canonical identity registry
+
+Migration `0004_canonical_entities.sql` adds stable internal UUID identities for
+teams and competitions. External IDs are optional metadata, never an identity
+authority. Entries require explicit country, gender, age group, squad type and
+provenance. Category keys distinguish `MEN:SENIOR:FIRST`, women, Uxx, B, II and
+reserve teams. Lexical markers are hints; an unmarked name does not prove a
+senior men's first team. A leading B in `B 93 Copenhagen` is not a reserve flag.
+
+`app.identities.create_entity` and `append_alias` operate within the caller's
+transaction. Alias bindings are source-specific and exact after Unicode/case/
+whitespace normalization; club prefixes, accents, numbers and punctuation are
+preserved. Variants require an evidenced alias. Alias revisions are append-only,
+ordered and serialized. PostgreSQL rejects update/delete/truncate of the registry.
+Retractions append a new revision and retain the original evidence.
+
+`app.identities.resolve` takes both `fixture_at` (validity of the alias) and
+`known_at` (knowledge cutoff), with explicit timezones. A later alias cannot
+resolve an earlier frozen snapshot retroactively. Missing context returns
+`CONTEXT_UNRESOLVED`, no candidate returns `UNKNOWN`, and multiple distinct
+entities return `AMBIGUOUS`, all without a usable entity ID.
+
+The registry starts empty and does not auto-import legacy names or assume missing
+countries. This additive foundation neither promotes a pilot source nor rewrites
+frozen tickets, and is not yet a replacement for all legacy joins. Production
+matching adoption requires separately evidenced bindings and strict time and
+competition gates. Current collector Pinnacle joins still require the explicitly
+tracked follow-up in master #35; identity infrastructure alone does not certify them.

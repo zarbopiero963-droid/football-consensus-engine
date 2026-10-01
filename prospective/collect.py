@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(ROOT))
 from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E402
+from app.identities import category_flags  # noqa: E402
 
 SCRAPER_VERSION = "prospective-ledger-1"
 STRATEGY_FILE = os.path.join(ROOT, "strategies_preregistered.json")
@@ -143,13 +144,7 @@ def name_score(a, b):
     return 0
 
 def women_or_youth(s: str) -> str:
-    n = canon(s)
-    flags = []
-    if re.search(r"\b(women|woman|ladies|femenino|femminile|frauen)\b", n):
-        flags.append("women")
-    if re.search(r"\b(u19|u20|u21|u23|u18|reserves|reserve|ii|b)\b", n):
-        flags.append("youth_or_b")
-    return ",".join(flags)
+    return category_flags(s)
 
 def american_to_decimal(price):
     a = float(price)
@@ -551,7 +546,8 @@ def main():
             "away_team": p["away"],
             "home_canon": canon(p["home"]),
             "away_canon": canon(p["away"]),
-            "team_flags": women_or_youth(p["home"] + " " + p["away"]),
+            "team_flags": ",".join(sorted(set(filter(None,
+                (women_or_youth(p["home"]) + "," + women_or_youth(p["away"])).split(","))))),
             "snapshot_timestamp_utc": now.isoformat(),
             "minutes_before_kickoff": round(row["minutes"], 2) if row["minutes"] is not None else "",
             "model_version": "not-exposed-on-page",
