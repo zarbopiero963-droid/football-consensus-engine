@@ -1,0 +1,18 @@
+{
+  "loading": {
+    "html_sha256": "88bda6c6852ce8762bd3f69c7f9e366373955e53df0cb905df5924fdadd1015f",
+    "html_bytes": 22540,
+    "text_from_html": "Game Statistics Explorer | Smart Soccer Stats\nRecent Games\nGame Statistics\nStreak Explorer\nHead to Head\nLeague Standings\nBlog\nLoading...\nAbout this explorer\nThis is the widest view of the database: every match, filterable by the things that actually decide a bet or an argument \u2014 goals scored and conceded, match outcome, clean sheets, and the date range the question applies to.\nFilters combine, which is where most of the value sits. Any single condition returns a long and fairly meaningless list; two or three together \u2014 away matches, under 2.5 goals, inside a specific window \u2014 narrow it to a set small enough to actually read.\nEvery result set is a real list of matches rather than an aggregate, so you can check the individual games behind any number instead of taking a summary on trust.\nWhat the data covers\nThe score, the date and the competition exist for every match in the archive. Everything else is patchier, and it pays to know where. Half-time scores are missing for a share of matches, so every filter in the Half-Time section quietly excludes those games. Detailed match statistics \u2014 shots, corners, fouls, possession and passing \u2014 are recorded mainly for more recent seasons and the larger competitions, with possession and passing the thinnest of the set. Betting odds cover part of the archive and improve steadily towards the present.\nRed cards deserve a note of their own: they are recorded far less often than yellows. A filter for \u201cat most 0 red cards\u201d therefore does not mean \u201cmatches without a red card\u201d \u2014 it means matches we positively know finished without one.\nThat points at the rule behind all of it:\na missing value excludes the match from a range filter rather than counting as zero\n. It is the honest choice \u2014 a game with no corner data is not a game with no corners \u2014 but it is also why a single filter can narrow the results further than you expected. If a search returns less than you thought, the stat you filtered on is usually the reason.\nStreak Explorer\nTeam Statistics\nHead to Head\nSmart Soccer Stats 2021 -\n2026\nAbout\nPrivacy",
+    "extraction": "HTML text nodes, scripts/styles excluded; not browser visible DOM",
+    "run_id": "result-source-pilot-48h-issue20-v1-smart_soccer_stats-s05-c440fadc",
+    "http_status": 200
+  },
+  "maintenance": {
+    "url": "https://www.smartsoccerstats.eu/game-statistics",
+    "title": "SmartSoccerStats \u2014 Under maintenance",
+    "http_status": 502,
+    "text": "We\u2019ll be right back\n\nSmart Soccer Stats is undergoing scheduled maintenance.\n\nWe\u2019re deploying improvements and will be back online shortly.\n\nUnder maintenance",
+    "text_sha256": "6c971924470490ba0e2b06a22e3c36edb3a514dd8364a3993a35d91cbc56478a",
+    "observed_before_utc": "2026-10-01T15:44:13.998Z"
+  }
+}

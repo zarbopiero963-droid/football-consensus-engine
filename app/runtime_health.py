@@ -23,7 +23,7 @@ WITH tickets AS (
   SELECT DISTINCT ON(pilot_id,source) run_id,source,status,manifest,http_status
   FROM source_pilot_runs ORDER BY pilot_id,source,slot_no DESC
 ), latest_result_pilot AS (
-  SELECT DISTINCT ON(pilot_id,source) http_status
+  SELECT DISTINCT ON(pilot_id,source) http_status,manifest
   FROM result_source_pilot_runs ORDER BY pilot_id,source,slot_no DESC
 ), pilot_quality AS (
   SELECT r.*,count(p.source_match_key) AS rows,
@@ -67,6 +67,14 @@ SELECT
      SELECT http_status FROM latest_pilot
      UNION ALL SELECT http_status FROM latest_result_pilot
    ) transports WHERE http_status IS DISTINCT FROM 200) AS failed_pilot_transports,
+  (SELECT count(*) FROM (
+     SELECT manifest FROM latest_pilot
+     UNION ALL SELECT manifest FROM latest_result_pilot
+   ) captures WHERE
+     manifest->'page_capture'->>'state' NOT IN ('READY_PARSED','CAPABILITY_ONLY') OR
+     EXISTS (SELECT 1 FROM jsonb_each(COALESCE(manifest->'extra_pages','{}'::jsonb)) e
+       WHERE e.value->'page_capture'->>'state' NOT IN ('READY_PARSED','CAPABILITY_ONLY'))
+  ) AS failed_pilot_content,
   (SELECT COALESCE(sum(unresolved_rows),0) FROM pilot_quality) AS unresolved_pilot_timezone_rows
 """
 
@@ -82,7 +90,7 @@ def evaluate(counters, workers, now=None):
         'nonproduction_market_sources', 'pilot_or_unknown_snapshots',
         'pilot_or_unknown_tickets', 'unsafe_production_time') if counters[name] > 0]
     warnings = [name for name in ('broken_pilot_parsers', 'zero_row_pilot_parsers',
-                                  'failed_pilot_transports',
+                                  'failed_pilot_transports', 'failed_pilot_content',
                                   'unresolved_pilot_timezone_rows') if counters[name] > 0]
     due = counters['due_tickets']
     ratio = counters['pending_due_tickets'] / due if due else None

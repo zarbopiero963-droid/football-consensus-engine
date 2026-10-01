@@ -10,7 +10,7 @@ from app.runtime_health import evaluate
 COUNTERS = {name: 0 for name in ('snapshots','due_tickets','pending_due_tickets',
     'illegal_market_settlements','illegal_strategy_settlements','nonproduction_market_sources',
     'pilot_or_unknown_snapshots','pilot_or_unknown_tickets','unsafe_production_time',
-    'broken_pilot_parsers','zero_row_pilot_parsers','failed_pilot_transports',
+    'broken_pilot_parsers','zero_row_pilot_parsers','failed_pilot_transports','failed_pilot_content',
     'unresolved_pilot_timezone_rows')}
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 WORKERS = {'collector': NOW, 'settlement': NOW}
@@ -56,6 +56,12 @@ def test_http_failure_degrades_health_even_with_no_parser_errors():
     assert report['status'] == 'DEGRADED' and not report['ready']
     assert report['warnings'] == ['failed_pilot_transports']
     assert report['violations'] == []
+
+
+def test_http_200_incomplete_content_degrades_health_separately():
+    report = evaluate({**COUNTERS, 'snapshots': 1, 'failed_pilot_content': 1}, WORKERS, NOW)
+    assert report['warnings'] == ['failed_pilot_content']
+    assert not report['ready'] and report['violations'] == []
 
 
 def test_http_gate_exposes_fail_without_claiming_database_error_is_healthy(monkeypatch):

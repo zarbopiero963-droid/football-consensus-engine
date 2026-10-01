@@ -19,6 +19,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from app.db import connect
+from staging.page_capture import capture_page
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 ROME = ZoneInfo("Europe/Rome")
@@ -443,14 +444,11 @@ def collect_source(source, url, slot_no, anchors):
             cdp_session.send("Emulation.setTimezoneOverride", {"timezoneId": "Europe/Rome"})
             page.on("pageerror", lambda exc: page_errors.append(str(exc)[:300]))
             resp = page.goto(url, wait_until="domcontentloaded", timeout=90000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=30000)
-            except Exception:
-                page.wait_for_timeout(5000)
-            final_url = page.url
             http_status = resp.status if resp else None
-            text = page.locator("body").inner_text(timeout=30000)
-            main_html = page.content().encode("utf-8")
+            capture = capture_page(page, http_status, PARSERS[source], evidence_kind="prediction_rows")
+            final_url = page.url
+            text = capture.text
+            main_html = capture.html
             shot = page.screenshot(full_page=True, timeout=30000)
             html_parts = [b"<!-- PAGE:main -->\n" + main_html]
 
@@ -464,12 +462,10 @@ def collect_source(source, url, slot_no, anchors):
                 # We only persist predictions whose resolved kickoff is still in the future.
                 tomorrow_url = PROSOCCER_FORECAST_PAGES[1][1]
                 r = page.goto(tomorrow_url, wait_until="domcontentloaded", timeout=90000)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=30000)
-                except Exception:
-                    page.wait_for_timeout(4000)
-                tomorrow_text = page.locator("body").inner_text(timeout=30000)
-                tomorrow_raw = page.content().encode("utf-8")
+                tomorrow_capture = capture_page(page, r.status if r else None, parse_prosoccer,
+                                                evidence_kind="prediction_rows")
+                tomorrow_text = tomorrow_capture.text
+                tomorrow_raw = tomorrow_capture.html
                 prosoccer_forecast_texts.append((1, tomorrow_text))
                 tomorrow_counts = prosoccer_status_counts(tomorrow_text)
                 for key in prosoccer_status:
@@ -482,22 +478,30 @@ def collect_source(source, url, slot_no, anchors):
                     "http_status": r.status if r else None,
                     "html_sha256": sha(tomorrow_raw),
                     "html_bytes": len(tomorrow_raw),
+                    "page_capture": tomorrow_capture.audit,
                 }
 
                 for label, page_url in PROSOCCER_EXTRA_PAGES.items():
                     r = page.goto(page_url, wait_until="domcontentloaded", timeout=90000)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=30000)
-                    except Exception:
-                        page.wait_for_timeout(4000)
-                    extra_text[label] = page.locator("body").inner_text(timeout=30000)
-                    raw = page.content().encode("utf-8")
+                    extra_parser = {
+                        "goals": parse_prosoccer_goal_lines,
+                        "correct_scores": parse_prosoccer_scorelines,
+                        "half_time": parse_prosoccer_ht_1x2,
+                        "ht_correct_scores": parse_prosoccer_scorelines,
+                        "corners": parse_prosoccer_corners,
+                        "htft": parse_prosoccer_htft,
+                    }[label]
+                    extra_capture = capture_page(page, r.status if r else None, extra_parser,
+                                                 evidence_kind="native_market_rows")
+                    extra_text[label] = extra_capture.text
+                    raw = extra_capture.html
                     html_parts.append(f"\n<!-- PAGE:{label} URL:{page_url} -->\n".encode() + raw)
                     extra_page_status[label] = {
                         "url": page.url,
                         "http_status": r.status if r else None,
                         "html_sha256": sha(raw),
                         "html_bytes": len(raw),
+                        "page_capture": extra_capture.audit,
                     }
             html = b"".join(html_parts)
             browser.close()
@@ -521,7 +525,7 @@ def collect_source(source, url, slot_no, anchors):
         # source timezone or a structured timestamp is independently verified.
         enrich_prosoccer_predictions(preds, extra_text)
     else:
-        preds = PARSERS[source](text)
+        preds = capture.parsed if capture.accepted else []
 
     manifest = {
         "pilot_id": PILOT_ID,
@@ -542,6 +546,7 @@ def collect_source(source, url, slot_no, anchors):
         "raw_html_bytes": len(html),
         "screenshot_bytes": len(shot),
         "extra_pages": extra_page_status,
+        "page_capture": capture.audit,
     }
 
     with connect() as conn, conn.cursor() as cur:
@@ -588,6 +593,7 @@ def collect_source(source, url, slot_no, anchors):
         "run_id": run_id,
         "rows": len(preds),
         "extra_pages": sorted(extra_page_status),
+        "page_capture": capture.audit,
         "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")},
     }
 
