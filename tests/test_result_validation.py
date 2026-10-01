@@ -1,4 +1,4 @@
-from app.result_validation import compute_consensus
+from app.result_validation import compute_consensus, observation_id
 
 
 def test_consensus_verified_when_two_sources_agree():
@@ -67,3 +67,59 @@ def test_pilot_observation_cannot_override_production_provider():
     assert status == "SINGLE_SOURCE"
     assert values["final_home_goals"] == 1
     assert values["final_away_goals"] == 0
+
+
+def test_observation_id_is_stable_for_same_semantic_result():
+    payload_a = {
+        "final_home_goals": 2,
+        "final_away_goals": 0,
+        "ht_home_goals": 1,
+        "ht_away_goals": 0,
+        "corners_home": None,
+        "corners_away": None,
+        "ht_corners_home": None,
+        "ht_corners_away": None,
+        "raw_page_sha256": "first-fetch",
+    }
+    payload_b = dict(payload_a)
+    payload_b["raw_page_sha256"] = "later-fetch"
+
+    a = observation_id("match-1", "provider-a", "pm-1", "FINISHED", payload_a)
+    b = observation_id("match-1", "provider-a", "pm-1", "FINISHED", payload_b)
+    assert a == b
+
+
+def test_observation_id_changes_for_official_correction():
+    original = {
+        "final_home_goals": 2,
+        "final_away_goals": 0,
+        "ht_home_goals": 1,
+        "ht_away_goals": 0,
+        "corners_home": None,
+        "corners_away": None,
+        "ht_corners_home": None,
+        "ht_corners_away": None,
+    }
+    corrected = dict(original)
+    corrected["final_home_goals"] = 1
+    corrected["final_away_goals"] = 1
+
+    a = observation_id("match-1", "provider-a", "pm-1", "FINISHED", original)
+    b = observation_id("match-1", "provider-a", "pm-1", "FINISHED", corrected)
+    assert a != b
+
+
+def test_observation_id_changes_when_provider_match_identity_changes():
+    payload = {
+        "final_home_goals": 2,
+        "final_away_goals": 0,
+        "ht_home_goals": None,
+        "ht_away_goals": None,
+        "corners_home": None,
+        "corners_away": None,
+        "ht_corners_home": None,
+        "ht_corners_away": None,
+    }
+    a = observation_id("match-1", "provider-a", "pm-1", "FINISHED", payload)
+    b = observation_id("match-1", "provider-a", "pm-2", "FINISHED", payload)
+    assert a != b
