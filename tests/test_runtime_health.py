@@ -10,7 +10,8 @@ from app.runtime_health import evaluate
 COUNTERS = {name: 0 for name in ('snapshots','due_tickets','pending_due_tickets',
     'illegal_market_settlements','illegal_strategy_settlements','nonproduction_market_sources',
     'pilot_or_unknown_snapshots','pilot_or_unknown_tickets','unsafe_production_time',
-    'broken_pilot_parsers','zero_row_pilot_parsers','unresolved_pilot_timezone_rows')}
+    'broken_pilot_parsers','zero_row_pilot_parsers','failed_pilot_transports',
+    'unresolved_pilot_timezone_rows')}
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 WORKERS = {'collector': NOW, 'settlement': NOW}
 
@@ -48,6 +49,13 @@ def test_stale_future_and_unobserved_workers_are_not_certified():
     assert 'no_production_snapshots' in evaluate(COUNTERS, WORKERS, NOW)['warnings']
     with pytest.raises(ValueError, match='timezone'):
         evaluate(COUNTERS, WORKERS, NOW.replace(tzinfo=None))
+
+
+def test_http_failure_degrades_health_even_with_no_parser_errors():
+    report = evaluate({**COUNTERS, 'snapshots': 1, 'failed_pilot_transports': 1}, WORKERS, NOW)
+    assert report['status'] == 'DEGRADED' and not report['ready']
+    assert report['warnings'] == ['failed_pilot_transports']
+    assert report['violations'] == []
 
 
 def test_http_gate_exposes_fail_without_claiming_database_error_is_healthy(monkeypatch):

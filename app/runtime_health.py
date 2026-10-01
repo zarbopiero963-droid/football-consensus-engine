@@ -20,15 +20,18 @@ WITH tickets AS (
          ELSE ARRAY[]::text[] END AS required
   FROM market_decision_tickets m LEFT JOIN result_consensus rc USING(match_id)
 ), latest_pilot AS (
-  SELECT DISTINCT ON(pilot_id,source) run_id,source,status,manifest
+  SELECT DISTINCT ON(pilot_id,source) run_id,source,status,manifest,http_status
   FROM source_pilot_runs ORDER BY pilot_id,source,slot_no DESC
+), latest_result_pilot AS (
+  SELECT DISTINCT ON(pilot_id,source) http_status
+  FROM result_source_pilot_runs ORDER BY pilot_id,source,slot_no DESC
 ), pilot_quality AS (
   SELECT r.*,count(p.source_match_key) AS rows,
     count(*) FILTER(WHERE p.parse_status='BROKEN') AS broken_rows,
     count(*) FILTER(WHERE p.source_match_key IS NOT NULL AND
       (p.kickoff_utc IS NULL OR p.timezone_status<>'VERIFIED_SOURCE_TZ')) AS unresolved_rows
   FROM latest_pilot r LEFT JOIN source_pilot_predictions p USING(run_id)
-  GROUP BY r.run_id,r.source,r.status,r.manifest
+  GROUP BY r.run_id,r.source,r.status,r.manifest,r.http_status
 )
 SELECT
   (SELECT count(*) FROM model_snapshots) AS snapshots,
@@ -60,6 +63,10 @@ SELECT
       payload->>'timezone_status' IN ('TIMEZONE_UNRESOLVED','DATE_UNRESOLVED','VERIFIED_BROWSER_TZ'))) AS unsafe_production_time,
   (SELECT count(*) FROM pilot_quality WHERE status<>'OK' OR broken_rows>0) AS broken_pilot_parsers,
   (SELECT count(*) FROM pilot_quality WHERE status='OK' AND rows=0) AS zero_row_pilot_parsers,
+  (SELECT count(*) FROM (
+     SELECT http_status FROM latest_pilot
+     UNION ALL SELECT http_status FROM latest_result_pilot
+   ) transports WHERE http_status IS DISTINCT FROM 200) AS failed_pilot_transports,
   (SELECT COALESCE(sum(unresolved_rows),0) FROM pilot_quality) AS unresolved_pilot_timezone_rows
 """
 
@@ -75,6 +82,7 @@ def evaluate(counters, workers, now=None):
         'nonproduction_market_sources', 'pilot_or_unknown_snapshots',
         'pilot_or_unknown_tickets', 'unsafe_production_time') if counters[name] > 0]
     warnings = [name for name in ('broken_pilot_parsers', 'zero_row_pilot_parsers',
+                                  'failed_pilot_transports',
                                   'unresolved_pilot_timezone_rows') if counters[name] > 0]
     due = counters['due_tickets']
     ratio = counters['pending_due_tickets'] / due if due else None
