@@ -59,6 +59,7 @@ EXP. GOALS
     assert (row["p1"], row["px"], row["p2"]) == (28, 30, 42)
     assert row["btts_yes"] == 51
     assert row["over25"] == 44
+    assert row["under25"] is None
     assert row["xg_home"] == 1.1
     assert row["xg_away"] == 1.4
 
@@ -226,3 +227,28 @@ def test_result_source_inspection_contract():
     assert rows == 1
     assert caps["ft_score"] is True
     assert caps["ht_score"] is False
+
+
+def test_statsultra_does_not_infer_under_from_over():
+    text = """
+AAA
+Home Team
+50.0
+V
+BBB
+Away Team
+50.0
+40%
+AAA
+30%
+DRAW
+30%
+BBB
+OVER 2.5
+72%
+"""
+    rows = parse_statsultra(text)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["over25"] == 72
+    assert row["under25"] is None
