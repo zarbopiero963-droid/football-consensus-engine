@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sys
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ FI_INDEXES = [
 ]
 PIN_LEAGUES = "https://guest.api.arcadia.pinnacle.com/0.1/sports/29/leagues?brandId=0"
 PIN_FALLBACK_BATCH_SIZE = 12
+BRIDGE_503_BACKOFF_SECONDS = (3, 10, 30)
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -86,7 +88,25 @@ def http_get(url: str, timeout=45, headers=None):
         raise RuntimeError(f"urlerror {url} {e}") from e
 
 
-def fetch_pinnacle_leagues_via_bridge():
+def bridge_response(req, *, timeout, audit):
+    """Retry only a received 503, never auth, stop failure or unknown delivery."""
+    for attempt in range(len(BRIDGE_503_BACKOFF_SECONDS) + 1):
+        try:
+            response = urlopen(req, timeout=timeout)
+        except HTTPError as exc:
+            audit.append({'attempt': attempt + 1, 'http_status': exc.code,
+                          'received_at_utc': utcnow().isoformat()})
+            exc.close()
+            if exc.code != 503 or attempt == len(BRIDGE_503_BACKOFF_SECONDS):
+                raise
+            time.sleep(BRIDGE_503_BACKOFF_SECONDS[attempt])
+        else:
+            audit.append({'attempt': attempt + 1, 'http_status': getattr(response, 'status', None),
+                          'received_at_utc': utcnow().isoformat()})
+            return response
+
+
+def fetch_pinnacle_leagues_via_bridge(audit=None):
     token = os.environ.get("COLLECTOR_BRIDGE_TOKEN", "").strip()
     if not token:
         raise RuntimeError("COLLECTOR_BRIDGE_TOKEN is not configured")
@@ -102,7 +122,7 @@ def fetch_pinnacle_leagues_via_bridge():
             "X-Collector-Token": token,
         },
     )
-    with urlopen(req, timeout=75) as r:
+    with bridge_response(req, timeout=75, audit=audit if audit is not None else []) as r:
         payload = json.loads(r.read().decode("utf-8"))
     if payload.get("http_status") != 200 or payload.get("truncated"):
         raise RuntimeError(
@@ -136,7 +156,8 @@ def fetch_pinnacle_batch_via_bridge(league_ids):
         'https://football-consensus-browser-bridge.onrender.com').rstrip('/')
     req = Request(base+'/internal/pinnacle/league-batch?ids='+','.join(map(str,league_ids)),
         headers={'User-Agent':UA,'Accept':'application/json','X-Collector-Token':token})
-    with urlopen(req,timeout=210) as response:
+    requests_audit = []
+    with bridge_response(req, timeout=210, audit=requests_audit) as response:
         # The 20 MiB raw batch can grow when JSON strings are escaped in the envelope.
         raw=response.read(45*1024*1024+1)
         if len(raw) > 45*1024*1024: raise RuntimeError('fallback response too large')
@@ -150,7 +171,8 @@ def fetch_pinnacle_batch_via_bridge(league_ids):
     out = []
     for item in items:
         row = {'id':item['id'],'err':item.get('error'),'transport':'browser_bridge_fallback',
-               'captured_at':utcnow(),'matchups':None,'markets':None,'response_audit':{}}
+               'captured_at':utcnow(),'matchups':None,'markets':None,'response_audit':{},
+               'bridge_request_audit': requests_audit}
         if not row['err']:
             try:
                 for kind,suffix in (('matchups','matchups?brandId=0'),('markets','markets/straight')):
@@ -429,6 +451,8 @@ def main():
         errors.append({"source": "pinnacle", "url": PIN_LEAGUES, "error": str(e), "at": utcnow().isoformat()})
     leagues = []
     direct_error = None
+    pin_leagues_requests = []
+    pin_leagues_failure = None
     pin_leagues_transport = "direct"
     if code == 200 and body:
         try:
@@ -440,7 +464,7 @@ def main():
 
     if not isinstance(leagues, list) or not leagues:
         try:
-            bridge_code, bridge_body = fetch_pinnacle_leagues_via_bridge()
+            bridge_code, bridge_body = fetch_pinnacle_leagues_via_bridge(audit=pin_leagues_requests)
             leagues = json.loads(bridge_body.decode())
             if not isinstance(leagues, list) or not leagues:
                 raise RuntimeError("bridge leagues payload is not a non-empty list")
@@ -448,6 +472,9 @@ def main():
             pin_leagues_transport = "browser_bridge_fallback"
         except Exception as exc:
             pin_leagues_transport = "failed"
+            pin_leagues_failure = {'direct_http_status': code,
+                                   'bridge_error_type': type(exc).__name__,
+                                   'bridge_http_status': exc.code if isinstance(exc, HTTPError) else None}
             errors.append({
                 "source": "pinnacle",
                 "url": PIN_LEAGUES,
@@ -456,6 +483,10 @@ def main():
                 "at": utcnow().isoformat(),
             })
             leagues = []
+
+    save(os.path.join(run_dir_pin, 'leagues_transport_audit.json'),
+         json.dumps({'transport': pin_leagues_transport, 'bridge_requests': pin_leagues_requests,
+                     'failure': pin_leagues_failure}, indent=2).encode(), 'pin-leagues-transport-audit')
 
     if leagues and body:
         save(os.path.join(run_dir_pin, "leagues.json"), body, "pin-leagues")
@@ -504,11 +535,14 @@ def main():
             except Exception as exc:
                 for lid in batch:
                     league_items[lid]={'id':lid,'err':'bridge fallback failed:'+type(exc).__name__,
-                                      'transport':'failed','matchups':None,'markets':None}
+                                      'transport':'failed','matchups':None,'markets':None,
+                                      'failed_http_status': exc.code if isinstance(exc, HTTPError) else None}
     for audit in transport_audit:
         item=league_items[audit['id']]
         audit.update(final_transport=item['transport'],final_error=item['err'])
         if item.get('response_audit'):audit['browser_responses']=item['response_audit']
+        if item.get('bridge_request_audit'):audit['bridge_requests']=item['bridge_request_audit']
+        if item.get('failed_http_status'):audit['failed_http_status']=item['failed_http_status']
         if item.get('captured_at'):audit['collector_acquired_at_utc']=item['captured_at'].isoformat()
     if transport_audit:
         save(os.path.join(run_dir_pin,'transport_audit.json'),json.dumps(transport_audit,indent=2).encode(),
@@ -862,6 +896,8 @@ def main():
         "no_probability": n_no_prob,
         "pinnacle_leagues_with_matchups": len(league_ids),
         "pinnacle_leagues_transport": pin_leagues_transport,
+        "pinnacle_leagues_bridge_requests": pin_leagues_requests,
+        "pinnacle_leagues_failure": pin_leagues_failure,
         "pinnacle_league_transports": {kind:sum(i['transport']==kind for i in league_items.values())
                                       for kind in ('direct','browser_bridge_fallback','failed')},
         "pinnacle_direct_leagues_recovered": sum(not a['direct_complete'] and not a['final_error'] for a in transport_audit),
@@ -919,6 +955,8 @@ def main():
         "valid_prematch": len(ledger),
         "errors": len(errors),
         "pinnacle_leagues_transport": pin_leagues_transport,
+        "pinnacle_leagues_bridge_requests": pin_leagues_requests,
+        "pinnacle_leagues_failure": pin_leagues_failure,
         "pinnacle_league_transports": quality['pinnacle_league_transports'],
     })
 
