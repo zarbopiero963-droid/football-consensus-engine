@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from app import runtime_health
+from app import result_validation, runtime_health
 from app.source_resilience import SourceCircuit, assert_owner, record_skipped, source_key
 from app.source_fallback import pilot_fallback_report
 from staging.result_sources import pilot48 as results
@@ -145,3 +145,32 @@ def test_current_run_fallback_evidence_is_persisted_and_duplicate_slot_does_not_
     monkeypatch.setattr(results, 'browser_api', lambda *a: pytest.fail('immutable slot refetched'))
     duplicate = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 1)
     assert duplicate['status'] == 'ALREADY_DONE' and duplicate['run_id'] == outcome['run_id']
+
+
+def test_actual_pilot_adapters_route_worldfootball_ft_when_smart_is_down_without_production_vote(pipeline, monkeypatch):
+    monkeypatch.setattr(results, 'connect', pipeline['connect'])
+    monkeypatch.setattr(results, 'PILOT_ID', 'alternative-test')
+    monkeypatch.setattr(results, 'result_anchor_rows', lambda: [{'match_id': 'fixture',
+        'home_team': 'Juventus', 'away_team': 'Milan', 'league': 'Serie A',
+        'kickoff_utc': datetime(2026, 9, 30, 16, tzinfo=timezone.utc)}])
+    browser_fixture(monkeypatch, results, Page(['Under maintenance'], http_status=502))
+    primary = results.collect_source('smart_soccer_stats', results.SOURCES['smart_soccer_stats'], 1)
+    assert primary['source_resilience']['mode'] == 'OPEN'
+    browser_fixture(monkeypatch, results, Page(['30.09.2026\nJuventus\n2:0\nMilan\nStanding']))
+    alternative = results.collect_source('worldfootball', results.SOURCES['worldfootball'], 1)
+    assert alternative['normalized_observations'] == {'parsed': 1, 'matched': 1, 'persisted': 1}
+    with pipeline['connect']() as conn:
+        runs = conn.execute('SELECT manifest FROM result_source_pilot_runs WHERE slot_no=1').fetchall()
+        candidates = [row for run in runs for row in run['manifest'].get('fallback_candidates', [])]
+        assert conn.execute('SELECT provider FROM result_observations').fetchone()['provider'] == 'pilot:worldfootball'
+    report = pilot_fallback_report(candidates)
+    fields = report['matches'][0]['fields']
+    assert fields['final_away_goals']['status'] == 'FALLBACK_SELECTED'
+    assert fields['final_away_goals']['value'] == 0
+    assert fields['final_away_goals']['provider'] == 'pilot:worldfootball'
+    assert fields['final_away_goals']['verification'] == 'SINGLE_SOURCE'
+    for field in ('ht_home_goals', 'corners_home', 'ht_corners_home'):
+        assert fields[field]['verification'] == 'MISSING' and fields[field]['value'] is None
+    production = result_validation.rebuild_consensus('fixture')
+    assert production['status'] == 'UNVERIFIED'
+    assert all(f['status'] == 'MISSING' for f in production['fields'].values())
