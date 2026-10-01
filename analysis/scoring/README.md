@@ -76,3 +76,10 @@ REPEATABLE READ, READ ONLY transaction and contains SELECTs only.
 explicit cutoff/policy. An insufficient report is evidence of missing usable
 data, not a performance verdict. Tests use synthetic outcomes only in isolated
 PostgreSQL schemas; no fabricated outcome or prediction is inserted into Neon.
+# Report dei ticket mostrati
+
+Questo modulo confronta le **fonti**, selezionando l'ultimo snapshot valido
+pre-match per metodo. Per valutare esattamente i pronostici mostrati usare
+[`analysis.decisions`](../decisions/README.md): probabilità e quote congelate
+nel ticket, calibrazione della scelta, protocollo prospettico e verdetti
+distinti fra dati insufficienti e vantaggio non dimostrato.
