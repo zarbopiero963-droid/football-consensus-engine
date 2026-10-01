@@ -532,6 +532,7 @@ Create an immutable decision batch:
 ```http
 POST /decisions/date/2026-09-30
 Content-Type: application/json
+Idempotency-Key: daily-picks-20260930-1700
 
 {"label":"17:00 daily picks","mode":"all","strategies":[]}
 ```
@@ -543,6 +544,16 @@ Supported modes:
 - `signals`: freeze only rows activating at least one requested strategy; for example `["S2","S4","S6","S8","S9"]`.
 
 The batch selects the latest valid snapshot that already existed at `requested_at_utc`, excludes matches that have already kicked off, stores the exact response in `decision_tickets.snapshot_view`, and returns that same object to the caller.
+
+Both decision POST endpoints require `Idempotency-Key` (1–128 ASCII letters,
+digits, dots, underscores, colons or hyphens). Generate one key per intended
+decision and reuse it for every retry or double click. The same key and request
+return the original frozen response, including its batch and market tickets,
+even after snapshots or outcomes change. Reusing the key for a different date,
+label, mode or strategy list returns HTTP 409; a missing/invalid key returns
+HTTP 422. Use a new key for an intentional new decision. Existing frozen batches
+are preserved. Batch, decision tickets, market tickets and replay response commit
+atomically; concurrent requests for one key serialize in PostgreSQL.
 
 Later automatic snapshots never update decision tickets.
 

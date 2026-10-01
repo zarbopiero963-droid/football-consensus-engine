@@ -268,38 +268,42 @@ def _ticket_id(batch_id: str, match_id: str, market_id: str, source: str) -> str
     return hashlib.sha256(f"{batch_id}|{match_id}|{market_id}|{source}".encode()).hexdigest()[:32]
 
 
-def freeze_market_tickets(batch_id: str, frozen_matches: list[dict[str, Any]], requested_at) -> int:
+def freeze_market_tickets(batch_id: str, frozen_matches: list[dict[str, Any]], requested_at, *, cursor=None) -> int:
     """Freeze production market tickets from production snapshots only.
 
     Pilot/qualification tables are intentionally not read here. A source must
     be promoted through an explicit production eligibility path before it can
     contribute to user-visible market tickets.
     """
+    if cursor is None:
+        with connect() as conn, conn.cursor() as cur:
+            count = freeze_market_tickets(batch_id, frozen_matches, requested_at, cursor=cur)
+            conn.commit()
+            return count
     count = 0
-    with connect() as conn, conn.cursor() as cur:
-        for view in frozen_matches:
-            picks = project_from_1x2(view)
+    cur = cursor
+    for view in frozen_matches:
+        picks = project_from_1x2(view)
 
-            unique = {}
-            for pick in picks:
-                unique[(pick.market_id, pick.source)] = pick
+        unique = {}
+        for pick in picks:
+            unique[(pick.market_id, pick.source)] = pick
 
-            for pick in unique.values():
-                tid = _ticket_id(batch_id, view["match_id"], pick.market_id, pick.source)
-                cur.execute("""
-                    INSERT INTO market_decision_tickets(
-                        ticket_id,batch_id,match_id,kickoff_utc,home_team,away_team,league,
-                        source,market_id,period,selection,line,probability,odds,edge,
-                        derivation,source_snapshot_utc,status,stake_eur,payload
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',1.00,%s::jsonb)
-                    ON CONFLICT(batch_id,match_id,market_id,source) DO NOTHING
-                """, (
-                    tid,batch_id,view["match_id"],view["kickoff_utc"],view["home"],view["away"],view["league"],
-                    pick.source,pick.market_id,pick.period,pick.selection,pick.line,pick.probability,pick.odds,
-                    pick.edge,pick.derivation,view["snapshot_timestamp_utc"],json.dumps(pick.payload or {})
-                ))
-                count += 1
-        conn.commit()
+        for pick in unique.values():
+            tid = _ticket_id(batch_id, view["match_id"], pick.market_id, pick.source)
+            cur.execute("""
+                INSERT INTO market_decision_tickets(
+                    ticket_id,batch_id,match_id,kickoff_utc,home_team,away_team,league,
+                    source,market_id,period,selection,line,probability,odds,edge,
+                    derivation,source_snapshot_utc,status,stake_eur,payload
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',1.00,%s::jsonb)
+                ON CONFLICT(batch_id,match_id,market_id,source) DO NOTHING
+            """, (
+                tid,batch_id,view["match_id"],view["kickoff_utc"],view["home"],view["away"],view["league"],
+                pick.source,pick.market_id,pick.period,pick.selection,pick.line,pick.probability,pick.odds,
+                pick.edge,pick.derivation,view["snapshot_timestamp_utc"],json.dumps(pick.payload or {})
+            ))
+            count += 1
     return count
 
 
@@ -394,17 +398,20 @@ def synchronize_market_settlement() -> dict[str, int]:
     return {"tickets_seen": len(rows), "tickets_updated": updated}
 
 
-def get_batch_markets(batch_id: str) -> list[dict[str, Any]]:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT ticket_id,match_id,kickoff_utc,home_team,away_team,league,source,
-                   market_id,period,selection,line,probability,odds,edge,derivation,
-                   status,result_value,correct,stake_eur,profit_eur
-            FROM market_decision_tickets
-            WHERE batch_id=%s
-            ORDER BY kickoff_utc,home_team,market_id,source
-        """, (batch_id,))
-        return list(cur.fetchall())
+def get_batch_markets(batch_id: str, *, cursor=None) -> list[dict[str, Any]]:
+    if cursor is None:
+        with connect() as conn, conn.cursor() as cur:
+            return get_batch_markets(batch_id, cursor=cur)
+    cur = cursor
+    cur.execute("""
+        SELECT ticket_id,match_id,kickoff_utc,home_team,away_team,league,source,
+               market_id,period,selection,line,probability,odds,edge,derivation,
+               status,result_value,correct,stake_eur,profit_eur
+        FROM market_decision_tickets
+        WHERE batch_id=%s
+        ORDER BY kickoff_utc,home_team,market_id,source
+    """, (batch_id,))
+    return list(cur.fetchall())
 
 
 def get_market_stats() -> list[dict[str, Any]]:

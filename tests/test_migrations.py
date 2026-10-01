@@ -11,9 +11,9 @@ def _write(directory, version, sql):
 
 def test_current_baseline_is_versioned_and_stable():
     items=migrations.load_migrations()
-    assert len(items)==1 and items[0].version==1
+    assert items[0].version==1 and items[0].name=='0001_baseline.sql'
     assert 'CREATE TABLE IF NOT EXISTS model_snapshots' in items[0].sql
-    assert len(items[0].checksum)==64
+    assert items[0].checksum=='a6cd3bda6f1bfb8f029d4039b2c50d0ed8d444bc12470b28a382faac068f7287'
     assert items==migrations.load_migrations()
 
 
