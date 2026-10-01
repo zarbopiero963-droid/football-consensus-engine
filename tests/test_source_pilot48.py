@@ -286,7 +286,7 @@ Africa Cup of Nations - Qualification - World, 2027
     assert rows[1]["final_away_goals"] == 5
 
 
-def test_worldfootball_parser_only_takes_finished_scores():
+def test_worldfootball_text_without_lifecycle_cannot_certify_finished_scores():
     from staging.result_sources.pilot48 import parse_worldfootball_results
 
     rows = parse_worldfootball_results("""
@@ -310,14 +310,7 @@ AS Roma
 11
 13
 """)
-    assert len(rows) == 2
-    assert rows[0]["home_team"] == "Inter"
-    assert rows[0]["away_team"] == "AC Monza"
-    assert rows[0]["final_home_goals"] == 4
-    assert rows[0]["final_away_goals"] == 1
-    assert rows[1]["home_team"] == "Udinese Calcio"
-    assert rows[1]["final_home_goals"] == 1
-    assert rows[1]["final_away_goals"] == 1
+    assert rows == []  # Numeric text alone could also be a scheduled clock.
 
 
 def test_result_anchor_match_requires_exact_pair_and_date():
@@ -328,6 +321,7 @@ def test_result_anchor_match_requires_exact_pair_and_date():
         "home_team": "Lithuania",
         "away_team": "Andorra",
         "source_date": datetime(2026, 9, 30).date(),
+        "competition": "Friendlies - World, 2026",
     }
     anchors = [{
         "match_id": "fi:lithuania-vs-andorra-2026-09-30",
@@ -338,9 +332,9 @@ def test_result_anchor_match_requires_exact_pair_and_date():
     }]
     anchor, status = match_result_anchor(row, anchors)
     assert anchor["match_id"] == "fi:lithuania-vs-andorra-2026-09-30"
-    assert status == "EXACT_PAIR_DATE"
+    assert status == "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
 
     row["source_date"] = datetime(2026, 10, 1).date()
     anchor, status = match_result_anchor(row, anchors)
     assert anchor is None
-    assert status == "NOT_FOUND"
+    assert status == "DATE_MISMATCH"

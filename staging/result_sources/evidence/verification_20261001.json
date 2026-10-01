@@ -1,0 +1,105 @@
+{
+  "verified_at_utc": "2026-10-01T21:56:33.555248+00:00",
+  "anchors": 169,
+  "worldfootball": {
+    "bytes": 806528,
+    "sha256": "8a8e6f1a8d33b7efc7e19725d916751e4a53fb3ce7592f48b133d2012e06107e",
+    "parser": {
+      "contract": "WORLDFOOTBALL_FINISHED_HTML_V1",
+      "cards_seen": 380,
+      "rows_accepted": 50,
+      "identical_duplicates": 0,
+      "rejection_counts": {
+        "NOT_FINISHED": 330
+      }
+    },
+    "parsed": 50,
+    "matched": 0,
+    "rejections": {
+      "NOT_FOUND": 50
+    },
+    "matches": []
+  },
+  "smart_soccer_stats": {
+    "bytes": 125349,
+    "sha256": "0b51d876b042f3113ab49ca26dc8924e948a728c25521156d7a530d092c08571",
+    "parsed": 20,
+    "matched": 8,
+    "rejections": {
+      "COMPETITION_MISMATCH": 9,
+      "NOT_FOUND": 3
+    },
+    "matches": [
+      {
+        "home": "Malta",
+        "away": "Gibraltar",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Israel",
+        "away": "Kosovo",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Rep. Of Ireland",
+        "away": "Austria",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Wales",
+        "away": "Norway",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Denmark",
+        "away": "Portugal",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Greece",
+        "away": "Netherlands",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Germany",
+        "away": "Serbia",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      },
+      {
+        "home": "Azerbaijan",
+        "away": "Liechtenstein",
+        "source_competition": "UEFA Nations League - World, 2026",
+        "anchor_competition": "UEFA Nations League",
+        "match_status": "EXACT_PAIR_DATE_COMPETITION_DIAGNOSTIC"
+      }
+    ]
+  },
+  "browser_session_id": "5f16de20-5789-4b87-b0ce-58ad21da5efa",
+  "browser_lease_state": "STOPPED",
+  "browser_stop_error": "",
+  "pilot_observations": 19,
+  "pilot_observation_hash_before": "9be3014003f1927a714fcd7baa31639b",
+  "pilot_observation_hash_after": "9be3014003f1927a714fcd7baa31639b",
+  "production_eligible": false,
+  "kind": "READ_ONLY_EXTERNAL_VERIFICATION_SUMMARY_NOT_FULL_CAPTURE",
+  "limits": [
+    "No persisted production run or prospective seal",
+    "Smart source timezone unresolved",
+    "Country/category and cross-source aliases not qualified",
+    "Full HTML bytes and screenshots not committed"
+  ]
+}

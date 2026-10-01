@@ -7,7 +7,10 @@ from app.source_fallback import select_result_fallback
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 ROW = {'provider': 'pilot:worldfootball', 'channel': 'PILOT', 'match_id': 'fixture',
        'observed_at_utc': NOW.isoformat(), 'http_status': 200, 'capture_state': 'READY_PARSED',
-       'raw_page_sha256': 'real-hash-reference', 'status': 'FT', 'match_status': 'EXACT_PAIR_DATE',
+       'raw_page_sha256': 'real-hash-reference', 'status': 'FT',
+       'match_status': 'EXACT_PAIR_KICKOFF_COMPETITION_DIAGNOSTIC',
+       'result_match_contract': 'RESULT_PAIR_DATE_COMPETITION_V1',
+       'competition': 'Serie A', 'home_team': 'Home', 'away_team': 'Away',
        'production_eligible': False, 'final_home_goals': 2, 'final_away_goals': 0,
        'corners_home': 9}  # Nonqualified field must never be selected.
 
@@ -38,6 +41,9 @@ def test_qualified_alternative_retains_identity_zero_and_only_supported_fields()
     ({'capture_state': 'MAINTENANCE'}, 'CAPTURE_UNACCEPTED'),
     ({'raw_page_sha256': None}, 'EVIDENCE_INCOMPLETE'),
     ({'match_status': 'FOUND_NAME_ONLY'}, 'MATCH_UNSAFE'),
+    ({'match_status': 'EXACT_PAIR_DATE'}, 'MATCH_UNSAFE'),
+    ({'result_match_contract': None}, 'MATCH_UNSAFE'),
+    ({'competition': ''}, 'MATCH_UNSAFE'),
 ])
 def test_unqualified_stale_or_failed_evidence_stays_missing(change, reason):
     report = route([{**ROW, **change}])
