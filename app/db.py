@@ -7,7 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = ROOT / "sql" / "schema.sql"
+from app.migrations import apply_migrations
 
 
 def database_url() -> str:
@@ -22,8 +22,4 @@ def connect():
 
 
 def migrate() -> None:
-    sql = SCHEMA.read_text(encoding="utf-8")
-    with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
-        conn.commit()
+    apply_migrations(connect)

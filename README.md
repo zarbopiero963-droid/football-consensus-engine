@@ -624,3 +624,18 @@ API:
 - `GET /strategies/{strategy_id}`
 
 The simulation ledger never places a real wager and never rewrites decision tickets or match results.
+
+## Versioned database migrations
+
+`python3 -m app.migrate` applies numbered SQL files in `sql/migrations/` in one
+transaction, under a transaction-scoped advisory lock. `0001_baseline.sql` freezes
+the existing schema. An existing database adopts the baseline without rewriting
+its records; later schema changes require a new numbered migration with explicit
+DDL such as `ALTER TABLE`.
+
+`schema_migrations` records each version, filename, SHA-256 and application time.
+Repeated runs skip an unchanged applied migration. Changed checksums, invalid or
+missing versions and SQL errors fail visibly; a failed upgrade rolls back the
+whole transaction. Never edit an applied SQL file. Use a direct database
+connection for migrations and test each upgrade on a Neon branch before applying
+it to production.
