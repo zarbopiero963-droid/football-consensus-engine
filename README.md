@@ -721,3 +721,15 @@ frozen tickets, and is not yet a replacement for all legacy joins. Production
 matching adoption requires separately evidenced bindings and strict time and
 competition gates. Current collector Pinnacle joins still require the explicitly
 tracked follow-up in master #35; identity infrastructure alone does not certify them.
+
+## Read-only consensus robustness
+
+M18/M19 live in [staging/consensus_robustness](staging/consensus_robustness/README.md).
+The T1–T8 harness compares linear/log shadow, LOO, clones, near-zero veto,
+epsilon/weight sensitivity and draft integer agreement gates. Pinnacle stays
+outside the model pool and is only an explicit negative control. Fixed synthetic
+fixtures have a SHA-256 manifest. Run `python -m staging.consensus_robustness.run
+--neon` for a stdout report inside a PostgreSQL read-only transaction; no tickets,
+strategies, migrations or source promotion occur. Unsafe matching/timezone,
+incomplete vectors and missing sealing audit are excluded rather than repaired.
+Insufficient clean overlap is reported as `INSUFFICIENT_SAMPLE`.
