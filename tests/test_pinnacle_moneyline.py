@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.pinnacle_moneyline import parse_moneylines, CONTRACT
-from prospective.collect import fair_from_odds
+from prospective.collect import american_to_decimal, fair_from_odds
 from staging.same_market.pinnacle import _document
 
 
@@ -39,7 +39,7 @@ def test_preserves_explicit_hda_order_prices_fair_and_legacy_overround():
     assert audit['contract'] == CONTRACT and audit['accepted'] == 1 and not audit['rejected']
     q = quotes[0]
     assert q['american'] == [100, -150, 200]
-    assert q['dec'] == [2, 1 + 100 / 150, 3]
+    assert q['dec'] == [2, 1.6667, 3]
     assert (q['fair'], q['overround']) == fair_from_odds(*q['dec'])
     assert sum(q['fair']) == pytest.approx(1)
     assert q['captured_at'] < q['start'] and q['home'] == 'Home'
@@ -148,6 +148,9 @@ def test_fresh_public_capture_replay_and_duplicate_home_regression():
     kwargs = {'league_id': 1842, 'league_name': bundle['league_name'], 'captured_at': bundle['captured_at_utc']}
     quotes, audit = parse_moneylines(f, m, **kwargs)
     assert len(quotes) == 17 and audit['accepted'] == 17
+    for quote in quotes:
+        assert quote['dec'] == [american_to_decimal(p) for p in quote['american']]
+        assert (quote['fair'], quote['overround']) == fair_from_odds(*quote['dec'])
     mid = 1637151323
     original = next(q for q in quotes if q['matchup_id'] == mid)
     assert original['dec'][0] == 4.04

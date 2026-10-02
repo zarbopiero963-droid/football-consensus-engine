@@ -32,7 +32,10 @@ def _decimal(value):
     try:
         if not math.isfinite(value) or abs(value) < 100:
             raise ValueError('INVALID_PRICES')
-        odds = 1 + (value / 100 if value > 0 else 100 / -value)
+        numeric = float(value)
+        # Preserve the collector's frozen four-decimal convention; hardening
+        # must not subtly change market probabilities or strategy edges.
+        odds = round(1 + (numeric / 100.0 if numeric > 0 else 100.0 / -numeric), 4)
     except OverflowError:
         raise ValueError('INVALID_PRICES') from None
     if not math.isfinite(odds) or odds <= 1:
