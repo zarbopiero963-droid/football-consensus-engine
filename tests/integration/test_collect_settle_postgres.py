@@ -52,11 +52,15 @@ def pipeline(monkeypatch, tmp_path):
         if url == collect.PIN_LEAGUES:
             data = [{'id': 1, 'name': 'Test league', 'matchupCount': 1}]
         elif '/matchups?' in url:
-            data = [{'id': 1, 'startTime': kickoff.isoformat(), 'participants': [
+            data = [{'id': 1, 'type': 'matchup', 'isLive': False, 'units': 'Regular',
+                     'status': 'pending', 'parentId': None, 'parent': None,
+                     'league': {'id': 1, 'name': 'Test league', 'sport': {'id': 29}},
+                     'startTime': kickoff.isoformat(), 'participants': [
                 {'alignment': 'home', 'name': 'Czechia'}, {'alignment': 'away', 'name': 'England'}]}]
         elif '/markets/straight' in url:
             data = [{'matchupId': 1, 'type': 'moneyline', 'period': 0, 'status': 'open',
-                     'key': 's;0;m', 'version': 1, 'prices': [
+                     'key': 's;0;m', 'version': 1, 'isAlternate': False,
+                     'cutoffAt': kickoff.isoformat(), 'prices': [
                          {'designation': 'home', 'price': 100}, {'designation': 'draw', 'price': 250},
                          {'designation': 'away', 'price': 200}]}]
         elif url.startswith('https://footinsights.com/predictions/test-'):
@@ -170,6 +174,8 @@ def test_rejected_matching_audit_is_sealed_persisted_and_never_priced(pipeline, 
             body = json.dumps([{'id': 1, 'name': 'Other league', 'matchupCount': 1}]).encode()
         elif '/matchups?' in url:
             rows = json.loads(body)
+            if case == 'competition':
+                rows[0]['league']['name'] = 'Other league'
             if case == 'time':
                 rows[0]['startTime'] = (pipeline['kickoff'] + timedelta(minutes=16)).isoformat()
             if case == 'pair':
@@ -208,6 +214,67 @@ def test_rejected_matching_audit_is_sealed_persisted_and_never_priced(pipeline, 
     assert report['summary'] == state['market_matching']
     assert report['models'][0]['model_raw_sha256'] == row['sha256_model_raw']
     assert report['models'][0]['candidates'] == audit['candidates']
+    assert ledger.read_bytes().startswith(historic)
+    for table in ('decision_tickets', 'market_decision_tickets', 'source_pilot_predictions'):
+        assert read(pipeline, f'SELECT count(*) AS n FROM {table}')[0]['n'] == 0
+
+
+@pytest.mark.parametrize('case,reason', [
+    ('duplicate_price', 'INVALID_PRICES'),
+    ('duplicate_participant', 'INVALID_PARTICIPANTS'),
+    ('duplicate_fixture', 'MISSING_OR_DUPLICATE_MATCHUP'),
+    ('damaged_duplicate_market', 'DUPLICATE_MONEYLINE'),
+    ('missing_live_flag', 'MATCHUP_NOT_EXPLICIT_PREMATCH'),
+    ('wrong_units', 'MATCHUP_NOT_EXPLICIT_PREMATCH'),
+    ('bool_period', 'INVALID_MARKET_CONTRACT'),
+    ('wrong_key', 'INVALID_MARKET_CONTRACT'),
+    ('expired_cutoff', 'INVALID_PREMATCH_TIME_OR_CUTOFF'),
+    ('malformed_prices', 'INVALID_PRICES'),
+    ('source_league_mismatch', 'SOURCE_LEAGUE_OR_SPORT_MISMATCH'),
+])
+def test_moneyline_rejection_survives_real_postgres_pipeline(pipeline, monkeypatch, capsys, case, reason):
+    original = pipeline['http_fixture']
+
+    def http(url, **kwargs):
+        code, body, headers = original(url, **kwargs)
+        if '/matchups?' in url:
+            rows = json.loads(body)
+            if case == 'duplicate_participant': rows[0]['participants'].append(rows[0]['participants'][0])
+            if case == 'duplicate_fixture': rows.append(dict(rows[0]))
+            if case == 'missing_live_flag': rows[0].pop('isLive')
+            if case == 'wrong_units': rows[0]['units'] = 'Corners'
+            if case == 'source_league_mismatch': rows[0]['league']['id'] = 2
+            body = json.dumps(rows).encode()
+        if '/markets/straight' in url:
+            rows = json.loads(body)
+            if case == 'duplicate_price': rows[0]['prices'].append({'designation': 'home', 'price': 1000})
+            if case == 'damaged_duplicate_market': rows.append(dict(rows[0], prices=None))
+            if case == 'bool_period': rows[0]['period'] = False
+            if case == 'wrong_key': rows[0]['key'] = 's;1;m'
+            if case == 'expired_cutoff': rows[0]['cutoffAt'] = pipeline['now'].isoformat()
+            if case == 'malformed_prices': rows[0]['prices'] = {'home': 100}
+            body = json.dumps(rows).encode()
+        return code, body, headers
+
+    monkeypatch.setattr(collect, 'http_get', http)
+    ledger = pipeline['root'] / 'prospective_ledger.csv'
+    historic = b'match_id,snapshot_timestamp_utc,sha256_model_raw\nold,2026-09-01T00:00:00Z,old-hash\n'
+    ledger.write_bytes(historic)
+    collect.main()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary['valid_prematch'] == 1 and summary['joined_pinnacle'] == summary['eligible'] == 0
+    row = read(pipeline, 'SELECT * FROM model_snapshots')[0]
+    assert row['picked_odds'] is None and not row['analysis_eligible']
+    assert all(row['payload'][k] == '' for k in ('odds_home', 'odds_draw', 'odds_away', 'sha256_odds_raw'))
+    state = read(pipeline, "SELECT value FROM runtime_state WHERE key='collector'")[0]['value']
+    audit = state['pinnacle_moneyline_validation']
+    assert audit == summary['pinnacle_moneyline_validation'] and audit['accepted'] == 0
+    assert audit['rejected'] == {reason: 2 if case == 'damaged_duplicate_market' else 1}
+    manifest = json.loads((pipeline['root'] / 'manifests' / ('manifest_' + summary['run_id'] + '.json')).read_text())
+    entry = next(f for f in manifest['files'] if f['role'] == 'pin-moneyline-audit')
+    raw = (pipeline['root'] / entry['path']).read_bytes()
+    assert entry['sha256'] == hashlib.sha256(raw).hexdigest() and entry['bytes'] == len(raw)
+    assert json.loads(raw)['summary'] == audit == manifest['counts']['pinnacle_moneyline_validation']
     assert ledger.read_bytes().startswith(historic)
     for table in ('decision_tickets', 'market_decision_tickets', 'source_pilot_predictions'):
         assert read(pipeline, f'SELECT count(*) AS n FROM {table}')[0]['n'] == 0
@@ -429,6 +496,8 @@ def test_unsafe_market_cannot_price_production_snapshot(pipeline, monkeypatch, c
         status, body, headers = original_http(url, **kwargs)
         if '/matchups?' in url:
             data = json.loads(body)
+            if case == 'league':
+                data[0]['league']['name'] = 'Different league'
             if case == 'containment':
                 data[0]['participants'][0]['name'] = 'Czechia U21'
             if case == 'shifted':

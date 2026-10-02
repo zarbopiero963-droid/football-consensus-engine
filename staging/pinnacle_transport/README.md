@@ -29,3 +29,24 @@ preserves browser response time in the transport audit, and retains existing
 strict exact pair/kickoff/context matching. Quote availability is not canonical
 competition binding, source independence, production promotion or certified
 open/close coverage. Those real data gates remain pending.
+
+`moneyline_capture_20261002.json` is a new independent HTTP 200 DOM capture of
+league 1842 (19 matchup rows, 653 market rows), with complete compressed text,
+byte counts, SHA-256 and confirmed browser STOPPED lease. Its timestamp is
+conservatively after delivery and lease verification. It is diagnostic evidence,
+not a production market seal, wire response or pilot slot.
+
+The production moneyline parser in `app/pinnacle_moneyline.py` requires explicit
+soccer/league identity, a regular pending top-level non-live fixture, unique home
+and away participants, an open non-alternate period-0 `s;0;m` market, exactly
+three unique finite numeric American prices and offset-aware future kickoff and
+cutoff. Duplicate fixture/market IDs reject the ambiguous quote, including a
+damaged duplicate alongside a valid market. Prices are ordered H/D/A explicitly;
+the existing `overround` convention remains the sum of implied probabilities.
+
+The collector seals `moneyline_audit.json` in its manifest and exposes identical
+reason counts in quality reports, runtime state and stdout. Other market/period
+counts describe excluded coverage, not transport outages. Malformed records
+cannot silently replace prices or price a production snapshot. Replay accepts
+17 unchanged FT1X2 quotes; adding a duplicate home price rejects that fixture
+alone, preserving the other 16. No historical capture or ticket is rewritten.

@@ -24,6 +24,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(ROOT))
 from app.persist import guarded, set_runtime_state, upsert_snapshots  # noqa: E402
 from app.identities import category_flags
+from app.pinnacle_moneyline import parse_moneylines, CONTRACT as PIN_MONEYLINE_CONTRACT
 from app.market_reference import audit_market_candidates, exact_market_match, MATCH_CONTRACT  # noqa: E402
 
 SCRAPER_VERSION = "prospective-ledger-3"
@@ -547,6 +548,7 @@ def main():
     if transport_audit:
         save(os.path.join(run_dir_pin,'transport_audit.json'),json.dumps(transport_audit,indent=2).encode(),
              'pin-transport-audit')
+    moneyline_audits = []
     for lid in league_ids:
         item = league_items[lid]
         if item["err"]:
@@ -570,64 +572,27 @@ def main():
         except json.JSONDecodeError:
             errors.append({"source": "pinnacle", "league": lid, "error": "bad json", "at": utcnow().isoformat()})
             continue
-        ml = {}
-        duplicate_markets = set()
-        for m in mks:
-            if m.get("type") != "moneyline" or m.get("period") != 0 or m.get("isAlternate"):
-                continue
-            if m.get("key") not in (None, "s;0;m") and not str(m.get("key", "")).endswith(";m"):
-                continue
-            prices = {p.get("designation"): p.get("price") for p in m.get("prices") or []}
-            if not all(k in prices for k in ("home", "draw", "away")):
-                continue
-            matchup_id = m.get("matchupId")
-            if matchup_id in ml:
-                duplicate_markets.add(matchup_id)
-            ml[matchup_id] = m
-        for mu in mus:
-            if mu.get("type") not in (None, "matchup"):
-                continue
-            if mu.get("parentId") or mu.get("parent") or mu.get("isLive"):
-                continue
-            start = parse_iso(mu.get("startTime"))
-            if not start or start <= item["captured_at"]:
-                continue
-            parts = mu.get("participants") or []
-            home = next((p.get("name") for p in parts if p.get("alignment") == "home"), None)
-            away = next((p.get("name") for p in parts if p.get("alignment") == "away"), None)
-            if not home or not away:
-                continue
-            if mu.get("id") in duplicate_markets:
-                continue
-            market = ml.get(mu.get("id"))
-            if not market or market.get("status") != "open":
-                continue
-            prices = {p["designation"]: p["price"] for p in market["prices"]}
-            try:
-                dec = [american_to_decimal(prices["home"]), american_to_decimal(prices["draw"]), american_to_decimal(prices["away"])]
-            except (TypeError, ValueError, OverflowError):
-                dec = []
-            if len(dec) != 3 or not all(o is not None and math.isfinite(o) and o > 1 for o in dec):
-                errors.append({"source": "pinnacle", "league": lid, "what": "invalid_prices", "at": utcnow().isoformat()})
-                continue
-            fair, over = fair_from_odds(*dec)
-            pin_matchups.append({
-                "matchup_id": mu.get("id"),
-                "captured_at": item["captured_at"],
-                "league_id": lid,
-                "league": league_name.get(lid) or "",
-                "home": home,
-                "away": away,
-                "start": start,
-                "dec": dec,
-                "fair": fair,
-                "overround": over,
-                "american": [prices["home"], prices["draw"], prices["away"]],
-                "market_version": market.get("version"),
-                "cutoff": market.get("cutoffAt"),
-                "raw_file": f"markets_{lid}.json",
-                "transport": item['transport'],
-            })
+        try:
+            quotes, audit = parse_moneylines(
+                mus, mks, league_id=lid, league_name=league_name.get(lid) or "",
+                captured_at=item["captured_at"])
+        except ValueError as exc:
+            quotes = []
+            audit = {'contract': PIN_MONEYLINE_CONTRACT, 'league_id': lid,
+                     'accepted': 0, 'rejected': {str(exc): 1}}
+        moneyline_audits.append(audit)
+        for quote in quotes:
+            quote.update(raw_file=f"markets_{lid}.json", transport=item['transport'])
+            pin_matchups.append(quote)
+    moneyline_rejections = {}
+    for audit in moneyline_audits:
+        for reason, count in audit['rejected'].items():
+            moneyline_rejections[reason] = moneyline_rejections.get(reason, 0) + count
+    moneyline_summary = {'contract': PIN_MONEYLINE_CONTRACT,
+                         'accepted': len(pin_matchups), 'rejected': moneyline_rejections}
+    save(os.path.join(run_dir_pin, 'moneyline_audit.json'),
+         json.dumps({'summary': moneyline_summary, 'leagues': moneyline_audits}, indent=2).encode(),
+         'pin-moneyline-audit')
     # --- match ---
     manual = []
     joined = 0
@@ -919,6 +884,7 @@ def main():
                                       for kind in ('direct','browser_bridge_fallback','failed')},
         "pinnacle_direct_leagues_recovered": sum(not a['direct_complete'] and not a['final_error'] for a in transport_audit),
         "pinnacle_open_moneylines": len(pin_matchups),
+        "pinnacle_moneyline_validation": moneyline_summary,
         "market_matching": match_summary,
         "joined": joined,
         "unmatched_model": unmatched,
@@ -977,6 +943,7 @@ def main():
         "pinnacle_leagues_failure": pin_leagues_failure,
         "pinnacle_league_transports": quality['pinnacle_league_transports'],
         "market_matching": match_summary,
+        "pinnacle_moneyline_validation": moneyline_summary,
     })
 
     print(json.dumps({
@@ -993,6 +960,7 @@ def main():
         "invalid": len(invalid_rows),
         "pinnacle_moneylines": len(pin_matchups),
         "market_matching": match_summary,
+        "pinnacle_moneyline_validation": moneyline_summary,
         "pinnacle_leagues_transport": pin_leagues_transport,
         "errors": len(errors),
         "database": {
