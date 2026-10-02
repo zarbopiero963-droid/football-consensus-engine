@@ -529,6 +529,16 @@ hash/size and acquisition time in the manifest (5 MiB limit per attempt); final
 HTML stays in the existing raw column. Provider stop must be confirmed before
 ingestion. No browser creation POST, historical slot or production write is retried.
 
+Pilot runs derive their persisted and returned `status` from the same capture
+policy as the source circuit: HTTP/content/parser/loading failures are `ERROR`.
+`manifest.run_outcome` records `PILOT_RUN_OUTCOME_V1`, its reason and partial-page
+availability; `source_resilience_at_admission` is explicitly the pre-capture
+circuit state. The final circuit state remains in runtime state and the returned
+outcome. Capability-only or unconfirmed empty captures do not certify parsed
+data, and healthy extra pages preserve partial availability with separate error
+audits. Historical misleading `OK` slots remain unchanged and are identified by
+their HTTP/content audit; future captures apply this correction.
+
 The API recomputes only the already preregistered S1-S9 activation flags from the frozen snapshot fields. It does not retune thresholds and does not scrape the web.
 
 
