@@ -1,0 +1,52 @@
+{
+  "run_id": "result-source-pilot-48h-issue20-v1-statbunker-s11-17e4afd4",
+  "source": "statbunker",
+  "slot_no": 11,
+  "http_status": 404,
+  "status": "OK",
+  "html_sha256": "33070b7eee9e4a4c6fa86f161dab0b3d2abaf1a16c5039b85d3be452cf886b65",
+  "html_gzip_base64": "H4sIAAAAAAAA/61XW2/aSBR+76+Y0CoGCTAEEjVgW+omqfpQ2mg31Wq1WlVj+xhPM55xPQMOTfjv\ne8Y2hnDbtltb2HM5cy7fuRnn5Prj1d1ftzck1gn3HPMknIqp2wDRwDnQ0HtBqsvRTHPwhr0huaVT\nIB+kJm/lTISOXe6sKZVecCB6kYLb0PCg7UCphveiJjDXaKSAQ6CZFI/Ep8H9NDPMOoHkMhuRlzf9\nwaDXG5NqnsdMw5gst3gk8lvnV/DJwb9n+idZPePly3BBHp8tFcu77KIoGu/QJTSbMjEiw176sLsb\nSaFHpD9IH+wzJCBCZgnl5B3wOWgW0DZ5kzHK20RRodCajO0RsZI/fHvePz9/vr9lDN1jyep4rzcY\nXF7ust+1VGeoTUozEHq/SZ0c2DRGy0p7jqoU94/oNBwO/7dCvsxCyDq+1FomCDbCrCRnIXl53TP3\nARMU+wZIfXnIbUdtNNfK8z28+0OUukdSSsOQiemoJOifm0evGh1FLZAh7MGtUCyiCeOLEbmSAg2l\nqk0mUtBAtnFlljHIyAfI60mbJFJIRC+A40ic7UNiXxpcmvuQH77LAeuQPOtfXOzuh0ylnKKJPpfB\n/WHoS9i/A/2zGvjV6Cj6LwPEhTKBUO76oBa+N+N/AIVOVcR8+dBRMQ1lXgbTazy699CWlukx5c7q\neDs7EG+rkWMX5b9sB469biKOKY0bXSJkc8JCt1GD0/CesXTi/t5ug8tO6t3FgA7BnYWckQy+zkBp\nCElOFWaYxkhE2q5jp95aLxS4IT71Pqbq5IR8EpHM9ExQDXxB9IrtM0YnJyeOn3m/QwQZAPlDU60I\n1g9CuZKEzinj1MeW5880kQLZZMCpUUdLzJskxeJsuooiMiO3GImQqa5heMuBKiBBLCW+pMBfVKgQ\nSc5ljsFGOBP3alQaslZ+xkmBstvgTGHKmbEpLQLG2yhy5jm+51ASZxC5jVjrVI1sO8/zrkI7/Jm4\nh6wbyKThbarq2NRzbDxoI4Of5GhTzjVLwKziB8AbzskdTkv8fomAhAp0VobMJ9XoGHPHnvEqFlWQ\nsVR7zWgmiobfbD2uhiTAyZxmxHdp1wQntolrGcwSfD89Neu1P5nAHDs93VrohhVta8yipl+yCl2/\nG2SAMXHDwWw2rVIDqzUOu0xg9L+7m7x3G3nJ4/Pnq7evgvkrbFI0Ue5jNrLocBC9DgAuXp/7QC8G\nVluPrMldcD65vs8n158Wk9x1reXYiKPuSomDUmlXZYFr2UEoOsGU2UGMzgIxhQ6WSo0pkdglrbK/\nqBCBZqL7RVnjmvEUdMVV/ba4o9MPNIGmZdLdav3d+6dL0xREeBUzHjZpa9wY+z90JGwtl4hfLc4U\njxLLw8axCNGCwri46LZuH4c5C3VcjIo06aZSFSHuWtTHkjrTYNV7WqZur55xiPTGtKzFrmXSbH1k\nzhTzGWd64VoxC0MQGyAZrbeRQKssLqlpJdaJuzYGbQkXJnqhhRE4Bo4lAWmriMDeczNHsveY74Dh\n0qrPbe80reuPk6syJN+jHAitdlDyK/CDtUgpCqEmqQADAL3/9LSREcvxEUq3JsQYB3yM/8Oq09Pm\nMXbQRqvR6ctlC613qujznNKppHJoo98gpUPNqKqBK4+OyMqjY6y8KbY/bFPEeLEaVt92BYMRSSBk\ns6Re3Syiq7XqyyKYZeZjsZjVeyzBgrOiX0fBiJRRgIXYsUvlvRdYi0zzw+Zl/mn9C2tk4L55DQAA\n",
+  "page_capture": {
+    "state": "HTTP_ERROR",
+    "samples": [
+      {
+        "state": "HTTP_ERROR",
+        "at_utc": "2026-10-02T00:22:04.680744+00:00",
+        "text_sha256": "842db679ad4fdaf16df1c141c2d89f1a93959f85b3843e91a9a5c1eda150300f"
+      }
+    ],
+    "contract": "PILOT_CONTENT_READINESS_V1",
+    "http_status": 404,
+    "evidence_kind": "capability_only",
+    "captured_at_utc": "2026-10-02T00:22:04.782317+00:00",
+    "parser_error_class": null,
+    "capture_error_class": null,
+    "navigation_attempts": [
+      {
+        "state": "HTTP_ERROR",
+        "attempt": 1,
+        "html_bytes": 3449,
+        "html_sha256": "33070b7eee9e4a4c6fa86f161dab0b3d2abaf1a16c5039b85d3be452cf886b65",
+        "http_status": 404,
+        "raw_storage": "FINAL_HTML",
+        "captured_at_utc": "2026-10-02T00:22:04.782317+00:00",
+        "navigation_error_class": null
+      }
+    ],
+    "navigation_contract": "PUBLIC_GET_RETRY_V1",
+    "readiness_budget_ms": 20000,
+    "navigation_budget_ms": 210000
+  },
+  "source_resilience_at_admission": {
+    "mode": "CLOSED",
+    "reason": "CAPABILITY_ONLY",
+    "contract": "SOURCE_CIRCUIT_V1",
+    "failures": 0,
+    "open_count": 0,
+    "retry_at_utc": null,
+    "lease_until_utc": "2026-10-02T00:36:57.564466+00:00",
+    "stop_pending_id": null
+  },
+  "purpose": "HISTORICAL_EXTERNAL_FAILURE_REPLAY_NOT_CORRECTED_SLOT",
+  "exported_at_utc": "2026-10-02T07:58:00Z"
+}

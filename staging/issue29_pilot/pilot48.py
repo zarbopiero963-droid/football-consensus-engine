@@ -20,7 +20,7 @@ if ROOT not in sys.path:
 from app.db import connect
 from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
 from staging.structured_predictions import HTML_PARSERS, captured_prematch, diagnostic_match, prediction_key
-from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
+from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state, pilot_run_outcome
 
 BROWSER_API = "https://api.browser-use.com/api/v4/browsers"
 ROME = ZoneInfo("Europe/Rome")
@@ -518,7 +518,7 @@ def _collect_source(source, url, slot_no, anchors, claim):
             invalid_triplets += 1
 
     manifest = {
-        "source_resilience": public_state(claim["state"]),
+        "source_resilience_at_admission": public_state(claim["state"]),
         "pilot_id": PILOT_ID, "source": source, "slot_no": slot_no,
         "browser_timezone_override": "Europe/Rome",
         "rows_parsed": len(preds), "invalid_triplets": invalid_triplets,
@@ -527,6 +527,10 @@ def _collect_source(source, url, slot_no, anchors, claim):
         **run_quality(http_status, len(preds)),
         "page_capture": capture.audit,
     }
+
+    extra_captures = {}
+    run_outcome = pilot_run_outcome(capture.audit, extra_captures)
+    manifest['run_outcome'] = run_outcome
 
     with connect() as conn, conn.cursor() as cur:
         assert_owner(cur, claim)
@@ -542,10 +546,10 @@ def _collect_source(source, url, slot_no, anchors, claim):
             final_url,http_status,browser_session_id,browser_cost,proxy_cost,
             proxy_used_mb,captcha_cost,html_sha256,screenshot_sha256,html_gzip,
             screenshot_png,manifest
-          ) VALUES (%s,%s,%s,%s,%s,%s,'OK',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+          ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
           ON CONFLICT (pilot_id,source,slot_no) DO NOTHING
         """, (
-            run_id,PILOT_ID,source,slot_no,started,utcnow(),final_url,http_status,sid,
+            run_id,PILOT_ID,source,slot_no,started,utcnow(),run_outcome["status"],final_url,http_status,sid,
             fnum(sess.get("browserCost")),fnum(sess.get("proxyCost")),
             fnum(sess.get("proxyUsedMb")),fnum(sess.get("captchaCost") or 0),
             sha(html),sha(shot),gzip.compress(html, compresslevel=6),shot,json.dumps(manifest)
@@ -577,6 +581,7 @@ def _collect_source(source, url, slot_no, anchors, claim):
 
     return {
         "source": source, "run_id": run_id, "rows": len(preds),
+        "status": run_outcome["status"], "run_outcome": run_outcome,
         "http_status": http_status,
         "page_capture": capture_summary(capture.audit),
         "session": {k:sess.get(k) for k in ("browserCost","proxyCost","proxyUsedMb","captchaCost")},

@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 from app.db import connect
 from app.result_validation import upsert_observation
 from staging.page_capture import navigate_capture, confirmed_browser_stop, capture_summary
-from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state
+from app.source_resilience import run_source, SourceCircuit, assert_owner, public_state, pilot_run_outcome
 from app.source_fallback import pilot_fallback_report
 from staging.result_sources.worldfootball import (CONTRACT as WORLDFOOTBALL_CONTRACT,
     parse_html as parse_worldfootball_html, parse_document as worldfootball_document)
@@ -452,7 +452,7 @@ def _collect_source(source, url, slot_no, claim):
             match_rejections[match_status] += 1
     observation_stats = {"parsed": len(normalized_rows), "matched": 0, "persisted": 0}
     manifest = {
-        "source_resilience": public_state(claim["state"]),
+        "source_resilience_at_admission": public_state(claim["state"]),
         "pilot_id": PILOT_ID,
         "source": source,
         "slot_no": slot_no,
@@ -471,6 +471,10 @@ def _collect_source(source, url, slot_no, claim):
     if source == "worldfootball":
         manifest["result_parser_audit"] = parser_audit
 
+    extra_captures = {}
+    run_outcome = pilot_run_outcome(capture.audit, extra_captures)
+    manifest['run_outcome'] = run_outcome
+
     with connect() as conn, conn.cursor() as cur:
         assert_owner(cur, claim)
         observation_stats = persist_pilot_observations(source, normalized_rows, observed_at, sha(html), cursor=cur, anchors=anchors)
@@ -481,7 +485,7 @@ def _collect_source(source, url, slot_no, claim):
                  final_url,http_status,browser_session_id,browser_cost,proxy_cost,
                  proxy_used_mb,captcha_cost,rows_found,capabilities,html_sha256,
                  screenshot_sha256,html_gzip,screenshot_png,manifest
-               ) VALUES (%s,%s,%s,%s,%s,%s,'OK',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb)
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb)
                ON CONFLICT (pilot_id,source,slot_no) DO NOTHING""",
             (
                 run_id,
@@ -490,6 +494,7 @@ def _collect_source(source, url, slot_no, claim):
                 slot_no,
                 started,
                 utcnow(),
+                run_outcome["status"],
                 final_url,
                 http_status,
                 sid,
@@ -512,6 +517,8 @@ def _collect_source(source, url, slot_no, claim):
         "source": source,
         "run_id": run_id,
         "rows_found": rows_found,
+        "status": run_outcome["status"],
+        "run_outcome": run_outcome,
         "capabilities": capabilities,
         "normalized_observations": observation_stats,
         "fallback_candidates": fallback_candidates,

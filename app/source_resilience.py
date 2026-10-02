@@ -112,6 +112,24 @@ def capture_fault(outcome):
                          status in {401, 403, 404, 429}}
 
 
+def pilot_run_outcome(page_capture, extra_page_captures=None):
+    """Classify a captured run before sealing it, using the circuit's policy.
+
+    Availability is distinct from parsed/qualified data. Healthy extra pages
+    preserve partial availability; their own failures remain in the manifest.
+    This is the capture outcome, never a prediction of the final circuit state.
+    """
+    extras = extra_page_captures or {}
+    fault = capture_fault({'page_capture': page_capture, 'extra_page_captures': extras})
+    states = {'main': page_capture['state'], **{k: v['state'] for k, v in extras.items()}}
+    return {'contract': 'PILOT_RUN_OUTCOME_V1',
+            'status': 'ERROR' if fault['failed'] else 'OK', 'reason': fault['reason'],
+            'partial': not fault['failed'] and any(
+                state in {'READY_PARSED', 'CAPABILITY_ONLY'} for state in states.values()) and any(
+                state not in {'READY_PARSED', 'CAPABILITY_ONLY'} for state in states.values()),
+            'capture_states': states}
+
+
 class SourceCircuit:
     def __init__(self, connect, key):
         self.connect, self.key = connect, key
