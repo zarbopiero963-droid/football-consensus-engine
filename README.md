@@ -575,6 +575,13 @@ Tools exposed by `bridge.server`:
 - `browser_screenshot`
 - `browser_get_network_responses`
 - `browser_stop`
+- `browser_list_sessions`
+- `browser_session_status`
+- `browser_reap`
+- `browser_stop_all_idle`
+- `browser_stop_all`
+- `browser_health`
+- `browser_cleanup_report`
 
 The Browser Use `cdpUrl` is treated as a bearer-like capability and is kept in process memory only. It is never returned by an MCP tool, committed, or logged by the bridge. Browser sessions stay connected between tool calls and are terminated explicitly with `browser_stop`.
 
@@ -635,7 +642,15 @@ A background reaper checks every minute for expired idle leases; active leases
 and busy local operations are excluded. A failed remote stop remains durable and
 retries after a one-minute backoff, including after worker restart. Shutdown stops
 owned local sessions. `browser_reap` offers an explicit idle cleanup (minimum 60
-seconds, default 300); it uses the same ownership and lease guards.
+seconds, default 300); it uses the same ownership and lease guards. Invalid
+manual thresholds return a structured `INVALID_IDLE_SECONDS` result instead of
+an opaque MCP exception. `browser_list_sessions` and `browser_session_status`
+read only the bridge-owned durable lease ledger and never expose CDP URLs,
+credentials or provider-wide browser inventories. `browser_stop_all_idle` uses
+the same safe reaper rules; `browser_stop_all` is an emergency stop limited to
+sessions local to the current worker. `browser_health` reports only booleans and
+sanitized lifecycle state, while `browser_cleanup_report` summarizes durable
+states, local/busy sessions and the last reaper error.
 
 Each navigation captures at most 500 response metadata records and removes its
 own response listener on success, failure or cancellation. A disabled capture
