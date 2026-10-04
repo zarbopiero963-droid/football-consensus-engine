@@ -583,6 +583,25 @@ The bridge rejects non-HTTP(S), credential-bearing, loopback, private, link-loca
 PR3 adds the MCP server implementation only. Public deployment, authentication and Render configuration are intentionally deferred to the next PR.
 
 
+## Optional CloakBrowser provider
+
+The MCP bridge can optionally launch a **bridge-owned local CloakBrowser** session while keeping Browser Use Cloud as the default provider.
+
+Tools:
+- `browser_create` → Browser Use Cloud, unchanged;
+- `browser_create_cloak` → CloakBrowser only when explicitly enabled server-side.
+
+Server-side environment:
+- `CLOAKBROWSER_ENABLED=true` enables the optional tool;
+- `CLOAKBROWSER_LICENSE_KEY` is consumed by CloakBrowser and is never returned/logged;
+- `CLOAKBROWSER_PROXY_URL` is optional and remains server-side;
+- `CLOAKBROWSER_HEADLESS=true|false`;
+- `CLOAKBROWSER_HUMANIZE=true|false`.
+
+CloakBrowser sessions use opaque IDs prefixed `cloak-`. No CDP URL is returned by MCP, persisted, or logged. The local child browser is owned by the bridge and is closed by the same `browser_stop` lifecycle used by Browser Use sessions. Reaper cleanup is provider-aware through the opaque session prefix. Browser Use Cloud behavior is unchanged when CloakBrowser is disabled.
+
+The existing URL guard, OAuth, lease, timeout, raw DOM/network contract and access policy remain in force. The optional browser provider does not grant permission to bypass authentication, paywalls, CAPTCHA or other access controls.
+
 ## Secure MCP bridge deployment
 
 The public bridge endpoint is mounted at `/mcp` and requires:
