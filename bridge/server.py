@@ -84,7 +84,7 @@ async def browser_get_network_responses(session_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def browser_stop(session_id: str) -> dict[str, Any]:
-    """Stop the Browser Use cloud browser and remove its in-memory CDP capability."""
+    """Stop the bridge-owned browser session and remove its in-memory capabilities."""
     return await bridge.stop(session_id)
 
 
