@@ -120,8 +120,6 @@ async def healthz(_request: Request):
         {
             "ok": True,
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
-            "cloakbrowser_enabled": bridge._cloak_enabled(),
-            "cloakbrowser_license_configured": bool(os.environ.get("CLOAKBROWSER_LICENSE_KEY", "").strip()),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
         }
