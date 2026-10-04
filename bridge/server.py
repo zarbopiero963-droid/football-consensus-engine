@@ -231,7 +231,8 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
                          created.get("provider"), created.get("status"), opened.get("title"), opened.get("http_status"))
             except Exception as exc:
                 from bridge.browser_use import LOG
-                LOG.error("CLOAK_STARTUP_SMOKE_FAILED error=%s", type(exc).__name__)
+                detail = re.sub(r'(?i)(token|key|password|secret)=?[^\\s,;]+', r'\\1=[REDACTED]', str(exc))[:1200]
+                LOG.error("CLOAK_STARTUP_SMOKE_FAILED error=%s detail=%s", type(exc).__name__, detail)
             finally:
                 if smoke_session:
                     try:
