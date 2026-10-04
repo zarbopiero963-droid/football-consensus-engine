@@ -126,6 +126,34 @@ async def healthz(_request: Request):
     )
 
 
+async def internal_cloak_smoke(request: Request):
+    expected = os.environ.get("CLOAK_SMOKE_TOKEN", "").strip()
+    supplied = request.headers.get("x-cloak-smoke-token", "")
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+    session_id = None
+    try:
+        created = await bridge.create_cloak()
+        session_id = created["session_id"]
+        opened = await bridge.open_url(session_id, "https://example.com", "domcontentloaded", 45000, False)
+        return JSONResponse({
+            "ok": True,
+            "provider": created.get("provider"),
+            "status": created.get("status"),
+            "title": opened.get("title"),
+            "http_status": opened.get("http_status"),
+        })
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": type(exc).__name__}, status_code=502)
+    finally:
+        if session_id:
+            try:
+                await bridge.stop(session_id)
+            except Exception:
+                pass
+
+
 async def internal_pinnacle_leagues(request: Request):
     expected = os.environ.get("COLLECTOR_BRIDGE_TOKEN", "").strip()
     supplied = request.headers.get("x-collector-token", "")
@@ -238,6 +266,7 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/internal/cloak-smoke", internal_cloak_smoke, methods=["GET"]),
         Route("/internal/pinnacle/leagues", internal_pinnacle_leagues, methods=["GET"]),
         Route('/internal/pinnacle/league-batch', internal_pinnacle_league_batch, methods=['GET']),
         Route("/.well-known/oauth-protected-resource", oauth.protected_resource, methods=["GET"]),
