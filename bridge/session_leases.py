@@ -62,3 +62,42 @@ def finish(session_id, owner_id, success, error='', retry_seconds=60):
                            ('STOPPED' if success else 'STOP_FAILED', error, retry_seconds, session_id, owner_id)).fetchone()
         if row is None:
             raise RuntimeError('Browser stop ownership changed before completion')
+
+
+def get_session(session_id):
+    with connect() as conn:
+        row = conn.execute('''SELECT session_id,state,created_at,last_activity_at,lease_until,
+                                     updated_at,stop_error
+                              FROM browser_session_leases
+                              WHERE session_id=%s''', (session_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def list_sessions(include_stopped=False, limit=200):
+    if type(include_stopped) is not bool:
+        raise ValueError('include_stopped must be boolean')
+    if type(limit) is not int or not 1 <= limit <= 500:
+        raise ValueError('limit must be between 1 and 500')
+    where = '' if include_stopped else "WHERE state <> 'STOPPED'"
+    with connect() as conn:
+        rows = conn.execute(f'''SELECT session_id,state,created_at,last_activity_at,lease_until,
+                                      updated_at,stop_error
+                               FROM browser_session_leases
+                               {where}
+                               ORDER BY created_at DESC
+                               LIMIT %s''', (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+
+def state_summary():
+    with connect() as conn:
+        rows = conn.execute('''SELECT state,COUNT(*) AS count
+                               FROM browser_session_leases
+                               GROUP BY state''').fetchall()
+        return {row['state']: int(row['count']) for row in rows}
+
+
+def healthcheck():
+    with connect() as conn:
+        row = conn.execute('SELECT 1 AS ok').fetchone()
+        return bool(row and row['ok'] == 1)

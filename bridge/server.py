@@ -89,9 +89,45 @@ async def browser_stop(session_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def browser_list_sessions(include_stopped: bool = False, limit: int = 200) -> dict[str, Any]:
+    """List durable bridge-owned browser sessions without exposing provider capabilities."""
+    return await bridge.list_sessions(include_stopped, limit)
+
+
+@mcp.tool()
+async def browser_session_status(session_id: str) -> dict[str, Any]:
+    """Return lifecycle status for one bridge-owned browser session."""
+    return await bridge.session_status(session_id)
+
+
+@mcp.tool()
 async def browser_reap(idle_seconds: int = 300) -> dict[str, Any]:
-    """Stop only bridge-owned expired idle leases; active operations are excluded."""
+    """Stop expired idle bridge leases; invalid thresholds return a structured error."""
     return await bridge.reap(idle_seconds)
+
+
+@mcp.tool()
+async def browser_stop_all_idle(idle_seconds: int = 300) -> dict[str, Any]:
+    """Stop expired idle bridge sessions while excluding active local operations."""
+    return await bridge.stop_all_idle(idle_seconds)
+
+
+@mcp.tool()
+async def browser_stop_all() -> dict[str, Any]:
+    """Emergency stop for all sessions local to this bridge worker."""
+    return await bridge.stop_all()
+
+
+@mcp.tool()
+async def browser_health() -> dict[str, Any]:
+    """Return bridge/database/provider configuration health without exposing secrets."""
+    return await bridge.health()
+
+
+@mcp.tool()
+async def browser_cleanup_report() -> dict[str, Any]:
+    """Return durable/local cleanup counts and the last reaper failure, if any."""
+    return await bridge.cleanup_report()
 
 
 class OAuthBearerMiddleware(BaseHTTPMiddleware):
