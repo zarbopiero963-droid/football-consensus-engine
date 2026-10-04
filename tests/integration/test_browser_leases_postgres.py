@@ -96,3 +96,24 @@ def test_failed_remote_stop_is_durable_and_retryable_after_restart(database, mon
     stop.assert_awaited_once_with('orphan')
     assert state(database, 'orphan')['state'] == 'STOPPED'
     assert session_leases.claim_stale('later') == []
+
+
+def test_inventory_and_status_queries_use_only_durable_bridge_rows(database):
+    session_leases.register('browser-use-owned', 'worker-a')
+    session_leases.register('cloak-owned', 'worker-b')
+    with database() as conn:
+        conn.execute("UPDATE browser_session_leases SET state='STOPPED' WHERE session_id='browser-use-owned'")
+
+    open_rows = session_leases.list_sessions()
+    all_rows = session_leases.list_sessions(include_stopped=True)
+    cloak = session_leases.get_session('cloak-owned')
+
+    assert [row['session_id'] for row in open_rows] == ['cloak-owned']
+    assert {row['session_id'] for row in all_rows} == {'browser-use-owned', 'cloak-owned'}
+    assert cloak['state'] == 'ACTIVE'
+    assert 'owner_id' not in cloak
+    assert session_leases.get_session('missing') is None
+    assert session_leases.healthcheck() is True
+    summary = session_leases.state_summary()
+    assert summary['ACTIVE'] == 1
+    assert summary['STOPPED'] == 1
