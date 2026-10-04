@@ -8,6 +8,7 @@ import uuid
 import logging
 import hashlib
 import json
+import importlib.util
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from collections import deque
@@ -449,9 +450,98 @@ class BrowserUseBridge:
             session.closing = True
             return await self._stop_claimed(session_id)
 
+    @staticmethod
+    def _provider_from_session_id(session_id: str) -> str:
+        return "cloak" if str(session_id).startswith("cloak-") else "browser_use"
+
+    @staticmethod
+    def _iso(value):
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    async def _decorate_lease(self, row: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(row["session_id"])
+        async with self._lock:
+            local = self._sessions.get(session_id)
+        return {
+            "session_id": session_id,
+            "provider": self._provider_from_session_id(session_id),
+            "state": row["state"],
+            "created_at": self._iso(row.get("created_at")),
+            "last_activity_at": self._iso(row.get("last_activity_at")),
+            "lease_until": self._iso(row.get("lease_until")),
+            "updated_at": self._iso(row.get("updated_at")),
+            "stop_error": row.get("stop_error") or None,
+            "local": local is not None,
+            "active_operation": local.operation_lock.locked() if local is not None else None,
+            "closing": local.closing if local is not None else None,
+        }
+
+    async def list_sessions(self, include_stopped: bool = False, limit: int = 200) -> dict[str, Any]:
+        rows = await asyncio.to_thread(session_leases.list_sessions, include_stopped, limit)
+        sessions = [await self._decorate_lease(row) for row in rows]
+        return {"sessions": sessions, "count": len(sessions), "include_stopped": include_stopped}
+
+    async def session_status(self, session_id: str) -> dict[str, Any]:
+        row = await asyncio.to_thread(session_leases.get_session, session_id)
+        if row is None:
+            raise KeyError("unknown browser session")
+        return await self._decorate_lease(row)
+
+    async def health(self) -> dict[str, Any]:
+        try:
+            database_ok = await asyncio.to_thread(session_leases.healthcheck)
+        except Exception:
+            database_ok = False
+        browser_use_configured = bool(os.environ.get("BROWSER_USE_API_KEY", "").strip())
+        cloak_enabled = self._cloak_enabled()
+        cloak_runtime_available = importlib.util.find_spec("cloakbrowser") is not None
+        async with self._lock:
+            local_count = len(self._sessions)
+        return {
+            "ok": bool(database_ok and (browser_use_configured or cloak_enabled)),
+            "database_ok": database_ok,
+            "providers": {
+                "browser_use": {"configured": browser_use_configured},
+                "cloak": {"enabled": cloak_enabled, "runtime_available": cloak_runtime_available},
+            },
+            "local_session_count": local_count,
+            "reaper_error": self.reaper_error,
+        }
+
+    async def cleanup_report(self) -> dict[str, Any]:
+        try:
+            states = await asyncio.to_thread(session_leases.state_summary)
+            database_ok = True
+        except Exception as exc:
+            states = {}
+            database_ok = False
+            error = type(exc).__name__
+        async with self._lock:
+            local = list(self._sessions.values())
+        report = {
+            "database_ok": database_ok,
+            "states": states,
+            "open_durable_sessions": sum(
+                states.get(name, 0) for name in ("ACTIVE", "STOPPING", "STOP_FAILED")
+            ),
+            "local_sessions": len(local),
+            "local_busy_sessions": sum(1 for session in local if session.operation_lock.locked()),
+            "last_reaper_error": self.reaper_error,
+        }
+        if not database_ok:
+            report["error"] = error
+        return report
+
     async def reap(self, idle_seconds=300):
-        if not 60 <= idle_seconds <= 21600:
-            raise ValueError('idle_seconds must be between 60 and 21600')
+        if type(idle_seconds) is not int or not 60 <= idle_seconds <= 21600:
+            return {
+                'stopped': [],
+                'failed': [],
+                'error': 'INVALID_IDLE_SECONDS',
+                'idle_seconds': idle_seconds,
+                'min_idle_seconds': 60,
+                'max_idle_seconds': 21600,
+            }
         async with self._lock:
             busy = [sid for sid, session in self._sessions.items() if session.operation_lock.locked()]
         ids = await asyncio.to_thread(session_leases.claim_stale, self._owner_id, idle_seconds, busy)
@@ -470,6 +560,9 @@ class BrowserUseBridge:
             except Exception as exc:
                 failed.append({'session_id': session_id, 'error': type(exc).__name__})
         return {'stopped': stopped, 'failed': failed}
+
+    async def stop_all_idle(self, idle_seconds=300) -> dict[str, Any]:
+        return await self.reap(idle_seconds)
 
     async def reaper_loop(self):
         while True:
