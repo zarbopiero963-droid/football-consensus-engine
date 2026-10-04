@@ -41,6 +41,7 @@ class Session:
     id: str
     cdp_url: str
     live_url: str | None
+    provider: str = "browser_use"
     created_monotonic: float = field(default_factory=time.monotonic)
     last_network: list[dict[str, Any]] = field(default_factory=list)
     playwright: Playwright | None = None
@@ -111,6 +112,64 @@ class BrowserUseBridge:
             "live_url": session.live_url,
         }
 
+    @staticmethod
+    def _cloak_enabled() -> bool:
+        return os.environ.get("CLOAKBROWSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _cloak_headless() -> bool:
+        return os.environ.get("CLOAKBROWSER_HEADLESS", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+    async def _launch_cloak(self):
+        try:
+            from cloakbrowser import launch_async
+        except Exception as exc:
+            raise RuntimeError("CloakBrowser runtime unavailable") from exc
+
+        kwargs: dict[str, Any] = {
+            "headless": self._cloak_headless(),
+            "humanize": os.environ.get("CLOAKBROWSER_HUMANIZE", "true").strip().lower() in {"1", "true", "yes", "on"},
+        }
+        proxy = os.environ.get("CLOAKBROWSER_PROXY_URL", "").strip()
+        if proxy:
+            kwargs["proxy"] = proxy
+
+        # CLOAKBROWSER_LICENSE_KEY is consumed by the upstream library directly.
+        return await launch_async(**kwargs)
+
+    async def create_cloak(self) -> dict[str, Any]:
+        """Create one bridge-owned CloakBrowser session. No CDP or secret is returned."""
+        if not self._cloak_enabled():
+            raise RuntimeError("CloakBrowser is not enabled")
+
+        browser = await self._launch_cloak()
+        session_id = "cloak-" + uuid.uuid4().hex
+        session = Session(
+            id=session_id,
+            cdp_url="local-cloak-owned",
+            live_url=None,
+            provider="cloak",
+            browser=browser,
+        )
+        try:
+            session.context = await browser.new_context()
+            session.page = await session.context.new_page()
+            async def guard(route):
+                await self._navigation_guard(route, session)
+            await session.context.route("**/*", guard)
+            session.navigation_guard_installed = True
+            await asyncio.to_thread(session_leases.register, session.id, self._owner_id)
+        except Exception:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            raise
+
+        async with self._lock:
+            self._sessions[session.id] = session
+        return {"session_id": session.id, "status": "active", "provider": "cloak"}
+
     async def _session(self, session_id: str) -> Session:
         async with self._lock:
             session = self._sessions.get(session_id)
@@ -150,6 +209,9 @@ class BrowserUseBridge:
     async def _page(self, session: Session) -> Page:
         if session.browser is not None and session.browser.is_connected() and session.page is not None:
             return session.page
+
+        if session.provider == "cloak":
+            raise RuntimeError("CloakBrowser session is no longer connected")
 
         await self._drop_local(session)
 
@@ -304,8 +366,16 @@ class BrowserUseBridge:
         }
 
     async def _drop_local(self, session: Session) -> None:
-        # Do not call Browser.close(): the Browser Use API owns the remote browser lifecycle.
+        # Browser Use owns its remote browser lifecycle; CloakBrowser is owned locally.
         try:
+            if session.provider == "cloak" and session.browser is not None:
+                try:
+                    await session.browser.close()
+                except Exception:
+                    # Cleanup must still clear all local references even if the child browser
+                    # already exited.
+                    if session.browser.is_connected():
+                        raise
             if session.playwright is not None:
                 await session.playwright.stop()
         finally:
@@ -316,6 +386,11 @@ class BrowserUseBridge:
             session.navigation_guard_installed = False
 
     async def _stop_remote(self, session_id):
+        # CloakBrowser sessions are local child processes. Their lifecycle is handled
+        # by _drop_local; orphan durable leases after a worker restart require no
+        # provider API call.
+        if str(session_id).startswith("cloak-"):
+            return
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.patch(f"{API_ROOT}/browsers/{session_id}",
                                           headers=self._headers(), json={"action": "stop"})

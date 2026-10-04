@@ -37,6 +37,12 @@ async def browser_create(proxy_country_code: str | None = None) -> dict[str, Any
 
 
 @mcp.tool()
+async def browser_create_cloak() -> dict[str, Any]:
+    """Create one bridge-owned CloakBrowser session when server-side enabled."""
+    return await bridge.create_cloak()
+
+
+@mcp.tool()
 async def browser_open_url(
     session_id: str,
     url: str,
@@ -78,7 +84,7 @@ async def browser_get_network_responses(session_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def browser_stop(session_id: str) -> dict[str, Any]:
-    """Stop the Browser Use cloud browser and remove its in-memory CDP capability."""
+    """Stop the bridge-owned browser session and remove its in-memory capabilities."""
     return await bridge.stop(session_id)
 
 
