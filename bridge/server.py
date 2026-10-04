@@ -126,34 +126,6 @@ async def healthz(_request: Request):
     )
 
 
-async def internal_cloak_smoke(request: Request):
-    expected = os.environ.get("CLOAK_SMOKE_TOKEN", "").strip()
-    supplied = request.headers.get("x-cloak-smoke-token", "")
-    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
-        return JSONResponse({"detail": "unauthorized"}, status_code=401)
-
-    session_id = None
-    try:
-        created = await bridge.create_cloak()
-        session_id = created["session_id"]
-        opened = await bridge.open_url(session_id, "https://example.com", "domcontentloaded", 45000, False)
-        return JSONResponse({
-            "ok": True,
-            "provider": created.get("provider"),
-            "status": created.get("status"),
-            "title": opened.get("title"),
-            "http_status": opened.get("http_status"),
-        })
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": type(exc).__name__}, status_code=502)
-    finally:
-        if session_id:
-            try:
-                await bridge.stop(session_id)
-            except Exception:
-                pass
-
-
 async def internal_pinnacle_leagues(request: Request):
     expected = os.environ.get("COLLECTOR_BRIDGE_TOKEN", "").strip()
     supplied = request.headers.get("x-collector-token", "")
@@ -248,6 +220,25 @@ mcp_app = mcp.streamable_http_app(
 @asynccontextmanager
 async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     async with mcp.session_manager.run():
+        if os.environ.get("CLOAK_STARTUP_SMOKE", "").strip().lower() in {"1", "true", "yes", "on"}:
+            smoke_session = None
+            try:
+                created = await bridge.create_cloak()
+                smoke_session = created["session_id"]
+                opened = await bridge.open_url(smoke_session, "https://example.com", "domcontentloaded", 45000, False)
+                from bridge.browser_use import LOG
+                LOG.info("CLOAK_STARTUP_SMOKE_OK provider=%s status=%s title=%s http_status=%s",
+                         created.get("provider"), created.get("status"), opened.get("title"), opened.get("http_status"))
+            except Exception as exc:
+                from bridge.browser_use import LOG
+                LOG.error("CLOAK_STARTUP_SMOKE_FAILED error=%s", type(exc).__name__)
+            finally:
+                if smoke_session:
+                    try:
+                        await bridge.stop(smoke_session)
+                    except Exception as exc:
+                        from bridge.browser_use import LOG
+                        LOG.error("CLOAK_STARTUP_SMOKE_STOP_FAILED error=%s", type(exc).__name__)
         reaper = asyncio.create_task(bridge.reaper_loop())
         try:
             yield
@@ -266,7 +257,6 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=[
         Route("/healthz", healthz, methods=["GET"]),
-        Route("/internal/cloak-smoke", internal_cloak_smoke, methods=["GET"]),
         Route("/internal/pinnacle/leagues", internal_pinnacle_leagues, methods=["GET"]),
         Route('/internal/pinnacle/league-batch', internal_pinnacle_league_batch, methods=['GET']),
         Route("/.well-known/oauth-protected-resource", oauth.protected_resource, methods=["GET"]),
