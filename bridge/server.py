@@ -37,6 +37,12 @@ async def browser_create(proxy_country_code: str | None = None) -> dict[str, Any
 
 
 @mcp.tool()
+async def browser_create_cloak() -> dict[str, Any]:
+    """Create one bridge-owned CloakBrowser session when server-side enabled."""
+    return await bridge.create_cloak()
+
+
+@mcp.tool()
 async def browser_open_url(
     session_id: str,
     url: str,
@@ -114,6 +120,8 @@ async def healthz(_request: Request):
         {
             "ok": True,
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
+            "cloakbrowser_enabled": bridge._cloak_enabled(),
+            "cloakbrowser_license_configured": bool(os.environ.get("CLOAKBROWSER_LICENSE_KEY", "").strip()),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
         }
