@@ -91,9 +91,16 @@ def test_stolen_lease_fails_before_page_operation(monkeypatch):
 
 
 @pytest.mark.parametrize('seconds', [0, 59, 21601])
-def test_reaper_rejects_unsafe_idle_threshold(seconds):
-    with pytest.raises(ValueError):
-        run(BrowserUseBridge().reap(seconds))
+def test_reaper_returns_structured_error_for_unsafe_idle_threshold(seconds):
+    result = run(BrowserUseBridge().reap(seconds))
+    assert result == {
+        'stopped': [],
+        'failed': [],
+        'error': 'INVALID_IDLE_SECONDS',
+        'idle_seconds': seconds,
+        'min_idle_seconds': 60,
+        'max_idle_seconds': 21600,
+    }
 
 
 def test_cleanup_failure_is_visible_and_drops_capability_references(monkeypatch):
@@ -134,3 +141,56 @@ def test_reclaimed_stop_never_contacts_provider(monkeypatch):
     with pytest.raises(RuntimeError, match='ownership lost'):
         run(bridge._stop_claimed('owned'))
     remote.assert_not_awaited()
+
+
+def test_session_inventory_and_status_do_not_expose_capabilities(monkeypatch):
+    bridge = BrowserUseBridge()
+    bridge._sessions['cloak-live'] = Session('cloak-live', 'secret-cdp-value', None, provider='cloak')
+    rows = [{
+        'session_id': 'cloak-live',
+        'state': 'ACTIVE',
+        'created_at': None,
+        'last_activity_at': None,
+        'lease_until': None,
+        'updated_at': None,
+        'stop_error': '',
+    }]
+    monkeypatch.setattr(session_leases, 'list_sessions', lambda *args: rows)
+    monkeypatch.setattr(session_leases, 'get_session', lambda *args: rows[0])
+
+    inventory = run(bridge.list_sessions())
+    status = run(bridge.session_status('cloak-live'))
+
+    assert inventory['count'] == 1
+    assert status['provider'] == 'cloak'
+    assert status['local'] is True
+    assert status['active_operation'] is False
+    assert 'secret-cdp-value' not in repr(inventory)
+    assert 'cdp' not in repr(inventory).lower()
+
+
+def test_stop_all_idle_delegates_to_safe_reaper(monkeypatch):
+    bridge = BrowserUseBridge()
+    reap = AsyncMock(return_value={'stopped': ['idle'], 'failed': []})
+    monkeypatch.setattr(bridge, 'reap', reap)
+    assert run(bridge.stop_all_idle(600)) == {'stopped': ['idle'], 'failed': []}
+    reap.assert_awaited_once_with(600)
+
+
+def test_health_and_cleanup_report_never_return_secret_values(monkeypatch):
+    bridge = BrowserUseBridge()
+    monkeypatch.setenv('BROWSER_USE_API_KEY', 'super-secret-key')
+    monkeypatch.setenv('CLOAKBROWSER_LICENSE_KEY', 'super-secret-license')
+    monkeypatch.setattr(session_leases, 'healthcheck', lambda: True)
+    monkeypatch.setattr(session_leases, 'state_summary',
+                        lambda: {'ACTIVE': 2, 'STOPPING': 1, 'STOP_FAILED': 1, 'STOPPED': 9})
+
+    health = run(bridge.health())
+    report = run(bridge.cleanup_report())
+    rendered = repr((health, report))
+
+    assert health['database_ok'] is True
+    assert health['providers']['browser_use']['configured'] is True
+    assert report['open_durable_sessions'] == 4
+    assert 'super-secret-key' not in rendered
+    assert 'super-secret-license' not in rendered
