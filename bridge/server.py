@@ -221,25 +221,43 @@ mcp_app = mcp.streamable_http_app(
 async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     async with mcp.session_manager.run():
         if os.environ.get("CLOAK_STARTUP_SMOKE", "").strip().lower() in {"1", "true", "yes", "on"}:
-            smoke_session = None
+            smoke_browser = None
             try:
-                created = await bridge.create_cloak()
-                smoke_session = created["session_id"]
-                opened = await bridge.open_url(smoke_session, "https://example.com", "domcontentloaded", 45000, False)
+                # Runtime-only smoke: this disposable service intentionally has no
+                # lease database. Production create_cloak still requires durable leases.
+                smoke_browser = await bridge._launch_cloak()
+                smoke_page = await smoke_browser.new_page()
+                response = await smoke_page.goto(
+                    "https://example.com", wait_until="domcontentloaded", timeout=45000
+                )
                 from bridge.browser_use import LOG
-                LOG.info("CLOAK_STARTUP_SMOKE_OK provider=%s status=%s title=%s http_status=%s",
-                         created.get("provider"), created.get("status"), opened.get("title"), opened.get("http_status"))
+                LOG.info(
+                    "CLOAK_STARTUP_SMOKE_OK title=%s http_status=%s",
+                    await smoke_page.title(),
+                    response.status if response else None,
+                )
             except Exception as exc:
                 from bridge.browser_use import LOG
-                detail = re.sub(r'(?i)(token|key|password|secret)=?[^\\s,;]+', r'\\1=[REDACTED]', str(exc))[:1200]
-                LOG.error("CLOAK_STARTUP_SMOKE_FAILED error=%s detail=%s", type(exc).__name__, detail)
+                detail = re.sub(
+                    r'(?i)(token|key|password|secret)=?[^\\s,;]+',
+                    r'\\1=[REDACTED]',
+                    str(exc),
+                )[:1200]
+                LOG.error(
+                    "CLOAK_STARTUP_SMOKE_FAILED error=%s detail=%s",
+                    type(exc).__name__,
+                    detail,
+                )
             finally:
-                if smoke_session:
+                if smoke_browser:
                     try:
-                        await bridge.stop(smoke_session)
+                        await smoke_browser.close()
                     except Exception as exc:
                         from bridge.browser_use import LOG
-                        LOG.error("CLOAK_STARTUP_SMOKE_STOP_FAILED error=%s", type(exc).__name__)
+                        LOG.error(
+                            "CLOAK_STARTUP_SMOKE_STOP_FAILED error=%s",
+                            type(exc).__name__,
+                        )
         reaper = asyncio.create_task(bridge.reaper_loop())
         try:
             yield
