@@ -407,6 +407,14 @@ class BrowserUseBridge:
     def _bounded_timeout(timeout_ms: int) -> int:
         return max(250, min(int(timeout_ms), 120000))
 
+    @staticmethod
+    def _stop_lock_timeout_seconds() -> float:
+        try:
+            value = float(os.environ.get("BROWSER_STOP_LOCK_TIMEOUT_SECONDS", "8"))
+        except ValueError:
+            value = 8.0
+        return max(0.05, min(value, 30.0))
+
     @session_operation
     async def click(
         self,
@@ -834,7 +842,7 @@ class BrowserUseBridge:
     async def stop(self, session_id: str) -> dict[str, Any]:
         session = await self._session(session_id)
         try:
-            async with asyncio.timeout(8):
+            async with asyncio.timeout(self._stop_lock_timeout_seconds()):
                 async with session.operation_lock:
                     claimed = await asyncio.to_thread(session_leases.claim_stop, session_id, self._owner_id)
                     if not claimed:
