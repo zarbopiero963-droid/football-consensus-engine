@@ -379,16 +379,23 @@ class BrowserUseBridge:
         session = await self._session(session_id)
         page = await self._page(session)
         if session.provider == "cloak":
-            # CloakBrowser's humanization layer patches Page actions directly.
-            # Using Locator.click can fail on otherwise valid targets in the
-            # wrapper, while Page.click keeps the same selector semantics and
-            # routes through Cloak's supported humanized action path.
-            await page.click(
-                selector,
-                button=button,
-                click_count=click_count,
-                timeout=self._bounded_timeout(timeout_ms),
-            )
+            # CloakBrowser's humanization layer can time out on valid elements.
+            # Prefer its page-level action, then fall back to a DOM click for
+            # ordinary left-clicks so the bridge remains usable on reactive UIs.
+            try:
+                await page.click(
+                    selector,
+                    button=button,
+                    click_count=click_count,
+                    timeout=self._bounded_timeout(timeout_ms),
+                )
+            except Exception:
+                if button != "left":
+                    raise
+                await page.locator(selector).first.evaluate(
+                    "(el, count) => { for (let i = 0; i < count; i++) el.click(); }",
+                    click_count,
+                )
         else:
             await page.locator(selector).first.click(
                 button=button,
@@ -410,10 +417,24 @@ class BrowserUseBridge:
         session = await self._session(session_id)
         page = await self._page(session)
         if session.provider == "cloak":
-            # Prefer Page.fill for CloakBrowser: the humanized wrapper owns the
-            # page-level action path and can reject Locator.fill even when the
-            # same selector is visible and actionable.
-            await page.fill(selector, value, timeout=self._bounded_timeout(timeout_ms))
+            # Prefer Cloak's humanized Page.fill, but some reactive inputs time
+            # out despite being present in the DOM. Fall back to the native
+            # value setter and dispatch the same input/change events a form
+            # framework expects. The supplied value is never returned.
+            try:
+                await page.fill(selector, value, timeout=self._bounded_timeout(timeout_ms))
+            except Exception:
+                await page.locator(selector).first.evaluate(
+                    """(el, value) => {
+                        const proto = Object.getPrototypeOf(el);
+                        const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                        if (descriptor && descriptor.set) descriptor.set.call(el, value);
+                        else el.value = value;
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    value,
+                )
         else:
             await page.locator(selector).first.fill(value, timeout=self._bounded_timeout(timeout_ms))
         # Never echo filled text: this tool is intentionally safe for credentials.

@@ -76,3 +76,30 @@ def test_click_uses_provider_compatible_action_path(monkeypatch):
             page.click.assert_not_awaited()
         assert result["status"] == "clicked"
         assert result["selector"] == "text=Login"
+
+
+
+def test_cloak_fill_falls_back_to_dom_when_page_fill_fails(monkeypatch):
+    bridge, locator = make_bridge(monkeypatch, "cloak-actions")
+    page = bridge._sessions["cloak-actions"].page
+    page.fill.side_effect = RuntimeError("humanized fill timeout")
+    locator.evaluate = AsyncMock()
+
+    result = run(bridge.fill("cloak-actions", "input[type=text]", "Italy"))
+
+    page.fill.assert_awaited_once()
+    locator.evaluate.assert_awaited_once()
+    assert result["status"] == "filled"
+
+
+def test_cloak_click_falls_back_to_dom_when_page_click_fails(monkeypatch):
+    bridge, locator = make_bridge(monkeypatch, "cloak-actions")
+    page = bridge._sessions["cloak-actions"].page
+    page.click.side_effect = RuntimeError("humanized click timeout")
+    locator.evaluate = AsyncMock()
+
+    result = run(bridge.click("cloak-actions", "button", wait_after_ms=0))
+
+    page.click.assert_awaited_once()
+    locator.evaluate.assert_awaited_once()
+    assert result["status"] == "clicked"
