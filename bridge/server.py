@@ -401,6 +401,10 @@ mcp_app = mcp.streamable_http_app(
 
 @asynccontextmanager
 async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+    # Render should not mark a fresh worker ready until Cloak's Chromium
+    # artifact is actually present. This moves the expensive cold download
+    # out of the first user MCP request.
+    await bridge.prepare_cloak_runtime()
     async with mcp.session_manager.run():
         reaper = asyncio.create_task(bridge.reaper_loop())
         try:
