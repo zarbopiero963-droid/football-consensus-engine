@@ -850,13 +850,29 @@ class BrowserUseBridge:
                     session.closing = True
                     return await self._stop_claimed(session_id)
         except TimeoutError:
-            # A wedged Playwright/Cloak operation must not make stop hang forever.
-            # Mark closing, claim the durable lease, and force bounded local cleanup.
+            # A wedged operation must not make stop hang forever. The reaper may
+            # already own the same durable lease in STOPPING state; treat that as
+            # an in-progress stop instead of racing a second claim.
             session.closing = True
             claimed = await asyncio.to_thread(session_leases.claim_stop, session_id, self._owner_id)
-            if not claimed:
-                raise RuntimeError('browser session stop lock timed out and lease could not be claimed')
-            return await self._stop_claimed(session_id)
+            if claimed:
+                return await self._stop_claimed(session_id)
+
+            for _ in range(50):
+                row = await asyncio.to_thread(session_leases.get_session, session_id)
+                if row is None or row.get("state") == "STOPPED":
+                    async with self._lock:
+                        self._sessions.pop(session_id, None)
+                    return {"session_id": session_id, "status": "stopped"}
+                if row.get("state") != "STOPPING":
+                    raise RuntimeError(
+                        "browser session stop lock timed out and lease is not stopping"
+                    )
+                await asyncio.sleep(0.2)
+
+            # Another same-owner cleanup is still running. Return a truthful
+            # non-error state rather than wedging the MCP call.
+            return {"session_id": session_id, "status": "stopping"}
 
     @staticmethod
     def _provider_from_session_id(session_id: str) -> str:
