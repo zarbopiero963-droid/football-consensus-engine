@@ -23,6 +23,7 @@ def make_bridge(monkeypatch, session_id="cloak-actions"):
         locator=lambda selector: locator,
         click=AsyncMock(),
         fill=AsyncMock(),
+        evaluate=AsyncMock(return_value="direct dom text"),
         wait_for_timeout=AsyncMock(),
     )
     browser = SimpleNamespace(is_connected=lambda: True)
@@ -106,13 +107,14 @@ def test_cloak_click_falls_back_to_dom_when_page_click_fails(monkeypatch):
 
 
 
-def test_dom_text_falls_back_when_inner_text_times_out(monkeypatch):
+def test_cloak_dom_text_uses_direct_page_evaluate(monkeypatch):
     bridge, locator = make_bridge(monkeypatch, "cloak-dom")
-    locator.inner_text = AsyncMock(side_effect=TimeoutError())
-    locator.evaluate = AsyncMock(return_value="fallback text")
+    page = bridge._sessions["cloak-dom"].page
+    page.evaluate = AsyncMock(return_value="direct dom text")
+    locator.inner_text = AsyncMock()
 
     result = run(bridge.dom_text("cloak-dom", "body", 10000))
 
-    locator.inner_text.assert_awaited_once()
-    locator.evaluate.assert_awaited_once()
-    assert result["text"] == "fallback text"
+    page.evaluate.assert_awaited_once()
+    locator.inner_text.assert_not_awaited()
+    assert result["text"] == "direct dom text"
