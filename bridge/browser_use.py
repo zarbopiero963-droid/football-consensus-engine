@@ -143,7 +143,18 @@ class BrowserUseBridge:
         if not self._cloak_enabled():
             raise RuntimeError("CloakBrowser is not enabled")
 
-        browser = await self._launch_cloak()
+        # Cloak is a local Chromium process. Bound startup and refuse
+        # unbounded local fan-out on small workers.
+        async with self._lock:
+            local_cloak = [
+                s for s in self._sessions.values()
+                if s.provider == "cloak" and not s.closing
+            ]
+        max_local = max(1, min(int(os.environ.get("CLOAKBROWSER_MAX_LOCAL_SESSIONS", "1")), 4))
+        if len(local_cloak) >= max_local:
+            raise RuntimeError("CloakBrowser local session capacity reached")
+        async with asyncio.timeout(45):
+            browser = await self._launch_cloak()
         session_id = "cloak-" + uuid.uuid4().hex
         session = Session(
             id=session_id,
@@ -153,8 +164,9 @@ class BrowserUseBridge:
             browser=browser,
         )
         try:
-            session.context = await browser.new_context()
-            session.page = await session.context.new_page()
+            async with asyncio.timeout(30):
+                session.context = await browser.new_context()
+                session.page = await session.context.new_page()
             async def guard(route):
                 await self._navigation_guard(route, session)
             await session.context.route("**/*", guard)
@@ -335,7 +347,17 @@ class BrowserUseBridge:
         session = await self._session(session_id)
         page = await self._page(session)
         max_chars = max(1000, min(int(max_chars), 500000))
-        text = await page.locator(selector).first.inner_text()
+        locator = page.locator(selector).first
+        try:
+            async with asyncio.timeout(12):
+                text = await locator.inner_text(timeout=10000)
+        except (TimeoutError, PlaywrightError):
+            # innerText may wait on layout/visibility in reactive pages.
+            # textContent is a cheaper DOM read and avoids wedging the worker.
+            async with asyncio.timeout(5):
+                text = await locator.evaluate(
+                    "(el) => el.innerText || el.textContent || ''"
+                )
         return {
             "session_id": session_id,
             "url": page.url,
@@ -695,7 +717,8 @@ class BrowserUseBridge:
         try:
             if session.provider == "cloak" and session.browser is not None:
                 try:
-                    await session.browser.close()
+                    async with asyncio.timeout(12):
+                        await session.browser.close()
                 except Exception:
                     # Cleanup must still clear all local references even if the child browser
                     # already exited.
@@ -906,7 +929,8 @@ class BrowserUseBridge:
         stopped, failed = [], []
         for session_id in ids:
             try:
-                await self.stop(session_id)
+                async with asyncio.timeout(20):
+                    await self.stop(session_id)
                 stopped.append(session_id)
             except Exception as exc:
                 failed.append({"session_id": session_id, "error": str(exc)})

@@ -90,3 +90,27 @@ def test_cloak_page_does_not_silently_relaunch_after_disconnect():
     )
     with pytest.raises(RuntimeError, match="no longer connected"):
         run(bridge._page(session))
+
+
+
+def test_cloak_create_enforces_local_capacity(monkeypatch):
+    bridge = BrowserUseBridge()
+    monkeypatch.setenv("CLOAKBROWSER_ENABLED", "true")
+    monkeypatch.setenv("CLOAKBROWSER_MAX_LOCAL_SESSIONS", "1")
+    existing = Session(
+        "cloak-existing",
+        "local-cloak-owned",
+        None,
+        provider="cloak",
+        browser=SimpleNamespace(is_connected=lambda: True),
+        context=SimpleNamespace(),
+        page=SimpleNamespace(),
+    )
+    bridge._sessions[existing.id] = existing
+    launch = AsyncMock()
+    monkeypatch.setattr(bridge, "_launch_cloak", launch)
+
+    with pytest.raises(RuntimeError, match="capacity reached"):
+        run(bridge.create_cloak())
+
+    launch.assert_not_awaited()

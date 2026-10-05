@@ -103,3 +103,16 @@ def test_cloak_click_falls_back_to_dom_when_page_click_fails(monkeypatch):
     page.click.assert_awaited_once()
     locator.evaluate.assert_awaited_once()
     assert result["status"] == "clicked"
+
+
+
+def test_dom_text_falls_back_when_inner_text_times_out(monkeypatch):
+    bridge, locator = make_bridge(monkeypatch, "cloak-dom")
+    locator.inner_text = AsyncMock(side_effect=TimeoutError())
+    locator.evaluate = AsyncMock(return_value="fallback text")
+
+    result = run(bridge.dom_text("cloak-dom", "body", 10000))
+
+    locator.inner_text.assert_awaited_once()
+    locator.evaluate.assert_awaited_once()
+    assert result["text"] == "fallback text"
