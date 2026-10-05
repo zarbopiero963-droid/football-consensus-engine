@@ -357,6 +357,283 @@ class BrowserUseBridge:
             "bytes": len(body),
         }
 
+    @staticmethod
+    def _bounded_timeout(timeout_ms: int) -> int:
+        return max(250, min(int(timeout_ms), 120000))
+
+    @session_operation
+    async def click(
+        self,
+        session_id: str,
+        selector: str,
+        button: str = "left",
+        click_count: int = 1,
+        timeout_ms: int = 30000,
+        wait_after_ms: int = 0,
+    ) -> dict[str, Any]:
+        if button not in {"left", "right", "middle"}:
+            raise ValueError("invalid mouse button")
+        if type(click_count) is not int or not 1 <= click_count <= 3:
+            raise ValueError("click_count must be 1..3")
+        wait_after_ms = max(0, min(int(wait_after_ms), 10000))
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.locator(selector).first.click(
+            button=button,
+            click_count=click_count,
+            timeout=self._bounded_timeout(timeout_ms),
+        )
+        if wait_after_ms:
+            await page.wait_for_timeout(wait_after_ms)
+        return {"session_id": session_id, "url": page.url, "selector": selector, "status": "clicked"}
+
+    @session_operation
+    async def fill(
+        self,
+        session_id: str,
+        selector: str,
+        value: str,
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.locator(selector).first.fill(value, timeout=self._bounded_timeout(timeout_ms))
+        # Never echo filled text: this tool is intentionally safe for credentials.
+        return {"session_id": session_id, "url": page.url, "selector": selector, "status": "filled"}
+
+    @session_operation
+    async def type_text(
+        self,
+        session_id: str,
+        selector: str,
+        text: str,
+        delay_ms: int = 0,
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        delay_ms = max(0, min(int(delay_ms), 1000))
+        session = await self._session(session_id)
+        page = await self._page(session)
+        locator = page.locator(selector).first
+        await locator.click(timeout=self._bounded_timeout(timeout_ms))
+        await locator.press_sequentially(text, delay=delay_ms, timeout=self._bounded_timeout(timeout_ms))
+        # Never echo typed text.
+        return {"session_id": session_id, "url": page.url, "selector": selector, "status": "typed"}
+
+    @session_operation
+    async def press(
+        self,
+        session_id: str,
+        selector: str,
+        key: str,
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.locator(selector).first.press(key, timeout=self._bounded_timeout(timeout_ms))
+        return {"session_id": session_id, "url": page.url, "selector": selector, "key": key, "status": "pressed"}
+
+    @session_operation
+    async def select_option(
+        self,
+        session_id: str,
+        selector: str,
+        values: list[str],
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        if not values or len(values) > 50:
+            raise ValueError("values must contain 1..50 options")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        selected = await page.locator(selector).first.select_option(
+            value=values,
+            timeout=self._bounded_timeout(timeout_ms),
+        )
+        return {"session_id": session_id, "url": page.url, "selector": selector, "selected": selected}
+
+    @session_operation
+    async def set_checked(
+        self,
+        session_id: str,
+        selector: str,
+        checked: bool = True,
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.locator(selector).first.set_checked(bool(checked), timeout=self._bounded_timeout(timeout_ms))
+        return {"session_id": session_id, "url": page.url, "selector": selector, "checked": bool(checked)}
+
+    @session_operation
+    async def hover(self, session_id: str, selector: str, timeout_ms: int = 30000) -> dict[str, Any]:
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.locator(selector).first.hover(timeout=self._bounded_timeout(timeout_ms))
+        return {"session_id": session_id, "url": page.url, "selector": selector, "status": "hovered"}
+
+    @session_operation
+    async def focus(self, session_id: str, selector: str, timeout_ms: int = 30000) -> dict[str, Any]:
+        session = await self._session(session_id)
+        page = await self._page(session)
+        locator = page.locator(selector).first
+        await locator.wait_for(state="attached", timeout=self._bounded_timeout(timeout_ms))
+        await locator.focus()
+        return {"session_id": session_id, "url": page.url, "selector": selector, "status": "focused"}
+
+    @session_operation
+    async def scroll(self, session_id: str, delta_x: int = 0, delta_y: int = 700) -> dict[str, Any]:
+        delta_x = max(-100000, min(int(delta_x), 100000))
+        delta_y = max(-100000, min(int(delta_y), 100000))
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.mouse.wheel(delta_x, delta_y)
+        return {"session_id": session_id, "url": page.url, "delta_x": delta_x, "delta_y": delta_y}
+
+    @session_operation
+    async def wait_for_selector(
+        self,
+        session_id: str,
+        selector: str,
+        state: str = "visible",
+        timeout_ms: int = 30000,
+    ) -> dict[str, Any]:
+        if state not in {"attached", "detached", "visible", "hidden"}:
+            raise ValueError("invalid selector state")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.locator(selector).first.wait_for(state=state, timeout=self._bounded_timeout(timeout_ms))
+        return {"session_id": session_id, "url": page.url, "selector": selector, "state": state}
+
+    @session_operation
+    async def wait(self, session_id: str, milliseconds: int = 1000) -> dict[str, Any]:
+        if type(milliseconds) is not int or not 0 <= milliseconds <= 30000:
+            raise ValueError("milliseconds must be 0..30000")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        await page.wait_for_timeout(milliseconds)
+        return {"session_id": session_id, "url": page.url, "waited_ms": milliseconds}
+
+    @session_operation
+    async def back(self, session_id: str, wait_until: str = "domcontentloaded", timeout_ms: int = 45000) -> dict[str, Any]:
+        if wait_until not in {"commit", "domcontentloaded", "load", "networkidle"}:
+            raise ValueError("invalid wait_until")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        response = await page.go_back(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms))
+        await asyncio.to_thread(validate_public_http_url, page.url)
+        return {"session_id": session_id, "url": page.url, "title": await page.title(),
+                "http_status": response.status if response else None}
+
+    @session_operation
+    async def forward(self, session_id: str, wait_until: str = "domcontentloaded", timeout_ms: int = 45000) -> dict[str, Any]:
+        if wait_until not in {"commit", "domcontentloaded", "load", "networkidle"}:
+            raise ValueError("invalid wait_until")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        response = await page.go_forward(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms))
+        await asyncio.to_thread(validate_public_http_url, page.url)
+        return {"session_id": session_id, "url": page.url, "title": await page.title(),
+                "http_status": response.status if response else None}
+
+    @session_operation
+    async def reload(self, session_id: str, wait_until: str = "domcontentloaded", timeout_ms: int = 45000) -> dict[str, Any]:
+        if wait_until not in {"commit", "domcontentloaded", "load", "networkidle"}:
+            raise ValueError("invalid wait_until")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        response = await page.reload(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms))
+        await asyncio.to_thread(validate_public_http_url, page.url)
+        return {"session_id": session_id, "url": page.url, "title": await page.title(),
+                "http_status": response.status if response else None}
+
+    @session_operation
+    async def elements(self, session_id: str, selector: str = "input,button,a,select,textarea", limit: int = 100) -> dict[str, Any]:
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit must be 1..200")
+        session = await self._session(session_id)
+        page = await self._page(session)
+        locators = page.locator(selector)
+        count = await locators.count()
+        items = []
+        for index in range(min(count, limit)):
+            item = locators.nth(index)
+            try:
+                data = await item.evaluate("""el => ({
+                    tag: el.tagName.toLowerCase(),
+                    type: el.getAttribute('type'),
+                    name: el.getAttribute('name'),
+                    id: el.id || null,
+                    placeholder: el.getAttribute('placeholder'),
+                    aria_label: el.getAttribute('aria-label'),
+                    role: el.getAttribute('role'),
+                    href: el.getAttribute('href'),
+                    autocomplete: el.getAttribute('autocomplete'),
+                    disabled: !!el.disabled,
+                    checked: typeof el.checked === 'boolean' ? el.checked : null,
+                    text: (el.innerText || el.textContent || '').trim().slice(0, 500)
+                })""")
+                data["index"] = index
+                items.append(data)
+            except PlaywrightError:
+                continue
+        return {"session_id": session_id, "url": page.url, "selector": selector,
+                "items": items, "returned": len(items), "matched": count, "truncated": count > limit}
+
+    @session_operation
+    async def list_pages(self, session_id: str) -> dict[str, Any]:
+        session = await self._session(session_id)
+        await self._page(session)
+        pages = list(session.context.pages if session.context else [])
+        items = []
+        for index, candidate in enumerate(pages):
+            items.append({"index": index, "url": candidate.url, "title": await candidate.title(),
+                          "current": candidate is session.page})
+        return {"session_id": session_id, "pages": items, "count": len(items)}
+
+    @session_operation
+    async def new_page(self, session_id: str, url: str | None = None) -> dict[str, Any]:
+        session = await self._session(session_id)
+        await self._page(session)
+        if session.context is None:
+            raise RuntimeError("browser context unavailable")
+        page = await session.context.new_page()
+        session.page = page
+        if url:
+            await asyncio.to_thread(validate_public_http_url, url)
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.to_thread(validate_public_http_url, page.url)
+        return {"session_id": session_id, "url": page.url, "title": await page.title(),
+                "page_index": list(session.context.pages).index(page)}
+
+    @session_operation
+    async def switch_page(self, session_id: str, page_index: int) -> dict[str, Any]:
+        session = await self._session(session_id)
+        await self._page(session)
+        pages = list(session.context.pages if session.context else [])
+        if type(page_index) is not int or page_index < 0 or page_index >= len(pages):
+            raise ValueError("invalid page_index")
+        session.page = pages[page_index]
+        await asyncio.to_thread(validate_public_http_url, session.page.url)
+        return {"session_id": session_id, "url": session.page.url, "title": await session.page.title(),
+                "page_index": page_index}
+
+    @session_operation
+    async def close_page(self, session_id: str, page_index: int) -> dict[str, Any]:
+        session = await self._session(session_id)
+        await self._page(session)
+        pages = list(session.context.pages if session.context else [])
+        if type(page_index) is not int or page_index < 0 or page_index >= len(pages):
+            raise ValueError("invalid page_index")
+        if len(pages) <= 1:
+            raise ValueError("cannot close the last page")
+        target = pages[page_index]
+        was_current = target is session.page
+        await target.close()
+        remaining = list(session.context.pages if session.context else [])
+        if was_current:
+            session.page = remaining[-1]
+        return {"session_id": session_id, "closed_page_index": page_index,
+                "current_url": session.page.url if session.page else None, "remaining_pages": len(remaining)}
+
     @session_operation
     async def network_responses(self, session_id: str) -> dict[str, Any]:
         session = await self._session(session_id)
