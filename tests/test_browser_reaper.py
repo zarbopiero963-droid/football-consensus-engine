@@ -194,3 +194,36 @@ def test_health_and_cleanup_report_never_return_secret_values(monkeypatch):
     assert report['open_durable_sessions'] == 4
     assert 'super-secret-key' not in rendered
     assert 'super-secret-license' not in rendered
+
+
+
+def test_stop_forces_cleanup_when_operation_lock_is_wedged(monkeypatch):
+    bridge = BrowserUseBridge()
+    session = Session(
+        "cloak-wedged",
+        "local-cloak-owned",
+        None,
+        provider="cloak",
+        browser=type("B", (), {"close": AsyncMock(), "is_connected": lambda self: True})(),
+        context=type("C", (), {"close": AsyncMock()})(),
+        page=object(),
+    )
+    bridge._sessions[session.id] = session
+    monkeypatch.setenv("BROWSER_STOP_LOCK_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setattr(session_leases, "claim_stop", lambda *args: True)
+    monkeypatch.setattr(session_leases, "renew_stop", lambda *args: None)
+    monkeypatch.setattr(session_leases, "finish", lambda *args: None)
+
+    async def scenario():
+        await session.operation_lock.acquire()
+        try:
+            result = await bridge.stop(session.id)
+        finally:
+            if session.operation_lock.locked():
+                session.operation_lock.release()
+        return result
+
+    result = run(scenario())
+
+    assert result == {"session_id": "cloak-wedged", "status": "stopped"}
+    assert session.id not in bridge._sessions
