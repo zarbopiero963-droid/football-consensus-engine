@@ -378,11 +378,23 @@ class BrowserUseBridge:
         wait_after_ms = max(0, min(int(wait_after_ms), 10000))
         session = await self._session(session_id)
         page = await self._page(session)
-        await page.locator(selector).first.click(
-            button=button,
-            click_count=click_count,
-            timeout=self._bounded_timeout(timeout_ms),
-        )
+        if session.provider == "cloak":
+            # CloakBrowser's humanization layer patches Page actions directly.
+            # Using Locator.click can fail on otherwise valid targets in the
+            # wrapper, while Page.click keeps the same selector semantics and
+            # routes through Cloak's supported humanized action path.
+            await page.click(
+                selector,
+                button=button,
+                click_count=click_count,
+                timeout=self._bounded_timeout(timeout_ms),
+            )
+        else:
+            await page.locator(selector).first.click(
+                button=button,
+                click_count=click_count,
+                timeout=self._bounded_timeout(timeout_ms),
+            )
         if wait_after_ms:
             await page.wait_for_timeout(wait_after_ms)
         return {"session_id": session_id, "url": page.url, "selector": selector, "status": "clicked"}
@@ -397,7 +409,13 @@ class BrowserUseBridge:
     ) -> dict[str, Any]:
         session = await self._session(session_id)
         page = await self._page(session)
-        await page.locator(selector).first.fill(value, timeout=self._bounded_timeout(timeout_ms))
+        if session.provider == "cloak":
+            # Prefer Page.fill for CloakBrowser: the humanized wrapper owns the
+            # page-level action path and can reject Locator.fill even when the
+            # same selector is visible and actionable.
+            await page.fill(selector, value, timeout=self._bounded_timeout(timeout_ms))
+        else:
+            await page.locator(selector).first.fill(value, timeout=self._bounded_timeout(timeout_ms))
         # Never echo filled text: this tool is intentionally safe for credentials.
         return {"session_id": session_id, "url": page.url, "selector": selector, "status": "filled"}
 
@@ -413,9 +431,17 @@ class BrowserUseBridge:
         delay_ms = max(0, min(int(delay_ms), 1000))
         session = await self._session(session_id)
         page = await self._page(session)
-        locator = page.locator(selector).first
-        await locator.click(timeout=self._bounded_timeout(timeout_ms))
-        await locator.press_sequentially(text, delay=delay_ms, timeout=self._bounded_timeout(timeout_ms))
+        if session.provider == "cloak":
+            # Keep Cloak actions on the page-level humanized API for the same
+            # compatibility reason as click/fill.
+            await page.click(selector, timeout=self._bounded_timeout(timeout_ms))
+            await page.locator(selector).first.press_sequentially(
+                text, delay=delay_ms, timeout=self._bounded_timeout(timeout_ms)
+            )
+        else:
+            locator = page.locator(selector).first
+            await locator.click(timeout=self._bounded_timeout(timeout_ms))
+            await locator.press_sequentially(text, delay=delay_ms, timeout=self._bounded_timeout(timeout_ms))
         # Never echo typed text.
         return {"session_id": session_id, "url": page.url, "selector": selector, "status": "typed"}
 
