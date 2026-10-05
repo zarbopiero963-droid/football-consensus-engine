@@ -121,6 +121,18 @@ class BrowserUseBridge:
     def _cloak_headless() -> bool:
         return os.environ.get("CLOAKBROWSER_HEADLESS", "true").strip().lower() not in {"0", "false", "no", "off"}
 
+    async def prepare_cloak_runtime(self) -> None:
+        """Ensure Cloak's Chromium binary exists before the service accepts traffic."""
+        if not self._cloak_enabled():
+            return
+        try:
+            from cloakbrowser import ensure_binary
+        except Exception as exc:
+            raise RuntimeError("CloakBrowser runtime unavailable") from exc
+        async with asyncio.timeout(120):
+            await asyncio.to_thread(ensure_binary)
+        LOG.info("CloakBrowser runtime prewarmed")
+
     async def _launch_cloak(self):
         try:
             from cloakbrowser import launch_async
