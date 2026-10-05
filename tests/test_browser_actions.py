@@ -21,6 +21,8 @@ def make_bridge(monkeypatch, session_id="cloak-actions"):
     page = SimpleNamespace(
         url="https://example.com/",
         locator=lambda selector: locator,
+        click=AsyncMock(),
+        fill=AsyncMock(),
         wait_for_timeout=AsyncMock(),
     )
     browser = SimpleNamespace(is_connected=lambda: True)
@@ -43,7 +45,9 @@ def test_fill_never_echoes_secret(monkeypatch):
     secret = "super-secret-password"
     result = run(bridge.fill("cloak-actions", "input[type=password]", secret))
 
-    locator.fill.assert_awaited_once()
+    page = bridge._sessions["cloak-actions"].page
+    page.fill.assert_awaited_once()
+    locator.fill.assert_not_awaited()
     assert secret not in repr(result)
     assert result["status"] == "filled"
 
@@ -59,10 +63,16 @@ def test_type_never_echoes_text(monkeypatch):
     assert result["status"] == "typed"
 
 
-def test_click_is_shared_by_both_provider_session_types(monkeypatch):
+def test_click_uses_provider_compatible_action_path(monkeypatch):
     for session_id in ("cloak-click", "browser-use-click"):
         bridge, locator = make_bridge(monkeypatch, session_id)
+        page = bridge._sessions[session_id].page
         result = run(bridge.click(session_id, "text=Login", wait_after_ms=0))
-        locator.click.assert_awaited_once()
+        if session_id.startswith("cloak-"):
+            page.click.assert_awaited_once()
+            locator.click.assert_not_awaited()
+        else:
+            locator.click.assert_awaited_once()
+            page.click.assert_not_awaited()
         assert result["status"] == "clicked"
         assert result["selector"] == "text=Login"
