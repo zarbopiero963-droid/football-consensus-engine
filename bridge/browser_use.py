@@ -733,12 +733,18 @@ class BrowserUseBridge:
                         LOG.warning("Cloak browser cleanup failed: session=%s error=%s",
                                     session.id, type(exc).__name__)
             if session.playwright is not None:
-                try:
+                if session.provider == "cloak":
+                    try:
+                        async with asyncio.timeout(8):
+                            await session.playwright.stop()
+                    except Exception as exc:
+                        LOG.warning("Playwright cleanup failed: session=%s error=%s",
+                                    session.id, type(exc).__name__)
+                else:
+                    # Preserve fail-visible cleanup semantics for Browser Use/CDP
+                    # reconnects while still bounding the operation.
                     async with asyncio.timeout(8):
                         await session.playwright.stop()
-                except Exception as exc:
-                    LOG.warning("Playwright cleanup failed: session=%s error=%s",
-                                session.id, type(exc).__name__)
         finally:
             session.playwright = None
             session.browser = None
