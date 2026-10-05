@@ -359,17 +359,29 @@ class BrowserUseBridge:
         session = await self._session(session_id)
         page = await self._page(session)
         max_chars = max(1000, min(int(max_chars), 500000))
-        locator = page.locator(selector).first
-        try:
-            async with asyncio.timeout(12):
-                text = await locator.inner_text(timeout=10000)
-        except (TimeoutError, PlaywrightError):
-            # innerText may wait on layout/visibility in reactive pages.
-            # textContent is a cheaper DOM read and avoids wedging the worker.
-            async with asyncio.timeout(5):
-                text = await locator.evaluate(
-                    "(el) => el.innerText || el.textContent || ''"
+        if session.provider == "cloak":
+            # Cloak's Locator.inner_text path can wedge on reactive pages.
+            # Use a direct DOM query for CSS selectors instead; this bypasses
+            # actionability/layout waiting and is strictly bounded.
+            async with asyncio.timeout(6):
+                text = await page.evaluate(
+                    """selector => {
+                        const el = document.querySelector(selector);
+                        if (!el) throw new Error('selector not found');
+                        return el.innerText || el.textContent || '';
+                    }""",
+                    selector,
                 )
+        else:
+            locator = page.locator(selector).first
+            try:
+                async with asyncio.timeout(12):
+                    text = await locator.inner_text(timeout=10000)
+            except (TimeoutError, PlaywrightError):
+                async with asyncio.timeout(5):
+                    text = await locator.evaluate(
+                        "(el) => el.innerText || el.textContent || ''"
+                    )
         return {
             "session_id": session_id,
             "url": page.url,
@@ -394,6 +406,14 @@ class BrowserUseBridge:
     @staticmethod
     def _bounded_timeout(timeout_ms: int) -> int:
         return max(250, min(int(timeout_ms), 120000))
+
+    @staticmethod
+    def _stop_lock_timeout_seconds() -> float:
+        try:
+            value = float(os.environ.get("BROWSER_STOP_LOCK_TIMEOUT_SECONDS", "8"))
+        except ValueError:
+            value = 8.0
+        return max(0.05, min(value, 30.0))
 
     @session_operation
     async def click(
@@ -821,11 +841,21 @@ class BrowserUseBridge:
 
     async def stop(self, session_id: str) -> dict[str, Any]:
         session = await self._session(session_id)
-        async with session.operation_lock:
+        try:
+            async with asyncio.timeout(self._stop_lock_timeout_seconds()):
+                async with session.operation_lock:
+                    claimed = await asyncio.to_thread(session_leases.claim_stop, session_id, self._owner_id)
+                    if not claimed:
+                        raise RuntimeError('browser session already claimed or no longer owned')
+                    session.closing = True
+                    return await self._stop_claimed(session_id)
+        except TimeoutError:
+            # A wedged Playwright/Cloak operation must not make stop hang forever.
+            # Mark closing, claim the durable lease, and force bounded local cleanup.
+            session.closing = True
             claimed = await asyncio.to_thread(session_leases.claim_stop, session_id, self._owner_id)
             if not claimed:
-                raise RuntimeError('browser session already claimed or no longer owned')
-            session.closing = True
+                raise RuntimeError('browser session stop lock timed out and lease could not be claimed')
             return await self._stop_claimed(session_id)
 
     @staticmethod
