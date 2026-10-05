@@ -227,3 +227,28 @@ def test_stop_forces_cleanup_when_operation_lock_is_wedged(monkeypatch):
 
     assert result == {"session_id": "cloak-wedged", "status": "stopped"}
     assert session.id not in bridge._sessions
+
+
+def test_stop_waits_for_existing_stopping_lease(monkeypatch):
+    bridge = BrowserUseBridge()
+    session = Session("cloak-race", "local", None, provider="cloak")
+    bridge._sessions[session.id] = session
+    monkeypatch.setenv("BROWSER_STOP_LOCK_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setattr(session_leases, "claim_stop", lambda *args: False)
+    rows = [
+        {"session_id": session.id, "state": "STOPPING"},
+        {"session_id": session.id, "state": "STOPPED"},
+    ]
+    monkeypatch.setattr(session_leases, "get_session", lambda *args: rows.pop(0))
+
+    async def scenario():
+        await session.operation_lock.acquire()
+        try:
+            return await bridge.stop(session.id)
+        finally:
+            if session.operation_lock.locked():
+                session.operation_lock.release()
+
+    result = run(scenario())
+    assert result == {"session_id": "cloak-race", "status": "stopped"}
+    assert session.id not in bridge._sessions
