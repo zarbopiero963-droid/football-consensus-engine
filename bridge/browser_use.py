@@ -714,18 +714,37 @@ class BrowserUseBridge:
 
     async def _drop_local(self, session: Session) -> None:
         # Browser Use owns its remote browser lifecycle; CloakBrowser is owned locally.
+        # Cleanup is best-effort and strictly bounded: a wedged child must never keep
+        # the MCP worker or a durable lease stuck forever.
         try:
-            if session.provider == "cloak" and session.browser is not None:
-                try:
-                    async with asyncio.timeout(12):
-                        await session.browser.close()
-                except Exception:
-                    # Cleanup must still clear all local references even if the child browser
-                    # already exited.
-                    if session.browser.is_connected():
-                        raise
+            if session.provider == "cloak":
+                if session.context is not None and hasattr(session.context, "close"):
+                    try:
+                        async with asyncio.timeout(5):
+                            await session.context.close()
+                    except Exception as exc:
+                        LOG.warning("Cloak context cleanup failed: session=%s error=%s",
+                                    session.id, type(exc).__name__)
+                if session.browser is not None:
+                    try:
+                        async with asyncio.timeout(8):
+                            await session.browser.close()
+                    except Exception as exc:
+                        LOG.warning("Cloak browser cleanup failed: session=%s error=%s",
+                                    session.id, type(exc).__name__)
             if session.playwright is not None:
-                await session.playwright.stop()
+                if session.provider == "cloak":
+                    try:
+                        async with asyncio.timeout(8):
+                            await session.playwright.stop()
+                    except Exception as exc:
+                        LOG.warning("Playwright cleanup failed: session=%s error=%s",
+                                    session.id, type(exc).__name__)
+                else:
+                    # Preserve fail-visible cleanup semantics for Browser Use/CDP
+                    # reconnects while still bounding the operation.
+                    async with asyncio.timeout(8):
+                        await session.playwright.stop()
         finally:
             session.playwright = None
             session.browser = None

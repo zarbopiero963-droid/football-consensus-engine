@@ -114,3 +114,34 @@ def test_cloak_create_enforces_local_capacity(monkeypatch):
         run(bridge.create_cloak())
 
     launch.assert_not_awaited()
+
+
+
+def test_cloak_stop_survives_close_failure(monkeypatch):
+    bridge = BrowserUseBridge()
+    browser = SimpleNamespace(
+        close=AsyncMock(side_effect=TimeoutError()),
+        is_connected=lambda: True,
+    )
+    context = SimpleNamespace(close=AsyncMock())
+    session = Session(
+        "cloak-timeout",
+        "local-cloak-owned",
+        None,
+        provider="cloak",
+        browser=browser,
+        context=context,
+        page=SimpleNamespace(),
+    )
+    bridge._sessions[session.id] = session
+
+    monkeypatch.setattr(session_leases, "claim_stop", lambda *args: True)
+    monkeypatch.setattr(session_leases, "renew_stop", lambda *args: None)
+    monkeypatch.setattr(session_leases, "finish", lambda *args: None)
+
+    result = run(bridge.stop(session.id))
+
+    assert result == {"session_id": "cloak-timeout", "status": "stopped"}
+    context.close.assert_awaited_once()
+    browser.close.assert_awaited_once()
+    assert session.id not in bridge._sessions
