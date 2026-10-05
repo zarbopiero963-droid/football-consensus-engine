@@ -1,5 +1,6 @@
 import asyncio
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -145,3 +146,17 @@ def test_cloak_stop_survives_close_failure(monkeypatch):
     context.close.assert_awaited_once()
     browser.close.assert_awaited_once()
     assert session.id not in bridge._sessions
+
+
+
+def test_prepare_cloak_runtime_downloads_binary(monkeypatch):
+    bridge = BrowserUseBridge()
+    monkeypatch.setenv("CLOAKBROWSER_ENABLED", "true")
+    module = ModuleType("cloakbrowser")
+    calls = []
+    module.ensure_binary = lambda: calls.append("ok") or "/tmp/cloak"
+    monkeypatch.setitem(sys.modules, "cloakbrowser", module)
+
+    run(bridge.prepare_cloak_runtime())
+
+    assert calls == ["ok"]
