@@ -172,7 +172,7 @@ def test_optional_health_tool_is_mock_only_no_secret_no_request():
     registry = FakeMCP()
     settings = Settings.from_env({"APIFOOTBALL_ENABLED": "true", "APIFOOTBALL_API_KEY": key})
     registered = register_tools(registry, settings)
-    assert len(registered) == 20
+    assert len(registered) == 42
     assert registered[0] == "apifootball_health"
     assert set(registered) == set(registry.registry)
     result = _run(registry.registry["apifootball_health"]())
@@ -242,7 +242,7 @@ def test_server_enabled_registers_isolated_health_tool(monkeypatch):
     monkeypatch.delenv("APIFOOTBALL_API_KEY", raising=False)
     fake = FakeMCP()
     names = server._register_optional_api_football_tools(fake)
-    assert len(names) == 20
+    assert len(names) == 42
     assert names[0] == "apifootball_health"
     assert set(names) == set(fake.registry)
 
