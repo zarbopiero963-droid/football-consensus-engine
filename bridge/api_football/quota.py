@@ -193,3 +193,32 @@ class PostgresQuota:
 
     async def snapshot(self, secret: str) -> dict[str, int]:
         return await asyncio.to_thread(self._snapshot, secret)
+
+
+    def _mark_exhausted(self, secret: str, kind: str) -> None:
+        """Honor a provider-reported zero budget across all bridge workers."""
+        if kind not in ("minute", "day"):
+            raise ValueError("unsupported budget window")
+        key = _key_hash(secret)
+        max_count = self.limits.per_minute if kind == "minute" else self.limits.per_day
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                for statement in _SCHEMA:
+                    cur.execute(statement)
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_lock_key(key),))
+                cur.execute("SELECT EXTRACT(EPOCH FROM clock_timestamp())::BIGINT AS epoch")
+                row = cur.fetchone()
+                epoch = int(row["epoch"] if isinstance(row, dict) else row[0])
+                bucket = epoch // (60 if kind == "minute" else 86400)
+                cur.execute(
+                    """INSERT INTO api_football_quota_counters
+                       (api_key_hash, window_kind, bucket, used)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (api_key_hash, window_kind, bucket)
+                       DO UPDATE SET used=GREATEST(api_football_quota_counters.used, EXCLUDED.used)""",
+                    (key, kind, bucket, max_count),
+                )
+            conn.commit()
+
+    async def mark_exhausted(self, secret: str, kind: str) -> None:
+        await asyncio.to_thread(self._mark_exhausted, secret, kind)
