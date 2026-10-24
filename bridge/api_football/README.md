@@ -10,9 +10,10 @@ The module is **disabled by default**. With `APIFOOTBALL_ENABLED=false`
 `bridge.api_football` and the 34 existing `browser_*` tools remain
 unchanged.
 
-With `APIFOOTBALL_ENABLED=true`, `apifootball_health` is registered as an
-**offline-only** MCP diagnostic; no client transport, authentication attempt,
-provider call, rate limiter or new external service is created.
+With `APIFOOTBALL_ENABLED=true`, **42 offline-only typed**
+`apifootball_*` tools are registered (38 football paths, `/status`,
+coverage plus two diagnostics). No client transport is constructed, no
+provider calls are made, and no external service is created.
 
 | Environment variable | Default | Meaning |
 |---|---|---|
@@ -48,10 +49,87 @@ the bridge starts with its original browser tool registry.
 1. PR-01 — optional module, config, allowlisted documentary catalog,
    network-free mock and isolated MCP diagnostic **(this PR)**.
 2. PR-02 — hardened HTTP transport **injectable only in tests/future trusted code**, shared PostgreSQL quotas, bounded cache, deduplication, timeout, finite retry and breaker. Multiworker simulations on CI PostgreSQL; NO runtime/MCP wiring (this PR).
-3. PR-03 — source-verified typed endpoint tools and response envelopes;
-   never invent parameters. No paid provider calls until authorized.
+3. PR-03 — conservative typed endpoint tools and response envelopes (this PR);
+   source-verification confidence and unresolved parameters are explicit.
+   Network remains disabled; no paid provider calls authorized.
 4. PR-04 — coverage diagnostics and MatchPilot field-level comparison
    for all relevant FPT fields, independent empirical validation.
+
+
+
+## PR-03 — Optional typed MCP research catalog (NO LIVE DATA)
+
+PR-03 introduces **42 explicit typed MCP tools** (38 football endpoints,
+one `/status` account endpoint, `apifootball_coverage_report`,
+`apifootball_health`, `apifootball_quota_report`) under
+`apifootball_*`. The opt-in flag `APIFOOTBALL_ENABLED` remains OFF by
+default. Existing 34 `browser_*` tools, Browser Use, CloakBrowser, OAuth,
+session lifecycle and transport are **unchanged**.
+
+The endpoint tool names are:
+`apifootball_status`, `apifootball_countries`,
+`apifootball_leagues`, `apifootball_seasons`,
+`apifootball_fixtures`, `apifootball_fixture_statistics`,
+`apifootball_fixture_events`, `apifootball_fixture_lineups`,
+`apifootball_teams`, `apifootball_team_statistics`,
+`apifootball_players`, `apifootball_injuries`,
+`apifootball_predictions`, `apifootball_odds`,
+`apifootball_live_odds`, `apifootball_bookmakers`,
+`apifootball_bets`, `apifootball_coverage_report`,
+`apifootball_timezones`, `apifootball_team_seasons`,
+`apifootball_team_countries`, `apifootball_venues`,
+`apifootball_standings`, `apifootball_fixture_rounds`,
+`apifootball_fixture_headtohead`, `apifootball_fixture_players`,
+`apifootball_coaches`, `apifootball_player_seasons`,
+`apifootball_player_profiles`, `apifootball_player_squads`,
+`apifootball_player_teams`, `apifootball_top_scorers`,
+`apifootball_top_assists`, `apifootball_top_yellow_cards`,
+`apifootball_top_red_cards`, `apifootball_transfers`,
+`apifootball_trophies`, `apifootball_sidelined`,
+`apifootball_odds_mapping`, `apifootball_live_bets`.
+The diagnostics and additional `/leagues` coverage view make
+**42 tools, with 39 unique provider paths** (38 football + /status).
+
+**No production network wiring yet.** Even with
+`APIFOOTBALL_ENABLED=true` AND a dummy/future real API key, endpoint
+tools return `REAL_API_TEST_NOT_AUTHORIZED`, `data=null`,
+`network_calls_made=0`. Without a key they return
+`KEY_NOT_CONFIGURED`. Only unit tests may inject
+`MockFootballClient` directly in Python; then the envelope states
+`MOCK_VERIFIED` and preserves original null/zero/empty/absent distinctions.
+This mechanism is intentionally not an MCP argument or env toggle.
+
+Every registered endpoint tool:
+- Has its own fixed, typed parameters (no arbitrary host, path or URL).
+- Rejects unbounded fixture/odds scans and oversized page/batch numbers.
+- Rejects invalid dates, non-positive IDs, unsupported timezone inputs,
+  unknown fields, control characters and booleans in integer slots.
+- Returns a structured envelope with UTC acquisition time, source
+  version, document-confidence indicator, cache/paging/provenance
+  placeholders and a **truthful blocked/no-data status**.
+- Limits mocked response payloads to 256 KiB and redacts exceptions.
+
+The underlying catalog inventories **38 football GET paths plus
+/status**, and PR-03 now has an explicitly typed tool for **every path**.
+This is complete **path coverage**, not proof that every optional
+parameter is supported or that all fields are available for every
+league. Unreconciled parameter sets remain marked as such. Coverage flags in
+/leagues do **not** certify complete match-level field availability.
+
+Official documentation: https://www.api-football.com/documentation_v3
+(version 3.9.3 from the provider's published searchable documentation).
+The official documentation v3.9.3 was independently examined from the
+public indexed provider source; direct bridge-browser fetching is still
+Cloudflare-blocked (HTTP 403). Not all optional query combinations were
+independently verified and no actual provider call was made. Where exact
+parameter conditions are not independently reconciled, the tool
+envelope explicitly reports `PENDING_PARAMETER_RECONCILIATION`.
+No real provider API or billing test is permitted under this PR.
+
+**Provider query execution must remain fail-closed until separate owner
+authorization** for endpoint-specific schema reconciliation, key
+configuration, operational limits and a limited real-data sample. Code
+review / CI passing cannot be used as permission to switch on paid calls.
 
 
 ## PR-02 resilience layer — OFFLINE by construction in the deployed registry

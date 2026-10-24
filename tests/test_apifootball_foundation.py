@@ -171,18 +171,20 @@ def test_optional_health_tool_is_mock_only_no_secret_no_request():
     key = "DUMMY_FAKE_API_KEY_VALUE"
     registry = FakeMCP()
     settings = Settings.from_env({"APIFOOTBALL_ENABLED": "true", "APIFOOTBALL_API_KEY": key})
-    assert register_tools(registry, settings) == ("apifootball_health",)
-    assert list(registry.registry) == ["apifootball_health"]
+    registered = register_tools(registry, settings)
+    assert len(registered) == 42
+    assert registered[0] == "apifootball_health"
+    assert set(registered) == set(registry.registry)
     result = _run(registry.registry["apifootball_health"]())
     assert result["provider"] == "API-FOOTBALL"
     assert result["status"] == "MOCK_ONLY"
     assert result["provider_requests_authorized"] is False
     assert result["network_calls_made"] == 0
-    assert result["http_transport"] == "NOT_IMPLEMENTED"
-    assert result["limits_configured_not_enforced"]["per_day"] == 80
+    assert result["http_transport"] == "NOT_CONNECTED_TO_MCP"
+    assert result["limits_configured_not_active"]["per_day"] == 80
     assert result["observed_at_utc"].endswith("+00:00")
     assert key not in str(result)
-    assert "PENDING_OFFICIAL_RECONCILIATION" == result["documented_contract"]
+    assert "PARTIALLY_RECONCILED_OFFICIAL" == result["documented_contract"]
 
 
 def test_optional_health_warns_if_enabled_without_api_key():
@@ -239,8 +241,10 @@ def test_server_enabled_registers_isolated_health_tool(monkeypatch):
     monkeypatch.setenv("APIFOOTBALL_ENABLED", "true")
     monkeypatch.delenv("APIFOOTBALL_API_KEY", raising=False)
     fake = FakeMCP()
-    assert server._register_optional_api_football_tools(fake) == ("apifootball_health",)
-    assert list(fake.registry) == ["apifootball_health"]
+    names = server._register_optional_api_football_tools(fake)
+    assert len(names) == 42
+    assert names[0] == "apifootball_health"
+    assert set(names) == set(fake.registry)
 
 
 def test_server_enabled_with_invalid_config_does_not_crash_or_log_secret(monkeypatch, caplog):
