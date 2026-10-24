@@ -7,6 +7,7 @@ import html
 import json
 import logging
 import os
+import time
 import secrets
 from urllib.parse import urlencode, urlparse
 
@@ -20,6 +21,9 @@ SCOPE = "browser:use"
 OFFLINE = "offline_access"
 
 CLAUDE_CIMD_URL = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
+_DCR_PREFIX = "fcbdcr1_"
+_DCR_MAX_JSON_BYTES = 8192
 _CIMD_MAX_BYTES = 64 * 1024
 LOG = logging.getLogger(__name__)
 
@@ -59,6 +63,7 @@ def authorization_server_metadata():
         "scopes_supported": [SCOPE, OFFLINE],
         "client_id_metadata_document_supported": True,
         "authorization_response_iss_parameter_supported": True,
+        "registration_endpoint": base + "/oauth/register",
     }
 
 
@@ -120,7 +125,7 @@ def _valid_cimd_document(client_id: str, redirect_uri: str, data: object) -> boo
 
 def _client_kind(client_id: str) -> str:
     """Return a predefined label, never an untrusted URL or identifier."""
-    if client_id == CLAUDE_CIMD_URL:
+    if client_id == CLAUDE_CIMD_URL or client_id.startswith(_DCR_PREFIX):
         return "claude"
     if _is_trusted_cimd_url(client_id):
         return "chatgpt"
@@ -166,6 +171,97 @@ async def validate_cimd(client_id: str, redirect_uri: str) -> bool:
     return True
 
 
+
+def _claude_dcr_registration_valid(data: object) -> bool:
+    """Only the official Claude web callback can be registered.
+
+    DCR public client metadata is not proof of vendor identity. Security comes
+    from the pinned HTTPS callback, authorization password, PKCE and binding
+    every code/token to its registered client and protected resource.
+    """
+    if not isinstance(data, dict):
+        return False
+    if data.get("redirect_uris") != [CLAUDE_CALLBACK]:
+        return False
+    if data.get("token_endpoint_auth_method", "none") != "none":
+        return False
+    responses = data.get("response_types", ["code"])
+    if not isinstance(responses, list) or responses != ["code"]:
+        return False
+    grants = data.get("grant_types", ["authorization_code"])
+    if not isinstance(grants, list) or "authorization_code" not in grants:
+        return False
+    # We only grant these two operations; reject registrations requesting
+    # unsupported actions, without treating extra advertised client metadata
+    # (e.g. JWT bearer) as permission to use such flows.
+    allowed = {"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}
+    if any(not isinstance(v, str) or v not in allowed for v in grants):
+        return False
+    scope = data.get("scope")
+    if scope is not None:
+        if not isinstance(scope, str) or not set(scope.split()).issubset({SCOPE, OFFLINE}):
+            return False
+    name = data.get("client_name", "")
+    if not isinstance(name, str) or len(name) > 128:
+        return False
+    client_uri = data.get("client_uri")
+    if client_uri is not None and client_uri not in ("https://claude.ai", "https://claude.ai/"):
+        return False
+    return True
+
+
+async def register_claude_client(request: Request):
+    """Claude.ai DCR fallback for cloud-side CIMD/Cloudflare HTTP 403.
+
+    Registration never returns an OAuth secret; this is a public PKCE client.
+    """
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+    body = await request.body()
+    if len(body) > _DCR_MAX_JSON_BYTES:
+        return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+    if not _claude_dcr_registration_valid(data):
+        _reject("", "registration", "invalid_claude_client_metadata")
+        return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+    try:
+        client_id = oauth_store.register_claude_dcr_client(CLAUDE_CALLBACK)
+    except Exception:
+        LOG.error("oauth_registration_error reason=storage_unavailable")
+        return JSONResponse({"error": "server_error"}, status_code=503)
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "client_id_issued_at": int(time.time()),
+            "client_name": "Claude",
+            "redirect_uris": [CLAUDE_CALLBACK],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            "scope": f"{SCOPE} {OFFLINE}",
+        },
+        status_code=201,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _valid_oauth_client(client_id: str, redirect_uri: str) -> bool:
+    if client_id.startswith(_DCR_PREFIX):
+        if redirect_uri != CLAUDE_CALLBACK:
+            return _reject(client_id, "registration", "invalid_claude_callback")
+        try:
+            result = oauth_store.valid_claude_dcr_client(client_id, redirect_uri)
+        except Exception:
+            return _reject(client_id, "registration", "registration_storage_error")
+        if not result:
+            return _reject(client_id, "registration", "unknown_or_expired_client_id")
+        return True
+    return await validate_cimd(client_id, redirect_uri)
+
+
 def _pkce_s256(verifier: str) -> str:
     raw = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -205,7 +301,7 @@ async def authorize_get(request: Request):
     if failure is not None:
         _reject(p["client_id"], "authorize_get", failure)
         return JSONResponse({"error": "invalid_request"}, status_code=400)
-    if not await validate_cimd(p["client_id"], p["redirect_uri"]):
+    if not await _valid_oauth_client(p["client_id"], p["redirect_uri"]):
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     hidden = "".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
@@ -236,7 +332,7 @@ async def authorize_post(request: Request):
     if failure is not None:
         _reject(p["client_id"], "authorize_post", failure)
         return JSONResponse({"error": "invalid_request"}, status_code=400)
-    if not await validate_cimd(p["client_id"], p["redirect_uri"]):
+    if not await _valid_oauth_client(p["client_id"], p["redirect_uri"]):
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = secrets.token_urlsafe(32)
     oauth_store.save_code(
