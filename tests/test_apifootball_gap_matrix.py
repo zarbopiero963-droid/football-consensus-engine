@@ -82,7 +82,11 @@ def test_matrix_generation_is_deterministic_under_input_reordering():
 @pytest.mark.parametrize("count", [0, 1, 324, 326])
 def test_partial_or_inflated_registry_fails_closed(count):
     with pytest.raises(GapMatrixError, match="FPT_FIELD_REGISTRY_INCOMPLETE"):
-        build_gap_matrix(_fake_registry()[:count])
+        rows = _fake_registry()
+        if count > len(rows):
+            rows.extend(FptField(f"Extra_Field_{i}", "unclassified", "POSTMATCH_OUTCOME")
+                        for i in range(count - len(rows)))
+        build_gap_matrix(rows[:count])
 
 
 def test_duplicate_fields_fail_closed():
@@ -94,7 +98,7 @@ def test_duplicate_fields_fail_closed():
 
 @pytest.mark.parametrize("field", [
     FptField("xg_Home_FT", "expected_goals", "POSTMATCH_OUTCOME"),
-    FptField("Corners_Home_HT", "corners", "POSTMATCH_OUTCOME"),
+    FptField("Corners_Away_2T", "corners", "POSTMATCH_OUTCOME"),
 ])
 def test_family_timing_metadata_alone_never_certifies_equivalence(field):
     rows = _fake_registry()
