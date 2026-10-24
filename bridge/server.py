@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import asyncio
 import os
+import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -274,6 +275,30 @@ async def browser_health() -> dict[str, Any]:
 async def browser_cleanup_report() -> dict[str, Any]:
     """Return durable/local cleanup counts and the last reaper failure, if any."""
     return await bridge.cleanup_report()
+
+
+def _register_optional_api_football_tools(registry) -> tuple[str, ...]:
+    """Opt-in and fail closed; no optional imports when the flag is off.
+
+    Isolate a broken/missing adapter from OAuth, browser tools and MCP startup.
+    Deliberately avoid logging exception messages, which may contain settings.
+    """
+    if os.environ.get("APIFOOTBALL_ENABLED", "false").strip().lower() not in ("true", "1"):
+        return ()
+    try:
+        from bridge.api_football.config import Settings
+        from bridge.api_football.tools import register_tools
+        return register_tools(registry, Settings.from_env())
+    except Exception:
+        logging.getLogger(__name__).error(
+            "optional_apifootball_registration_failed; browser tools unaffected"
+        )
+        return ()
+
+
+# Register after the existing browser tool definitions, before MCP transport.
+# The OFF state is indistinguishable from the original tool registry.
+APIFOOTBALL_REGISTERED_TOOLS = _register_optional_api_football_tools(mcp)
 
 
 class OAuthBearerMiddleware(BaseHTTPMiddleware):
