@@ -31,6 +31,7 @@ def identity():
 def cleanup(key):
     digest = hashlib.sha256(key.encode()).hexdigest()
     with connect() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM api_football_quota_attempts WHERE api_key_hash=%s", (digest,))
         cur.execute("DELETE FROM api_football_quota_leases WHERE api_key_hash=%s", (digest,))
         cur.execute("DELETE FROM api_football_quota_counters WHERE api_key_hash=%s", (digest,))
         conn.commit()
@@ -168,6 +169,68 @@ def test_plaintext_key_is_never_written_to_budget_tables():
                 assert len(rows) == 1
                 assert rows[0]["api_key_hash"] != key
             await quota.release(lease)
+        finally:
+            cleanup(key)
+    asyncio.run(go())
+
+
+def test_rolling_minute_blocks_recent_attempt_even_without_fixed_bucket_debits():
+    """A request made just before UTC minute turnover still consumes the
+    provider's rolling 60-second budget in the new minute."""
+    key = identity()
+    quota = PostgresQuota(QuotaLimits(1, 4, 2), connect=connect)
+
+    async def go():
+        try:
+            # Bootstrap schema without consuming an API budget unit.
+            assert (await quota.snapshot(key))["remaining_minute"] == 1
+            digest = hashlib.sha256(key.encode()).hexdigest()
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO api_football_quota_attempts "
+                    "(attempt_id, api_key_hash, created_at) "
+                    "VALUES (%s, %s, clock_timestamp()-INTERVAL '5 seconds')",
+                    (secrets.token_urlsafe(20), digest),
+                )
+                conn.commit()
+            # The fixed bucket is empty, but the true rolling window isn't.
+            assert (await quota.snapshot(key))["remaining_minute"] == 1
+            with pytest.raises(QuotaExceeded, match="rolling"):
+                await quota.acquire(key)
+            assert (await quota.snapshot(key))["active_leases"] == 0
+            assert (await quota.snapshot(key))["remaining_day"] == 4
+        finally:
+            cleanup(key)
+    asyncio.run(go())
+
+
+def test_stale_rolling_attempt_expires_and_budget_recovers():
+    key = identity()
+    quota = PostgresQuota(QuotaLimits(1, 4, 2), connect=connect)
+
+    async def go():
+        try:
+            await quota.snapshot(key)
+            digest = hashlib.sha256(key.encode()).hexdigest()
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO api_football_quota_attempts "
+                    "(attempt_id, api_key_hash, created_at) "
+                    "VALUES (%s, %s, clock_timestamp()-INTERVAL '70 seconds')",
+                    (secrets.token_urlsafe(20), digest),
+                )
+                conn.commit()
+            lease = await quota.acquire(key)
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) AS n FROM api_football_quota_attempts "
+                    "WHERE api_key_hash=%s", (digest,),
+                )
+                assert cur.fetchone()["n"] == 1
+            await quota.release(lease)
+            with pytest.raises(QuotaExceeded):
+                await quota.acquire(key)
+            assert (await quota.snapshot(key))["remaining_day"] == 3
         finally:
             cleanup(key)
     asyncio.run(go())
