@@ -101,20 +101,20 @@ without new paid services. Lazy-created isolated tables:
 
 | Scenario | Verification path | Status |
 |---|---|---|
-| Browser/OAuth registry unchanged | PR diff + pre-existing suite | CI PENDING |
-| Adapter off, key absent | PR-01 existing baseline tests | CI PENDING |
-| Bad host/URL/params | New mock unit tests | CI PENDING |
-| Provider 301/401/403/429/500/502 | HTTPX mock tests | CI PENDING |
-| Malformed body, pagination and oversize | HTTPX mock tests | CI PENDING |
-| Cache null/zero fidelity and expiry | Unit tests | CI PENDING |
-| Dedup of 8 concurrent callers | Unit test | CI PENDING |
-| Retry 503/502 bounded by 3 debits | Unit test | CI PENDING |
-| 429 reconciles shared budget | Mock and PostgreSQL tests | CI PENDING |
-| Breaker open / half-open | Unit tests | CI PENDING |
-| Caller cancellation | Unit test | CI PENDING |
-| PostgreSQL shared budget across workers | Dedicated CI PostgreSQL | CI PENDING |
-| PostgreSQL crash lease expiry | Dedicated CI PostgreSQL | CI PENDING |
-| Cross-key quota isolation | Hash/unique key tests | CI PENDING |
+| Browser/OAuth registry unchanged | PR diff + pre-existing suite | MOCK/CI PASS |
+| Adapter off, key absent | PR-01 existing baseline tests | MOCK/CI PASS |
+| Bad host/URL/params | New mock unit tests | MOCK/CI PASS |
+| Provider 301/401/403/429/500/502 | HTTPX mock tests | MOCK/CI PASS |
+| Malformed body, pagination and oversize | HTTPX mock tests | MOCK/CI PASS |
+| Cache null/zero fidelity and expiry | Unit tests | MOCK/CI PASS |
+| Dedup of 8 concurrent callers | Unit test | MOCK/CI PASS |
+| Retry 503/502 bounded by 3 debits | Unit test | MOCK/CI PASS |
+| 429 reconciles shared budget | Mock and PostgreSQL tests | MOCK/CI PASS |
+| Breaker open / half-open | Unit tests | MOCK/CI PASS |
+| Caller cancellation | Unit test | MOCK/CI PASS |
+| PostgreSQL shared budget across workers | Dedicated CI PostgreSQL | MOCK/CI PASS |
+| PostgreSQL crash lease expiry | Dedicated CI PostgreSQL | MOCK/CI PASS |
+| Cross-key quota isolation | Hash/unique key tests | MOCK/CI PASS |
 | Real provider header/latency/coverage | Needs owner key + approval | BLOCKED |
 | Official endpoint parameter reconciliation | 403 / separate audit | UNKNOWN |
 | Live ChatGPT discovery for new endpoints | Endpoint tools not wired | NOT IMPLEMENTED |
@@ -123,6 +123,29 @@ without new paid services. Lazy-created isolated tables:
 A test marked SKIP remains SKIP. CodeRabbit Free summaries are not
 equivalent to comprehensive independent line-by-line APPROVED reviews;
 any waiver must be explicitly recorded by the owner.
+
+## D08.1 — Actual CI outcomes and reproduced concurrency defect
+
+First run [40134730425](https://github.com/zarbopiero963-droid/football-consensus-engine/actions/runs/40134730425):
+- General Python suite: **850 passed, 99 skipped**.
+- PostgreSQL integration: **1 failed, 97 passed**. The 2-worker
+  simultaneous first-use quota test reproduced a **real DDL/advisory
+  lock-order deadlock**. This is a FAILED finding, not SKIP or PASS.
+
+Fix applied in this same PR: `PostgresQuota._ensure_schema()` uses a
+dedicated globally serialized transactional schema lock, completes
+all DDL and commits **before** acquiring the per-key quota lock.
+A process-local thread lock also prevents duplicate same-instance
+bootstrap. No schema DDL runs while the per-key advisory lock is held.
+
+Re-run [40134908029](https://github.com/zarbopiero963-droid/football-consensus-engine/actions/runs/40134908029):
+- General Python suite: **850 passed, 99 skipped** — SUCCESS.
+- Dedicated PostgreSQL suite: **98 passed** — SUCCESS.
+- The previously failing multi-worker budget test now passes.
+
+Any subsequent documentation-only commit will require latest-head CI
+green again. A CodeRabbit summary alone is not an independent full
+code review; review remains a separate release gate.
 
 ## D09 — MCP compatibility
 
@@ -141,7 +164,7 @@ no claim of live ChatGPT API-FOOTBALL tool readiness.
   contracts and MCP schemas, then PR-04 field-level mapping/coverage.
 - First-month spending authorized €0, real API calls 0. Default limits
   8/minute and 80/day are design values, **not proof of provider quota**.
-- D12 status: `PR02_MOCK_RESEARCH_LAYER` pending CI/review,
+- D12 status: `PR02_MOCK_RESEARCH_LAYER` CI PASS / review pending,
   `MCP_INTEGRATION_READY=NO`,
   `REAL_API_TEST_NOT_AUTHORIZED=YES`,
   `MATCHPILOT_REPLACEMENT_NOT_YET_CERTIFIED=YES`.
