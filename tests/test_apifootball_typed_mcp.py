@@ -228,3 +228,45 @@ def test_backend_contract_rejects_arbitrary_path_and_unknown_query_key():
             assert str(e) == expected
         else:
             raise AssertionError((name, expected))
+
+
+def test_actual_mcp_sdk_generates_valid_typed_tool_discovery_schemas():
+    """Inspect the real MCP v2 SDK, not merely a fake decorator registry."""
+    from mcp.server import MCPServer
+
+    async def go():
+        instance = MCPServer("apifootball-schema-test")
+        names = register_tools(instance, _settings())
+        listing = await instance.list_tools()
+        assert len(listing) == 20
+        assert {tool.name for tool in listing} == set(names)
+        for tool in listing:
+            assert tool.description and len(tool.description) >= 20
+            schema = tool.input_schema
+            assert isinstance(schema, dict)
+            assert schema.get("type") == "object"
+            assert "url" not in schema.get("properties", {})
+            assert "api_key" not in schema.get("properties", {})
+        fixtures = next(t for t in listing if t.name == "apifootball_fixtures")
+        assert "id" in fixtures.input_schema["properties"]
+        stats = next(t for t in listing if t.name == "apifootball_fixture_statistics")
+        assert "fixture" in stats.input_schema["properties"]
+        assert "fixture" in stats.input_schema.get("required", [])
+        assert not stats.input_schema["properties"].get("url")
+    asyncio.run(go())
+
+
+def test_production_mcp_registry_still_has_exactly_original_34_browser_tools():
+    """Production imports with flag absent must remain discoverable by MCP SDK."""
+    import bridge.server as server
+
+    async def go():
+        listing = await server.mcp.list_tools()
+        names = [t.name for t in listing]
+        assert len(names) == 34
+        assert len(set(names)) == 34
+        assert all(n.startswith("browser_") for n in names)
+        assert "browser_health" in names
+        assert "browser_create_cloak" in names
+        assert "browser_get_network_responses" in names
+    asyncio.run(go())
