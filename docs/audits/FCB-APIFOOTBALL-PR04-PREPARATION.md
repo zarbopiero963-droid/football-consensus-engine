@@ -1,19 +1,23 @@
-# FCB-APIFOOTBALL-INTEGRATION-CERT-01 — PR-04 staging / NO OPEN PR
+# FCB-APIFOOTBALL-INTEGRATION-CERT-01 — PR-04 Offline MatchPilot gap audit
 
-**Status:** WORKTREE/BRANCH PREPARATION ONLY · 2026-10-25 · €0 ·
+**Status:** PR-04 IMPLEMENTATION / MOCK TESTS · 2026-10-25 · €0 ·
 **NO MERGE / NO DEPLOY / NO PROVIDER CALL / NO MATCHPILOT WRITE**
 
 ## Dependency / one-PR-at-a-time gate
 
 The predecessor [#107](https://github.com/zarbopiero963-droid/football-consensus-engine/pull/107)
-remains OPEN at SHA `b4b282ae7da342c417a634f1f8e382e340a9908e`.
-This prep branch is deliberately based on that SHA for eventual integration.
-It is **NOT** an opened PR and must not be treated as accepted release work.
-Do not open PR-04 until #107 has passed its independent review
-(or an explicit owner-specific review waiver), merged with owner approval,
-and the Render post-merge smoke tests are successful. Reconcile this branch
-against the new `main` before opening PR-04; do not assume the SHA remains
-current. Any #107 subsequent revisions invalidate the branch baseline.
+was merged by explicit owner request «Chiudi e prosegui», with a
+review waiver **limited to PR #107**, as commit
+`27d2e5ae8aee4d571933ab06f4d03a984d4540ef`.
+Render auto-deploy `dep-dbejaluq1p3s73ebep6g` is **LIVE**,
+`browser_health` reports healthy providers/database and a real
+CloakBrowser session create → example.com HTTP 200 → stop passed.
+
+The clean PR-04 branch
+`feat/fcb-apifootball-pr04-matchpilot-gap-20261025` is based directly
+on the new main commit, not the preparatory PR #107 branch. PR-04 is
+the only active workstream. PR-04 MUST NOT merge or deploy without
+separate owner approval and new independent review or explicit waiver.
 
 ## Goal
 
@@ -50,16 +54,19 @@ Actual MatchPilot default branch source paths reviewed:
 
 ## FR-01 — Complete field inventory (PENDING REAL REGISTRY EXPORT)
 
-The `bridge/api_football/gap_matrix.py` staging implementation enforces
+The `bridge/api_football/gap_matrix.py` implementation enforces
 **exactly 325 unique FPT field entries** with explicit source family and
 timing class. There is deliberately **no fabricated 325-field list**
 in the repository and no synthetic list may be certified as MatchPilot
 data. A verifiable export will be needed from a source-owned registry file
 or read-only DB snapshot, with SHA-256 and source commit recorded.
 
-The staged tests use 325 **synthetic** names to test correctness, not
+The unit tests use 325 **synthetic** names to test correctness, not
 actual provider field names. `build_gap_matrix` refuses 324/326 rows,
 duplicates, malformed metadata or unsupported timing classes.
+`registry_import.py` requires a SHA-256-pinned 325-field manifest and
+explicit MatchPilot 40-character commit SHA; without an independently
+verified read-only export it refuses to claim complete real coverage.
 Real FR-01 status: **BLOCKED_ON_COMPLETE_325_FIELD_SOURCE_EXPORT**.
 
 ## FR-02 — Field-by-field provider substitution
@@ -100,7 +107,10 @@ Separate matrices must connect every material FPT field to:
 
 ## FR-04 — All 37 Strategy Lab indicators
 
-The owner requests 37 input-to-output formulas reconciled against #34.
+All **37 candidate indicator names** are inventoried exactly from
+MatchPilot issue #34 in `indicators.py`. Their formulas, code versions,
+primitive inputs and freshness thresholds remain UNVERIFIED;
+`indicator_gap_report()` marks every one `FORMULA_NOT_IN_OFFLINE_AUDIT`.
 No formula should be inferred from an indicator label.
 For each: `ID, formula/version, primitive inputs, unit, time horizon,
 freshness, validity for HT/2T/live, AF/TC candidate, degradation,
@@ -141,16 +151,16 @@ with explicit stop/rollback gates. Do not reactivate TotalCorner.
 
 ## FR-08 — Verdict / owner decisions
 
-- `PR04_PREPARATION_ONLY`: YES.
+- `PR04_MOCK_RESEARCH_IMPLEMENTED`: YES; final-head CI/review pending.
 - `FR01_COMPLETE_325_ACTUAL_FIELD_NAMES`: NO.
 - `FR02_325_FIELD_REAL_MAPPING_CERTIFIED`: NO.
 - `FR04_37_INDICATORS_CERTIFIED`: NO.
 - `REAL_API_TEST_NOT_AUTHORIZED`: YES.
 - `MATCHPILOT_REPLACEMENT_NOT_YET_CERTIFIED`: YES.
-- `PR04_OPEN`: NO.
-- `PR107_CLOSED`: NO (at the time of prep).
+- `PR107_CLOSED`: YES / merged `27d2e5ae`.
+- `PR04_MERGE_AUTHORIZED`: NO.
 
-Owner action required before beginning official PR-04: close #107 by
-approved review or explicit waiver, authorize its merge (automatically
-deploys Render), confirm post-merge health, and reopen the PR-04 base
-comparison. No new spending or infrastructure is requested by this prep.
+Owner action required before PR-04 merge: approved independent review
+or an explicit #108-only owner waiver, passing CI on the exact head,
+explicit authorization to merge/auto-deploy, and confirmation of bridge
+health. No new spending or infrastructure is requested.
