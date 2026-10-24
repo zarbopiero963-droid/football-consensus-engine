@@ -10,9 +10,10 @@ The module is **disabled by default**. With `APIFOOTBALL_ENABLED=false`
 `bridge.api_football` and the 34 existing `browser_*` tools remain
 unchanged.
 
-With `APIFOOTBALL_ENABLED=true`, `apifootball_health` is registered as an
-**offline-only** MCP diagnostic; no client transport, authentication attempt,
-provider call, rate limiter or new external service is created.
+With `APIFOOTBALL_ENABLED=true`, **42 offline-only typed**
+`apifootball_*` tools are registered (38 football paths, `/status`,
+coverage plus two diagnostics). No client transport is constructed, no
+provider calls are made, and no external service is created.
 
 | Environment variable | Default | Meaning |
 |---|---|---|
@@ -58,8 +59,9 @@ the bridge starts with its original browser tool registry.
 
 ## PR-03 — Optional typed MCP research catalog (NO LIVE DATA)
 
-PR-03 introduces **20 explicit typed MCP tools** (18 soccer catalog tools
-plus `apifootball_health` and `apifootball_quota_report`) under
+PR-03 introduces **42 explicit typed MCP tools** (38 football endpoints,
+one `/status` account endpoint, `apifootball_coverage_report`,
+`apifootball_health`, `apifootball_quota_report`) under
 `apifootball_*`. The opt-in flag `APIFOOTBALL_ENABLED` remains OFF by
 default. Existing 34 `browser_*` tools, Browser Use, CloakBrowser, OAuth,
 session lifecycle and transport are **unchanged**.
@@ -73,9 +75,20 @@ The endpoint tool names are:
 `apifootball_players`, `apifootball_injuries`,
 `apifootball_predictions`, `apifootball_odds`,
 `apifootball_live_odds`, `apifootball_bookmakers`,
-`apifootball_bets`, `apifootball_coverage_report`.
-The existing diagnostic `apifootball_health` and local-only
-`apifootball_quota_report` make 20 tools total.
+`apifootball_bets`, `apifootball_coverage_report`,
+`apifootball_timezones`, `apifootball_team_seasons`,
+`apifootball_team_countries`, `apifootball_venues`,
+`apifootball_standings`, `apifootball_fixture_rounds`,
+`apifootball_fixture_headtohead`, `apifootball_fixture_players`,
+`apifootball_coaches`, `apifootball_player_seasons`,
+`apifootball_player_profiles`, `apifootball_player_squads`,
+`apifootball_player_teams`, `apifootball_top_scorers`,
+`apifootball_top_assists`, `apifootball_top_yellow_cards`,
+`apifootball_top_red_cards`, `apifootball_transfers`,
+`apifootball_trophies`, `apifootball_sidelined`,
+`apifootball_odds_mapping`, `apifootball_live_bets`.
+The diagnostics and additional `/leagues` coverage view make
+**42 tools, with 39 unique provider paths** (38 football + /status).
 
 **No production network wiring yet.** Even with
 `APIFOOTBALL_ENABLED=true` AND a dummy/future real API key, endpoint
@@ -96,16 +109,19 @@ Every registered endpoint tool:
   placeholders and a **truthful blocked/no-data status**.
 - Limits mocked response payloads to 256 KiB and redacts exceptions.
 
-The underlying catalog still inventories **38 football GET paths plus
-/status**; PR-03 does **not** pretend that all of them have full
-source-certified parameter schemas. The first 18 curated endpoint tools
-cover primary MatchPilot investigation families. Coverage flags in
+The underlying catalog inventories **38 football GET paths plus
+/status**, and PR-03 now has an explicitly typed tool for **every path**.
+This is complete **path coverage**, not proof that every optional
+parameter is supported or that all fields are available for every
+league. Unreconciled parameter sets remain marked as such. Coverage flags in
 /leagues do **not** certify complete match-level field availability.
 
 Official documentation: https://www.api-football.com/documentation_v3
 (version 3.9.3 from the provider's published searchable documentation).
-The official OpenAPI YAML is not retrievable through the authenticated
-bridge browser at the time of this PR (Cloudflare 403). Where exact
+The official documentation v3.9.3 was independently examined from the
+public indexed provider source; direct bridge-browser fetching is still
+Cloudflare-blocked (HTTP 403). Not all optional query combinations were
+independently verified and no actual provider call was made. Where exact
 parameter conditions are not independently reconciled, the tool
 envelope explicitly reports `PENDING_PARAMETER_RECONCILIATION`.
 No real provider API or billing test is permitted under this PR.
