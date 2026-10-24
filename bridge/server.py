@@ -430,6 +430,7 @@ app = Starlette(
         Route('/internal/pinnacle/league-batch', internal_pinnacle_league_batch, methods=['GET']),
         Route("/.well-known/oauth-protected-resource", oauth.protected_resource, methods=["GET"]),
         Route("/.well-known/oauth-authorization-server", oauth.auth_metadata, methods=["GET"]),
+        Route("/oauth/register", oauth.register_claude_client, methods=["POST"]),
         Route("/oauth/authorize", oauth.authorize_get, methods=["GET"]),
         Route("/oauth/authorize", oauth.authorize_post, methods=["POST"]),
         Route("/oauth/token", oauth.token_endpoint, methods=["POST"]),
