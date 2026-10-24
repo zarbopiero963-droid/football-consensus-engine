@@ -18,6 +18,9 @@ from bridge import oauth_store
 SCOPE = "browser:use"
 OFFLINE = "offline_access"
 
+CLAUDE_CIMD_URL = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+_CIMD_MAX_BYTES = 64 * 1024
+
 
 def public_base() -> str:
     host = os.environ.get("MCP_PUBLIC_HOST", "football-consensus-browser-bridge.onrender.com").strip()
@@ -57,20 +60,67 @@ def authorization_server_metadata():
     }
 
 
-async def validate_cimd(client_id: str, redirect_uri: str) -> bool:
-    parsed = urlparse(client_id)
-    if parsed.scheme != "https" or parsed.hostname != "chatgpt.com":
+def _is_trusted_cimd_url(client_id: str) -> bool:
+    try:
+        parsed = urlparse(client_id)
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError:
         return False
-    if not (parsed.path.startswith("/oauth/") and parsed.path.endswith("/client.json")):
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    if client_id == CLAUDE_CIMD_URL:
+        return True
+    return (
+        hostname == "chatgpt.com"
+        and parsed.path.startswith("/oauth/")
+        and parsed.path.endswith("/client.json")
+    )
+
+
+def _valid_cimd_document(client_id: str, redirect_uri: str, data: object) -> bool:
+    if not isinstance(data, dict) or data.get("client_id") != client_id:
+        return False
+    redirect_uris = data.get("redirect_uris")
+    if (
+        not isinstance(redirect_uris, list)
+        or not redirect_uris
+        or any(not isinstance(item, str) for item in redirect_uris)
+        or redirect_uri not in redirect_uris
+    ):
+        return False
+    auth_method = data.get("token_endpoint_auth_method")
+    if client_id == CLAUDE_CIMD_URL and auth_method != "none":
+        return False
+    if client_id != CLAUDE_CIMD_URL and auth_method not in (None, "none", "private_key_jwt"):
+        return False
+    response_types = data.get("response_types")
+    if not isinstance(response_types, list) or "code" not in response_types:
+        return False
+    grant_types = data.get("grant_types")
+    return isinstance(grant_types, list) and "authorization_code" in grant_types
+
+
+async def validate_cimd(client_id: str, redirect_uri: str) -> bool:
+    if not _is_trusted_cimd_url(client_id):
         return False
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-            r = await client.get(client_id)
+            r = await client.get(client_id, headers={"Accept": "application/json"})
             r.raise_for_status()
+            if len(r.content) > _CIMD_MAX_BYTES:
+                return False
             data = r.json()
     except Exception:
         return False
-    return redirect_uri in (data.get("redirect_uris") or [])
+    return _valid_cimd_document(client_id, redirect_uri, data)
 
 
 def _pkce_s256(verifier: str) -> str:
@@ -111,7 +161,7 @@ async def authorize_get(request: Request):
     )
     body = f"""<!doctype html><html><body>
     <h2>Football Consensus Browser</h2>
-    <p>Autorizza ChatGPT a usare il browser remoto.</p>
+    <p>Autorizza il client OAuth a usare il browser remoto.</p>
     <form method="post">{hidden}
       <label>Password di autorizzazione</label><br>
       <input type="password" name="password" required autofocus><br><br>
@@ -130,9 +180,14 @@ async def authorize_post(request: Request):
     supplied = str(form.get("password", ""))
     if not expected or not hmac.compare_digest(supplied, expected):
         return HTMLResponse("Password non valida", status_code=401)
-    if not await validate_cimd(p["client_id"], p["redirect_uri"]):
-        return JSONResponse({"error": "invalid_client"}, status_code=400)
-    if p["resource"] != resource_url() or p["code_challenge_method"] != "S256":
+    ok = (
+        p["response_type"] == "code"
+        and p["code_challenge_method"] == "S256"
+        and p["resource"] == resource_url()
+        and SCOPE in set(p["scope"].split())
+        and await validate_cimd(p["client_id"], p["redirect_uri"])
+    )
+    if not ok:
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = secrets.token_urlsafe(32)
     oauth_store.save_code(
