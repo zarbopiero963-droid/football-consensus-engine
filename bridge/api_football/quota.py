@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import secrets
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -77,6 +78,9 @@ def _advisory_lock_key(key_hash: str) -> int:
     return int(key_hash[:16], 16) & ((1 << 63) - 1)
 
 
+_SCHEMA_INIT_LOCK_ID = 0x4150464F4F544241
+
+
 class PostgresQuota:
     """Multi-process per-key UTC rolling-bucket accounting on an existing DB.
 
@@ -89,14 +93,32 @@ class PostgresQuota:
     def __init__(self, limits: QuotaLimits, *, connect: Callable = _default_connect):
         self.limits = limits
         self._connect = connect
+        self._schema_ready = False
+        self._schema_guard = threading.Lock()
+
+    def _ensure_schema(self) -> None:
+        # SQL DDL and quota row locks must NEVER overlap. Running DDL inside
+        # an active per-key advisory lock caused a real PostgreSQL deadlock in
+        # multi-worker CI; separate the two lock domains transactionally.
+        if self._schema_ready:
+            return
+        with self._schema_guard:
+            if self._schema_ready:
+                return
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_INIT_LOCK_ID,))
+                    for statement in _SCHEMA:
+                        cur.execute(statement)
+                conn.commit()
+            self._schema_ready = True
 
     def _reserve(self, secret: str) -> QuotaLease:
         key = _key_hash(secret)
+        self._ensure_schema()
         lease = secrets.token_urlsafe(24)
         with self._connect() as conn:
             with conn.cursor() as cur:
-                for statement in _SCHEMA:
-                    cur.execute(statement)
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_lock_key(key),))
                 cur.execute("SELECT EXTRACT(EPOCH FROM clock_timestamp())::BIGINT AS epoch")
                 row = cur.fetchone()
@@ -162,10 +184,9 @@ class PostgresQuota:
 
     def _snapshot(self, secret: str) -> dict[str, int]:
         key = _key_hash(secret)
+        self._ensure_schema()
         with self._connect() as conn:
             with conn.cursor() as cur:
-                for statement in _SCHEMA:
-                    cur.execute(statement)
                 cur.execute("SELECT EXTRACT(EPOCH FROM clock_timestamp())::BIGINT AS epoch")
                 row = cur.fetchone()
                 epoch = int(row["epoch"] if isinstance(row, dict) else row[0])
@@ -200,11 +221,10 @@ class PostgresQuota:
         if kind not in ("minute", "day"):
             raise ValueError("unsupported budget window")
         key = _key_hash(secret)
+        self._ensure_schema()
         max_count = self.limits.per_minute if kind == "minute" else self.limits.per_day
         with self._connect() as conn:
             with conn.cursor() as cur:
-                for statement in _SCHEMA:
-                    cur.execute(statement)
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_lock_key(key),))
                 cur.execute("SELECT EXTRACT(EPOCH FROM clock_timestamp())::BIGINT AS epoch")
                 row = cur.fetchone()
