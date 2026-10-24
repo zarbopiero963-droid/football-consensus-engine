@@ -20,11 +20,12 @@ _CONFIRMED = "DOCUMENTED_OFFICIAL"
 _PENDING = "PENDING_PARAMETER_RECONCILIATION"
 _POSITIVE = frozenset({
     "id", "league", "season", "team", "fixture", "player", "bookmaker",
-    "bet", "page", "last", "next", "venue", "coach", "current",
+    "bet", "page", "last", "next", "venue", "coach",
 })
 _DATE_FIELDS = frozenset({"date", "from", "to"})
 _TEXT = frozenset({"name", "country", "code", "search", "status", "type", "timezone", "live", "city"})
 _BOOL_FIELDS = frozenset({"current", "dates"})
+assert not (_POSITIVE & _BOOL_FIELDS), "Boolean fields must not be validated as integers"
 _H2H = re.compile(r"^[1-9][0-9]{0,9}-[1-9][0-9]{0,9}$")
 _VALID_VALUE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 
