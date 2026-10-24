@@ -82,7 +82,8 @@ not a process-local counter:
 - Concurrency leases expire after 180 s if a worker crashes; ordinary
   completion deletes them.
 - Provider-reported `remaining=0` in a recognized quota header can
-  freeze that UTC minute/day in the shared table.
+  freeze that UTC minute/day in the shared table. Attempts older than
+  60 seconds are pruned opportunistically for the active key.
 - This is **not a guarantee** against independent API clients outside
   this bridge using the same provider key. Stop on uncertainty or denial.
 
