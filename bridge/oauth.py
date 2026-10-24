@@ -217,11 +217,15 @@ async def register_claude_client(request: Request):
     """
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
-    body = await request.body()
-    if len(body) > _DCR_MAX_JSON_BYTES:
-        return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+    chunks = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _DCR_MAX_JSON_BYTES:
+            return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+        chunks.append(chunk)
     try:
-        data = json.loads(body)
+        data = json.loads(b"".join(chunks))
     except (ValueError, UnicodeDecodeError):
         return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
     if not _claude_dcr_registration_valid(data):
