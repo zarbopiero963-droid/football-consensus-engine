@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -106,3 +108,52 @@ def rotate_refresh_token(token: str) -> dict[str, Any] | None:
         row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
+
+
+# RFC 7591 DCR clients are PUBLIC client identifiers, not bearer credentials.
+# Store only a hash of each opaque ID in the existing OAuth PostgreSQL backend.
+_DCR_PREFIX = "fcbdcr1_"
+_DCR_ID_PATTERN = re.compile(r"^fcbdcr1_[A-Za-z0-9_-]{32}$")
+_DCR_TTL_DAYS = 730
+
+
+def register_claude_dcr_client(redirect_uri: str) -> str:
+    """Register an opaque public client, restricted at authorization to Claude's callback.
+
+    This bootstraps one isolated OAuth table without altering existing credentials
+    or the canonical schema_migrations ledger. All writes are transactional.
+    """
+    client_id = _DCR_PREFIX + secrets.token_urlsafe(24)
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS oauth_claude_dcr_clients (
+               client_id_hash TEXT PRIMARY KEY,
+               redirect_uri TEXT NOT NULL,
+               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+               expires_at TIMESTAMPTZ NOT NULL
+            )"""
+        )
+        cur.execute(
+            "DELETE FROM oauth_claude_dcr_clients WHERE expires_at <= NOW()"
+        )
+        cur.execute(
+            """INSERT INTO oauth_claude_dcr_clients
+               (client_id_hash, redirect_uri, expires_at)
+               VALUES (%s, %s, NOW() + INTERVAL '730 days')""",
+            (digest(client_id), redirect_uri),
+        )
+        conn.commit()
+    return client_id
+
+
+def valid_claude_dcr_client(client_id: str, redirect_uri: str) -> bool:
+    if not _DCR_ID_PATTERN.fullmatch(client_id):
+        return False
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT 1 FROM oauth_claude_dcr_clients
+               WHERE client_id_hash=%s AND redirect_uri=%s
+                 AND expires_at > NOW()""",
+            (digest(client_id), redirect_uri),
+        )
+        return cur.fetchone() is not None
