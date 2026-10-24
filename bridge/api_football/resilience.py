@@ -247,7 +247,15 @@ class ResilientFootballClient:
             if began:
                 await self.breaker.abort()
             raise
-        except Exception:
+        except (ProviderUnavailable, ProviderHTTPError, ProviderDataError):
             if began:
                 await self.breaker.fail()
             raise
+        except Exception:
+            if began:
+                await self.breaker.fail()
+            # An injected transport, cache or quota adapter may raise an
+            # unexpected exception whose message contains internal URLs,
+            # connection strings or even secrets. Never return it through a
+            # future MCP tool. The stable code retains fail-closed behavior.
+            raise ProviderUnavailable("PROVIDER_INTERNAL_ERROR", retryable=False) from None
