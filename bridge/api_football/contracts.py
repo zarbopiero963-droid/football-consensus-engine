@@ -143,7 +143,7 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
     ):
         raise ParameterError("LIVE_ODDS_FILTER_REQUIRED")
     if ("league" in provided) != ("season" in provided) and name in (
-        "apifootball_fixtures", "apifootball_odds", "apifootball_players",
+        "apifootball_fixtures", "apifootball_odds",
     ) and "id" not in provided and "fixture" not in provided and "date" not in provided and "live" not in provided:
         raise ParameterError("LEAGUE_SEASON_PAIR_REQUIRED")
     return endpoint, provided
