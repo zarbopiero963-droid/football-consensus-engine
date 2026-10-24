@@ -400,3 +400,17 @@ def test_unique_inflight_task_count_is_bounded_before_allocation():
             gate.set()
             await asyncio.gather(*tasks, return_exceptions=True)
     asyncio.run(go())
+
+
+def test_unexpected_transport_exception_is_sanitized_before_mcp_boundary():
+    async def go():
+        sensitive = f"SECRET_DSN_AND_API_KEY:{KEY}"
+        client, transport, quota = _make_client([RuntimeError(sensitive)])
+        with pytest.raises(ProviderUnavailable, match="PROVIDER_INTERNAL_ERROR") as e:
+            await client.get("/fixtures", {"id": 1})
+        assert sensitive not in str(e.value)
+        assert KEY not in str(e.value)
+        assert len(transport.calls) == 1
+        assert len(quota.claims) == len(quota.releases) == 1
+
+    asyncio.run(go())
