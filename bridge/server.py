@@ -388,6 +388,8 @@ transport_security = TransportSecuritySettings(
     allowed_origins=[
         "https://chatgpt.com",
         "https://chat.openai.com",
+        "https://claude.ai",
+        "https://claude.com",
     ],
 )
 
