@@ -370,3 +370,33 @@ def test_quota_headers_and_mock_data_never_become_synthetic_pit():
         assert result["status"] == "MOCK_TRANSPORT_ONLY"
         assert "PIT" not in result
     asyncio.run(go())
+
+
+def test_unique_inflight_task_count_is_bounded_before_allocation():
+    """Do not create unbounded tasks for unique requests under overload."""
+    async def go():
+        gate = asyncio.Event()
+        async def delayed():
+            await gate.wait()
+            return _reply()
+
+        transport = FakeTransport([delayed] * 4)
+        client, _, quota = _make_client(transport, settings=_settings(max_concurrency=1))
+        tasks = [asyncio.create_task(client.get("/fixtures", {"id": n})) for n in range(4)]
+        try:
+            await asyncio.sleep(0.05)
+            assert len(client._flights) == 4
+            with pytest.raises(RequestQueueFull):
+                await client.get("/fixtures", {"id": 99})
+            assert len(client._flights) == 4
+            # An identical caller may reuse a slot despite a full queue.
+            duplicate = asyncio.create_task(client.get("/fixtures", {"id": 0}))
+            gate.set()
+            results = await asyncio.gather(*tasks, duplicate, return_exceptions=True)
+            assert all(isinstance(item, dict) or isinstance(item, RequestQueueFull)
+                       for item in results)
+            assert not any(isinstance(item, AssertionError) for item in results)
+        finally:
+            gate.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+    asyncio.run(go())
