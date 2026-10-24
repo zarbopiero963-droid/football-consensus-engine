@@ -23,7 +23,9 @@ _POSITIVE = frozenset({
     "bet", "page", "last", "next", "venue", "coach", "current",
 })
 _DATE_FIELDS = frozenset({"date", "from", "to"})
-_TEXT = frozenset({"name", "country", "code", "search", "status", "type", "timezone", "live"})
+_TEXT = frozenset({"name", "country", "code", "search", "status", "type", "timezone", "live", "city"})
+_BOOL_FIELDS = frozenset({"current", "dates"})
+_H2H = re.compile(r"^[1-9][0-9]{0,9}-[1-9][0-9]{0,9}$")
 _VALID_VALUE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 
 
@@ -59,6 +61,34 @@ ENDPOINTS: dict[str, Endpoint] = {
     "apifootball_bookmakers": Endpoint("/odds/bookmakers", ("id", "search"), confidence=_PENDING),
     "apifootball_bets": Endpoint("/odds/bets", ("id", "search"), confidence=_PENDING),
     "apifootball_coverage_report": Endpoint("/leagues", ("id", "season"), ("id", "season"), confidence=_CONFIRMED),
+    # All 22 remaining football endpoints. Confidence labels classify
+    # provider-documentary evidence only, NEVER empirical availability.
+    "apifootball_timezones": Endpoint("/timezone", (), confidence=_CONFIRMED),
+    "apifootball_team_seasons": Endpoint("/teams/seasons", ("team",), ("team",), confidence=_CONFIRMED),
+    "apifootball_team_countries": Endpoint("/teams/countries", (), confidence=_CONFIRMED),
+    "apifootball_venues": Endpoint("/venues", ("id", "name", "city", "country", "search"), confidence=_CONFIRMED),
+    "apifootball_standings": Endpoint("/standings", ("league", "season", "team"), ("league", "season"), confidence=_CONFIRMED),
+    "apifootball_fixture_rounds": Endpoint("/fixtures/rounds", ("league", "season", "current", "dates", "timezone"), ("league", "season"), confidence=_CONFIRMED),
+    "apifootball_fixture_headtohead": Endpoint("/fixtures/headtohead", ("h2h", "last", "next"), ("h2h",), confidence=_CONFIRMED),
+    "apifootball_fixture_players": Endpoint("/fixtures/players", ("fixture", "team"), ("fixture",), confidence=_CONFIRMED),
+    "apifootball_coaches": Endpoint("/coachs", ("id", "team", "search"), confidence=_CONFIRMED),
+    "apifootball_player_seasons": Endpoint("/players/seasons", (), confidence=_CONFIRMED),
+    # A full OpenAPI parameter reconciliation is still pending for profiles.
+    "apifootball_player_profiles": Endpoint("/players/profiles", ("page",), confidence=_PENDING, pagination=True),
+    "apifootball_player_squads": Endpoint("/players/squads", ("team", "player"), confidence=_CONFIRMED),
+    "apifootball_player_teams": Endpoint("/players/teams", ("player",), ("player",), confidence=_CONFIRMED),
+    "apifootball_top_scorers": Endpoint("/players/topscorers", ("league", "season"), ("league", "season"), confidence=_CONFIRMED),
+    "apifootball_top_assists": Endpoint("/players/topassists", ("league", "season"), ("league", "season"), confidence=_CONFIRMED),
+    "apifootball_top_yellow_cards": Endpoint("/players/topyellowcards", ("league", "season"), ("league", "season"), confidence=_CONFIRMED),
+    "apifootball_top_red_cards": Endpoint("/players/topredcards", ("league", "season"), ("league", "season"), confidence=_CONFIRMED),
+    "apifootball_transfers": Endpoint("/transfers", ("player", "team"), confidence=_CONFIRMED),
+    "apifootball_trophies": Endpoint("/trophies", ("player", "coach"), confidence=_CONFIRMED),
+    "apifootball_sidelined": Endpoint("/sidelined", ("player", "coach"), confidence=_CONFIRMED),
+    # The documentation identifies /odds/mapping but further filter
+    # parameter semantics are not yet verified. Publish zero-argument
+    # read-only diagnostic discovery only; do not invent page support.
+    "apifootball_odds_mapping": Endpoint("/odds/mapping", (), confidence=_PENDING),
+    "apifootball_live_bets": Endpoint("/odds/live/bets", ("id", "search"), confidence=_CONFIRMED),
 }
 assert all(documented_path(endpoint.path) for endpoint in ENDPOINTS.values())
 
@@ -99,8 +129,21 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
     for key, value in values.items():
         if value is None:
             continue
-        if key in _POSITIVE:
+        if name == "apifootball_live_bets" and key == "id":
+            value = _string(value, key)
+            if not value.isdecimal() or len(value) > 10:
+                raise ParameterError("INVALID_LIVE_BET_ID")
+            provided[key] = value
+        elif key in _POSITIVE:
             provided[key] = _positive_int(value, key)
+        elif key in _BOOL_FIELDS:
+            if type(value) is not bool:
+                raise ParameterError("INVALID_BOOLEAN_PARAMETER")
+            provided[key] = "true" if value else "false"
+        elif key == "h2h":
+            if not isinstance(value, str) or not _H2H.fullmatch(value):
+                raise ParameterError("INVALID_HEAD_TO_HEAD_FILTER")
+            provided[key] = value
         elif key in _DATE_FIELDS:
             value = _string(value, key)
             try:
@@ -124,6 +167,24 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
         raise ParameterError("FIXTURE_FILTER_REQUIRED")
     if name == "apifootball_teams" and not provided:
         raise ParameterError("TEAM_FILTER_REQUIRED")
+    if name == "apifootball_venues" and not provided:
+        raise ParameterError("VENUE_FILTER_REQUIRED")
+    if name == "apifootball_coaches" and not provided:
+        raise ParameterError("COACH_FILTER_REQUIRED")
+    if name == "apifootball_player_squads" and not (
+        "team" in provided or "player" in provided
+    ):
+        raise ParameterError("SQUAD_FILTER_REQUIRED")
+    if name in ("apifootball_transfers", "apifootball_trophies",
+                "apifootball_sidelined") and not (
+        "player" in provided or "team" in provided or "coach" in provided
+    ):
+        raise ParameterError("PERSON_OR_TEAM_FILTER_REQUIRED")
+    if name == "apifootball_live_bets" and "search" in provided and (
+        len(provided["search"]) < 3
+    ):
+        raise ParameterError("SEARCH_TOO_SHORT")
+
     if name == "apifootball_players" and not (
         "id" in provided or ("team" in provided and "season" in provided)
     ):
