@@ -179,6 +179,13 @@ mock CI:
    await the already-running identical request without creating a new one.
    Added a concurrent overload/capacity test.
 
+3. Unexpected errors from an injected transport could reach future MCP
+   callers with uncontrolled exception messages, potentially revealing
+   internal addresses or secret-bearing adapter diagnostics. Added a
+   fixed-code `PROVIDER_INTERNAL_ERROR` boundary while preserving the
+   explicit provider/HTTP error classes and circuit failure semantics.
+   Added a secret-redaction regression test.
+
 This is an **author-side review**, not an independent APPROVED review, and
 cannot waive the mandatory independent reviewer gate. Results are PENDING
 fresh CI on the amended head.
