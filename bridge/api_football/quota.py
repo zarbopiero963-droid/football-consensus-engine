@@ -237,8 +237,22 @@ class PostgresQuota:
                 )
                 found = cur.fetchone()
                 active = int(found["n"] if isinstance(found, dict) else found[0])
+                cur.execute(
+                    "SELECT count(*) AS n FROM api_football_quota_attempts "
+                    "WHERE api_key_hash=%s "
+                    "AND created_at > clock_timestamp()-INTERVAL '60 seconds'",
+                    (key,),
+                )
+                row = cur.fetchone()
+                rolling_count = int(row["n"] if isinstance(row, dict) else row[0])
         return {
-            "remaining_minute": max(0, self.limits.per_minute - used["minute"]),
+            # Report the effective budget, not just the UTC calendar bucket.
+            # Otherwise the snapshot can claim capacity while acquire()
+            # correctly rejects the same request in the rolling window.
+            "remaining_minute": max(
+                0, min(self.limits.per_minute - used["minute"],
+                       self.limits.per_minute - rolling_count)
+            ),
             "remaining_day": max(0, self.limits.per_day - used["day"]),
             "active_leases": active,
         }
