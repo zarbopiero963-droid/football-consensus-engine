@@ -527,3 +527,32 @@ def test_dcr_storage_id_format_is_unforgeable_by_guesswork():
     assert oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "q" * 32)
     assert not oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "q" * 31)
     assert not oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "!" * 32)
+
+
+
+def test_dcr_postgres_registration_round_trip_when_database_available():
+    import os
+    import pytest
+    from bridge import oauth_store
+
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("PostgreSQL test requires the dedicated CI DATABASE_URL")
+    client_id = oauth_store.register_claude_dcr_client(CLAUDE_REDIRECT)
+    assert client_id.startswith("fcbdcr1_")
+    assert oauth_store.valid_claude_dcr_client(client_id, CLAUDE_REDIRECT)
+    assert not oauth_store.valid_claude_dcr_client(client_id, "https://attacker.example/callback")
+    assert not oauth_store.valid_claude_dcr_client("fcbdcr1_" + "z" * 32, CLAUDE_REDIRECT)
+    with oauth_store._conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT client_id_hash FROM oauth_claude_dcr_clients WHERE client_id_hash=%s",
+            (oauth_store.digest(client_id),),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row["client_id_hash"] != client_id
+        cur.execute(
+            "DELETE FROM oauth_claude_dcr_clients WHERE client_id_hash=%s",
+            (oauth_store.digest(client_id),),
+        )
+        conn.commit()
+    assert not oauth_store.valid_claude_dcr_client(client_id, CLAUDE_REDIRECT)
