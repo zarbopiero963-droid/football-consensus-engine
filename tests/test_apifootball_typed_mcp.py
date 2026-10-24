@@ -35,7 +35,7 @@ def _settings(*, key=""):
 
 
 def test_all_endpoints_have_fixed_paths_and_no_generic_arbitrary_url_tool():
-    assert len(ENDPOINTS) == 18
+    assert len(ENDPOINTS) == 40
     assert ENDPOINTS["apifootball_fixtures"].path == "/fixtures"
     assert ENDPOINTS["apifootball_odds"].path == "/odds"
     assert ENDPOINTS["apifootball_live_odds"].path == "/odds/live"
@@ -44,10 +44,10 @@ def test_all_endpoints_have_fixed_paths_and_no_generic_arbitrary_url_tool():
     assert not any("raw" in name or "request" in name or "url" in name for name in ENDPOINTS)
 
 
-def test_all_20_tools_have_typed_signatures_and_explicit_identity():
+def test_all_42_tools_have_typed_signatures_and_explicit_identity():
     registry = FakeRegistry()
     names = register_tools(registry, _settings())
-    assert len(names) == len(set(names)) == 20
+    assert len(names) == len(set(names)) == 42
     assert names[0] == "apifootball_health"
     assert names[-1] == "apifootball_quota_report"
     assert set(names) == set(registry.tools)
@@ -238,7 +238,7 @@ def test_actual_mcp_sdk_generates_valid_typed_tool_discovery_schemas():
         instance = MCPServer("apifootball-schema-test")
         names = register_tools(instance, _settings())
         listing = await instance.list_tools()
-        assert len(listing) == 20
+        assert len(listing) == 42
         assert {tool.name for tool in listing} == set(names)
         for tool in listing:
             assert tool.description and len(tool.description) >= 20
