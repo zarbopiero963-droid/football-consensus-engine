@@ -95,6 +95,22 @@ Timing:
 - API-FOOTBALL `retrieved_at_utc` is NOT automatically
   `provider_generated_at`; cannot reconstruct past observations.
 
+## FR-02.1 — Critical 34 capability requirements
+
+`capabilities.py` now inventories **34 named requirements** from
+MatchPilot #249, #29, #34 and #248; these include shot-based xG, xGoT,
+xPTS, big chances, possessions, shots, corners, attacks and dangerous
+attacks, half splits, odds pre/live/movements/opening-closing, mapping,
+PIT, coverage, referee, lineups and injuries, prediction provenance,
+licensing and retention. Every entry exposes only a potential official
+API endpoint path (if documented), plus critical uncertainty flags.
+
+The matrix must **not** be read as 34 covered features: `34 UNKNOWN`,
+`0 VERIFIED REPLACEMENTS`, `0 REAL API CALLS`, `0 TC REACTIVATION`.
+A candidate path does not certify fields, period granularity, source
+freshness, bookmaker coverage, raw rights or historical correctness.
+`tests/test_apifootball_capabilities.py` enforces no false promotion.
+
 ## FR-03 — Product impact
 
 Separate matrices must connect every material FPT field to:
@@ -155,6 +171,7 @@ with explicit stop/rollback gates. Do not reactivate TotalCorner.
 - `FR01_COMPLETE_325_ACTUAL_FIELD_NAMES`: NO.
 - `FR02_325_FIELD_REAL_MAPPING_CERTIFIED`: NO.
 - `FR04_37_INDICATORS_CERTIFIED`: NO.
+- `CRITICAL_CAPABILITY_REQUIREMENTS_CATALOGUED`: 34, all UNKNOWN.
 - `REAL_API_TEST_NOT_AUTHORIZED`: YES.
 - `MATCHPILOT_REPLACEMENT_NOT_YET_CERTIFIED`: YES.
 - `PR107_CLOSED`: YES / merged `27d2e5ae`.
