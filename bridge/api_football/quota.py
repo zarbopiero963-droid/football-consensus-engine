@@ -57,6 +57,13 @@ _SCHEMA = (
        )""",
     """CREATE INDEX IF NOT EXISTS idx_api_football_lease_expires
        ON api_football_quota_leases(api_key_hash, expires_at)""",
+    """CREATE TABLE IF NOT EXISTS api_football_quota_attempts (
+         attempt_id TEXT PRIMARY KEY,
+         api_key_hash TEXT NOT NULL,
+         created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+       )""",
+    """CREATE INDEX IF NOT EXISTS idx_api_football_attempt_recent
+       ON api_football_quota_attempts(api_key_hash, created_at)""",
 )
 
 
@@ -84,10 +91,9 @@ _SCHEMA_INIT_LOCK_ID = 0x4150464F4F544241
 class PostgresQuota:
     """Multi-process per-key UTC rolling-bucket accounting on an existing DB.
 
-    Per-minute and per-day windows are UTC calendar buckets, not a
-    sliding-window guarantee. Real-time provider limits must be verified
-    before activating live traffic; configured values should remain below
-    the provider's actual allowances.
+    Per-minute quota enforces BOTH UTC bucket and rolling 60-second
+    limits. Per-day quota is a UTC calendar bucket. Real-time provider
+    limits must be verified before activating live traffic.
     """
 
     def __init__(self, limits: QuotaLimits, *, connect: Callable = _default_connect):
@@ -138,6 +144,26 @@ class PostgresQuota:
                 if active >= self.limits.max_concurrency:
                     raise QuotaConcurrencyBusy("shared concurrency budget exhausted")
 
+                # Protect the provider against double bursts at UTC minute
+                # boundaries with an exact rolling 60-second history.
+                # The same per-key lock serializes ALL worker reservations.
+                cur.execute(
+                    "DELETE FROM api_football_quota_attempts "
+                    "WHERE api_key_hash=%s "
+                    "AND created_at <= clock_timestamp()-INTERVAL '60 seconds'",
+                    (key,),
+                )
+                cur.execute(
+                    "SELECT count(*) AS n FROM api_football_quota_attempts "
+                    "WHERE api_key_hash=%s "
+                    "AND created_at > clock_timestamp()-INTERVAL '60 seconds'",
+                    (key,),
+                )
+                rolling = cur.fetchone()
+                recent_count = int(rolling["n"] if isinstance(rolling, dict) else rolling[0])
+                if recent_count >= self.limits.per_minute:
+                    raise QuotaExceeded("rolling provider request budget exhausted")
+
                 for kind, bucket, maximum in (
                     ("minute", epoch // 60, self.limits.per_minute),
                     ("day", epoch // 86400, self.limits.per_day),
@@ -155,6 +181,11 @@ class PostgresQuota:
                     if cur.fetchone() is None:
                         # Context manager rolls back BOTH buckets and lease.
                         raise QuotaExceeded("shared provider budget exhausted")
+                cur.execute(
+                    """INSERT INTO api_football_quota_attempts (attempt_id, api_key_hash)
+                       VALUES (%s, %s)""",
+                    (lease, key),
+                )
                 cur.execute(
                     """INSERT INTO api_football_quota_leases
                        (lease_id, api_key_hash, expires_at)
