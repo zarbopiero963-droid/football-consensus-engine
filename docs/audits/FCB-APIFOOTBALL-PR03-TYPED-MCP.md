@@ -16,8 +16,9 @@ Date: 2026-10-25 (Europe/Rome). Football-only, €0, no live API authorization.
 ## Goals and non-goals
 
 Develop typed football research contracts while **not** connecting any
-real API key or provider network call. PR-03 adds 20 optional
-`apifootball_*` MCP tools (18 endpoint-related + health + quota-report)
+real API key or provider network call. PR-03 adds 42 optional
+`apifootball_*` MCP tools (38 football routes, one status route, plus
+coverage/health/quota-report)
 under `bridge/api_football/`, registered only when
 `APIFOOTBALL_ENABLED=true`. With the flag absent, startup and browser
 registry are identical to baseline. With the flag enabled, every endpoint
@@ -46,8 +47,11 @@ fixtures, predictions, odds/live and odds pre-match.
   `PENDING_PARAMETER_RECONCILIATION` where full typing is not attested.
 - `DOCUMENTED_OFFICIAL` here does NOT mean `REAL_VERIFIED`, nor that
   a league exposes every response field or every bookmaker market.
-- The full MatchPilot #248 documentary inventory remains 38 GET paths
-  + /status; this PR implements **18 endpoint-type tools**, not all 38.
+- MatchPilot #248's inventory of **38 football GET paths + /status**
+  is now covered by **39 distinct named provider endpoint tools**, plus
+  an extra coverage view and two local diagnostic tools = **42 MCP tools**.
+  This establishes **path coverage**, not exhaustive parameter/field
+  availability or empirical coverage.
 
 ## Structured tool catalog
 
@@ -70,6 +74,28 @@ fixtures, predictions, odds/live and odds pre-match.
 | apifootball_live_odds | /odds/live | Documentation only |
 | apifootball_bookmakers | /odds/bookmakers | Parameter reconciliation pending |
 | apifootball_bets | /odds/bets | Parameter reconciliation pending |
+| apifootball_timezones | /timezone | Documented, no query parameters |
+| apifootball_team_seasons | /teams/seasons | Documented, team required |
+| apifootball_team_countries | /teams/countries | Documented, no query parameters |
+| apifootball_venues | /venues | Documented, at least one filter |
+| apifootball_standings | /standings | Documented, league + season |
+| apifootball_fixture_rounds | /fixtures/rounds | Documented, boolean dates/current |
+| apifootball_fixture_headtohead | /fixtures/headtohead | Documented, h2h ID pair |
+| apifootball_fixture_players | /fixtures/players | Documented, fixture required |
+| apifootball_coaches | /coachs | Documented, id/team/search |
+| apifootball_player_seasons | /players/seasons | Documented, no query parameters |
+| apifootball_player_profiles | /players/profiles | Endpoint documented; paging schema pending |
+| apifootball_player_squads | /players/squads | Documented, team/player |
+| apifootball_player_teams | /players/teams | Documented, player required |
+| apifootball_top_scorers | /players/topscorers | Documented, league + season |
+| apifootball_top_assists | /players/topassists | Documented, league + season |
+| apifootball_top_yellow_cards | /players/topyellowcards | Documented, league + season |
+| apifootball_top_red_cards | /players/topredcards | Documented, league + season |
+| apifootball_transfers | /transfers | Documented, player/team |
+| apifootball_trophies | /trophies | Documented, player/coach |
+| apifootball_sidelined | /sidelined | Documented, player/coach |
+| apifootball_odds_mapping | /odds/mapping | Documented endpoint; no unverifiable filters |
+| apifootball_live_bets | /odds/live/bets | Documented, string ID/search |
 | apifootball_coverage_report | /leagues | Coverage flag only |
 | apifootball_health | local only | Offline |
 | apifootball_quota_report | local only | Configured caps only |
@@ -79,7 +105,11 @@ Each query parameter is bounded by type and range. Fixtures and odds
 require targeted filters. Page is capped at 100, dates must be ISO
 calendar dates, timezone is currently limited to UTC, IDs positive.
 These are conservative **local safeguards**, not claims about provider
-maxima. The /fixtures/statistics `half` optional filter is held back
+maxima. Head-to-head is validated as a pair of positive numeric team IDs.
+The boolean `current`/`dates` filters on fixture rounds are normalized
+as provider-compatible lowercase `true`/`false` values. Live bet type
+IDs are strings in the provider documentation, unlike pre-match bet IDs.
+Unverified filters are omitted rather than fabricated. The /fixtures/statistics `half` optional filter is held back
 until its accepted type and semantics are reconciled against the
 official machine-readable contract.
 
@@ -107,7 +137,7 @@ Those are **documented**, not empirical assertions.
 ## Security and resilience regression gates
 
 - Disabled API module: zero registered new tools and original 34 browsers.
-- Enabled module: +20 only, no network even with a test key.
+- Enabled module: +42 only, no network even with a test key.
 - Typed signatures, no arbitrary URL, safe validation, rejection of
   oversized/unbounded scans, no raw upstream exception leakage.
 - Mock response equality preserves missing/null/zero/empty.
@@ -129,7 +159,8 @@ dangerous attacks, corners markets or historical opening/closing odds.
 
 ## D12 verdict at PR preparation
 
-- `PR03_TYPED_MCP_OFFLINE_IMPLEMENTED`: pending GitHub CI/review.
+- `PR03_TYPED_MCP_OFFLINE_IMPLEMENTED`: 42 tools authored, full path
+  inventory matched; pending final-head CI/review.
 - `MCP_INTEGRATION_READY`: NO for real provider reads.
 - `REAL_API_TEST_NOT_AUTHORIZED`: YES.
 - `REAL_API_TEST_READY`: NO.
@@ -137,3 +168,18 @@ dangerous attacks, corners markets or historical opening/closing odds.
 - `MERGE_DEPLOY`: requires separate owner approval.
 
 No further PR should be opened while PR-03 remains active.
+
+## Completeness update — owner requested every endpoint
+
+The original 20-tool shortlist was incomplete. This same PR now includes
+**all 22 previously missing football routes**, preserving the first 20
+functions and extending to 42 typed offline MCP tools. Path coverage is
+asserted against `ALLOWED_PATHS` and under the actual MCP v2 discovery
+implementation, not only against an in-memory fake registry. Dedicated
+negative tests cover unsafe inputs, missing parameters, bookmaker/live-bet
+ID distinctions, pagination and raw mock payload fidelity.
+
+No claim is made that all possible query parameters or all historical data
+are source-verified; the full machine-readable provider schema and actual
+coverage still require future authorized provider access. `/status` is
+an account endpoint, not a football-data fixture route.
