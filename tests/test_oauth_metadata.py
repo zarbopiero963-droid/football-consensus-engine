@@ -312,3 +312,218 @@ def test_authorize_post_logs_rejection_without_password_or_state(monkeypatch, ca
     assert "reason=resource_mismatch" in caplog.text
     for item in (password, fields["state"], fields["code_challenge"], fields["resource"], CLAUDE_ID):
         assert item not in caplog.text
+
+
+
+# Claude's dynamic registration does not rely on a server-to-Claude CIMD
+# download, which can be blocked by a datacenter Cloudflare challenge.
+def _make_http_request(method, path, *, json_body=None, form_body=None, query=None):
+    from urllib.parse import urlencode
+    from starlette.requests import Request
+
+    headers = []
+    if json_body is not None:
+        payload = json.dumps(json_body).encode()
+        headers = [(b"content-type", b"application/json")]
+    elif form_body is not None:
+        payload = urlencode(form_body).encode()
+        headers = [(b"content-type", b"application/x-www-form-urlencoded")]
+    else:
+        payload = b""
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    return Request({
+        "type": "http", "method": method, "scheme": "https",
+        "server": ("football-consensus-browser-bridge.onrender.com", 443),
+        "path": path, "headers": headers,
+        "query_string": urlencode(query or {}).encode(),
+    }, receive)
+
+
+def _claude_registration_payload():
+    return {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "redirect_uris": [CLAUDE_REDIRECT],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }
+
+
+def test_registration_endpoint_is_published():
+    assert oauth.authorization_server_metadata()["registration_endpoint"].endswith("/oauth/register")
+    from bridge.server import app
+    assert any(getattr(route, "path", None) == "/oauth/register" for route in app.routes)
+
+
+def test_claude_dcr_registration_issues_opaque_public_id_no_secret(monkeypatch):
+    recorded = []
+    client_id = "fcbdcr1_" + "a" * 32
+    monkeypatch.setattr(
+        oauth.oauth_store, "register_claude_dcr_client",
+        lambda redirect: recorded.append(redirect) or client_id,
+    )
+    response = asyncio.run(oauth.register_claude_client(
+        _make_http_request("POST", "/oauth/register", json_body=_claude_registration_payload())
+    ))
+    assert response.status_code == 201
+    data = json.loads(response.body)
+    assert data["client_id"] == client_id
+    assert data["redirect_uris"] == [CLAUDE_REDIRECT]
+    assert data["token_endpoint_auth_method"] == "none"
+    assert "client_secret" not in data
+    assert response.headers["cache-control"] == "no-store"
+    assert recorded == [CLAUDE_REDIRECT]
+
+
+def test_claude_dcr_rejects_untrusted_registration_metadata(monkeypatch):
+    def forbidden_write(*_args):
+        raise AssertionError("invalid clients cannot be registered")
+
+    monkeypatch.setattr(oauth.oauth_store, "register_claude_dcr_client", forbidden_write)
+    invalid = [
+        {},
+        {**_claude_registration_payload(), "redirect_uris": ["https://attacker.example/callback"]},
+        {**_claude_registration_payload(), "redirect_uris": [CLAUDE_REDIRECT, "https://attacker.example"]},
+        {**_claude_registration_payload(), "token_endpoint_auth_method": "client_secret_post"},
+        {**_claude_registration_payload(), "response_types": ["token"]},
+        {**_claude_registration_payload(), "grant_types": ["refresh_token"]},
+        {**_claude_registration_payload(), "scope": "browser:use admin"},
+        {**_claude_registration_payload(), "client_uri": "https://attacker.example"},
+    ]
+    for params in invalid:
+        resp = asyncio.run(oauth.register_claude_client(
+            _make_http_request("POST", "/oauth/register", json_body=params)
+        ))
+        assert resp.status_code == 400
+        assert json.loads(resp.body) == {"error": "invalid_client_metadata"}
+
+
+def test_claude_dcr_valid_authorization_even_when_cimd_fetch_blocked(monkeypatch):
+    import httpx
+    client_id = "fcbdcr1_" + "A" * 32
+
+    class BlockAllOutbound:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("DCR must not require an outbound CIMD request")
+
+    monkeypatch.setattr(oauth.httpx, "AsyncClient", BlockAllOutbound)
+    monkeypatch.setattr(
+        oauth.oauth_store, "valid_claude_dcr_client",
+        lambda supplied, redirect: supplied == client_id and redirect == CLAUDE_REDIRECT,
+    )
+    request = _make_http_request("GET", "/oauth/authorize", query={
+        "client_id": client_id,
+        "redirect_uri": CLAUDE_REDIRECT,
+        "response_type": "code",
+        "scope": "browser:use",
+        "resource": oauth.resource_url(),
+        "code_challenge": "challenge",
+        "code_challenge_method": "S256",
+        "state": "state",
+    })
+    response = asyncio.run(oauth.authorize_get(request))
+    assert response.status_code == 200
+    assert b"Password di autorizzazione" in response.body
+
+
+def test_claude_dcr_unknown_client_or_redirect_never_gets_consent(monkeypatch):
+    client_id = "fcbdcr1_" + "z" * 32
+    monkeypatch.setattr(oauth.oauth_store, "valid_claude_dcr_client", lambda *_args: False)
+    base = {
+        "client_id": client_id,
+        "redirect_uri": CLAUDE_REDIRECT,
+        "response_type": "code",
+        "scope": "browser:use",
+        "resource": oauth.resource_url(),
+        "code_challenge": "challenge",
+        "code_challenge_method": "S256",
+        "state": "state",
+    }
+    for redirect in (CLAUDE_REDIRECT, "https://attacker.example/cb"):
+        params = dict(base, redirect_uri=redirect)
+        response = asyncio.run(oauth.authorize_get(
+            _make_http_request("GET", "/oauth/authorize", query=params)
+        ))
+        assert response.status_code == 400
+
+
+def test_claude_dcr_code_and_pkce_remain_bound_after_consent(monkeypatch):
+    # Test complete authorization through code exchange with in-memory storage,
+    # not the production database or real OAuth password.
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    client_id = "fcbdcr1_" + "q" * 32
+    state = "test-state"
+    code_rows = {}
+    captured = {}
+    monkeypatch.setenv("MCP_OAUTH_PASSWORD", "LOCAL_TEST_ONLY_PASSWORD")
+    monkeypatch.setattr(oauth.oauth_store, "valid_claude_dcr_client", lambda cid, redirect: cid == client_id and redirect == CLAUDE_REDIRECT)
+
+    def save_code(code, **kw):
+        code_rows[code] = kw
+
+    monkeypatch.setattr(oauth.oauth_store, "save_code", save_code)
+    monkeypatch.setattr(oauth.oauth_store, "consume_code", lambda code: code_rows.pop(code, None))
+    monkeypatch.setattr(oauth, "_token_payload", lambda cid, resource, scope: {"access_token": "TEST_ACCESS", "scope": scope, "token_type": "Bearer"})
+
+    form = {
+        "client_id": client_id,
+        "redirect_uri": CLAUDE_REDIRECT,
+        "response_type": "code",
+        "scope": "browser:use",
+        "resource": oauth.resource_url(),
+        "code_challenge": oauth._pkce_s256(verifier),
+        "code_challenge_method": "S256",
+        "state": state,
+        "password": "LOCAL_TEST_ONLY_PASSWORD",
+    }
+    res = asyncio.run(oauth.authorize_post(_make_http_request("POST", "/oauth/authorize", form_body=form)))
+    assert res.status_code == 302
+    from urllib.parse import urlparse, parse_qs
+    redir = urlparse(res.headers["location"])
+    assert redir.scheme == "https" and redir.netloc == "claude.ai"
+    query = parse_qs(redir.query)
+    assert query["state"] == [state]
+    code = query["code"][0]
+    bad = asyncio.run(oauth.token_endpoint(_make_http_request("POST", "/oauth/token", form_body={
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "code": code,
+        "redirect_uri": "https://attacker.example/callback",
+        "code_verifier": verifier,
+    })))
+    assert bad.status_code == 400
+    assert json.loads(bad.body) == {"error": "invalid_grant"}
+    # A consumed code cannot be replayed.
+    replay = asyncio.run(oauth.token_endpoint(_make_http_request("POST", "/oauth/token", form_body={
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "code": code,
+        "redirect_uri": CLAUDE_REDIRECT,
+        "code_verifier": verifier,
+    })))
+    assert replay.status_code == 400
+    # Separately prove successful exchange with a fresh authorization code.
+    res2 = asyncio.run(oauth.authorize_post(_make_http_request("POST", "/oauth/authorize", form_body=form)))
+    code2 = parse_qs(urlparse(res2.headers["location"]).query)["code"][0]
+    good = asyncio.run(oauth.token_endpoint(_make_http_request("POST", "/oauth/token", form_body={
+        "grant_type": "authorization_code", "client_id": client_id,
+        "code": code2, "redirect_uri": CLAUDE_REDIRECT, "code_verifier": verifier,
+    })))
+    assert good.status_code == 200
+    assert json.loads(good.body)["access_token"] == "TEST_ACCESS"
+
+
+def test_dcr_storage_id_format_is_unforgeable_by_guesswork():
+    from bridge import oauth_store
+    assert oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "q" * 32)
+    assert not oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "q" * 31)
+    assert not oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "!" * 32)
