@@ -143,8 +143,8 @@ Before PR-02 / runtime authorization:
 ## D06 — Implementation per PR
 
 PR-01 contains only:
-`bridge/api_football/{__init__,config,catalog,client,tools,README}.py`
-(where the README has a `.md` extension),
+`bridge/api_football/{__init__,config,catalog,client,tools}.py` and
+`bridge/api_football/README.md`,
 one guarded optional registration in `bridge/server.py`,
 plus mocks/regression tests and this dossier.
 **No collector, ledger, scheduler, matching, settlement, OAuth or strategy edits.**
@@ -163,9 +163,20 @@ plus mocks/regression tests and this dossier.
 
 ## D08 — MCP test evidence
 
-Status until PR CI finishes: **PENDING**. No live provider tests authorized.
-Previous unrelated PR baseline: 790 PASS, 93 SKIP (not attributable to PR-01).
-Mock results will not be promoted to `REAL_VERIFIED`.
+**PR-01 first full CI run:**
+https://github.com/zarbopiero963-droid/football-consensus-engine/actions/runs/40132318500
+- `pytest -q`: **821 passed, 93 skipped**, SUCCESS.
+- `decision-postgres`: **SUCCESS**.
+- The prior baseline CI had 790 passed, 93 skipped; the +31 passing
+  cases are offline/mocked checks, not real provider certification.
+- Review gate: CodeRabbit check showed SUCCESS, but a substantive
+  independent line-by-line review is **not yet attested** by a submitted
+  review; do not treat that as certified.
+- If this documentation edit causes CI to rerun, the latest PR-head CI
+  must also be green before accepting the PR.
+
+No live provider tests authorized. SKIP is still SKIP and mock results
+will never be promoted to `REAL_VERIFIED`.
 
 ## D09 — ChatGPT / Claude.ai
 
