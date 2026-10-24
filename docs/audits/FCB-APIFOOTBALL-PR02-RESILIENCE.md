@@ -25,7 +25,7 @@ isolated library (not instantiated by the MCP registry):
       -> per-key async singleflight
       -> bounded local queue / semaphore
       -> circuit breaker
-      -> shared PostgreSQL Quota(acquire)
+      -> shared PostgreSQL Quota(acquire) + rolling 60-second history
       -> injected HTTPX transport (tests/mock only)
       -> Quota(release)
       -> provider-data validation / provenance
@@ -63,17 +63,22 @@ without new paid services. Lazy-created isolated tables:
 - Per-key SHA-256 fingerprint (not plaintext secret) scopes all counters.
 - Transaction-scoped advisory lock serializes reservations across
   independent workers/processes sharing the same key and DB.
-- Atomic UTC minute and UTC day buckets; if either cap is exhausted,
-  neither counter advances and no HTTP request is dispatched.
+- Atomic UTC minute/day buckets **plus exact shared rolling 60-second
+  per-key attempt history**, preventing provider bursts at minute turnover.
+  If any cap is exhausted, neither counter advances and no HTTP request
+  is dispatched. Stale attempt rows are pruned during subsequent
+  reservations for the same key.
 - Every actual attempt consumes one reservation: errors, timeouts and
   cancellations do not refund prior unknown work.
 - Concurrent-request leases expire after 180s for crash recovery.
 - Provider-reported zero remaining can freeze a window globally.
 - Readable quota snapshots exclude the key.
 - DB failure -> fail-closed `QUOTA_COORDINATOR_UNAVAILABLE`.
-- NOTE: these are fixed UTC windows, **not guaranteed rolling windows**.
-  Header semantics and real provider plan limits require verification
-  before any actual use.
+- NOTE: **daily** limits remain UTC calendar buckets; **minute** admission
+  requires both UTC bucket and sliding 60-second limit.
+  Header semantics and real provider limits require verification
+  before any actual use. Expired-attempt retention for inactive keys
+  needs later operational cleanup.
 - NOTE: independent applications outside this bridge sharing a key
   are not counted, and are therefore not certified safe in aggregate.
 - NOTE: PostgreSQL counters require retention/cleanup planning for long
@@ -114,6 +119,7 @@ without new paid services. Lazy-created isolated tables:
 | Caller cancellation | Unit test | MOCK/CI PASS |
 | PostgreSQL shared budget across workers | Dedicated CI PostgreSQL | MOCK/CI PASS |
 | PostgreSQL crash lease expiry | Dedicated CI PostgreSQL | MOCK/CI PASS |
+| Rolling 60-second cap at UTC minute boundary | Dedicated CI PostgreSQL | CI PENDING |
 | Cross-key quota isolation | Hash/unique key tests | MOCK/CI PASS |
 | Real provider header/latency/coverage | Needs owner key + approval | BLOCKED |
 | Official endpoint parameter reconciliation | 403 / separate audit | UNKNOWN |
@@ -142,6 +148,13 @@ Re-run [40134908029](https://github.com/zarbopiero963-droid/football-consensus-e
 - General Python suite: **850 passed, 99 skipped** — SUCCESS.
 - Dedicated PostgreSQL suite: **98 passed** — SUCCESS.
 - The previously failing multi-worker budget test now passes.
+
+Follow-up hardening on this same PR: added a per-key PostgreSQL rolling
+60-second attempt history to reject requests that would otherwise fit
+into a new UTC minute bucket but still exceed a rolling provider rate
+limit. Added integration tests for recent-history blocking and stale
+history expiry. **The amended HEAD requires another successful CI run**;
+prior PASS evidence is not automatically transferable.
 
 Any subsequent documentation-only commit will require latest-head CI
 green again. A CodeRabbit summary alone is not an independent full
