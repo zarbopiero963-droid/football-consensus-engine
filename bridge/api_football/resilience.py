@@ -100,6 +100,12 @@ class ResilientFootballClient:
                 return hit
             task = self._flights.get(key)
             if task is None:
+                # Bound new per-key tasks BEFORE create_task(). The downstream
+                # semaphore alone only bounds active jobs; without this guard
+                # thousands of unique callers could allocate unbounded tasks
+                # while waiting to acquire the local queue.
+                if len(self._flights) >= self.settings.max_concurrency * 4:
+                    raise RequestQueueFull()
                 task = asyncio.create_task(self._execute(path, checked, key))
                 self._flights[key] = task
                 task.add_done_callback(lambda t, k=key: self._flight_completed(k, t))
