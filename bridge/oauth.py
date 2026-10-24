@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import secrets
 from urllib.parse import urlencode, urlparse
@@ -20,6 +21,7 @@ OFFLINE = "offline_access"
 
 CLAUDE_CIMD_URL = "https://claude.ai/oauth/mcp-oauth-client-metadata"
 _CIMD_MAX_BYTES = 64 * 1024
+LOG = logging.getLogger(__name__)
 
 
 def public_base() -> str:
@@ -85,42 +87,83 @@ def _is_trusted_cimd_url(client_id: str) -> bool:
     )
 
 
-def _valid_cimd_document(client_id: str, redirect_uri: str, data: object) -> bool:
-    if not isinstance(data, dict) or data.get("client_id") != client_id:
-        return False
-    redirect_uris = data.get("redirect_uris")
-    if (
-        not isinstance(redirect_uris, list)
-        or not redirect_uris
-        or any(not isinstance(item, str) for item in redirect_uris)
-        or redirect_uri not in redirect_uris
+def _cimd_document_failure(client_id: str, redirect_uri: str, data: object) -> str | None:
+    """Only fixed reason codes. Never include document contents or OAuth parameters."""
+    if not isinstance(data, dict):
+        return "metadata_not_object"
+    if data.get("client_id") != client_id:
+        return "metadata_client_id_mismatch"
+    redirects = data.get("redirect_uris")
+    if not isinstance(redirects, list) or not redirects or any(
+        not isinstance(item, str) for item in redirects
     ):
-        return False
+        return "metadata_invalid_redirect_list"
+    if redirect_uri not in redirects:
+        return "metadata_redirect_not_registered"
     auth_method = data.get("token_endpoint_auth_method")
     if client_id == CLAUDE_CIMD_URL and auth_method != "none":
-        return False
+        return "metadata_claude_auth_method"
     if client_id != CLAUDE_CIMD_URL and auth_method not in (None, "none", "private_key_jwt"):
-        return False
+        return "metadata_auth_method"
     response_types = data.get("response_types")
     if not isinstance(response_types, list) or "code" not in response_types:
-        return False
-    grant_types = data.get("grant_types")
-    return isinstance(grant_types, list) and "authorization_code" in grant_types
+        return "metadata_response_type"
+    grants = data.get("grant_types")
+    if not isinstance(grants, list) or "authorization_code" not in grants:
+        return "metadata_grant_type"
+    return None
+
+
+def _valid_cimd_document(client_id: str, redirect_uri: str, data: object) -> bool:
+    return _cimd_document_failure(client_id, redirect_uri, data) is None
+
+
+def _client_kind(client_id: str) -> str:
+    """Return a predefined label, never an untrusted URL or identifier."""
+    if client_id == CLAUDE_CIMD_URL:
+        return "claude"
+    if _is_trusted_cimd_url(client_id):
+        return "chatgpt"
+    return "untrusted"
+
+
+def _reject(client_id: str, stage: str, reason: str) -> bool:
+    # SECURITY: do not log request URLs, redirects, state, PKCE, tokens,
+    # passwords, exception messages, response bodies or raw client IDs.
+    LOG.warning(
+        "oauth_rejected client=%s stage=%s reason=%s",
+        _client_kind(client_id), stage, reason,
+    )
+    return False
 
 
 async def validate_cimd(client_id: str, redirect_uri: str) -> bool:
     if not _is_trusted_cimd_url(client_id):
-        return False
+        return _reject(client_id, "metadata", "untrusted_client_id")
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             r = await client.get(client_id, headers={"Accept": "application/json"})
             r.raise_for_status()
             if len(r.content) > _CIMD_MAX_BYTES:
-                return False
+                return _reject(client_id, "metadata", "metadata_too_large")
             data = r.json()
+    except httpx.HTTPStatusError as exc:
+        # HTTP status is safe; no upstream response body or URL is logged.
+        code = exc.response.status_code
+        return _reject(client_id, "metadata", f"metadata_http_{code}")
+    except httpx.TimeoutException:
+        return _reject(client_id, "metadata", "metadata_timeout")
+    except httpx.RequestError:
+        return _reject(client_id, "metadata", "metadata_transport_error")
+    except ValueError:
+        return _reject(client_id, "metadata", "metadata_invalid_json")
     except Exception:
-        return False
-    return _valid_cimd_document(client_id, redirect_uri, data)
+        return _reject(client_id, "metadata", "metadata_unexpected_error")
+
+    failure = _cimd_document_failure(client_id, redirect_uri, data)
+    if failure is not None:
+        return _reject(client_id, "metadata", failure)
+    return True
 
 
 def _pkce_s256(verifier: str) -> str:
@@ -144,16 +187,25 @@ def _authorize_params(request: Request) -> dict[str, str]:
     )}
 
 
+def _authorization_request_failure(p: dict[str, str]) -> str | None:
+    if p["response_type"] != "code":
+        return "unsupported_response_type"
+    if p["code_challenge_method"] != "S256":
+        return "unsupported_pkce_method"
+    if p["resource"] != resource_url():
+        return "resource_mismatch"
+    if SCOPE not in set(p["scope"].split()):
+        return "required_scope_missing"
+    return None
+
+
 async def authorize_get(request: Request):
     p = _authorize_params(request)
-    ok = (
-        p["response_type"] == "code"
-        and p["code_challenge_method"] == "S256"
-        and p["resource"] == resource_url()
-        and SCOPE in set(p["scope"].split())
-        and await validate_cimd(p["client_id"], p["redirect_uri"])
-    )
-    if not ok:
+    failure = _authorization_request_failure(p)
+    if failure is not None:
+        _reject(p["client_id"], "authorize_get", failure)
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    if not await validate_cimd(p["client_id"], p["redirect_uri"]):
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     hidden = "".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
@@ -180,14 +232,11 @@ async def authorize_post(request: Request):
     supplied = str(form.get("password", ""))
     if not expected or not hmac.compare_digest(supplied, expected):
         return HTMLResponse("Password non valida", status_code=401)
-    ok = (
-        p["response_type"] == "code"
-        and p["code_challenge_method"] == "S256"
-        and p["resource"] == resource_url()
-        and SCOPE in set(p["scope"].split())
-        and await validate_cimd(p["client_id"], p["redirect_uri"])
-    )
-    if not ok:
+    failure = _authorization_request_failure(p)
+    if failure is not None:
+        _reject(p["client_id"], "authorize_post", failure)
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    if not await validate_cimd(p["client_id"], p["redirect_uri"]):
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = secrets.token_urlsafe(32)
     oauth_store.save_code(
