@@ -12,6 +12,7 @@ import json
 from typing import Any, Mapping, Protocol
 
 from .config import Settings
+from .catalog import ALLOWED_PATHS
 from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
 
 _MAX_MCP_DATA_BYTES = 262_144
@@ -208,6 +209,116 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_coverage_report", dict(id=id, season=season))
 
     @add
+    async def apifootball_timezones() -> dict[str, Any]:
+        """Available timezones accepted by the football fixtures API (offline catalog)."""
+        return await execute("apifootball_timezones", {})
+
+    @add
+    async def apifootball_team_seasons(team: int) -> dict[str, Any]:
+        """Available season IDs for one team; never implies complete statistics coverage."""
+        return await execute("apifootball_team_seasons", dict(team=team))
+
+    @add
+    async def apifootball_team_countries() -> dict[str, Any]:
+        """Countries available in the football teams catalog."""
+        return await execute("apifootball_team_countries", {})
+
+    @add
+    async def apifootball_venues(id: int | None = None, name: str | None = None, city: str | None = None, country: str | None = None, search: str | None = None) -> dict[str, Any]:
+        """Football venues and stadiums, with bounded venue-identifying filters."""
+        return await execute("apifootball_venues", dict(id=id, name=name, city=city, country=country, search=search))
+
+    @add
+    async def apifootball_standings(league: int, season: int, team: int | None = None) -> dict[str, Any]:
+        """League-season standings; league and season required to bound access."""
+        return await execute("apifootball_standings", dict(league=league, season=season, team=team))
+
+    @add
+    async def apifootball_fixture_rounds(league: int, season: int, current: bool | None = None, dates: bool | None = None, timezone: str | None = None) -> dict[str, Any]:
+        """Competition rounds, optionally current or with round dates; UTC only."""
+        return await execute("apifootball_fixture_rounds", dict(league=league, season=season, current=current, dates=dates, timezone=timezone))
+
+    @add
+    async def apifootball_fixture_headtohead(h2h: str, last: int | None = None, next: int | None = None) -> dict[str, Any]:
+        """Historical fixtures between two teams identified as 'homeID-awayID'."""
+        return await execute("apifootball_fixture_headtohead", dict(h2h=h2h, last=last, next=next))
+
+    @add
+    async def apifootball_fixture_players(fixture: int, team: int | None = None) -> dict[str, Any]:
+        """Per-player match statistics; fixture ID required."""
+        return await execute("apifootball_fixture_players", dict(fixture=fixture, team=team))
+
+    @add
+    async def apifootball_coaches(id: int | None = None, team: int | None = None, search: str | None = None) -> dict[str, Any]:
+        """Coaches by numeric ID, team, or name search; one filter required."""
+        return await execute("apifootball_coaches", dict(id=id, team=team, search=search))
+
+    @add
+    async def apifootball_player_seasons() -> dict[str, Any]:
+        """Season catalog for player statistics; no provider data fetched in PR-03."""
+        return await execute("apifootball_player_seasons", {})
+
+    @add
+    async def apifootball_player_profiles(page: int | None = None) -> dict[str, Any]:
+        """Paginated player profile catalog; page parameter requires full OpenAPI reconciliation."""
+        return await execute("apifootball_player_profiles", dict(page=page))
+
+    @add
+    async def apifootball_player_squads(team: int | None = None, player: int | None = None) -> dict[str, Any]:
+        """Current squads filtered by team or player ID, without season-statistics inference."""
+        return await execute("apifootball_player_squads", dict(team=team, player=player))
+
+    @add
+    async def apifootball_player_teams(player: int) -> dict[str, Any]:
+        """Teams and seasons in a player's career; player ID required."""
+        return await execute("apifootball_player_teams", dict(player=player))
+
+    @add
+    async def apifootball_top_scorers(league: int, season: int) -> dict[str, Any]:
+        """League-season leading goal scorers; results only documented, not empirically verified."""
+        return await execute("apifootball_top_scorers", dict(league=league, season=season))
+
+    @add
+    async def apifootball_top_assists(league: int, season: int) -> dict[str, Any]:
+        """League-season leading assists, distinct from scoring and match predictions."""
+        return await execute("apifootball_top_assists", dict(league=league, season=season))
+
+    @add
+    async def apifootball_top_yellow_cards(league: int, season: int) -> dict[str, Any]:
+        """League-season player yellow card leaderboard."""
+        return await execute("apifootball_top_yellow_cards", dict(league=league, season=season))
+
+    @add
+    async def apifootball_top_red_cards(league: int, season: int) -> dict[str, Any]:
+        """League-season player red card leaderboard."""
+        return await execute("apifootball_top_red_cards", dict(league=league, season=season))
+
+    @add
+    async def apifootball_transfers(player: int | None = None, team: int | None = None) -> dict[str, Any]:
+        """Player or club transfer records; no fabricated transfer fees."""
+        return await execute("apifootball_transfers", dict(player=player, team=team))
+
+    @add
+    async def apifootball_trophies(player: int | None = None, coach: int | None = None) -> dict[str, Any]:
+        """Trophies for one player or coach; no guarantee of complete history."""
+        return await execute("apifootball_trophies", dict(player=player, coach=coach))
+
+    @add
+    async def apifootball_sidelined(player: int | None = None, coach: int | None = None) -> dict[str, Any]:
+        """Historical player or coach sidelined periods (injuries/suspensions)."""
+        return await execute("apifootball_sidelined", dict(player=player, coach=coach))
+
+    @add
+    async def apifootball_odds_mapping() -> dict[str, Any]:
+        """Pre-match odds fixture mapping; no unsupported filter invented."""
+        return await execute("apifootball_odds_mapping", {})
+
+    @add
+    async def apifootball_live_bets(id: str | None = None, search: str | None = None) -> dict[str, Any]:
+        """In-play odds bet type IDs; NOT interchangeable with pre-match bet IDs."""
+        return await execute("apifootball_live_bets", dict(id=id, search=search))
+
+    @add
     async def apifootball_quota_report() -> dict[str, Any]:
         """Configured design limits, NOT provider-observed balance or a live DB check."""
         return {
@@ -225,4 +336,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         }
 
     assert set(ENDPOINTS).issubset(names)
+    # Forty named contracts (including an extra /leagues coverage view)
+    # address exactly the official 38 football paths plus /status.
+    # Two local diagnostic tools make 42 MCP names in all.
+    assert len(names) == 42 and len(set(names)) == 42
+    assert {endpoint.path for endpoint in ENDPOINTS.values()} == ALLOWED_PATHS
     return tuple(names)
