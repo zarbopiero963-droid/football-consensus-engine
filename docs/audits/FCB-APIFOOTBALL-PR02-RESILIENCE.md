@@ -160,6 +160,29 @@ Any subsequent documentation-only commit will require latest-head CI
 green again. A CodeRabbit summary alone is not an independent full
 code review; review remains a separate release gate.
 
+
+## D08.2 — Additional manual security review (same PR)
+
+A manual author-side code inspection found two **real gaps** despite green
+mock CI:
+
+1. `PostgresQuota.snapshot()` was reporting only the UTC-calendar-minute
+   remaining balance. At a minute boundary, it could report positive
+   allowance while the strict rolling 60-second ledger rejected requests.
+   Fixed by computing the **minimum** of calendar and rolling capacity.
+   Added DB regressions for effective remaining-capacity reporting.
+2. `ResilientFootballClient.get()` spawned an unbounded number of unique
+   `asyncio.Task` instances **before** entering its bounded downstream
+   semaphore. The queue protected work execution, not task allocation.
+   Fixed by rejecting additional distinct inflight keys while the
+   `4 * max_concurrency` queue is full. Duplicate callers may still
+   await the already-running identical request without creating a new one.
+   Added a concurrent overload/capacity test.
+
+This is an **author-side review**, not an independent APPROVED review, and
+cannot waive the mandatory independent reviewer gate. Results are PENDING
+fresh CI on the amended head.
+
 ## D09 — MCP compatibility
 
 No new MCP tool in PR-02. `apifootball_health` remains the offline
