@@ -193,8 +193,10 @@ def test_rolling_minute_blocks_recent_attempt_even_without_fixed_bucket_debits()
                     (secrets.token_urlsafe(20), digest),
                 )
                 conn.commit()
-            # The fixed bucket is empty, but the true rolling window isn't.
-            assert (await quota.snapshot(key))["remaining_minute"] == 1
+            # The fixed UTC bucket is empty but the rolling window isn't.
+            # The quota report must reflect the same effective capacity
+            # that the reservation check will enforce.
+            assert (await quota.snapshot(key))["remaining_minute"] == 0
             with pytest.raises(QuotaExceeded, match="rolling"):
                 await quota.acquire(key)
             assert (await quota.snapshot(key))["active_leases"] == 0
@@ -231,6 +233,25 @@ def test_stale_rolling_attempt_expires_and_budget_recovers():
             with pytest.raises(QuotaExceeded):
                 await quota.acquire(key)
             assert (await quota.snapshot(key))["remaining_day"] == 3
+        finally:
+            cleanup(key)
+    asyncio.run(go())
+
+
+def test_effective_minute_snapshot_matches_shared_rolling_budget():
+    key = identity()
+    quota = PostgresQuota(QuotaLimits(2, 5, 2), connect=connect)
+
+    async def go():
+        try:
+            before = await quota.snapshot(key)
+            assert before["remaining_minute"] == 2
+            lease = await quota.acquire(key)
+            await quota.release(lease)
+            after = await quota.snapshot(key)
+            assert after["remaining_minute"] == 1
+            assert after["remaining_day"] == 4
+            assert after["active_leases"] == 0
         finally:
             cleanup(key)
     asyncio.run(go())
