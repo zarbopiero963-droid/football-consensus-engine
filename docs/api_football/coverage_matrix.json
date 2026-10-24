@@ -1,0 +1,1158 @@
+{
+  "registry_version": 1,
+  "dashboard": {
+    "endpoints_catalogued": {
+      "value": 39,
+      "denominator_note": "MatchPilot #248 baseline; official catalogue not acquired"
+    },
+    "official_contracts_verified": {
+      "numerator": 0,
+      "denominator": 39
+    },
+    "owner_verified_parameter_names": {
+      "numerator": 6,
+      "denominator": 39
+    },
+    "endpoints_implemented_as_tools": {
+      "numerator": 6,
+      "denominator": 39
+    },
+    "parameters_covered": {
+      "numerator": 35,
+      "denominator": 35,
+      "denominator_note": "known parameter names only; total official parameter count is UNKNOWN"
+    },
+    "response_schemas_verified": {
+      "numerator": 0,
+      "denominator": 39
+    },
+    "real_tests_passed": {
+      "numerator": 0,
+      "denominator": 39
+    },
+    "incomplete_contracts": {
+      "value": 39
+    },
+    "breaking_changes_detected": {
+      "value": 0,
+      "note": "no official snapshot acquired yet"
+    }
+  },
+  "endpoints": [
+    {
+      "id": "AF-EP-001",
+      "path": "/timezone",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-002",
+      "path": "/countries",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-003",
+      "path": "/leagues",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-004",
+      "path": "/leagues/seasons",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-005",
+      "path": "/teams",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-006",
+      "path": "/teams/statistics",
+      "mcp_tool": "apifootball_teams_statistics",
+      "parameter_status": "OWNER_VERIFIED_NAMES",
+      "contract_status": "PARTIAL_OWNER_BASELINE",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "IMPLEMENTED_PROVISIONAL",
+      "mock_test": "tests/api_football/test_contracts.py",
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-007",
+      "path": "/teams/seasons",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-008",
+      "path": "/teams/countries",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-009",
+      "path": "/venues",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-010",
+      "path": "/standings",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-011",
+      "path": "/fixtures/rounds",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-012",
+      "path": "/fixtures",
+      "mcp_tool": "apifootball_fixtures",
+      "parameter_status": "OWNER_VERIFIED_NAMES",
+      "contract_status": "PARTIAL_OWNER_BASELINE",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "IMPLEMENTED_PROVISIONAL",
+      "mock_test": "tests/api_football/test_contracts.py",
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-013",
+      "path": "/fixtures/headtohead",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-014",
+      "path": "/fixtures/statistics",
+      "mcp_tool": "apifootball_fixtures_statistics",
+      "parameter_status": "OWNER_VERIFIED_NAMES",
+      "contract_status": "PARTIAL_OWNER_BASELINE",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "IMPLEMENTED_PROVISIONAL",
+      "mock_test": "tests/api_football/test_contracts.py",
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-015",
+      "path": "/fixtures/events",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-016",
+      "path": "/fixtures/lineups",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-017",
+      "path": "/fixtures/players",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-018",
+      "path": "/injuries",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-019",
+      "path": "/coachs",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-020",
+      "path": "/players/seasons",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-021",
+      "path": "/players/profiles",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-022",
+      "path": "/players",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-023",
+      "path": "/players/squads",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-024",
+      "path": "/players/teams",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-025",
+      "path": "/players/topscorers",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-026",
+      "path": "/players/topassists",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-027",
+      "path": "/players/topyellowcards",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-028",
+      "path": "/players/topredcards",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-029",
+      "path": "/transfers",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-030",
+      "path": "/trophies",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-031",
+      "path": "/sidelined",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-032",
+      "path": "/predictions",
+      "mcp_tool": "apifootball_predictions",
+      "parameter_status": "OWNER_VERIFIED_NAMES",
+      "contract_status": "PARTIAL_OWNER_BASELINE",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "IMPLEMENTED_PROVISIONAL",
+      "mock_test": "tests/api_football/test_contracts.py",
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-033",
+      "path": "/odds",
+      "mcp_tool": "apifootball_odds",
+      "parameter_status": "OWNER_VERIFIED_NAMES",
+      "contract_status": "PARTIAL_OWNER_BASELINE",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "IMPLEMENTED_PROVISIONAL",
+      "mock_test": "tests/api_football/test_contracts.py",
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-034",
+      "path": "/odds/mapping",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-035",
+      "path": "/odds/bookmakers",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-036",
+      "path": "/odds/bets",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-037",
+      "path": "/odds/live",
+      "mcp_tool": "apifootball_odds_live",
+      "parameter_status": "OWNER_VERIFIED_NAMES",
+      "contract_status": "PARTIAL_OWNER_BASELINE",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "IMPLEMENTED_PROVISIONAL",
+      "mock_test": "tests/api_football/test_contracts.py",
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-038",
+      "path": "/odds/live/bets",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    },
+    {
+      "id": "AF-EP-039",
+      "path": "/status",
+      "mcp_tool": null,
+      "parameter_status": "PENDING_OFFICIAL_VERIFICATION",
+      "contract_status": "PENDING_OFFICIAL_VERIFICATION",
+      "response_schema_status": "PENDING_OFFICIAL_VERIFICATION",
+      "implementation_status": "NOT_IMPLEMENTED_CONTRACT_PENDING",
+      "mock_test": null,
+      "real_test_status": "NOT_AUTHORIZED"
+    }
+  ],
+  "matrix": [
+    {
+      "endpoint": "/timezone",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/countries",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/leagues",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/leagues/seasons",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/teams",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/teams/statistics",
+      "parameter": "league",
+      "mcp_argument": "league",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/teams/statistics",
+      "parameter": "season",
+      "mcp_argument": "season",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "season",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/teams/statistics",
+      "parameter": "team",
+      "mcp_argument": "team",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/teams/statistics",
+      "parameter": "date",
+      "mcp_argument": "date",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "date",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/teams/seasons",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/teams/countries",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/venues",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/standings",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/fixtures/rounds",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "id",
+      "mcp_argument": "id",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "ids",
+      "mcp_argument": "ids",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "ids",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "live",
+      "mcp_argument": "live",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "live",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "date",
+      "mcp_argument": "date",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "date",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "league",
+      "mcp_argument": "league",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "season",
+      "mcp_argument": "season",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "season",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "team",
+      "mcp_argument": "team",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "last",
+      "mcp_argument": "last",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "int",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "next",
+      "mcp_argument": "next",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "int",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "from",
+      "mcp_argument": "from_date",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "date",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "to",
+      "mcp_argument": "to_date",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "date",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "round",
+      "mcp_argument": "round",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "round",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "status",
+      "mcp_argument": "status",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "status",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "venue",
+      "mcp_argument": "venue",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures",
+      "parameter": "timezone",
+      "mcp_argument": "timezone",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "timezone",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures/headtohead",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/fixtures/statistics",
+      "parameter": "fixture",
+      "mcp_argument": "fixture",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures/statistics",
+      "parameter": "team",
+      "mcp_argument": "team",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures/statistics",
+      "parameter": "type",
+      "mcp_argument": "type",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "text",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures/statistics",
+      "parameter": "half",
+      "mcp_argument": "half",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "bool",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/fixtures/events",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/fixtures/lineups",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/fixtures/players",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/injuries",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/coachs",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/seasons",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/profiles",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/squads",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/teams",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/topscorers",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/topassists",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/topyellowcards",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/players/topredcards",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/transfers",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/trophies",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/sidelined",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/predictions",
+      "parameter": "fixture",
+      "mcp_argument": "fixture",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "fixture",
+      "mcp_argument": "fixture",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "league",
+      "mcp_argument": "league",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "season",
+      "mcp_argument": "season",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "season",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "date",
+      "mcp_argument": "date",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "date",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "timezone",
+      "mcp_argument": "timezone",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "timezone",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "page",
+      "mcp_argument": "page",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "int",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "bookmaker",
+      "mcp_argument": "bookmaker",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds",
+      "parameter": "bet",
+      "mcp_argument": "bet",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds/mapping",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/odds/bookmakers",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/odds/bets",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/odds/live",
+      "parameter": "fixture",
+      "mcp_argument": "fixture",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds/live",
+      "parameter": "league",
+      "mcp_argument": "league",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds/live",
+      "parameter": "bet",
+      "mcp_argument": "bet",
+      "official_source": "SRC-OWNER-BASELINE",
+      "official_type": "PENDING_OFFICIAL_VERIFICATION",
+      "official_required": "PENDING_OFFICIAL_VERIFICATION",
+      "mcp_schema": "id",
+      "client_validation_status": "PROVISIONAL_CLIENT_POLICY",
+      "test": "tests/api_football/test_contracts.py",
+      "status": "MOCK_VERIFIED_NAMES_ONLY"
+    },
+    {
+      "endpoint": "/odds/live/bets",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    },
+    {
+      "endpoint": "/status",
+      "parameter": null,
+      "official_source": null,
+      "mcp_schema": null,
+      "test": null,
+      "status": "PENDING_OFFICIAL_VERIFICATION"
+    }
+  ]
+}

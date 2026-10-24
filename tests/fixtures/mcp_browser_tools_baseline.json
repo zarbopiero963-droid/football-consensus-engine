@@ -1,0 +1,959 @@
+{
+ "source_commit": "2d208462dd60b06b0f4d60d13f87aaef2db55ede",
+ "tool_count": 34,
+ "tools": {
+  "browser_back": {
+   "description": "Navigate the active page backward in history.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 45000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "wait_until": {
+      "default": "domcontentloaded",
+      "title": "Wait Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_backArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_backDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_cleanup_report": {
+   "description": "Return durable/local cleanup counts and the last reaper failure, if any.",
+   "input_schema": {
+    "properties": {},
+    "title": "browser_cleanup_reportArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_cleanup_reportDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_click": {
+   "description": "Click the first matching element in either Browser Use or CloakBrowser.",
+   "input_schema": {
+    "properties": {
+     "button": {
+      "default": "left",
+      "title": "Button",
+      "type": "string"
+     },
+     "click_count": {
+      "default": 1,
+      "title": "Click Count",
+      "type": "integer"
+     },
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "wait_after_ms": {
+      "default": 0,
+      "title": "Wait After Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector"
+    ],
+    "title": "browser_clickArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_clickDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_close_page": {
+   "description": "Close one tab/page; the final remaining page cannot be closed.",
+   "input_schema": {
+    "properties": {
+     "page_index": {
+      "title": "Page Index",
+      "type": "integer"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "page_index"
+    ],
+    "title": "browser_close_pageArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_close_pageDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_create": {
+   "description": "Create one Browser Use cloud browser. Returns an opaque session id, never the CDP URL.",
+   "input_schema": {
+    "properties": {
+     "proxy_country_code": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Proxy Country Code"
+     }
+    },
+    "title": "browser_createArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_createDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_create_cloak": {
+   "description": "Create one bridge-owned CloakBrowser session when server-side enabled.",
+   "input_schema": {
+    "properties": {},
+    "title": "browser_create_cloakArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_create_cloakDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_fill": {
+   "description": "Fill an input without echoing the supplied value in the result.",
+   "input_schema": {
+    "properties": {
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "value": {
+      "title": "Value",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector",
+     "value"
+    ],
+    "title": "browser_fillArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_fillDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_focus": {
+   "description": "Focus the first matching element.",
+   "input_schema": {
+    "properties": {
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector"
+    ],
+    "title": "browser_focusArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_focusDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_forward": {
+   "description": "Navigate the active page forward in history.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 45000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "wait_until": {
+      "default": "domcontentloaded",
+      "title": "Wait Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_forwardArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_forwardDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_get_dom": {
+   "description": "Return visible DOM text for a selector without AI interpretation.",
+   "input_schema": {
+    "properties": {
+     "max_chars": {
+      "default": 100000,
+      "title": "Max Chars",
+      "type": "integer"
+     },
+     "selector": {
+      "default": "body",
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_get_domArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_get_domDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_get_elements": {
+   "description": "Return safe metadata for matching elements; input values are deliberately omitted.",
+   "input_schema": {
+    "properties": {
+     "limit": {
+      "default": 100,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "selector": {
+      "default": "input,button,a,select,textarea",
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_get_elementsArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_get_elementsDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_get_html": {
+   "description": "Return raw outer HTML for the page or one selector.",
+   "input_schema": {
+    "properties": {
+     "selector": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Selector"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_get_htmlArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_get_htmlDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_get_network_responses": {
+   "description": "Return XHR/fetch/document response metadata captured by the last navigation.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_get_network_responsesArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_get_network_responsesDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_health": {
+   "description": "Return bridge/database/provider configuration health without exposing secrets.",
+   "input_schema": {
+    "properties": {},
+    "title": "browser_healthArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_healthDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_hover": {
+   "description": "Hover the first matching element.",
+   "input_schema": {
+    "properties": {
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector"
+    ],
+    "title": "browser_hoverArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_hoverDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_list_pages": {
+   "description": "List tabs/pages for the managed browser session.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_list_pagesArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_list_pagesDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_list_sessions": {
+   "description": "List durable bridge-owned browser sessions without exposing provider capabilities.",
+   "input_schema": {
+    "properties": {
+     "include_stopped": {
+      "default": false,
+      "title": "Include Stopped",
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 200,
+      "title": "Limit",
+      "type": "integer"
+     }
+    },
+    "title": "browser_list_sessionsArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_list_sessionsDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_new_page": {
+   "description": "Open a new tab/page and optionally navigate to an authorized public URL.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Url"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_new_pageArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_new_pageDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_open_url": {
+   "description": "Navigate a managed browser to an authorized public http/https URL.",
+   "input_schema": {
+    "properties": {
+     "capture_network": {
+      "default": true,
+      "title": "Capture Network",
+      "type": "boolean"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 45000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     },
+     "wait_until": {
+      "default": "domcontentloaded",
+      "title": "Wait Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "url"
+    ],
+    "title": "browser_open_urlArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_open_urlDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_press": {
+   "description": "Press a keyboard key or chord on the first matching element.",
+   "input_schema": {
+    "properties": {
+     "key": {
+      "title": "Key",
+      "type": "string"
+     },
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector",
+     "key"
+    ],
+    "title": "browser_pressArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_pressDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_reap": {
+   "description": "Stop expired idle bridge leases; invalid thresholds return a structured error.",
+   "input_schema": {
+    "properties": {
+     "idle_seconds": {
+      "default": 300,
+      "title": "Idle Seconds",
+      "type": "integer"
+     }
+    },
+    "title": "browser_reapArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_reapDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_reload": {
+   "description": "Reload the active page.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 45000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "wait_until": {
+      "default": "domcontentloaded",
+      "title": "Wait Until",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_reloadArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_reloadDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_screenshot": {
+   "description": "Return a PNG screenshot as base64.",
+   "input_schema": {
+    "properties": {
+     "full_page": {
+      "default": true,
+      "title": "Full Page",
+      "type": "boolean"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_screenshotArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_screenshotDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_scroll": {
+   "description": "Scroll the active page using mouse-wheel deltas.",
+   "input_schema": {
+    "properties": {
+     "delta_x": {
+      "default": 0,
+      "title": "Delta X",
+      "type": "integer"
+     },
+     "delta_y": {
+      "default": 700,
+      "title": "Delta Y",
+      "type": "integer"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_scrollArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_scrollDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_select_option": {
+   "description": "Select one or more option values from a select element.",
+   "input_schema": {
+    "properties": {
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     },
+     "values": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Values",
+      "type": "array"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector",
+     "values"
+    ],
+    "title": "browser_select_optionArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_select_optionDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_session_status": {
+   "description": "Return lifecycle status for one bridge-owned browser session.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_session_statusArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_session_statusDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_set_checked": {
+   "description": "Set a checkbox or radio control to the requested checked state.",
+   "input_schema": {
+    "properties": {
+     "checked": {
+      "default": true,
+      "title": "Checked",
+      "type": "boolean"
+     },
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector"
+    ],
+    "title": "browser_set_checkedArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_set_checkedDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_stop": {
+   "description": "Stop the bridge-owned browser session and remove its in-memory capabilities.",
+   "input_schema": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_stopArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_stopDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_stop_all": {
+   "description": "Emergency stop for all sessions local to this bridge worker.",
+   "input_schema": {
+    "properties": {},
+    "title": "browser_stop_allArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_stop_allDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_stop_all_idle": {
+   "description": "Stop expired idle bridge sessions while excluding active local operations.",
+   "input_schema": {
+    "properties": {
+     "idle_seconds": {
+      "default": 300,
+      "title": "Idle Seconds",
+      "type": "integer"
+     }
+    },
+    "title": "browser_stop_all_idleArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_stop_all_idleDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_switch_page": {
+   "description": "Switch the active tab/page by its current zero-based index.",
+   "input_schema": {
+    "properties": {
+     "page_index": {
+      "title": "Page Index",
+      "type": "integer"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "page_index"
+    ],
+    "title": "browser_switch_pageArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_switch_pageDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_type": {
+   "description": "Type sequentially into an element without echoing the supplied text.",
+   "input_schema": {
+    "properties": {
+     "delay_ms": {
+      "default": 0,
+      "title": "Delay Ms",
+      "type": "integer"
+     },
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "text": {
+      "title": "Text",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector",
+     "text"
+    ],
+    "title": "browser_typeArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_typeDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_wait": {
+   "description": "Wait a bounded amount of time in the active page.",
+   "input_schema": {
+    "properties": {
+     "milliseconds": {
+      "default": 1000,
+      "title": "Milliseconds",
+      "type": "integer"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "browser_waitArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_waitDictOutput",
+    "type": "object"
+   }
+  },
+  "browser_wait_for_selector": {
+   "description": "Wait for a selector to become attached, detached, visible or hidden.",
+   "input_schema": {
+    "properties": {
+     "selector": {
+      "title": "Selector",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "state": {
+      "default": "visible",
+      "title": "State",
+      "type": "string"
+     },
+     "timeout_ms": {
+      "default": 30000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "selector"
+    ],
+    "title": "browser_wait_for_selectorArguments",
+    "type": "object"
+   },
+   "output_schema": {
+    "additionalProperties": true,
+    "title": "browser_wait_for_selectorDictOutput",
+    "type": "object"
+   }
+  }
+ }
+}

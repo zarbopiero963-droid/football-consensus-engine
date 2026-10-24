@@ -1,0 +1,825 @@
+{
+  "registry_version": 1,
+  "endpoints": {
+    "AF-EP-001": {
+      "path": "/timezone",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-002": {
+      "path": "/countries",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-003": {
+      "path": "/leagues",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-004": {
+      "path": "/leagues/seasons",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-005": {
+      "path": "/teams",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-006": {
+      "path": "/teams/statistics",
+      "status": "OWNER_VERIFIED_NAMES",
+      "source": "SRC-OWNER-BASELINE",
+      "params": [
+        {
+          "name": "league",
+          "wire": "league",
+          "description": "League id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "season",
+          "wire": "season",
+          "description": "Season, four-digit year (client policy).",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "season",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "low": 1900,
+            "high": 2100
+          }
+        },
+        {
+          "name": "team",
+          "wire": "team",
+          "description": "Team id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "date",
+          "wire": "date",
+          "description": "Date YYYY-MM-DD (client policy).",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "date",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        }
+      ]
+    },
+    "AF-EP-007": {
+      "path": "/teams/seasons",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-008": {
+      "path": "/teams/countries",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-009": {
+      "path": "/venues",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-010": {
+      "path": "/standings",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-011": {
+      "path": "/fixtures/rounds",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-012": {
+      "path": "/fixtures",
+      "status": "OWNER_VERIFIED_NAMES",
+      "source": "SRC-OWNER-BASELINE",
+      "params": [
+        {
+          "name": "id",
+          "wire": "id",
+          "description": "Fixture id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "ids",
+          "wire": "ids",
+          "description": "Fixture ids joined by '-'.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "ids",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "max_len": 230,
+            "max_items": 20
+          }
+        },
+        {
+          "name": "live",
+          "wire": "live",
+          "description": "'all' or ids joined by '-'.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "live",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "max_len": 230,
+            "max_items": 20
+          }
+        },
+        {
+          "name": "date",
+          "wire": "date",
+          "description": "Date YYYY-MM-DD (client policy).",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "date",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "league",
+          "wire": "league",
+          "description": "League id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "season",
+          "wire": "season",
+          "description": "Season, four-digit year (client policy).",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "season",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "low": 1900,
+            "high": 2100
+          }
+        },
+        {
+          "name": "team",
+          "wire": "team",
+          "description": "Team id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "last",
+          "wire": "last",
+          "description": "Last N fixtures.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "int",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "low": 1,
+            "high": 10000
+          }
+        },
+        {
+          "name": "next",
+          "wire": "next",
+          "description": "Next N fixtures.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "int",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "low": 1,
+            "high": 10000
+          }
+        },
+        {
+          "name": "from_date",
+          "wire": "from",
+          "description": "Range start YYYY-MM-DD; provider parameter 'from'.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "date",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "to_date",
+          "wire": "to",
+          "description": "Range end YYYY-MM-DD; provider parameter 'to'.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "date",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "round",
+          "wire": "round",
+          "description": "Round name.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "round",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "status",
+          "wire": "status",
+          "description": "Status short codes joined by '-'.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "status",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "max_len": 60
+          }
+        },
+        {
+          "name": "venue",
+          "wire": "venue",
+          "description": "Venue id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "timezone",
+          "wire": "timezone",
+          "description": "Timezone name, e.g. Europe/Rome.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "timezone",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "max_len": 64
+          }
+        }
+      ]
+    },
+    "AF-EP-013": {
+      "path": "/fixtures/headtohead",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-014": {
+      "path": "/fixtures/statistics",
+      "status": "OWNER_VERIFIED_NAMES",
+      "source": "SRC-OWNER-BASELINE",
+      "params": [
+        {
+          "name": "fixture",
+          "wire": "fixture",
+          "description": "Fixture id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "team",
+          "wire": "team",
+          "description": "Team id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "type",
+          "wire": "type",
+          "description": "Statistic type name.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "text",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "max_len": 60
+          }
+        },
+        {
+          "name": "half",
+          "wire": "half",
+          "description": "Per-half statistics flag.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "bool",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        }
+      ]
+    },
+    "AF-EP-015": {
+      "path": "/fixtures/events",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-016": {
+      "path": "/fixtures/lineups",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-017": {
+      "path": "/fixtures/players",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-018": {
+      "path": "/injuries",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-019": {
+      "path": "/coachs",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-020": {
+      "path": "/players/seasons",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-021": {
+      "path": "/players/profiles",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-022": {
+      "path": "/players",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-023": {
+      "path": "/players/squads",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-024": {
+      "path": "/players/teams",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-025": {
+      "path": "/players/topscorers",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-026": {
+      "path": "/players/topassists",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-027": {
+      "path": "/players/topyellowcards",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-028": {
+      "path": "/players/topredcards",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-029": {
+      "path": "/transfers",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-030": {
+      "path": "/trophies",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-031": {
+      "path": "/sidelined",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-032": {
+      "path": "/predictions",
+      "status": "OWNER_VERIFIED_NAMES",
+      "source": "SRC-OWNER-BASELINE",
+      "params": [
+        {
+          "name": "fixture",
+          "wire": "fixture",
+          "description": "Fixture id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        }
+      ]
+    },
+    "AF-EP-033": {
+      "path": "/odds",
+      "status": "OWNER_VERIFIED_NAMES",
+      "source": "SRC-OWNER-BASELINE",
+      "params": [
+        {
+          "name": "fixture",
+          "wire": "fixture",
+          "description": "Fixture id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "league",
+          "wire": "league",
+          "description": "League id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "season",
+          "wire": "season",
+          "description": "Season, four-digit year (client policy).",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "season",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "low": 1900,
+            "high": 2100
+          }
+        },
+        {
+          "name": "date",
+          "wire": "date",
+          "description": "Date YYYY-MM-DD (client policy).",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "date",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "timezone",
+          "wire": "timezone",
+          "description": "Timezone name, e.g. Europe/Rome.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "timezone",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "max_len": 64
+          }
+        },
+        {
+          "name": "page",
+          "wire": "page",
+          "description": "Result page.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "int",
+            "status": "PROVISIONAL_CLIENT_POLICY",
+            "low": 1,
+            "high": 10000
+          }
+        },
+        {
+          "name": "bookmaker",
+          "wire": "bookmaker",
+          "description": "Bookmaker id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "bet",
+          "wire": "bet",
+          "description": "Bet id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        }
+      ]
+    },
+    "AF-EP-034": {
+      "path": "/odds/mapping",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-035": {
+      "path": "/odds/bookmakers",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-036": {
+      "path": "/odds/bets",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-037": {
+      "path": "/odds/live",
+      "status": "OWNER_VERIFIED_NAMES",
+      "source": "SRC-OWNER-BASELINE",
+      "params": [
+        {
+          "name": "fixture",
+          "wire": "fixture",
+          "description": "Fixture id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "league",
+          "wire": "league",
+          "description": "League id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        },
+        {
+          "name": "bet",
+          "wire": "bet",
+          "description": "Bet id.",
+          "official": {
+            "type": "PENDING_OFFICIAL_VERIFICATION",
+            "required": "PENDING_OFFICIAL_VERIFICATION",
+            "constraints": "PENDING_OFFICIAL_VERIFICATION",
+            "allowed_values": "PENDING_OFFICIAL_VERIFICATION",
+            "combinations": "PENDING_OFFICIAL_VERIFICATION"
+          },
+          "client_validation": {
+            "kind": "id",
+            "status": "PROVISIONAL_CLIENT_POLICY"
+          }
+        }
+      ]
+    },
+    "AF-EP-038": {
+      "path": "/odds/live/bets",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    },
+    "AF-EP-039": {
+      "path": "/status",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "source": null,
+      "params": null
+    }
+  }
+}

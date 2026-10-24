@@ -1,0 +1,38 @@
+name: API-FOOTBALL contracts
+
+# Offline only: no API-FOOTBALL key and no provider call. No schedule until the owner authorizes one.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "bridge/**"
+      - "docs/api_football/**"
+      - "scripts/check_api_football_contracts.py"
+      - "tests/api_football/**"
+      - "tests/fixtures/mcp_browser_tools_baseline.json"
+      - "requirements.txt"
+      - ".github/workflows/api-football-contracts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      APIFOOTBALL_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Registry, tool reconciliation, coverage drift, snapshot hashes
+        run: python scripts/check_api_football_contracts.py check
+      - name: Contract, resilience, change-detection and browser non-regression tests
+        run: pytest -q tests/api_football tests/test_bridge_auth.py tests/test_bridge_config.py tests/test_oauth_metadata.py
+      - name: Coverage report
+        if: always()
+        run: python scripts/check_api_football_contracts.py report >> "$GITHUB_STEP_SUMMARY"

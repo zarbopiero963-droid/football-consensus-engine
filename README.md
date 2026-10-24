@@ -658,6 +658,15 @@ clears the previous one. Reconnecting CDP installs the URL guard on the new
 context; local disconnect errors are surfaced.
 
 
+## Optional API-FOOTBALL v3 module
+
+The bridge can expose read-only `apifootball_*` MCP tools from an isolated, optional module
+(`bridge/api_football/`). It is disabled by default (`APIFOOTBALL_ENABLED`), makes no network call while disabled,
+and cannot affect browser tools, OAuth, sessions, leases or health. Contracts, provenance, coverage, configuration,
+the Render and ChatGPT plugin procedures, and the verification status are in
+[docs/api_football/README.md](docs/api_football/README.md). Operational issue: #101.
+
+
 ## ChatGPT OAuth 2.1
 
 The Browser Use bridge now acts as both MCP resource server and a minimal single-user OAuth 2.1 authorization server for this private deployment.

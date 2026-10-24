@@ -1,0 +1,243 @@
+{
+  "registry_version": 1,
+  "envelope": {
+    "status": "PENDING_OFFICIAL_VERIFICATION",
+    "client_assumption": "JSON object with a 'response' field; other keys (errors, results, paging) are read when present and never invented."
+  },
+  "endpoints": {
+    "AF-EP-001": {
+      "path": "/timezone",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-002": {
+      "path": "/countries",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-003": {
+      "path": "/leagues",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-004": {
+      "path": "/leagues/seasons",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-005": {
+      "path": "/teams",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-006": {
+      "path": "/teams/statistics",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-007": {
+      "path": "/teams/seasons",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-008": {
+      "path": "/teams/countries",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-009": {
+      "path": "/venues",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-010": {
+      "path": "/standings",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-011": {
+      "path": "/fixtures/rounds",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-012": {
+      "path": "/fixtures",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-013": {
+      "path": "/fixtures/headtohead",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-014": {
+      "path": "/fixtures/statistics",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-015": {
+      "path": "/fixtures/events",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-016": {
+      "path": "/fixtures/lineups",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-017": {
+      "path": "/fixtures/players",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-018": {
+      "path": "/injuries",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-019": {
+      "path": "/coachs",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-020": {
+      "path": "/players/seasons",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-021": {
+      "path": "/players/profiles",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-022": {
+      "path": "/players",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-023": {
+      "path": "/players/squads",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-024": {
+      "path": "/players/teams",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-025": {
+      "path": "/players/topscorers",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-026": {
+      "path": "/players/topassists",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-027": {
+      "path": "/players/topyellowcards",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-028": {
+      "path": "/players/topredcards",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-029": {
+      "path": "/transfers",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-030": {
+      "path": "/trophies",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-031": {
+      "path": "/sidelined",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-032": {
+      "path": "/predictions",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-033": {
+      "path": "/odds",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-034": {
+      "path": "/odds/mapping",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-035": {
+      "path": "/odds/bookmakers",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-036": {
+      "path": "/odds/bets",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-037": {
+      "path": "/odds/live",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-038": {
+      "path": "/odds/live/bets",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    },
+    "AF-EP-039": {
+      "path": "/status",
+      "status": "PENDING_OFFICIAL_VERIFICATION",
+      "schema": null,
+      "sha256": null
+    }
+  }
+}

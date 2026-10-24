@@ -1,0 +1,50 @@
+{
+  "registry_version": 1,
+  "sources": [
+    {
+      "id": "SRC-MP248",
+      "kind": "INVENTORY",
+      "url": "https://github.com/zarbopiero963-droid/MatchPilot/issues/248",
+      "title": "Super audit API-FOOTBALL v3.9.3 (MP-API-FOOTBALL-V3-GLOBAL-AUDIT-01)",
+      "consulted_at_utc": "2026-10-24",
+      "acquisition": "Public GitHub issue page, read-only, no credentials.",
+      "provides": "Endpoint paths only: 38 GET endpoints + /status, grouped in 5 families. The issue itself does not contain parameter contracts.",
+      "status": "CONSULTED"
+    },
+    {
+      "id": "SRC-OWNER-BASELINE",
+      "kind": "OWNER_VERIFICATION",
+      "reference": "Owner mandate FCB-AF-V3-OFFICIAL-CONTRACTS-01, section 3",
+      "consulted_at_utc": "2026-10-24",
+      "provides": "Parameter NAMES for /fixtures, /fixtures/statistics, /predictions, /odds, /teams/statistics and /odds/live from an earlier owner reading of the official documentation. Required-ness, types, allowed values and combinations must be re-verified.",
+      "status": "OWNER_VERIFIED_NAMES"
+    },
+    {
+      "id": "SRC-OFFICIAL-DOC",
+      "kind": "OFFICIAL_DOCUMENTATION",
+      "url": "https://www.api-football.com/documentation_v3",
+      "version_claimed": "3.9.3",
+      "provides": "Official endpoints, methods, parameters, types, constraints, examples, response structures, errors and pagination.",
+      "status": "DOCUMENTATION_UNAVAILABLE",
+      "acquisition_attempts": [
+        {"at_utc": "2026-10-24", "url": "https://www.api-football.com/documentation-v3", "method": "curl (desktop user agent)", "http_status": 403, "observed": "Cloudflare challenge page titled 'Just a moment...'"},
+        {"at_utc": "2026-10-24", "url": "https://www.api-football.com/documentation-v3", "method": "Playwright Chromium, standard navigation, 15 s wait, no stealth", "http_status": 403, "observed": "Cloudflare challenge not resolved automatically"},
+        {"at_utc": "2026-10-24", "url": "https://www.api-football.com/documentation_v3", "method": "curl (desktop user agent)", "http_status": 403, "observed": "Cloudflare challenge page titled 'Just a moment...'"},
+        {"at_utc": "2026-10-24", "url": "https://www.api-football.com/documentation_v3", "method": "Playwright Chromium, standard navigation, 15 s wait, no stealth", "http_status": 403, "observed": "Cloudflare challenge not resolved automatically"},
+        {"at_utc": "2026-10-24", "url": "web search: official API-FOOTBALL v3 OpenAPI specification", "method": "web search", "http_status": null, "observed": "No official public OpenAPI file found; only third-party catalogues (not accepted as official)."}
+      ],
+      "not_attempted": [
+        "Football Consensus Browser (deployed MCP bridge): needs the owner's OAuth session, which the agent does not have and does not request."
+      ],
+      "bypass_attempted": false
+    }
+  ],
+  "client_assumptions": [
+    {"id": "ASM-BASE-URL", "value": "https://v3.football.api-sports.io", "status": "PENDING_OFFICIAL_VERIFICATION", "note": "Only allowlisted host; RapidAPI is not supported."},
+    {"id": "ASM-AUTH-HEADER", "value": "x-apisports-key", "status": "PENDING_OFFICIAL_VERIFICATION", "note": "Sent only as a request header, never in the query string."},
+    {"id": "ASM-RATE-HEADERS", "value": ["x-ratelimit-requests-limit", "x-ratelimit-requests-remaining", "x-ratelimit-limit", "x-ratelimit-remaining"], "status": "PENDING_OFFICIAL_VERIFICATION", "note": "Missing headers stay unknown, never zero."},
+    {"id": "ASM-ENVELOPE", "value": "JSON object with 'response'; 'errors', 'results', 'paging' read when present", "status": "PENDING_OFFICIAL_VERIFICATION"},
+    {"id": "ASM-ERROR-KEYS", "value": ["token", "requests", "rateLimit", "plan"], "status": "PENDING_OFFICIAL_VERIFICATION", "note": "Unrecognised errors are returned as PROVIDER_ERROR with provider_errors verbatim."},
+    {"id": "ASM-QUOTA-DAY", "value": "UTC day", "status": "PENDING_OFFICIAL_VERIFICATION", "note": "Local budget only; provider headers are authoritative."}
+  ]
+}

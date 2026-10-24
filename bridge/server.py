@@ -276,6 +276,22 @@ async def browser_cleanup_report() -> dict[str, Any]:
     return await bridge.cleanup_report()
 
 
+def _register_optional_api_football(server: MCPServer) -> bool:
+    # API-FOOTBALL is optional and isolated: an import or registration failure
+    # must leave browser tools, OAuth, sessions and health untouched.
+    try:
+        from bridge.api_football.tools import register
+        register(server)
+        return True
+    except Exception as exc:
+        from bridge.browser_use import LOG
+        LOG.error('API-FOOTBALL tools unavailable: %s', type(exc).__name__)
+        return False
+
+
+_register_optional_api_football(mcp)
+
+
 class OAuthBearerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/mcp"):
