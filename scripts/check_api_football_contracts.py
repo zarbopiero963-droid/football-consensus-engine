@@ -2,8 +2,10 @@
 """Offline validator, snapshot writer and semantic change detector."""
 from __future__ import annotations
 import argparse, json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bridge.api_football.registry import build_registry, canonical_json, sha256, validate_registry
 
 def _items(registry):
