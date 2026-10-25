@@ -158,3 +158,30 @@ def valid_claude_dcr_client(client_id: str, redirect_uri: str) -> bool:
             (digest(client_id), redirect_uri),
         )
         return cur.fetchone() is not None
+
+
+# Isolated certification PKCE public clients; no reusable client secret.
+_CERT_PREFIX = "fcbe2e1_"
+_CERT_ID_PATTERN = re.compile(r"^fcbe2e1_[A-Za-z0-9_-]{32}$")
+def register_cert_client(redirect_uri: str) -> str:
+    client_id = _CERT_PREFIX + secrets.token_urlsafe(24)
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS oauth_cert_dcr_clients (
+            client_id_hash TEXT PRIMARY KEY,
+            redirect_uri TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL
+        )""")
+        cur.execute("""INSERT INTO oauth_cert_dcr_clients
+            (client_id_hash,redirect_uri,expires_at)
+            VALUES (%s,%s,NOW()+INTERVAL '30 days')""", (digest(client_id),redirect_uri))
+        conn.commit()
+    return client_id
+
+def valid_cert_client(client_id: str, redirect_uri: str) -> bool:
+    if not _CERT_ID_PATTERN.fullmatch(client_id):
+        return False
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT 1 FROM oauth_cert_dcr_clients
+            WHERE client_id_hash=%s AND redirect_uri=%s AND expires_at>NOW()""",
+            (digest(client_id),redirect_uri))
+        return cur.fetchone() is not None
