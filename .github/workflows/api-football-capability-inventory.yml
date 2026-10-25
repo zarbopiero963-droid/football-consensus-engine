@@ -9,15 +9,15 @@ concurrency:
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     environment: api-football-live
     env:
       PYTHONPATH: .
       APIFOOTBALL_ENABLED: 'true'
       APIFOOTBALL_LIVE_AUTHORIZED: 'true'
       APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
-      APIFOOTBALL_MAX_DAILY_REQUESTS: '4'
-      APIFOOTBALL_MAX_RPM: '4'
+      APIFOOTBALL_MAX_DAILY_REQUESTS: '60'
+      APIFOOTBALL_MAX_RPM: '8'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
