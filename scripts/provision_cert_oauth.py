@@ -20,8 +20,13 @@ STATE=Path.home()/".config/fcb-cert/pkce-bootstrap.json"
 REDIRECT="http://127.0.0.1:8765/oauth/callback"
 
 async def begin():
+    import os
+    registration_secret=os.getenv("FCB_CERT_OAUTH_REGISTRATION_SECRET","")
+    if not registration_secret:
+        raise ValueError("MISSING_CERT_REGISTRATION_SECRET")
     async with httpx.AsyncClient(trust_env=False,timeout=20,follow_redirects=False) as client:
-        r=await client.post(PUBLIC+"/oauth/cert-register",json={"redirect_uri":REDIRECT})
+        r=await client.post(PUBLIC+"/oauth/cert-register",json={"redirect_uri":REDIRECT},
+                            headers={"X-FCB-Cert-Registration":registration_secret})
         if r.status_code!=201:
             raise ValueError("CERT_CLIENT_REGISTRATION_UNAVAILABLE")
         client_id=r.json()["client_id"]
