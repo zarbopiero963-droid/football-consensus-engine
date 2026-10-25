@@ -9,6 +9,10 @@ from pathlib import Path
 import zipfile
 
 ARCHIVES = {
+    "40205480029": (
+        Path("evidence/api_football/route_inventory_40205480029.b64"),
+        "9ac706a73c58dc106d810ac6c220774c5090e439d40eccaae0f1e6e955184333",
+    ),
     "40211464376": (
         Path("evidence/api_football/route_inventory_40211464376.b64"),
         "08b34b6f438a62b0b8917ee151df991a921a8ff8fa253867066716fa752044d4",
