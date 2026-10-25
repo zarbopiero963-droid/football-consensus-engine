@@ -19,7 +19,7 @@ PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
 CAP = 60
 MAX_PAGES = 10
 
-async def run(env, *, transport=None):
+async def run(env, *, transport=None, sleep=asyncio.sleep):
     cfg = Settings.from_env(env)
     if not cfg.real_requests_authorized or cfg.base_url != OFFICIAL_BASE_URL or cfg.max_daily_requests < CAP:
         raise ValueError("LIVE_INVENTORY_NOT_AUTHORIZED")
@@ -55,7 +55,7 @@ async def run(env, *, transport=None):
                 if page > 1:
                     query["page"] = page
                 if calls:
-                    await asyncio.sleep(60 / min(cfg.max_rpm, 8))
+                    await sleep(60 / min(cfg.max_rpm, 8))
                 calls += 1
                 try:
                     async with client.stream("GET", path, params=query,
@@ -94,6 +94,7 @@ async def run(env, *, transport=None):
                         # Observe real bookmaker/market values from odds response, with no invented IDs.
                         if path in ("/odds", "/odds/live") and isinstance(body, list):
                             row["observed_market_schema"] = True
+                            row["sample"] = body[:2]  # bounded real observations; never fabricate prices
                         evidence.append(row)
                         if row["status"] not in ("OBSERVED", "NO_DATA_OBSERVED"):
                             stopped = True
