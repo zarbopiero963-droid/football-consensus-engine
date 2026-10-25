@@ -1,0 +1,68 @@
+{
+  "format": "api-football-candidate-evidence/v1",
+  "generated_from": "FCB-AF-V3-CONTRACT-GAP-20261025",
+  "status": "PARTIAL_EVIDENCE_ONLY",
+  "authoritative": false,
+  "source": {
+    "url": "https://api-sports.io/documentation/football/v3",
+    "access": "Cloudflare 403 observed 2026-10-25; selected indexed text only",
+    "official": true
+  },
+  "policy": "Candidate names must not promote a runtime parameter or an official contract status.",
+  "endpoints": {
+    "/fixtures": [
+      "from",
+      "ids",
+      "round",
+      "to",
+      "venue"
+    ],
+    "/fixtures/statistics": [
+      "half",
+      "type"
+    ],
+    "/fixtures/events": [
+      "player",
+      "team",
+      "type"
+    ],
+    "/fixtures/lineups": [
+      "player",
+      "team",
+      "type"
+    ],
+    "/fixtures/headtohead": [
+      "date",
+      "from",
+      "league",
+      "season",
+      "status",
+      "timezone",
+      "to",
+      "venue"
+    ],
+    "/leagues": [
+      "code",
+      "current",
+      "last",
+      "name",
+      "type"
+    ],
+    "/odds/mapping": [
+      "page"
+    ],
+    "/injuries": [
+      "player",
+      "date",
+      "ids",
+      "timezone"
+    ],
+    "/teams": [
+      "code",
+      "venue"
+    ],
+    "/odds/bets": [
+      "id"
+    ]
+  }
+}
