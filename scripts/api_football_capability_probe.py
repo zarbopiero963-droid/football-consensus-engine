@@ -22,6 +22,7 @@ PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
 CAP = 60
 # Completion requires all provider pages; request budget may still stop a scan.
 MAX_FIXTURE_SAMPLES = 3
+MAX_RESPONSE_BYTES = 2_097_152  # bounded payload; oversized responses are explicitly BLOCKED
 
 async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
     cfg = Settings.from_env(env)
@@ -117,7 +118,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                 stopped = True
                                 break
                             payload = await response.aread()
-                            if len(payload) > 524288:
+                            if len(payload) > MAX_RESPONSE_BYTES:
                                 evidence.append({**row, "status": "TOO_LARGE"})
                                 stopped = True
                                 break
@@ -170,7 +171,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                             total = paging.get("total", 1) if isinstance(paging, dict) else 1
                             if type(total) is not int or total < 1 or total <= page:
                                 break
-                            if path not in ("/odds/bookmakers", "/odds/bets", "/odds/live/bets", "/odds"):
+                            if path not in ("/odds/bookmakers", "/odds/bets", "/odds/live/bets", "/odds", "/players"):
                                 evidence.append({"path": path, "status": "PAGINATION_UNSUPPORTED_OR_NOT_VERIFIED", "page": page + 1})
                                 break
                             page += 1
@@ -192,7 +193,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                              trust_env=False, timeout=cfg.timeout_seconds, transport=transport) as second_client:
                     response = await second_client.get("/odds/live", params={"fixture": fid},
                         headers={"x-apisports-key": cfg.api_key, "Accept": "application/json"})
-                    if response.status_code != 200 or len(response.content) > 524288:
+                    if response.status_code != 200 or len(response.content) > MAX_RESPONSE_BYTES:
                         evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_HTTP_ERROR"})
                     else:
                         payload = response.json()
