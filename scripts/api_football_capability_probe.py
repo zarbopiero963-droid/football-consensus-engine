@@ -73,7 +73,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                 params = {"team": observed["team"], "season": team_scopes.get(observed["team"], {}).get("season", season)}
             elif path == "/odds/live":
                 if "live_fixture" not in observed:
-                    evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_LIVE_FIXTURE"})
+                    evidence.append({"path": path, "status": "BLOCKED_NO_LIVE_FIXTURE"})
                     continue
                 params = {"fixture": observed["live_fixture"]}
             samples = [params]
