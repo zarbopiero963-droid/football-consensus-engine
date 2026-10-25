@@ -37,11 +37,34 @@ jobs:
           fi
       - name: Bounded four-request live provider test
         run: python scripts/api_football_live_smoke.py --authorize-live-test --output /tmp/api_football_live_smoke.json
-      - name: Upload sanitized evidence
+      - name: Publish sanitized evidence in Actions summary
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: api-football-live-smoke-evidence
-          path: /tmp/api_football_live_smoke.json
-          if-no-files-found: ignore
-          retention-days: 7
+        env:
+          EVIDENCE_PATH: /tmp/api_football_live_smoke.json
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = Path(os.environ["EVIDENCE_PATH"])
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          if not report.is_file():
+              summary.open("a", encoding="utf-8").write("### API-FOOTBALL live smoke" + chr(10) * 2 + "No report was generated; check the preflight/test job steps." + chr(10))
+          else:
+              data = json.loads(report.read_text(encoding="utf-8"))
+              rows = data.get("results", [])
+              lines = [
+                  "### API-FOOTBALL live smoke (provider)",
+                  "",
+                  f"Attempted: {data.get('requests_attempted', 0)} / {data.get('request_cap', 4)}; complete: {data.get('complete')}",
+                  "",
+                  "| Endpoint | HTTP | Outcome | Day remaining | Minute remaining |",
+                  "|---|---:|---|---:|---:|",
+              ]
+              for x in rows:
+                  lines.append(f"| {x.get('path', '')} | {x.get('http_status', '-')} | {x.get('outcome', '')} | {x.get('remaining_day', '-')} | {x.get('remaining_minute', '-')} |")
+              lines.append("")
+              lines.append("Only bounded metadata shown; no credentials or provider response bodies.")
+              summary.open("a", encoding="utf-8").write(chr(10).join(lines) + chr(10))
+          PY
