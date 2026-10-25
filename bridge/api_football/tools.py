@@ -8,12 +8,14 @@ the HTTP transport nor the resilience engine is constructed here.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
 import json
 from typing import Any, Mapping, Protocol
 
 from .config import Settings
 from .catalog import ALLOWED_PATHS
 from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
+from .full_contract_audit import audit_contract_coverage
 
 _MAX_MCP_DATA_BYTES = 262_144
 
@@ -124,25 +126,37 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             return result
         except Exception as exc:
             # Never reflect provider bodies, exception messages or secrets.
+            from .quota import QuotaExceeded, QuotaConcurrencyBusy
             if test_mock is not None:
                 result["status"] = "MOCK_ERROR"
                 result["error"] = {"code": "MOCK_FIXTURE_UNAVAILABLE"}
             else:
                 result["status"] = "PROVIDER_ERROR"
                 safe_code = getattr(exc, "code", None)
-                result["error"] = {"code": safe_code if isinstance(safe_code, str) and safe_code in {
+                result["error"] = {"code": ("LOCAL_QUOTA_EXHAUSTED" if isinstance(exc, QuotaExceeded) else
+                    "LOCAL_CONCURRENCY_BUSY" if isinstance(exc, QuotaConcurrencyBusy) else
+                    safe_code if isinstance(safe_code, str) and safe_code in {
                     "PROVIDER_TIMEOUT", "PROVIDER_NETWORK_ERROR", "PROVIDER_REDIRECT_REJECTED",
                     "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_INVALID_JSON",
                     "PROVIDER_JSON_NOT_OBJECT", "PROVIDER_DECLARED_ERRORS",
                     "PROVIDER_RESPONSE_FIELD_MISSING", "PROVIDER_INVALID_PAGINATION",
                     "QUOTA_COORDINATOR_UNAVAILABLE", "QUOTA_RELEASE_FAILED",
                     "QUOTA_RECONCILIATION_FAILED", "PROVIDER_INTERNAL_ERROR",
-                } else "PROVIDER_REQUEST_FAILED"}
+                } else "PROVIDER_REQUEST_FAILED")}
             return result
 
     @add
     async def apifootball_health() -> dict[str, Any]:
-        """Offline adapter health. Never contacts API-FOOTBALL."""
+        """Local health and read-only shared quota readiness; no provider request."""
+        quota_state = "NOT_CONNECTED"
+        if settings.real_requests_authorized and client is not None:
+            quota_state = "UNKNOWN"
+            try:
+                if getattr(client, "quota", None) is not None:
+                    await asyncio.wait_for(client.quota.snapshot(settings.api_key), timeout=6.0)
+                    quota_state = "READY"
+            except Exception:
+                quota_state = "UNAVAILABLE"
         return {
             "provider": "API-FOOTBALL",
             "module": "FCB-APIFOOTBALL-INTEGRATION-CERT-01/PR-03",
@@ -151,8 +165,10 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "key_present": bool(settings.api_key),
             "provider_requests_authorized": bool(settings.real_requests_authorized and client is not None),
             "network_calls_made": 0,
+            "quota_coordinator": quota_state,
             "http_transport": "PINNED_HTTPX" if settings.real_requests_authorized and client is not None else "NOT_CONNECTED_TO_MCP",
             "documented_contract": "PARTIALLY_RECONCILED_OFFICIAL",
+            "mcp_contract_audit": {k: v for k, v in audit_contract_coverage().items() if k != "routes"},
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
             "limits_configured": {
                 "per_minute": settings.max_rpm,
@@ -191,9 +207,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_fixtures", dict(id=id, date=date, league=league, season=season, team=team, live=live, timezone=timezone, last=last, next=next, status=status, ids=ids, venue=venue, round=round, **{"from": from_date, "to": to_date}))
 
     @add
-    async def apifootball_fixture_statistics(fixture: int, team: int | None = None) -> dict[str, Any]:
-        """Fixture team statistics. No xG/xGoT availability implied; halftime not yet certified."""
-        return await execute("apifootball_fixture_statistics", dict(fixture=fixture, team=team))
+    async def apifootball_fixture_statistics(fixture: int, team: int | None = None, half: bool | None = None) -> dict[str, Any]:
+        """Fixture statistics; half is provider-supported for seasons from 2024 onward."""
+        return await execute("apifootball_fixture_statistics", dict(fixture=fixture, team=team, half=half))
 
     @add
     async def apifootball_fixture_events(fixture: int) -> dict[str, Any]:

@@ -117,7 +117,9 @@ async def inventory(env, *, transport=None, sleep=asyncio.sleep):
                 raise ValueError("UNALLOWLISTED_PATH")
             params = plan(path, ids)
             if params is None:
-                rows.append({"path": path, "outcome": "BLOCKED_MISSING_REAL_PREREQUISITES"})
+                rows.append({"path": path, "outcome": "BLOCKED_MISSING_REAL_PREREQUISITES",
+                             "required": list(NEED.get(path, ())),
+                             "missing": [key for key in NEED.get(path, ()) if not ids.get(key)]})
                 continue
             if stopped or count >= CAP:
                 rows.append({"path": path, "outcome": "BLOCKED_QUOTA_OR_PROVIDER"})
@@ -126,7 +128,8 @@ async def inventory(env, *, transport=None, sleep=asyncio.sleep):
                 await sleep(60 / min(config.max_rpm, 8))
             count += 1
             row = {"path": path, "outcome": "NOT_VERIFIED", "http_status": None,
-                   "results": None, "quota_day": None, "quota_minute": None}
+                   "results": None, "quota_day": None, "quota_minute": None,
+                   "params": params}
             try:
                 async with client.stream("GET", path, params=params, headers={
                     "x-apisports-key": config.api_key, "Accept": "application/json",
@@ -180,7 +183,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     with args.output.with_suffix(".csv").open("w", newline="", encoding="utf-8") as fp:
-        keys = ["path", "outcome", "http_status", "results", "quota_day", "quota_minute"]
+        keys = ["path", "outcome", "http_status", "results", "quota_day", "quota_minute", "params", "required", "missing"]
         writer = csv.DictWriter(fp, fieldnames=keys, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(report["records"])

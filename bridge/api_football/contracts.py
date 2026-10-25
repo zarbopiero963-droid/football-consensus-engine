@@ -24,7 +24,7 @@ _POSITIVE = frozenset({
 })
 _DATE_FIELDS = frozenset({"date", "from", "to"})
 _TEXT = frozenset({"name", "country", "code", "search", "status", "type", "timezone", "live", "city"})
-_BOOL_FIELDS = frozenset({"current", "dates"})
+_BOOL_FIELDS = frozenset({"current", "dates", "half"})
 _IDS = re.compile(r"^[1-9][0-9]{0,9}(?:-[1-9][0-9]{0,9}){0,19}$")
 assert not (_POSITIVE & _BOOL_FIELDS), "Boolean fields must not be validated as integers"
 _H2H = re.compile(r"^[1-9][0-9]{0,9}-[1-9][0-9]{0,9}$")
@@ -50,7 +50,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     "apifootball_leagues": Endpoint("/leagues", ("id", "season", "country", "team", "search"), confidence=_CONFIRMED),
     "apifootball_seasons": Endpoint("/leagues/seasons", (), confidence=_CONFIRMED),
     "apifootball_fixtures": Endpoint("/fixtures", ("id", "ids", "date", "league", "season", "team", "live", "timezone", "last", "next", "status", "venue", "round", "from", "to"), confidence=_CONFIRMED),
-    "apifootball_fixture_statistics": Endpoint("/fixtures/statistics", ("fixture", "team"), ("fixture",), confidence=_CONFIRMED),
+    "apifootball_fixture_statistics": Endpoint("/fixtures/statistics", ("fixture", "team", "half"), ("fixture",), confidence=_CONFIRMED),
     "apifootball_fixture_events": Endpoint("/fixtures/events", ("fixture",), ("fixture",), confidence=_CONFIRMED),
     "apifootball_fixture_lineups": Endpoint("/fixtures/lineups", ("fixture",), ("fixture",), confidence=_CONFIRMED),
     "apifootball_teams": Endpoint("/teams", ("id", "league", "season", "search", "code", "venue"), confidence=_CONFIRMED),
