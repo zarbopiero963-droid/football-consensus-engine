@@ -158,9 +158,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_seasons", {})
 
     @add
-    async def apifootball_fixtures(id: int | None = None, date: str | None = None, league: int | None = None, season: int | None = None, team: int | None = None, live: str | None = None, timezone: str | None = None, last: int | None = None, next: int | None = None, status: str | None = None) -> dict[str, Any]:
+    async def apifootball_fixtures(id: int | None = None, date: str | None = None, league: int | None = None, season: int | None = None, team: int | None = None, live: str | None = None, timezone: str | None = None, last: int | None = None, next: int | None = None, status: str | None = None, ids: str | None = None, venue: int | None = None, round: str | None = None, from_date: str | None = None, to_date: str | None = None) -> dict[str, Any]:
         """Fixtures/live calendar. Requires targeted filter; 'live' only 'all'; UTC timezone."""
-        return await execute("apifootball_fixtures", dict(id=id, date=date, league=league, season=season, team=team, live=live, timezone=timezone, last=last, next=next, status=status))
+        return await execute("apifootball_fixtures", dict(id=id, date=date, league=league, season=season, team=team, live=live, timezone=timezone, last=last, next=next, status=status, ids=ids, venue=venue, round=round, **{"from": from_date, "to": to_date}))
 
     @add
     async def apifootball_fixture_statistics(fixture: int, team: int | None = None) -> dict[str, Any]:
@@ -178,9 +178,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_fixture_lineups", dict(fixture=fixture))
 
     @add
-    async def apifootball_teams(id: int | None = None, league: int | None = None, season: int | None = None, search: str | None = None) -> dict[str, Any]:
+    async def apifootball_teams(id: int | None = None, league: int | None = None, season: int | None = None, search: str | None = None, code: str | None = None, venue: int | None = None) -> dict[str, Any]:
         """Find teams by ID, competition or name. Requires a filter."""
-        return await execute("apifootball_teams", dict(id=id, league=league, season=season, search=search))
+        return await execute("apifootball_teams", dict(id=id, league=league, season=season, search=search, code=code, venue=venue))
 
     @add
     async def apifootball_team_statistics(league: int, season: int, team: int, date: str | None = None) -> dict[str, Any]:
@@ -193,9 +193,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_players", dict(id=id, team=team, season=season, page=page))
 
     @add
-    async def apifootball_injuries(fixture: int | None = None, league: int | None = None, season: int | None = None, team: int | None = None) -> dict[str, Any]:
+    async def apifootball_injuries(fixture: int | None = None, league: int | None = None, season: int | None = None, team: int | None = None, ids: str | None = None) -> dict[str, Any]:
         """Injuries by fixture/league/team. Parameter combination pending verification."""
-        return await execute("apifootball_injuries", dict(fixture=fixture, league=league, season=season, team=team))
+        return await execute("apifootball_injuries", dict(fixture=fixture, league=league, season=season, team=team, ids=ids))
 
     @add
     async def apifootball_predictions(fixture: int) -> dict[str, Any]:
@@ -258,9 +258,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_fixture_rounds", dict(league=league, season=season, current=current, dates=dates, timezone=timezone))
 
     @add
-    async def apifootball_fixture_headtohead(h2h: str, last: int | None = None, next: int | None = None) -> dict[str, Any]:
+    async def apifootball_fixture_headtohead(h2h: str, last: int | None = None, next: int | None = None, status: str | None = None, venue: int | None = None) -> dict[str, Any]:
         """Historical fixtures between two teams identified as 'homeID-awayID'."""
-        return await execute("apifootball_fixture_headtohead", dict(h2h=h2h, last=last, next=next))
+        return await execute("apifootball_fixture_headtohead", dict(h2h=h2h, last=last, next=next, status=status, venue=venue))
 
     @add
     async def apifootball_fixture_players(fixture: int, team: int | None = None) -> dict[str, Any]:
