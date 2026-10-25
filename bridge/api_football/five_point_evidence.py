@@ -45,7 +45,7 @@ def extract_odds(payload: dict[str, Any], phase: str) -> list[dict[str, Any]]:
         for book in books:
             if not isinstance(book, dict):
                 continue
-            bets = book.get("bets")
+            bets = book.get("odds") if phase == "LIVE" else book.get("bets")
             if not isinstance(bets, list):
                 continue
             for bet in bets:
@@ -67,6 +67,7 @@ def extract_odds(payload: dict[str, Any], phase: str) -> list[dict[str, Any]]:
                         "suspended": sel.get("suspended", bet.get("suspended", "MISSING")),
                         "updated": bet.get("update", fixture.get("update")),
                         "fixture_status": fixture.get("status", "MISSING"),
+                        "market_status": fixture.get("status", "MISSING"),
                         "market_namespace": phase,
                     })
     return observations
