@@ -33,6 +33,7 @@ jobs:
         run: python scripts/api_football_capability_probe.py --out-dir /tmp/apifootball_capability_evidence
       - name: Upload complete sanitized bookmaker and market evidence
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: api-football-catalog-evidence
