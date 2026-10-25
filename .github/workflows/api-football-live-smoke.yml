@@ -50,7 +50,7 @@ jobs:
           report = Path(os.environ["EVIDENCE_PATH"])
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
           if not report.is_file():
-              summary.open("a", encoding="utf-8").write("### API-FOOTBALL live smoke\n\nNo report was generated; check the preflight/test job steps.\n")
+              summary.open("a", encoding="utf-8").write("### API-FOOTBALL live smoke" + chr(10) * 2 + "No report was generated; check the preflight/test job steps." + chr(10))
           else:
               data = json.loads(report.read_text(encoding="utf-8"))
               rows = data.get("results", [])
