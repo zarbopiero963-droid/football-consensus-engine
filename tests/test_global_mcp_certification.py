@@ -21,7 +21,7 @@ def test_wrong_release_cannot_certify(tmp_path):
                      "evidence_uri":"signed.txt","commit":PINNED_BASELINE}
              for domain in MANDATORY_DOMAINS}
     assert verdict(records,deployed_commit="wrong",evidence_root=tmp_path)["status"]=="NO_GO"
-    assert verdict(records,deployed_commit=PINNED_BASELINE,evidence_root=tmp_path)["status"]=="CERTIFIED"
+    assert verdict(records,deployed_commit=PINNED_BASELINE,evidence_root=tmp_path)["status"]=="NO_GO"  # Missing 76 execution proofs
     # Any file edit invalidates the certificate.
     (tmp_path / "signed.txt").write_bytes(b"tampered")
     assert verdict(records,deployed_commit=PINNED_BASELINE,evidence_root=tmp_path)["status"]=="NO_GO"
