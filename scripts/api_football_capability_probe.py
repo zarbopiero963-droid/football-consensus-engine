@@ -14,6 +14,7 @@ from bridge.api_football.capability_inventory import inventory_payload
 from bridge.api_football.coverage_certification import pagination_verdict
 from bridge.api_football.five_point_evidence import extract_odds, field_types, live_delta
 from bridge.api_football.five_point_verdict import assess_five_points
+from scripts.verify_api_football_evidence import verify_archive
 
 # Catalogs first; fixtures provide REAL prerequisites for statistics and odds.
 PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
@@ -230,7 +231,13 @@ if __name__ == "__main__":
     output = asyncio.run(run(os.environ, previous=previous))
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "capabilities.json").write_text(json.dumps(output, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
-    verdict = assess_five_points(output)
+    # Historical 39-route reachability is accepted only after ZIP SHA-256
+    # validation; the current LIVE run must independently close any missing path.
+    historical = verify_archive(
+        Path("evidence/api_football/route_inventory_40211464376.b64"),
+        "08b34b6f438a62b0b8917ee151df991a921a8ff8fa253867066716fa752044d4",
+    )
+    verdict = assess_five_points(output, historical_verified_paths=historical["verified_paths"])
     (args.out_dir / "five_point_verdict.json").write_text(
         json.dumps(verdict, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     with (args.out_dir / "catalogs.csv").open("w", newline="", encoding="utf-8") as fp:
