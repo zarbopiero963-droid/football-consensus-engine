@@ -1,0 +1,33 @@
+name: fcb-global-mcp-e2e-certification
+on:
+  pull_request:
+    paths:
+      - 'bridge/api_football/global_mcp_certification.py'
+      - 'scripts/fcb_global_mcp_certification.py'
+      - 'tests/test_global_mcp_certification.py'
+      - 'docs/certification/**'
+      - '.github/workflows/fcb-global-mcp-e2e-certification.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  global-e2e-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test inventory and false-PASS protection
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tests/test_global_mcp_certification.py
+      - name: Produce fail-closed certificate manifest
+        env:
+          PYTHONPATH: .
+        run: python scripts/fcb_global_mcp_certification.py
+      - name: Publish audit digest
+        run: sha256sum /tmp/fcb-global-e2e-certificate.json
