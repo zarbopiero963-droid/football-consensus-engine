@@ -59,3 +59,18 @@ def test_real_verified_cannot_be_smuggled_into_offline_registry():
     registry=build_registry()
     registry["tools"][0]["parameters"][0]["status"]="REAL_VERIFIED"
     assert "REAL_VERIFIED_FORBIDDEN" in validate_registry(registry)
+
+
+def test_candidate_evidence_is_gap_only_and_cannot_promote_runtime_contract(tmp_path):
+    evidence={"authoritative":False,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{"/fixtures":["ids"]}}
+    path=tmp_path/"candidate.json"; path.write_text(json.dumps(evidence))
+    report=MODULE.candidate_gap_report(build_registry(),path)
+    assert report["status"] == "PENDING_OFFICIAL_VERIFICATION"
+    assert report["gaps"][0]["runtime_missing"] == ["ids"]
+    assert report["gaps"][0]["promotion_allowed"] is False
+
+
+def test_candidate_evidence_cannot_claim_authority(tmp_path):
+    path=tmp_path/"candidate.json"; path.write_text(json.dumps({"authoritative":True,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{}}))
+    with pytest.raises(ValueError,match="CANDIDATE_EVIDENCE_MUST_NOT_BE_AUTHORITATIVE"):
+        MODULE.candidate_gap_report(build_registry(),path)
