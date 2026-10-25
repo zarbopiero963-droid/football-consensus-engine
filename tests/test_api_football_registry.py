@@ -36,7 +36,7 @@ def test_semantic_detector_classifies_adversarial_changes(mutation,classificatio
         new["endpoints"].append({"id":"route:/synthetic","path":"/synthetic","method":"GET","tool_ids":[],"official_status":"UNKNOWN","source":None,"source_section":None,"response_schema":{"status":"UNKNOWN"},"error_schema":{"status":"UNKNOWN"}})
     elif mutation=="remove_endpoint": new["endpoints"].pop()
     else:
-        tool=new["tools"][0]
+        tool=next(item for item in new["tools"] if item["parameters"])
         if mutation=="add_required_parameter":
             tool["parameters"].append({"id":tool["id"]+".synthetic","name":"synthetic","required":True,"type":"UNKNOWN","format":None,"enum":[],"minimum":None,"maximum":None,"status":"UNKNOWN","implementation_status":"IMPLEMENTED","source":None})
         elif mutation=="remove_parameter": tool["parameters"].pop()
