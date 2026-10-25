@@ -385,7 +385,7 @@ async def token_endpoint(request: Request):
         return JSONResponse(_token_payload(client_id, row["resource"], row["scope"]))
     if grant == "refresh_token":
         refresh = str(form.get("refresh_token", ""))
-        row = oauth_store.rotate_refresh_token(refresh)
+        row = oauth_store.rotate_refresh_token(refresh, client_id=client_id)
         if not row or row["client_id"] != client_id:
             return JSONResponse({"error":"invalid_grant"}, status_code=400)
         return JSONResponse(_token_payload(client_id, row["resource"], row["scope"]))
