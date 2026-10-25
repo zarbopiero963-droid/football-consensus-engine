@@ -117,7 +117,7 @@ def test_missing_real_authorization_stays_blocked_even_if_fake_key_present():
     registry = FakeRegistry()
     register_tools(registry, _settings(key=key))
     result = _call(registry.tools["apifootball_fixtures"](id=12))
-    assert result["status"] == "REAL_API_TEST_NOT_AUTHORIZED"
+    assert result["status"] == "LIVE_NOT_AUTHORIZED"
     assert result["data"] is None
     assert result["network_calls_made"] == 0
     assert key not in str(result)

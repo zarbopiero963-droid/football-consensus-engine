@@ -1,4 +1,4 @@
-"""Typed football-only MCP research tools; NO live provider access.
+"""Typed football-only MCP tools with independently authorized live access.
 
 PR-03 registers optional, authenticated MCP tools only when explicitly
 enabled in environment. Without an injected *test-only* mock client every
@@ -66,16 +66,16 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 "Provider calls require separate owner authorization and key.",
             ],
         }
-        if not settings.configured:
-            result["status"] = "KEY_NOT_CONFIGURED"
-            return result
-        # A real client is accepted only through trusted server wiring and
-        # only when the independent live gate is explicitly ON.
-        if test_mock is None and not settings.live_authorized:
-            return result
-        if test_mock is None and client is None:
-            result["status"] = "PROVIDER_CLIENT_UNAVAILABLE"
-            return result
+        if test_mock is None:
+            if not settings.api_key:
+                result["status"] = "KEY_NOT_CONFIGURED"
+                return result
+            if not settings.live_authorized:
+                result["status"] = "LIVE_NOT_AUTHORIZED"
+                return result
+            if client is None:
+                result["status"] = "PROVIDER_CLIENT_UNAVAILABLE"
+                return result
         # test_mock is supplied only by local unit tests, never from MCP
         # arguments or environment. Preserve raw simulated data losslessly.
         try:
@@ -95,21 +95,49 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
                 return result
             result["status"] = status
-            result["data"] = data.get("data", data) if status == "REAL_API_RESPONSE" else data
+            provider_data = data.get("data", data) if status == "REAL_API_RESPONSE" else data
+            # The account endpoint exposes private name/email fields upstream:
+            # expose only non-personal subscription and quota counters via MCP.
+            if tool == "apifootball_status" and status == "REAL_API_RESPONSE":
+                payload = provider_data.get("response") if isinstance(provider_data, dict) else None
+                if not isinstance(payload, dict):
+                    raise ValueError("INVALID_STATUS_RESPONSE")
+                subscription = payload.get("subscription")
+                requests = payload.get("requests")
+                if not isinstance(subscription, dict) or not isinstance(requests, dict):
+                    raise ValueError("INVALID_STATUS_RESPONSE")
+                result["data"] = {
+                    "subscription": {k: subscription.get(k) for k in ("plan", "active", "end")},
+                    "requests": {k: requests.get(k) for k in ("current", "limit_day")},
+                }
+            else:
+                result["data"] = provider_data
             result["http_status"] = data.get("http_status")
             result["pagination"] = data.get("pagination", data.get("paging"))
             result["cache_status"] = cache_status
-            result["network_calls_made"] = 1 if status == "REAL_API_RESPONSE" else 0
+            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else 1
             if status == "REAL_API_RESPONSE":
                 result["quota_remaining"] = {
                     "day": data.get("quota_remaining_provider_day"),
                     "minute": data.get("quota_remaining_provider_minute"),
                 }
             return result
-        except Exception:
-            # Never include exception messages, mock secrets or provider body.
-            result["status"] = "MOCK_ERROR"
-            result["error"] = {"code": "MOCK_FIXTURE_UNAVAILABLE"}
+        except Exception as exc:
+            # Never reflect provider bodies, exception messages or secrets.
+            if test_mock is not None:
+                result["status"] = "MOCK_ERROR"
+                result["error"] = {"code": "MOCK_FIXTURE_UNAVAILABLE"}
+            else:
+                result["status"] = "PROVIDER_ERROR"
+                safe_code = getattr(exc, "code", None)
+                result["error"] = {"code": safe_code if isinstance(safe_code, str) and safe_code in {
+                    "PROVIDER_TIMEOUT", "PROVIDER_NETWORK_ERROR", "PROVIDER_REDIRECT_REJECTED",
+                    "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_INVALID_JSON",
+                    "PROVIDER_JSON_NOT_OBJECT", "PROVIDER_DECLARED_ERRORS",
+                    "PROVIDER_RESPONSE_FIELD_MISSING", "PROVIDER_INVALID_PAGINATION",
+                    "QUOTA_COORDINATOR_UNAVAILABLE", "QUOTA_RELEASE_FAILED",
+                    "QUOTA_RECONCILIATION_FAILED", "PROVIDER_INTERNAL_ERROR",
+                } else "PROVIDER_REQUEST_FAILED"}
             return result
 
     @add
@@ -118,21 +146,21 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return {
             "provider": "API-FOOTBALL",
             "module": "FCB-APIFOOTBALL-INTEGRATION-CERT-01/PR-03",
-            "status": "MOCK_ONLY" if settings.configured else "KEY_NOT_CONFIGURED",
+            "status": "LIVE_ENABLED" if settings.real_requests_authorized and client is not None else ("LIVE_NOT_AUTHORIZED" if settings.configured else "KEY_NOT_CONFIGURED"),
             "enabled": True,
             "key_present": bool(settings.api_key),
-            "provider_requests_authorized": False,
+            "provider_requests_authorized": bool(settings.real_requests_authorized and client is not None),
             "network_calls_made": 0,
-            "http_transport": "NOT_CONNECTED_TO_MCP",
+            "http_transport": "PINNED_HTTPX" if settings.real_requests_authorized and client is not None else "NOT_CONNECTED_TO_MCP",
             "documented_contract": "PARTIALLY_RECONCILED_OFFICIAL",
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
-            "limits_configured_not_active": {
+            "limits_configured": {
                 "per_minute": settings.max_rpm,
                 "per_day": settings.max_daily_requests,
                 "max_concurrency": settings.max_concurrency,
             },
             "warnings": [
-                "Only offline typed tools; no real provider calls authorized.",
+                "Live calls require the independent server-side authorization gate.",
                 "Coverage and field availability require provider evidence.",
             ],
         }
@@ -344,7 +372,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "provider": "API-FOOTBALL",
             "status": "CONFIGURED_LIMITS_ONLY",
             "provider_quota_verified": False,
-            "live_requests_enabled": False,
+            "live_requests_enabled": bool(settings.real_requests_authorized and client is not None),
             "remaining_provider_quota": None,
             "configured_limits": {
                 "per_minute": settings.max_rpm,

@@ -203,7 +203,7 @@ class ResilientFootballClient:
                             "provider": "API-FOOTBALL",
                             "endpoint": path,
                             "params": deepcopy(checked),
-                            "status": "MOCK_TRANSPORT_ONLY",
+                            "status": "PROVIDER_RESPONSE_RECEIVED",
                             "http_status": reply.status_code,
                             "retrieved_at_utc": reply.received_at_utc,
                             "provider_timestamp_utc": None,
@@ -211,7 +211,7 @@ class ResilientFootballClient:
                             "quota_remaining_provider_day": reply.quota_remaining_day,
                             "quota_remaining_provider_minute": reply.quota_remaining_minute,
                             "data": deepcopy(reply.data),
-                            "warnings": ["No real provider data verified in PR-02"],
+                            "warnings": [],
                         }
                         if self.settings.cache_enabled:
                             self.cache.put(key, outcome, ttl_for_endpoint(path))

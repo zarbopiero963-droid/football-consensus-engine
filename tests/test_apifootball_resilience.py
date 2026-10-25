@@ -348,7 +348,7 @@ def test_cancellation_of_one_waiter_does_not_abort_shared_request_or_leak_lease(
             await a
         event.set()
         result = await b
-        assert result["status"] == "MOCK_TRANSPORT_ONLY"
+        assert result["status"] == "PROVIDER_RESPONSE_RECEIVED"
         assert len(transport.calls) == 1
         assert len(quota.claims) == len(quota.releases) == 1
     asyncio.run(go())
@@ -367,7 +367,7 @@ def test_quota_headers_and_mock_data_never_become_synthetic_pit():
         assert result["provider_timestamp_utc"] is None
         assert result["retrieved_at_utc"] == "2026-10-24T00:00:00+00:00"
         assert result["data"]["response"][0]["xg"] is None
-        assert result["status"] == "MOCK_TRANSPORT_ONLY"
+        assert result["status"] == "PROVIDER_RESPONSE_RECEIVED"
         assert "PIT" not in result
     asyncio.run(go())
 

@@ -177,11 +177,11 @@ def test_optional_health_tool_is_mock_only_no_secret_no_request():
     assert set(registered) == set(registry.registry)
     result = _run(registry.registry["apifootball_health"]())
     assert result["provider"] == "API-FOOTBALL"
-    assert result["status"] == "MOCK_ONLY"
+    assert result["status"] == "LIVE_NOT_AUTHORIZED"
     assert result["provider_requests_authorized"] is False
     assert result["network_calls_made"] == 0
     assert result["http_transport"] == "NOT_CONNECTED_TO_MCP"
-    assert result["limits_configured_not_active"]["per_day"] == 80
+    assert result["limits_configured"]["per_day"] == 80
     assert result["observed_at_utc"].endswith("+00:00")
     assert key not in str(result)
     assert "PARTIALLY_RECONCILED_OFFICIAL" == result["documented_contract"]
