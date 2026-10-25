@@ -22,11 +22,24 @@ CAP = 60
 # Completion requires all provider pages; request budget may still stop a scan.
 MAX_FIXTURE_SAMPLES = 3
 
-async def run(env, *, transport=None, sleep=asyncio.sleep):
+async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
     cfg = Settings.from_env(env)
     if not cfg.real_requests_authorized or cfg.base_url != OFFICIAL_BASE_URL or cfg.max_daily_requests < CAP:
         raise ValueError("LIVE_INVENTORY_NOT_AUTHORIZED")
     evidence, calls, stopped = [], 0, False
+    # Checkpoints are only reusable when they preserve a real HTTP200 response,
+    # a 64-character response digest and matching exact path and parameters.
+    prior = {}
+    for record in (previous or []):
+        if (isinstance(record, dict) and record.get("path") in
+            ("/odds/bookmakers", "/odds/bets", "/odds/live/bets", "/odds")
+            and record.get("http_status") == 200
+            and record.get("status") in ("OBSERVED", "NO_DATA_OBSERVED")
+            and isinstance(record.get("response_sha256"), str)
+            and len(record["response_sha256"]) == 64
+            and isinstance(record.get("parameters"), dict)
+            and type(record.get("page")) is int):
+            prior[(record["path"], json.dumps(record["parameters"], sort_keys=True))] = record
     observed = {}
     fixtures = []
     teams = []
@@ -67,6 +80,15 @@ async def run(env, *, transport=None, sleep=asyncio.sleep):
                     query = dict(sample_params)
                     if page > 1:
                         query["page"] = page
+                    recovered = prior.get((path, json.dumps(query, sort_keys=True)))
+                    if recovered is not None:
+                        evidence.append(recovered)
+                        paging_before = recovered.get("pagination")
+                        total_before = paging_before.get("total") if isinstance(paging_before, dict) else None
+                        if type(total_before) is int and page < total_before:
+                            page += 1
+                            continue
+                        break
                     if calls:
                         await sleep(60 / min(cfg.max_rpm, 8))
                     calls += 1
@@ -87,6 +109,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep):
                             parsed = json.loads(payload)
                             row.update(inventory_payload(path, parsed))
                             row["response_sha256"] = hashlib.sha256(payload).hexdigest()
+                            row["parameters"] = query
                             row["response_bytes"] = len(payload)
                             paging = parsed.get("paging") if isinstance(parsed, dict) else None
                             row["pagination"] = {k: paging.get(k) for k in ("current", "total")} if isinstance(paging, dict) else None
@@ -185,8 +208,14 @@ async def run(env, *, transport=None, sleep=asyncio.sleep):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", type=Path, default=Path("/tmp/apifootball_capability_evidence"))
+    parser.add_argument("--resume-evidence", type=Path, help="Prior sanitized capabilities.json from this same scope")
     args = parser.parse_args()
-    output = asyncio.run(run(os.environ))
+    previous = []
+    if args.resume_evidence:
+        previous = json.loads(args.resume_evidence.read_text(encoding="utf-8"))
+        if not isinstance(previous, list):
+            raise SystemExit("INVALID_CHECKPOINT")
+    output = asyncio.run(run(os.environ, previous=previous))
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "capabilities.json").write_text(json.dumps(output, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     with (args.out_dir / "catalogs.csv").open("w", newline="", encoding="utf-8") as fp:
