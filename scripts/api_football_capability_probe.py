@@ -247,6 +247,8 @@ if __name__ == "__main__":
     offered = {}
     for result in output:
         for item in result.get("odds_observations", []):
+            if item.get("phase") != "PREMATCH":
+                continue
             key = str(item.get("bookmaker_id"))
             offered[key] = offered.get(key, 0) + 1
     bookmaker_report = [{"bookmaker_id": key, "bookmaker_name": name,
