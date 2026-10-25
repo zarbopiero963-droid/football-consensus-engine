@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Manual-only capped catalog probe. No raw response or secrets in logs."""
 import asyncio
+import argparse
+import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,6 +38,9 @@ async def run(env, *, transport=None):
                         break
                     parsed = json.loads(payload)
                     row = inventory_payload(path, parsed)
+                    row["response_sha256"] = hashlib.sha256(payload).hexdigest()
+                    row["http_status"] = response.status_code
+                    row["response_bytes"] = len(payload)
                     paging = parsed.get("paging") if isinstance(parsed, dict) else None
                     row["pagination"] = {k: paging.get(k) for k in ("current", "total")} if isinstance(paging, dict) else None
                     evidence.append(row)
@@ -49,7 +55,24 @@ async def run(env, *, transport=None):
     return evidence
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out-dir", type=Path, default=Path("/tmp/apifootball_capability_evidence"))
+    args = parser.parse_args()
     output = asyncio.run(run(os.environ))
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    (args.out_dir / "capabilities.json").write_text(json.dumps(output, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
+    with (args.out_dir / "catalogs.csv").open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=["source_path", "phase", "id", "name"])
+        writer.writeheader()
+        for result in output:
+            for item in result.get("catalog", []):
+                writer.writerow({"source_path":result["path"],"phase":result.get("phase","UNKNOWN"),"id":item["id"],"name":item["name"]})
+    with (args.out_dir / "field_registry.csv").open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=["source_path", "json_path", "types"])
+        writer.writeheader()
+        for result in output:
+            for json_path, types in result.get("fields", {}).items():
+                writer.writerow({"source_path":result["path"],"json_path":json_path,"types":",".join(types)})
     summary = Path(os.environ.get("GITHUB_STEP_SUMMARY", "/tmp/api-football-capability-summary.md"))
     lines = ["### API-FOOTBALL catalog inventory", "", "Catalog does not prove bookie/market availability or full pagination.", "",
              "| Endpoint | State | Records | Pages |", "|---|---|---:|---|"]
