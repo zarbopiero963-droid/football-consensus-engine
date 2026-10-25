@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install pytest
-          python -m pytest -q tests/test_global_mcp_certification.py tests/test_mcp_connected_inventory.py tests/test_mcp_tool_evidence_gate.py
+          python -m pytest -q tests/test_global_mcp_certification.py tests/test_mcp_connected_inventory.py tests/test_mcp_tool_evidence_gate.py tests/test_full_mcp_one_command.py
           python scripts/run_full_mcp_certification.py --deployed-sha "$DEPLOYED_SHA" --evidence-dir evidence/certification
       - name: Print manifest SHA even on failure
         if: always()
