@@ -6,6 +6,7 @@ Unknown prerequisites are recorded BLOCKED, never replaced with fabricated IDs.
 """
 from __future__ import annotations
 import argparse
+import csv
 import asyncio
 from datetime import datetime, timezone
 import json
@@ -178,6 +179,11 @@ def main():
         raise SystemExit(str(exc)) from None
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    with args.output.with_suffix(".csv").open("w", newline="", encoding="utf-8") as fp:
+        keys = ["path", "outcome", "http_status", "results", "quota_day", "quota_minute"]
+        writer = csv.DictWriter(fp, fieldnames=keys, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(report["records"])
     print(json.dumps({"route_count": report["route_count"], "requests_attempted": report["requests_attempted"],
                       "outcomes": {key: sum(r["outcome"] == key for r in report["records"]) for key in sorted(set(r["outcome"] for r in report["records"]))}}))
 

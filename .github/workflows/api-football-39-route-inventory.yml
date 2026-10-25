@@ -33,7 +33,7 @@ jobs:
         run: python -m pytest -q tests/test_api_football_39_route_inventory.py
       - name: Provider inventory (manual only)
         run: python scripts/api_football_39_route_inventory.py --authorize-live-inventory --output /tmp/route_inventory.json
-      - name: Publish redacted evidence summary, no artifact storage
+      - name: Publish redacted evidence summary
         if: always()
         run: |
           python - <<'PY'
@@ -56,3 +56,13 @@ jobs:
               lines.extend(["", "Requests attempted: {} / 39".format(data["requests_attempted"])])
               output.open("a").write(chr(10).join(lines) + chr(10))
           PY
+      - name: Upload complete sanitized route JSON and CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-football-39-route-evidence
+          path: |
+            /tmp/route_inventory.json
+            /tmp/route_inventory.csv
+          if-no-files-found: warn
+          retention-days: 7

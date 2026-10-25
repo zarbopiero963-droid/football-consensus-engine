@@ -4,20 +4,20 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: api-football-capability-live
+  group: api-football-live-provider
   cancel-in-progress: false
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     environment: api-football-live
     env:
       PYTHONPATH: .
       APIFOOTBALL_ENABLED: 'true'
       APIFOOTBALL_LIVE_AUTHORIZED: 'true'
       APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
-      APIFOOTBALL_MAX_DAILY_REQUESTS: '4'
-      APIFOOTBALL_MAX_RPM: '4'
+      APIFOOTBALL_MAX_DAILY_REQUESTS: '60'
+      APIFOOTBALL_MAX_RPM: '8'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,4 +30,12 @@ jobs:
       - name: Validate configured secret presence without output
         run: test -n "$APIFOOTBALL_API_KEY"
       - name: Bounded live catalog inventory
-        run: python scripts/api_football_capability_probe.py
+        run: python scripts/api_football_capability_probe.py --out-dir /tmp/apifootball_capability_evidence
+      - name: Upload complete sanitized bookmaker and market evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-football-catalog-evidence
+          path: /tmp/apifootball_capability_evidence/
+          if-no-files-found: warn
+          retention-days: 7
