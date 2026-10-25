@@ -277,12 +277,15 @@ async def browser_cleanup_report() -> dict[str, Any]:
     return await bridge.cleanup_report()
 
 
+APIFOOTBALL_REGISTRATION_ERROR_TYPE: str | None = None
+
 def _register_optional_api_football_tools(registry) -> tuple[str, ...]:
     """Opt-in and fail closed; no optional imports when the flag is off.
 
     Isolate a broken/missing adapter from OAuth, browser tools and MCP startup.
     Deliberately avoid logging exception messages, which may contain settings.
     """
+    global APIFOOTBALL_REGISTRATION_ERROR_TYPE
     if os.environ.get("APIFOOTBALL_ENABLED", "false").strip().lower() not in ("true", "1"):
         return ()
     try:
@@ -292,9 +295,11 @@ def _register_optional_api_football_tools(registry) -> tuple[str, ...]:
         settings = Settings.from_env()
         client = build_client(settings)
         return register_tools(registry, settings, client=client)
-    except Exception:
+    except Exception as exc:
+        APIFOOTBALL_REGISTRATION_ERROR_TYPE = type(exc).__name__
         logging.getLogger(__name__).error(
-            "optional_apifootball_registration_failed; browser tools unaffected"
+            "optional_apifootball_registration_failed type=%s; browser tools unaffected",
+            APIFOOTBALL_REGISTRATION_ERROR_TYPE,
         )
         return ()
 
@@ -332,6 +337,11 @@ async def healthz(_request: Request):
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
+            "apifootball_enabled": os.environ.get("APIFOOTBALL_ENABLED", "false").strip().lower() in ("true", "1"),
+            "apifootball_key_configured": bool(os.environ.get("APIFOOTBALL_API_KEY", "").strip()),
+            "apifootball_live_authorized": os.environ.get("APIFOOTBALL_LIVE_AUTHORIZED", "false").strip().lower() in ("true", "1"),
+            "apifootball_registered_count": len(APIFOOTBALL_REGISTERED_TOOLS),
+            "apifootball_registration_error_type": APIFOOTBALL_REGISTRATION_ERROR_TYPE,
         }
     )
 
