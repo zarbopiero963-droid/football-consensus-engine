@@ -41,6 +41,18 @@ def candidate_gap_report(registry, evidence_path):
     evidence=json.loads(evidence_path.read_text(encoding="utf-8"))
     if evidence.get("authoritative") is True: raise ValueError("CANDIDATE_EVIDENCE_MUST_NOT_BE_AUTHORITATIVE")
     if evidence.get("status") != "PARTIAL_EVIDENCE_ONLY": raise ValueError("CANDIDATE_EVIDENCE_STATUS_INVALID")
+    if type(evidence.get("authoritative")) is not bool or evidence["authoritative"]:
+        raise ValueError("CANDIDATE_EVIDENCE_MUST_NOT_BE_AUTHORITATIVE")
+    candidates=evidence.get("endpoints")
+    if not isinstance(candidates,dict):
+        raise ValueError("CANDIDATE_ENDPOINTS_INVALID")
+    allowed={item["path"] for item in registry["endpoints"]}
+    if any(path not in allowed for path in candidates):
+        raise ValueError("CANDIDATE_UNKNOWN_ENDPOINT")
+    if any(not isinstance(names,list) or any(
+        not isinstance(name,str) or not name.isidentifier() for name in names
+    ) for names in candidates.values()):
+        raise ValueError("CANDIDATE_PARAMETERS_INVALID")
     fields_by_path={}
     for tool in registry["tools"]:
         fields_by_path.setdefault(tool["path"],set()).update(item["name"] for item in tool["parameters"])
