@@ -31,8 +31,14 @@ jobs:
         run: test -n "$APIFOOTBALL_API_KEY"
       - name: Bounded live catalog inventory
         run: python scripts/api_football_capability_probe.py --out-dir /tmp/apifootball_capability_evidence
+      - name: Publish recoverable evidence ZIP in downloadable job logs
+        if: always()
+        shell: bash
+        run: |
+          python scripts/api_football_evidence_log_transport.py --encode /tmp/apifootball_capability_evidence/*.json /tmp/apifootball_capability_evidence/*.csv
       - name: Upload complete sanitized bookmaker and market evidence
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: api-football-catalog-evidence
