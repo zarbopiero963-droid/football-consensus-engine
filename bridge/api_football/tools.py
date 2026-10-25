@@ -92,6 +92,19 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             if not isinstance(data, dict):
                 raise TypeError("Bad provider response type")
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+            if size > _MAX_MCP_DATA_BYTES and tool == "apifootball_odds":
+                # Never pretend a truncated list of prices is complete.
+                from .odds_manifest import odds_page_manifest
+                try:
+                    manifest=odds_page_manifest(data)
+                    result["status"] = "PARTIAL_ODDS_MANIFEST"
+                    result["data"] = manifest
+                    result["pagination"] = manifest["paging"]
+                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else 1
+                    result["cache_status"] = cache_status
+                    return result
+                except ValueError:
+                    pass
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
