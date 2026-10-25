@@ -44,6 +44,10 @@ def inventory_payload(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict) or payload.get("errors") not in (None, [], {}):
         return {"path": path, "status": "PROVIDER_ERROR"}
     body = payload.get("response")
+    if isinstance(body, dict) and path == "/teams/statistics":
+        return {"path": path, "status": "OBSERVED" if body else "NO_DATA_OBSERVED",
+                "count": 1 if body else 0, "fields": {k: sorted(v) for k, v in fields(body).items()},
+                "response_kind": "object"}
     if not isinstance(body, list):
         return {"path": path, "status": "NO_LIST_RESPONSE"}
     result: dict[str, Any] = {"path": path, "status": "OBSERVED" if body else "NO_DATA_OBSERVED",
