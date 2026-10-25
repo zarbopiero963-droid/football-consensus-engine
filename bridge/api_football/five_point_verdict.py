@@ -2,7 +2,6 @@
 
 A workflow exit code 0 is not a global coverage certification.
 """
-from collections import Counter
 from typing import Any
 from .five_point_evidence import pagination_coverage
 
@@ -30,7 +29,8 @@ def assess_five_points(records: list[dict[str, Any]]) -> dict[str, Any]:
                  for ob in row.get("odds_observations", []) if isinstance(ob, dict) and ob.get("phase") == "LIVE"]
     market_status = "PASS_SCOPE" if market_catalogs_ok and prematch_odds and live_odds else "PARTIAL"
     statistical = [r for r in by_path.get("_statistics_samples", []) if r.get("status") == "OBSERVATION_SUMMARY"]
-    sample_rows = [x for r in statistical for x in r.get("samples", []) if isinstance(x, dict)]
+    sample_rows = [x for r in statistical for x in r.get("samples", []) if isinstance(x, dict)
+                   and x.get("status") == "OBSERVED" and x.get("count", 0) > 0]
     stat_paths = {r.get("path") for r in sample_rows}
     fixture_ids = {s["parameters"].get("fixture") for s in sample_rows if
                    isinstance(s.get("parameters"), dict) and s["parameters"].get("fixture") is not None}
