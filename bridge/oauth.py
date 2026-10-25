@@ -252,7 +252,46 @@ async def register_claude_client(request: Request):
     )
 
 
+def _cert_redirect_allowed(uri: str) -> bool:
+    try:
+        parsed = urlparse(uri)
+        return (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")
+                and parsed.port is not None and 1024 <= parsed.port <= 65535
+                and parsed.path == "/oauth/callback" and not parsed.query
+                and not parsed.fragment and parsed.username is None)
+    except ValueError:
+        return False
+
+
+async def register_cert_client(request: Request):
+    """Registration explicitly enabled for local PKCE one-time consent only."""
+    if os.getenv("FCB_CERT_OAUTH_REGISTRATION_ENABLED") != "true":
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    uri = body.get("redirect_uri") if isinstance(body, dict) else None
+    if not isinstance(uri, str) or not _cert_redirect_allowed(uri):
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    try:
+        client_id = oauth_store.register_cert_client(uri)
+    except Exception:
+        return JSONResponse({"error": "server_error"}, status_code=503)
+    return JSONResponse({"client_id": client_id, "redirect_uri": uri,
+                         "grant_types": ["authorization_code", "refresh_token"],
+                         "token_endpoint_auth_method": "none"},
+                        status_code=201, headers={"Cache-Control": "no-store"})
+
+
 async def _valid_oauth_client(client_id: str, redirect_uri: str) -> bool:
+    if client_id.startswith("fcbe2e1_"):
+        if not _cert_redirect_allowed(redirect_uri):
+            return False
+        try:
+            return oauth_store.valid_cert_client(client_id, redirect_uri)
+        except Exception:
+            return False
     if client_id.startswith(_DCR_PREFIX):
         if redirect_uri != CLAUDE_CALLBACK:
             return _reject(client_id, "registration", "invalid_claude_callback")
