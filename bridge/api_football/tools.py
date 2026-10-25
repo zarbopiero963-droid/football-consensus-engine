@@ -15,6 +15,7 @@ from typing import Any, Mapping, Protocol
 from .config import Settings
 from .catalog import ALLOWED_PATHS
 from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
+from .full_contract_audit import audit_contract_coverage
 
 _MAX_MCP_DATA_BYTES = 262_144
 
@@ -167,6 +168,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "quota_coordinator": quota_state,
             "http_transport": "PINNED_HTTPX" if settings.real_requests_authorized and client is not None else "NOT_CONNECTED_TO_MCP",
             "documented_contract": "PARTIALLY_RECONCILED_OFFICIAL",
+            "mcp_contract_audit": {k: v for k, v in audit_contract_coverage().items() if k != "routes"},
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
             "limits_configured": {
                 "per_minute": settings.max_rpm,
