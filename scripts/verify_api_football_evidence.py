@@ -44,6 +44,8 @@ def verify_archive(file: Path, expected_sha256: str) -> dict:
     } for item in records if item.get("outcome") in ANOMALIES]
     return {
         "archive_sha256": expected_sha256, "route_count": data.get("route_count"),
+        "verified_paths": sorted({r.get("path") for r in records if r.get("outcome") in ("PASS_DATA", "PASS_EMPTY_NOT_AVAILABILITY") and r.get("http_status") == 200 and isinstance(r.get("path"), str)}),
+        "all_paths": sorted({r.get("path") for r in records if isinstance(r.get("path"), str)}),
         "requests_attempted": data.get("requests_attempted"),
         "anomalies": anomalies,
     }
