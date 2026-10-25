@@ -17,7 +17,7 @@ from bridge.api_football.five_point_evidence import extract_odds, field_types, l
 # Catalogs first; fixtures provide REAL prerequisites for statistics and odds.
 PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
          "/fixtures", "/fixtures", "/fixtures/statistics", "/odds", "/odds/live",
-         "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics")
+         "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics", "/players")
 CAP = 60
 # Completion requires all provider pages; request budget may still stop a scan.
 MAX_FIXTURE_SAMPLES = 3
@@ -61,6 +61,11 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_TEAM"})
                     continue
                 params = {"league": 39, "season": 2025, "team": observed["team"]}
+            elif path == "/players":
+                if "team" not in observed:
+                    evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_TEAM"})
+                    continue
+                params = {"team": observed["team"], "season": 2025}
             elif path == "/odds/live":
                 if "live_fixture" not in observed:
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_LIVE_FIXTURE"})
@@ -71,6 +76,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                 samples = [{"fixture": fid} for fid in fixtures[:MAX_FIXTURE_SAMPLES]] or [params]
             elif path == "/teams/statistics":
                 samples = [{"league": 39, "season": 2025, "team": tid} for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
+            elif path == "/players":
+                samples = [{"team": tid, "season": 2025} for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
             for sample_params in samples:
                 page = 1
                 while True:
@@ -143,7 +150,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                     st = fixture_obj.get("status") if isinstance(fixture_obj, dict) else None
                                     if type(fid) is int and isinstance(st, dict) and st.get("short") in ("1H","HT","2H","ET","BT","P","LIVE") and fid not in live_fixtures:
                                         live_fixtures.append(fid)
-                            if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics"):
+                            if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics", "/players"):
                                 statistics_samples.append({"path": path, "parameters": query, "field_types": field_types([parsed]), "response_sha256": row["response_sha256"]})
                             # Observe real bookmaker/market values from odds response, with no invented IDs.
                             if path in ("/odds", "/odds/live") and isinstance(body, list):
