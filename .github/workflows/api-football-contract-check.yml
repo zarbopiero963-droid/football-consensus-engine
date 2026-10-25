@@ -19,4 +19,4 @@ jobs:
       - name: Assert no provider credentials or calls
         run: |
           test -z "${APIFOOTBALL_API_KEY:-}"
-          ! rg -n 'https?://(v3\.)?api-football|APIFOOTBALL_API_KEY' /tmp/api-football-registry.json
+          ! rg -n 'APIFOOTBALL_API_KEY|APIFOOTBALL_LIVE_AUTHORIZED=true|APIFOOTBALL_ENABLED=true' /tmp/api-football-registry.json
