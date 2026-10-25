@@ -1,0 +1,14 @@
+{
+  "denominators": {
+    "known_baseline_endpoints": 39,
+    "mcp_tools": 42,
+    "browser_tools": 34
+  },
+  "counts": {
+    "registry_endpoints": 39,
+    "officially_verified_endpoints": 34,
+    "pending_official_verification_endpoints": 5,
+    "real_verified_endpoints": 0
+  },
+  "rule": "Baseline coverage is not all current official endpoints."
+}
