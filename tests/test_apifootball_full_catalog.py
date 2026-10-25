@@ -102,7 +102,7 @@ def test_even_with_key_all_new_endpoints_remain_offline(name, args, path):
     register_tools(registry, Settings(enabled=True, api_key=secret))
     result = asyncio.run(registry.funcs[name](**args))
     assert result["endpoint"] == path
-    assert result["status"] == "REAL_API_TEST_NOT_AUTHORIZED"
+    assert result["status"] == "LIVE_NOT_AUTHORIZED"
     assert result["data"] is None
     assert result["network_calls_made"] == 0
     assert secret not in str(result)
