@@ -126,31 +126,24 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                 for match in body:
                                     if not isinstance(match, dict):
                                         continue
-                                    fixture = match.get("fixture") or {}
-                                    teams = match.get("teams") or {}
-                                    if isinstance(fixture, dict) and type(fixture.get("id")) is int:
-                                        observed.setdefault("fixture", fixture["id"])
-                                        if (fixture.get("status") or {}).get("short") in ("1H", "HT", "2H", "ET", "BT", "P", "LIVE"):
-                                            observed.setdefault("live_fixture", fixture["id"])
-                                    home = teams.get("home") if isinstance(teams, dict) else None
-                                    if isinstance(home, dict) and type(home.get("id")) is int:
-                                        observed.setdefault("team", home["id"])
-                            if path == "/fixtures" and isinstance(body, list):
-                                for match in body:
-                                    if not isinstance(match, dict):
-                                        continue
                                     fixture_obj = match.get("fixture") or {}
                                     teams_obj = match.get("teams") or {}
                                     fid = fixture_obj.get("id") if isinstance(fixture_obj, dict) else None
                                     if type(fid) is int and fid not in fixtures:
                                         fixtures.append(fid)
+                                    if type(fid) is int:
+                                        observed.setdefault("fixture", fid)
                                     home = teams_obj.get("home") if isinstance(teams_obj, dict) else None
                                     tid = home.get("id") if isinstance(home, dict) else None
                                     if type(tid) is int and tid not in teams:
                                         teams.append(tid)
+                                    if type(tid) is int:
+                                        observed.setdefault("team", tid)
                                     st = fixture_obj.get("status") if isinstance(fixture_obj, dict) else None
-                                    if type(fid) is int and isinstance(st, dict) and st.get("short") in ("1H","HT","2H","ET","BT","P","LIVE") and fid not in live_fixtures:
-                                        live_fixtures.append(fid)
+                                    if type(fid) is int and isinstance(st, dict) and st.get("short") in ("1H","HT","2H","ET","BT","P","LIVE"):
+                                        observed.setdefault("live_fixture", fid)
+                                        if fid not in live_fixtures:
+                                            live_fixtures.append(fid)
                             if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics", "/players"):
                                 statistics_samples.append({"path": path, "parameters": query, "field_types": field_types([parsed]), "response_sha256": row["response_sha256"], "status": row["status"], "count": row.get("count", 0)})
                             # Observe real bookmaker/market values from odds response, with no invented IDs.
