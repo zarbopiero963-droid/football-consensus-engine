@@ -283,6 +283,15 @@ class PostgresQuota:
                        DO UPDATE SET used=GREATEST(api_football_quota_counters.used, EXCLUDED.used)""",
                     (key, kind, bucket, max_count),
                 )
+                if kind == "minute":
+                    # Provider-reported zero applies across UTC minute boundaries.
+                    # Consume rolling slots so independent workers remain blocked.
+                    cur.execute(
+                        """INSERT INTO api_football_quota_attempts (attempt_id, api_key_hash)
+                           SELECT %s || '-' || generate_series(1, %s)::text, %s
+                           ON CONFLICT (attempt_id) DO NOTHING""",
+                        ("provider-zero-" + secrets.token_urlsafe(16), self.limits.per_minute, key),
+                    )
             conn.commit()
 
     async def mark_exhausted(self, secret: str, kind: str) -> None:
