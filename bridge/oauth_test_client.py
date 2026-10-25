@@ -21,7 +21,7 @@ def pkce_pair():
     challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     return verifier,challenge
 
-def authorization_url(*, client_id, redirect_uri, state, challenge, scope="mcp:browser"):
+def authorization_url(*, client_id, redirect_uri, state, challenge, scope="browser:use offline_access"):
     if not all((client_id,redirect_uri,state,challenge)):
         raise ValueError("MISSING_PKCE_FIELDS")
     return PUBLIC+"/oauth/authorize?"+urlencode({
