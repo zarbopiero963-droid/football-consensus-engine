@@ -180,39 +180,40 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                         evidence.append({"path": path, "status": "NETWORK_OR_PAYLOAD_ERROR", "page": page})
                         stopped = True
                         break
-    # Controlled second LIVE snapshot: same fixture, no unbounded polling.
-    if live_fixtures and not stopped and calls < CAP:
-        fid = live_fixtures[0]
-        previous = next((x for x in evidence if x.get("path") == "/odds/live" and
-                         x.get("status") in ("OBSERVED", "NO_DATA_OBSERVED") and
-                         x.get("odds_observations") is not None), None)
-        if previous is not None:
-            await sleep(max(8, 60 / min(cfg.max_rpm, 8)))
-            calls += 1
-            try:
-                async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, follow_redirects=False,
-                                             trust_env=False, timeout=cfg.timeout_seconds, transport=transport) as second_client:
-                    response = await second_client.get("/odds/live", params={"fixture": fid},
-                        headers={"x-apisports-key": cfg.api_key, "Accept": "application/json"})
-                    if response.status_code != 200 or len(response.content) > MAX_RESPONSE_BYTES:
-                        evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_HTTP_ERROR"})
-                    else:
-                        payload = response.json()
-                        if not isinstance(payload, dict) or payload.get("errors") not in ({}, [], None):
-                            evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_PROVIDER_ERROR"})
-                        else:
-                            observations = extract_odds(payload, "LIVE")
-                            evidence.append({"path": "/odds/live", "fixture": fid,
-                                "status": "LIVE_DELTA_OBSERVED",
-                                "delta": live_delta(previous["odds_observations"], observations),
-                                "previous_sha256": previous["response_sha256"],
-                                "current_sha256": hashlib.sha256(response.content).hexdigest()})
-            except (httpx.RequestError, ValueError):
-                evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_ERROR"})
-    elif not live_fixtures:
-        evidence.append({"path": "/odds/live", "status": "BLOCKED_NO_LIVE_FIXTURE"})
-    elif calls >= CAP:
-        evidence.append({"path": "/odds/live", "status": "BLOCKED_LIVE_QUOTA"})
+            if path == "/odds/live":
+                # Controlled second LIVE snapshot: same fixture, no unbounded polling.
+                if live_fixtures and not stopped and calls < CAP:
+                    fid = live_fixtures[0]
+                    previous = next((x for x in evidence if x.get("path") == "/odds/live" and
+                                     x.get("status") in ("OBSERVED", "NO_DATA_OBSERVED") and
+                                     x.get("odds_observations") is not None), None)
+                    if previous is not None:
+                        await sleep(max(8, 60 / min(cfg.max_rpm, 8)))
+                        calls += 1
+                        try:
+                            async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, follow_redirects=False,
+                                                         trust_env=False, timeout=cfg.timeout_seconds, transport=transport) as second_client:
+                                response = await second_client.get("/odds/live", params={"fixture": fid},
+                                    headers={"x-apisports-key": cfg.api_key, "Accept": "application/json"})
+                                if response.status_code != 200 or len(response.content) > MAX_RESPONSE_BYTES:
+                                    evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_HTTP_ERROR"})
+                                else:
+                                    payload = response.json()
+                                    if not isinstance(payload, dict) or payload.get("errors") not in ({}, [], None):
+                                        evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_PROVIDER_ERROR"})
+                                    else:
+                                        observations = extract_odds(payload, "LIVE")
+                                        evidence.append({"path": "/odds/live", "fixture": fid,
+                                            "status": "LIVE_DELTA_OBSERVED",
+                                            "delta": live_delta(previous["odds_observations"], observations),
+                                            "previous_sha256": previous["response_sha256"],
+                                            "current_sha256": hashlib.sha256(response.content).hexdigest()})
+                        except (httpx.RequestError, ValueError):
+                            evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_ERROR"})
+                elif not live_fixtures:
+                    evidence.append({"path": "/odds/live", "status": "BLOCKED_NO_LIVE_FIXTURE"})
+                elif calls >= CAP:
+                    evidence.append({"path": "/odds/live", "status": "BLOCKED_LIVE_QUOTA"})
     evidence.append({"path": "_statistics_samples", "status": "OBSERVATION_SUMMARY",
                      "samples": statistics_samples, "distinct_fixtures": len(fixtures),
                      "distinct_teams": len(teams), "requests_attempted": calls})
