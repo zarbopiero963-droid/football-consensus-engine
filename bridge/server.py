@@ -288,7 +288,10 @@ def _register_optional_api_football_tools(registry) -> tuple[str, ...]:
     try:
         from bridge.api_football.config import Settings
         from bridge.api_football.tools import register_tools
-        return register_tools(registry, Settings.from_env())
+        from bridge.api_football.wiring import build_client
+        settings = Settings.from_env()
+        client = build_client(settings)
+        return register_tools(registry, settings, client=client)
     except Exception:
         logging.getLogger(__name__).error(
             "optional_apifootball_registration_failed; browser tools unaffected"
