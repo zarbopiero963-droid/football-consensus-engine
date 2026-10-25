@@ -204,6 +204,29 @@ if __name__ == "__main__":
     catalog_paths = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets", "/odds")
     coverage = [pagination_verdict(output, p) for p in catalog_paths]
     (args.out_dir / "pagination_coverage.json").write_text(json.dumps(coverage, indent=2) + chr(10), encoding="utf-8")
+    # Every observed bookmaker is distinct from actual prices available in this sample.
+    catalog_ids = {str(item.get("id")): item.get("name") for result in output
+                   if result.get("path") == "/odds/bookmakers"
+                   for item in result.get("catalog", []) if item.get("id") is not None}
+    offered = {}
+    for result in output:
+        for item in result.get("odds_observations", []):
+            key = str(item.get("bookmaker_id"))
+            offered[key] = offered.get(key, 0) + 1
+    bookmaker_report = [{"bookmaker_id": key, "bookmaker_name": name,
+                         "observed_prices_in_scope": offered.get(key, 0),
+                         "status": "PRICES_OBSERVED_IN_SAMPLE" if offered.get(key, 0) else "NO_PRICES_OBSERVED_IN_SAMPLE"}
+                        for key, name in sorted(catalog_ids.items())]
+    (args.out_dir / "bookmaker_availability.json").write_text(
+        json.dumps(bookmaker_report, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
+    (args.out_dir / "statistics_samples.json").write_text(json.dumps([
+        r for r in output if r.get("path") == "_statistics_samples"
+    ], indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
+    (args.out_dir / "live_delta.json").write_text(json.dumps([
+        r for r in output if r.get("path") == "/odds/live" and
+        r.get("status") in ("LIVE_DELTA_OBSERVED", "BLOCKED_NO_LIVE_FIXTURE", "BLOCKED_LIVE_QUOTA",
+                            "SECOND_SNAPSHOT_HTTP_ERROR", "SECOND_SNAPSHOT_PROVIDER_ERROR", "SECOND_SNAPSHOT_ERROR")
+    ], indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     with (args.out_dir / "odds_observations.csv").open("w", newline="", encoding="utf-8") as fp:
         cols = ["phase", "fixture_id", "bookmaker_id", "bookmaker_name", "market_id", "market_name", "selection", "odd", "handicap", "main", "suspended", "updated"]
         writer = csv.DictWriter(fp, fieldnames=cols)
