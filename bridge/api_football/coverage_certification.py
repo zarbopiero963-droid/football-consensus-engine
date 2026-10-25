@@ -30,7 +30,8 @@ def odds_observations(payload: dict[str, Any], *, phase: str) -> list[dict[str, 
     for fixture in body[:100]:
         if not isinstance(fixture, dict):
             continue
-        fixture_id = fixture.get("fixture")
+        fixture_value = fixture.get("fixture")
+        fixture_id = fixture_value.get("id") if isinstance(fixture_value, dict) else fixture_value
         bookmakers = fixture.get("bookmakers")
         if phase == "LIVE":
             bookmakers = fixture.get("bookmakers") or [fixture]
