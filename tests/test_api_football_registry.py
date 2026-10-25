@@ -26,7 +26,7 @@ def test_hash_is_deterministic_for_normalized_registry():
 
 @pytest.mark.parametrize("mutation,classification",[
     ("add_endpoint","ADDITIVE"),("remove_endpoint","BREAKING"),
-    ("add_required_parameter","ADDITIVE"),("remove_parameter","BREAKING"),
+    ("add_required_parameter","BREAKING"),("remove_parameter","BREAKING"),
     ("type","BREAKING"),("enum","BREAKING"),("minimum","BREAKING"),
     ("required","BREAKING"),("response_schema","BREAKING"),("notes","DOCUMENTATION_ONLY"),
 ])
