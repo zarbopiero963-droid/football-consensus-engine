@@ -12,12 +12,19 @@ def test_all_known_api_routes_and_tools_inventory():
 def test_missing_real_evidence_blocks_certificate():
     assert verdict({},deployed_commit=PINNED_BASELINE)["status"]=="NO_GO"
 
-def test_wrong_release_cannot_certify():
-    records={domain:{"status":"PASS","sha256":"a"*64,
-                     "evidence_uri":"github://record","commit":PINNED_BASELINE}
+def test_wrong_release_cannot_certify(tmp_path):
+    import hashlib
+    payload = b"reproducible-example-evidence-only"
+    (tmp_path / "signed.txt").write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    records={domain:{"status":"PASS","sha256":digest,
+                     "evidence_uri":"signed.txt","commit":PINNED_BASELINE}
              for domain in MANDATORY_DOMAINS}
-    assert verdict(records,deployed_commit="wrong")["status"]=="NO_GO"
-    assert verdict(records,deployed_commit=PINNED_BASELINE)["status"]=="CERTIFIED"
+    assert verdict(records,deployed_commit="wrong",evidence_root=tmp_path)["status"]=="NO_GO"
+    assert verdict(records,deployed_commit=PINNED_BASELINE,evidence_root=tmp_path)["status"]=="CERTIFIED"
+    # Any file edit invalidates the certificate.
+    (tmp_path / "signed.txt").write_bytes(b"tampered")
+    assert verdict(records,deployed_commit=PINNED_BASELINE,evidence_root=tmp_path)["status"]=="NO_GO"
 
 def test_malformed_and_wrong_commit_evidence_fail_closed():
     records={"oauth":{"status":"PASS","sha256":"not-a-digest",
