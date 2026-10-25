@@ -13,6 +13,7 @@ from bridge.api_football.config import Settings, OFFICIAL_BASE_URL
 from bridge.api_football.capability_inventory import inventory_payload
 from bridge.api_football.coverage_certification import pagination_verdict
 from bridge.api_football.five_point_evidence import extract_odds, field_types, live_delta
+from bridge.api_football.five_point_verdict import assess_five_points
 
 # Catalogs first; fixtures provide REAL prerequisites for statistics and odds.
 PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
@@ -151,7 +152,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                     if type(fid) is int and isinstance(st, dict) and st.get("short") in ("1H","HT","2H","ET","BT","P","LIVE") and fid not in live_fixtures:
                                         live_fixtures.append(fid)
                             if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics", "/players"):
-                                statistics_samples.append({"path": path, "parameters": query, "field_types": field_types([parsed]), "response_sha256": row["response_sha256"]})
+                                statistics_samples.append({"path": path, "parameters": query, "field_types": field_types([parsed]), "response_sha256": row["response_sha256"], "status": row["status"], "count": row.get("count", 0)})
                             # Observe real bookmaker/market values from odds response, with no invented IDs.
                             if path in ("/odds", "/odds/live") and isinstance(body, list):
                                 row["observed_market_schema"] = True
@@ -225,6 +226,9 @@ if __name__ == "__main__":
     output = asyncio.run(run(os.environ, previous=previous))
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "capabilities.json").write_text(json.dumps(output, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
+    verdict = assess_five_points(output)
+    (args.out_dir / "five_point_verdict.json").write_text(
+        json.dumps(verdict, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     with (args.out_dir / "catalogs.csv").open("w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=["source_path", "phase", "id", "name"])
         writer.writeheader()
@@ -282,3 +286,4 @@ if __name__ == "__main__":
         lines.append("| {} | {} | {} | {} |".format(item["path"], item["status"], item["observed_pages"], item.get("provider_total_pages", "UNKNOWN")))
     summary.open("a").write(chr(10).join(lines) + chr(10))
     print("Catalog paths evaluated: {}".format(len(output)))
+    print("Five-point statuses: " + json.dumps({k: verdict[k]["status"] for k in ("bookmakers", "markets", "statistics", "live", "coverage")}))
