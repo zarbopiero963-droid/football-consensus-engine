@@ -21,15 +21,15 @@ def semantic_diff(previous, current):
         elif key not in new: changes.append({"key":key,"kind":"removed","classification":"BREAKING"})
         else:
             before,after=old[key],new[key]
-            for field in ("required","type","format","enum","minimum","maximum","pagination","response_schema","error_schema","official_status"):
+            for field in ("required","type","format","enum","minimum","maximum","pagination","response_schema","error_schema","official_status","notes"):
                 if before.get(field)!=after.get(field):
                     classification = "UNKNOWN"
-                    if field in {"type","format","pagination","response_schema","error_schema"}: classification="BREAKING"
+                    if field in {"type","format","enum","minimum","maximum","pagination","response_schema","error_schema"}: classification="BREAKING"
                     elif field=="required" and after.get(field) is True: classification="BREAKING"
                     elif field=="enum" and set(after.get(field, [])) < set(before.get(field, [])): classification="BREAKING"
                     elif field in {"minimum","maximum"}: classification="BREAKING"
                     changes.append({"key":key,"kind":field+"_changed","classification":classification})
-            if before.get("source_section") != after.get("source_section") and not changes:
+            if before.get("source_section") != after.get("source_section"):
                 changes.append({"key":key,"kind":"source_changed","classification":"DOCUMENTATION_ONLY"})
     return changes
 
