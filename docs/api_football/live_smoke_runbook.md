@@ -26,3 +26,11 @@ The report contains only route, HTTP status, limited numerical quota metadata, n
 A `PASS` here proves one successful, authenticated response for a selected endpoint **at this time**, not complete schema, league/plan, fixture, all-parameter, odds-live, or MCP end-to-end validation. Calls to these direct provider endpoints do not certify that ChatGPT can discover or invoke the `apifootball_*` MCP tools. The remaining endpoint-by-endpoint matrix, full official contract reconciliation, adversarial integration, and independent review must be completed separately.
 
 **Do not enable this test in default CI or production startup.** The runner does not trigger itself. Run only through a secure approved execution mechanism and within configured quotas.
+
+## GitHub Actions alternative (Render Free)
+
+The repo workflow `.github/workflows/api-football-live-smoke.yml` is **manual only** (`workflow_dispatch`), has a maximum 8-minute runtime, concurrency serialization, read-only repository permission, and uses GitHub's injected `APIFOOTBALL_API_KEY` secret. It is never executed by a PR event. The service and Render environment remain unchanged.
+
+**GitHub requires a newly added workflow_dispatch workflow to be present on the default branch before it can be selected normally in the Actions UI.** After #114 is approved and protected-merged, open Actions → `api-football-live-smoke` → Run workflow → choose `main`. One run makes at most four GET requests; it produces a short-lived `api-football-live-smoke-evidence` artifact (seven-day retention). Check for a required environment approval if GitHub environments are configured.
+
+This step is **not yet executed** merely by merging the workflow. Do not infer authenticated verification from successful CI. Review the JSON evidence after the manual run.
