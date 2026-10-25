@@ -96,14 +96,15 @@ def valid_access_token(token: str, resource: str, required_scope: str) -> bool:
     return required_scope in scopes
 
 
-def rotate_refresh_token(token: str) -> dict[str, Any] | None:
+def rotate_refresh_token(token: str, *, client_id: str | None = None) -> dict[str, Any] | None:
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
             """UPDATE oauth_refresh_tokens
                SET revoked_at=NOW()
-               WHERE token_hash=%s AND revoked_at IS NULL AND expires_at>NOW()
+               WHERE token_hash=%s AND (%s IS NULL OR client_id=%s)
+                 AND revoked_at IS NULL AND expires_at>NOW()
                RETURNING *""",
-            (digest(token),),
+            (digest(token), client_id, client_id),
         )
         row = cur.fetchone()
         conn.commit()
