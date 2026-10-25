@@ -66,5 +66,5 @@ jobs:
                   lines.append(f"| {x.get('path', '')} | {x.get('http_status', '-')} | {x.get('outcome', '')} | {x.get('remaining_day', '-')} | {x.get('remaining_minute', '-')} |")
               lines.append("")
               lines.append("Only bounded metadata shown; no credentials or provider response bodies.")
-              summary.open("a", encoding="utf-8").write("\\n".join(lines) + "\\n")
+              summary.open("a", encoding="utf-8").write(chr(10).join(lines) + chr(10))
           PY
