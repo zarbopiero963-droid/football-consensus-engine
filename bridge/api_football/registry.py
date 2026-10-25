@@ -1,43 +1,84 @@
-"""Canonical deterministic API-FOOTBALL v3 contract registry; offline only."""
+"""Fail-closed canonical registry derived from the MCP contract allowlist.
+
+No network I/O occurs here. Documentary evidence is intentionally separate from
+runtime implementation: an implemented parameter is never marked DOCUMENTED
+until its official source section is acquired and recorded.
+"""
 from __future__ import annotations
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-import hashlib, json
+import hashlib
+import json
+from collections import defaultdict
 from typing import Any, Mapping
-REGISTRY_VERSION="2026.10.25"; SOURCE_URL="https://www.api-football.com/documentation_v3"
-VALID_STATUSES=frozenset({"DOCUMENTED","IMPLEMENTED","MOCK_VERIFIED","REAL_VERIFIED","UNKNOWN","BLOCKED","PENDING_OFFICIAL_VERIFICATION"})
-@dataclass(frozen=True)
-class ParameterContract:
-    id:str; name:str; type:str; required:bool
-    status:str="PENDING_OFFICIAL_VERIFICATION"; enum:tuple[str,...]=(); minimum:int|None=None; maximum:int|None=None; format:str|None=None; source:str=SOURCE_URL; notes:str=""
-@dataclass(frozen=True)
-class EndpointContract:
-    id:str; method:str; path:str; category:str; status:str
-    parameters:tuple[ParameterContract,...]=(); response_schema:Mapping[str,Any]|None=None; source:str=SOURCE_URL; verified_at_utc:str|None=None; notes:str=""
-def _p(e,n,t="string",r=False,**kw): return ParameterContract(id=f"{e}.{n}",name=n,type=t,required=r,**kw)
-def build_registry():
-    paths={"status":("/status","account"),"countries":("/countries","catalog"),"leagues":("/leagues","catalog"),"seasons":("/leagues/seasons","catalog"),"fixtures":("/fixtures","fixtures"),"fixture_statistics":("/fixtures/statistics","fixtures"),"fixture_events":("/fixtures/events","fixtures"),"fixture_lineups":("/fixtures/lineups","fixtures"),"fixture_players":("/fixtures/players","fixtures"),"teams":("/teams","teams"),"team_statistics":("/teams/statistics","teams"),"team_seasons":("/teams/seasons","teams"),"team_countries":("/teams/countries","teams"),"venues":("/venues","catalog"),"standings":("/standings","standings"),"fixture_rounds":("/fixtures/rounds","fixtures"),"fixture_headtohead":("/fixtures/headtohead","fixtures"),"injuries":("/injuries","medical"),"coaches":("/coachs","people"),"player_seasons":("/players/seasons","players"),"player_profiles":("/players/profiles","players"),"players":("/players","players"),"player_squads":("/players/squads","players"),"player_teams":("/players/teams","players"),"top_scorers":("/players/topscorers","players"),"top_assists":("/players/topassists","players"),"top_yellow_cards":("/players/topyellowcards","players"),"top_red_cards":("/players/topredcards","players"),"transfers":("/transfers","players"),"trophies":("/trophies","people"),"sidelined":("/sidelined","people"),"predictions":("/predictions","predictions"),"odds":("/odds","odds"),"odds_mapping":("/odds/mapping","odds"),"bookmakers":("/odds/bookmakers","odds"),"bets":("/odds/bets","odds"),"live_odds":("/odds/live","odds"),"live_bets":("/odds/live/bets","odds")}
-    common={"id":"integer","league":"integer","season":"integer","team":"integer","fixture":"integer","player":"integer","coach":"integer","page":"integer","last":"integer","next":"integer","date":"string","from":"string","to":"string","timezone":"string","search":"string","country":"string","code":"string","name":"string","live":"string","status":"string","current":"boolean","dates":"boolean","bookmaker":"integer","bet":"integer","h2h":"string"}
-    req={"fixture_statistics":["fixture"],"fixture_events":["fixture"],"fixture_lineups":["fixture"],"fixture_players":["fixture"],"predictions":["fixture"],"team_statistics":["league","season","team"],"standings":["league","season"],"fixture_rounds":["league","season"],"fixture_headtohead":["h2h"],"team_seasons":["team"],"player_teams":["player"],"top_scorers":["league","season"],"top_assists":["league","season"],"top_yellow_cards":["league","season"],"top_red_cards":["league","season"]}
-    empty={"status","seasons","team_countries","player_seasons","odds_mapping"}
-    pending={"players","player_profiles","injuries","bookmakers","bets","odds_mapping"}
-    eps=[]
-    for key,(path,cat) in paths.items():
-        names=[] if key in empty else list(common)
-        params=tuple(_p(key,n,common[n],n in req.get(key,[]),minimum=1 if common[n]=="integer" else None,maximum=2000000000 if common[n]=="integer" else None,format="YYYY-MM-DD" if n in {"date","from","to"} else None) for n in names)
-        eps.append(asdict(EndpointContract(id="apifootball."+key,method="GET",path=path,category=cat,status="PENDING_OFFICIAL_VERIFICATION" if key in pending else "DOCUMENTED",parameters=params,response_schema={"type":"object","required":["response"],"properties":{"response":{"type":"array"}}})))
-    return {"registry_version":REGISTRY_VERSION,"source":SOURCE_URL,"retrieved_at_utc":datetime.now(timezone.utc).date().isoformat(),"endpoints":eps,"verification_policy":{"real_api_calls_authorized":False,"unknown_is_not_pass":True}}
-def canonical_json(reg): return json.dumps(reg,sort_keys=True,separators=(",",":"),ensure_ascii=False)
-def sha256(reg): return hashlib.sha256(canonical_json(reg).encode()).hexdigest()
-def validate_registry(reg):
-    errors=[]; ids=set()
-    for e in reg.get("endpoints",[]):
-        if e["id"] in ids: errors.append("DUPLICATE_ID:"+e["id"])
-        ids.add(e["id"])
-        if e["status"] not in VALID_STATUSES: errors.append("INVALID_STATUS:"+e["id"])
-        for p in e.get("parameters",[]):
-            if p["id"] in ids: errors.append("DUPLICATE_ID:"+p["id"])
-            ids.add(p["id"])
-            if p["status"] not in VALID_STATUSES: errors.append("INVALID_STATUS:"+p["id"])
-            if p["status"]=="REAL_VERIFIED" and not reg["verification_policy"].get("real_api_calls_authorized"): errors.append("REAL_VERIFIED_FORBIDDEN:"+p["id"])
+from .contracts import ENDPOINTS, SOURCE, VERSION
+
+REGISTRY_VERSION = "1.0.0"
+PENDING = "PENDING_OFFICIAL_VERIFICATION"
+VALID_STATUSES = frozenset({"DOCUMENTED","IMPLEMENTED","MOCK_VERIFIED","REAL_VERIFIED","UNKNOWN","BLOCKED",PENDING})
+
+def canonical_json(value: Mapping[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+def sha256(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+def _parameter(tool: str, name: str, required: bool) -> dict[str, Any]:
+    # Runtime accepts these names, but their provider semantics stay pending
+    # until a source-section reference is recorded.
+    return {"id": f"{tool}.{name}", "name": name, "required": required,
+            "type": "UNKNOWN", "format": None, "enum": [], "minimum": None,
+            "maximum": None, "status": PENDING, "implementation_status": "IMPLEMENTED",
+            "source": None}
+
+def build_registry() -> dict[str, Any]:
+    routes: dict[str, dict[str, Any]] = {}
+    route_tools: dict[str, list[str]] = defaultdict(list)
+    tools: list[dict[str, Any]] = []
+    for tool_name, contract in sorted(ENDPOINTS.items()):
+        route_tools[contract.path].append(tool_name)
+        tools.append({
+            "id": tool_name, "path": contract.path, "method": "GET",
+            "runtime_contract_version": VERSION,
+            "parameters": [_parameter(tool_name, name, name in contract.required) for name in contract.fields],
+            "pagination": {"status": PENDING, "implemented": contract.pagination},
+            "response_schema": {"status": PENDING},
+            "error_schema": {"status": PENDING},
+            "source": SOURCE, "official_status": PENDING,
+        })
+    for path, tool_names in sorted(route_tools.items()):
+        routes[path] = {
+            "id": "route:" + path, "method": "GET", "path": path,
+            "tool_ids": sorted(tool_names), "official_status": PENDING,
+            "source": SOURCE, "source_section": None,
+            "response_schema": {"status": PENDING},
+            "error_schema": {"status": PENDING},
+        }
+    return {
+        "registry_version": REGISTRY_VERSION,
+        "runtime_contract_version": VERSION,
+        "official_documentation": {"url": SOURCE, "catalog_status": PENDING},
+        "verification_policy": {"real_api_calls_authorized": False, "unknown_is_not_pass": True},
+        "endpoints": list(routes.values()),
+        "tools": tools,
+    }
+
+def validate_registry(registry: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    endpoint_ids: set[str] = set()
+    tool_ids: set[str] = set()
+    canonical_tools = set(ENDPOINTS)
+    for endpoint in registry.get("endpoints", []):
+        if endpoint.get("id") in endpoint_ids: errors.append("DUPLICATE_ENDPOINT_ID")
+        endpoint_ids.add(endpoint.get("id"))
+        if endpoint.get("official_status") not in VALID_STATUSES: errors.append("INVALID_ENDPOINT_STATUS")
+    for tool in registry.get("tools", []):
+        identifier = tool.get("id")
+        if identifier in tool_ids: errors.append("DUPLICATE_TOOL_ID")
+        tool_ids.add(identifier)
+        runtime = ENDPOINTS.get(identifier)
+        if runtime is None or tool.get("path") != runtime.path: errors.append("REGISTRY_MCP_DRIFT:" + str(identifier))
+        for parameter in tool.get("parameters", []):
+            if parameter.get("status") not in VALID_STATUSES: errors.append("INVALID_PARAMETER_STATUS")
+            if parameter.get("status") == "REAL_VERIFIED": errors.append("REAL_VERIFIED_FORBIDDEN")
+    if tool_ids != canonical_tools: errors.append("TOOL_SET_DRIFT")
+    if {item.get("path") for item in registry.get("endpoints", [])} != {value.path for value in ENDPOINTS.values()}: errors.append("ROUTE_SET_DRIFT")
     return errors
