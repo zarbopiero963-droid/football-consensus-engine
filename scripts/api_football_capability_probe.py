@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 from bridge.api_football.config import Settings, OFFICIAL_BASE_URL
 from bridge.api_football.capability_inventory import inventory_payload
+from bridge.api_football.coverage_certification import pagination_verdict, odds_observations
 
 # Catalogs first; fixtures provide REAL prerequisites for statistics and odds.
 PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
@@ -95,6 +96,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep):
                         if path in ("/odds", "/odds/live") and isinstance(body, list):
                             row["observed_market_schema"] = True
                             row["sample"] = body[:2]  # bounded real observations; never fabricate prices
+                            row["odds_observations"] = odds_observations(parsed, phase="LIVE" if path == "/odds/live" else "PREMATCH")
                         evidence.append(row)
                         if row["status"] not in ("OBSERVED", "NO_DATA_OBSERVED"):
                             stopped = True
@@ -137,10 +139,23 @@ if __name__ == "__main__":
         for result in output:
             for json_path, types in result.get("fields", {}).items():
                 writer.writerow({"source_path":result["path"],"json_path":json_path,"types":",".join(types)})
+    catalog_paths = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets", "/odds")
+    coverage = [pagination_verdict(output, p) for p in catalog_paths]
+    (args.out_dir / "pagination_coverage.json").write_text(json.dumps(coverage, indent=2) + chr(10), encoding="utf-8")
+    with (args.out_dir / "odds_observations.csv").open("w", newline="", encoding="utf-8") as fp:
+        cols = ["phase", "fixture_id", "bookmaker_id", "bookmaker_name", "market_id", "market_name", "selection", "odd", "handicap", "main", "suspended", "updated"]
+        writer = csv.DictWriter(fp, fieldnames=cols)
+        writer.writeheader()
+        for result in output:
+            for item in result.get("odds_observations", []):
+                writer.writerow({key: item.get(key) for key in cols})
     summary = Path(os.environ.get("GITHUB_STEP_SUMMARY", "/tmp/api-football-capability-summary.md"))
     lines = ["### API-FOOTBALL catalog inventory", "", "Catalog does not prove bookie/market availability or full pagination.", "",
              "| Endpoint | State | Records | Pages |", "|---|---|---:|---|"]
     for row in output:
         lines.append("| {} | {} | {} | {} |".format(row["path"], row["status"], row.get("count", "-"), row.get("pagination", "-")))
+    lines.extend(["", "### Catalog pagination", "", "| Catalog | Coverage | Pages | Provider total |", "|---|---|---:|---:|"])
+    for item in coverage:
+        lines.append("| {} | {} | {} | {} |".format(item["path"], item["status"], item["observed_pages"], item.get("provider_total_pages", "UNKNOWN")))
     summary.open("a").write(chr(10).join(lines) + chr(10))
     print("Catalog paths evaluated: {}".format(len(output)))
