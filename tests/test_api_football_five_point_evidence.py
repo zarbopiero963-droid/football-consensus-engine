@@ -40,3 +40,16 @@ def test_live_delta_distinguishes_quote_and_suspension():
     assert result["status"] == "CHANGE_OBSERVED"
     assert {x["field"] for x in result["changes"]} == {"odd", "suspended"}
     assert live_delta(a, a)["status"] == "NOT_OBSERVED_DURING_WINDOW"
+
+
+def test_live_selection_level_suspend_and_main_are_preserved():
+    payload = {"response": [{"fixture": {"id": 77}, "status": {"stopped": False},
+        "bets": [{"id": 5, "name": "Live totals", "values": [
+            {"value": "Over", "odd": "0", "suspended": True, "main": None}]}]}]}
+    rows = extract_odds(payload, "LIVE")
+    assert len(rows) == 1
+    assert rows[0]["suspended"] is True
+    assert rows[0]["main"] is None
+    assert rows[0]["odd"] == "0"
+    assert rows[0]["fixture_status"] == {"stopped": False}
+    assert rows[0]["market_namespace"] == "LIVE"
