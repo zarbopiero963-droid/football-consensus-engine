@@ -1,0 +1,58 @@
+name: api-football-39-route-inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: api-football-live-provider
+  cancel-in-progress: false
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: api-football-live
+    env:
+      PYTHONPATH: .
+      APIFOOTBALL_ENABLED: 'true'
+      APIFOOTBALL_LIVE_AUTHORIZED: 'true'
+      APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+      APIFOOTBALL_MAX_DAILY_REQUESTS: '39'
+      APIFOOTBALL_MAX_RPM: '8'
+      APIFOOTBALL_MAX_CONCURRENCY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: No-secret preflight
+        run: |
+          test -n "$APIFOOTBALL_API_KEY" || (echo 'API key not configured' && exit 1)
+      - name: Offline bounded-probe tests
+        run: python -m pytest -q tests/test_api_football_39_route_inventory.py
+      - name: Provider inventory (manual only)
+        run: python scripts/api_football_39_route_inventory.py --authorize-live-inventory --output /tmp/route_inventory.json
+      - name: Publish redacted evidence summary, no artifact storage
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          report = Path("/tmp/route_inventory.json")
+          if not report.is_file():
+              output.open("a").write("### API-FOOTBALL inventory" + chr(10) * 2 + "No evidence file generated." + chr(10))
+          else:
+              data = json.loads(report.read_text())
+              lines = ["### 39 API-FOOTBALL paths — observed evidence", "",
+                       "Path coverage is not parameter/schema or availability certification.", "",
+                       "| Path | Outcome | HTTP | Results | Day left | Minute left |",
+                       "|---|---|---:|---:|---:|---:|"]
+              for x in data["records"]:
+                  lines.append("| {} | {} | {} | {} | {} | {} |".format(x["path"], x["outcome"],
+                      x.get("http_status"), x.get("results"), x.get("quota_day"), x.get("quota_minute")))
+              lines.extend(["", "Requests attempted: {} / 39".format(data["requests_attempted"])])
+              output.open("a").write(chr(10).join(lines) + chr(10))
+          PY
