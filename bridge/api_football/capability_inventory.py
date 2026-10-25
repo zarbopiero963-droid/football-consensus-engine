@@ -17,7 +17,7 @@ def fields(value: Any, path: str = "$") -> dict[str, set[str]]:
                 if isinstance(key, str) and len(key) <= 128:
                     walk(item, prefix + "." + key)
         elif isinstance(node, list):
-            for item in node[:100]:
+            for item in node:
                 walk(item, prefix + "[]")
     walk(value, path)
     return dict(out)
