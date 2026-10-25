@@ -1,0 +1,17 @@
+{
+  "denominators": {
+    "runtime_provider_routes": 39,
+    "runtime_provider_tools": 40,
+    "diagnostic_mcp_tools": 2,
+    "all_mcp_tools": 42,
+    "browser_tools": 34
+  },
+  "counts": {
+    "official_catalog_acquired": 0,
+    "officially_verified_endpoints": 0,
+    "officially_verified_parameters": 0,
+    "pending_official_verification_endpoints": 39,
+    "real_verified_endpoints": 0
+  },
+  "rule": "Runtime allowlist coverage is not official-provider coverage; all documentary fields remain pending until official evidence is acquired."
+}
