@@ -56,6 +56,11 @@ jobs:
               lines.extend(["", "Requests attempted: {} / 39".format(data["requests_attempted"])])
               output.open("a").write(chr(10).join(lines) + chr(10))
           PY
+      - name: Publish recoverable evidence ZIP in downloadable job logs
+        if: always()
+        shell: bash
+        run: |
+          python scripts/api_football_evidence_log_transport.py --encode /tmp/route_inventory.json /tmp/route_inventory.csv
       - name: Upload complete sanitized route JSON and CSV
         if: always()
         continue-on-error: true
