@@ -23,7 +23,7 @@ class MockClient(Protocol):
         ...
 
 
-def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | None = None) -> tuple[str, ...]:
+def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | None = None, client: Any | None = None) -> tuple[str, ...]:
     """Register additive typed tools, or none when optional module disabled."""
     if not settings.enabled:
         return ()
@@ -69,23 +69,42 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         if not settings.configured:
             result["status"] = "KEY_NOT_CONFIGURED"
             return result
-        if test_mock is None:
+        # A real client is accepted only through trusted server wiring and
+        # only when the independent live gate is explicitly ON.
+        if test_mock is None and not settings.live_authorized:
+            return result
+        if test_mock is None and client is None:
+            result["status"] = "PROVIDER_CLIENT_UNAVAILABLE"
             return result
         # test_mock is supplied only by local unit tests, never from MCP
         # arguments or environment. Preserve raw simulated data losslessly.
         try:
-            data = await test_mock.get(contract.path, params)
+            if test_mock is not None:
+                data = await test_mock.get(contract.path, params)
+                status = "MOCK_VERIFIED"
+                cache_status = "TEST_FIXTURE"
+            else:
+                data = await client.get(contract.path, params)
+                status = "REAL_API_RESPONSE"
+                cache_status = data.get("cache_status", "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
             if not isinstance(data, dict):
-                raise TypeError("Bad mock response type")
+                raise TypeError("Bad provider response type")
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
-                result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE"}
+                result["error"] = {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
                 return result
-            result["status"] = "MOCK_VERIFIED"
-            result["data"] = data
-            result["pagination"] = data.get("paging")
-            result["cache_status"] = "TEST_FIXTURE"
+            result["status"] = status
+            result["data"] = data.get("data", data) if status == "REAL_API_RESPONSE" else data
+            result["http_status"] = data.get("http_status")
+            result["pagination"] = data.get("pagination", data.get("paging"))
+            result["cache_status"] = cache_status
+            result["network_calls_made"] = 1 if status == "REAL_API_RESPONSE" else 0
+            if status == "REAL_API_RESPONSE":
+                result["quota_remaining"] = {
+                    "day": data.get("quota_remaining_provider_day"),
+                    "minute": data.get("quota_remaining_provider_minute"),
+                }
             return result
         except Exception:
             # Never include exception messages, mock secrets or provider body.
