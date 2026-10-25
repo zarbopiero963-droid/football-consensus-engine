@@ -5,7 +5,7 @@ from bridge.api_football.global_mcp_certification import (
 def test_all_known_api_routes_and_tools_inventory():
     data=inventory()
     assert data["api_path_count"]==39
-    assert data["api_tool_count"]==39
+    assert data["api_tool_count"]==40  # 40 typed provider contracts mapped onto 39 paths
     assert data["browser_discovery"]=="NOT_VERIFIED"
     assert data["route_contract"]["verdict"]=="INCOMPLETE"
 
