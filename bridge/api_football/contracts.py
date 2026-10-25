@@ -25,6 +25,7 @@ _POSITIVE = frozenset({
 _DATE_FIELDS = frozenset({"date", "from", "to"})
 _TEXT = frozenset({"name", "country", "code", "search", "status", "type", "timezone", "live", "city"})
 _BOOL_FIELDS = frozenset({"current", "dates"})
+_IDS = re.compile(r"^[1-9][0-9]{0,9}(?:-[1-9][0-9]{0,9}){0,19}$")
 assert not (_POSITIVE & _BOOL_FIELDS), "Boolean fields must not be validated as integers"
 _H2H = re.compile(r"^[1-9][0-9]{0,9}-[1-9][0-9]{0,9}$")
 _VALID_VALUE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
@@ -48,14 +49,14 @@ ENDPOINTS: dict[str, Endpoint] = {
     "apifootball_countries": Endpoint("/countries", ("name", "code", "search"), confidence=_CONFIRMED),
     "apifootball_leagues": Endpoint("/leagues", ("id", "season", "country", "team", "search"), confidence=_CONFIRMED),
     "apifootball_seasons": Endpoint("/leagues/seasons", (), confidence=_CONFIRMED),
-    "apifootball_fixtures": Endpoint("/fixtures", ("id", "date", "league", "season", "team", "live", "timezone", "last", "next", "status"), confidence=_CONFIRMED),
+    "apifootball_fixtures": Endpoint("/fixtures", ("id", "ids", "date", "league", "season", "team", "live", "timezone", "last", "next", "status", "venue", "round", "from", "to"), confidence=_CONFIRMED),
     "apifootball_fixture_statistics": Endpoint("/fixtures/statistics", ("fixture", "team"), ("fixture",), confidence=_CONFIRMED),
     "apifootball_fixture_events": Endpoint("/fixtures/events", ("fixture",), ("fixture",), confidence=_CONFIRMED),
     "apifootball_fixture_lineups": Endpoint("/fixtures/lineups", ("fixture",), ("fixture",), confidence=_CONFIRMED),
-    "apifootball_teams": Endpoint("/teams", ("id", "league", "season", "search"), confidence=_CONFIRMED),
+    "apifootball_teams": Endpoint("/teams", ("id", "league", "season", "search", "code", "venue"), confidence=_CONFIRMED),
     "apifootball_team_statistics": Endpoint("/teams/statistics", ("league", "season", "team", "date"), ("league", "season", "team"), confidence=_CONFIRMED),
     "apifootball_players": Endpoint("/players", ("id", "team", "season", "page"), confidence=_PENDING, pagination=True),
-    "apifootball_injuries": Endpoint("/injuries", ("fixture", "league", "season", "team"), confidence=_PENDING),
+    "apifootball_injuries": Endpoint("/injuries", ("fixture", "ids", "league", "season", "team"), confidence=_PENDING),
     "apifootball_predictions": Endpoint("/predictions", ("fixture",), ("fixture",), confidence=_CONFIRMED),
     "apifootball_odds": Endpoint("/odds", ("fixture", "league", "season", "date", "bookmaker", "bet", "page", "timezone"), confidence=_CONFIRMED, pagination=True),
     "apifootball_live_odds": Endpoint("/odds/live", ("fixture", "league", "bet"), confidence=_CONFIRMED),
@@ -70,7 +71,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     "apifootball_venues": Endpoint("/venues", ("id", "name", "city", "country", "search"), confidence=_CONFIRMED),
     "apifootball_standings": Endpoint("/standings", ("league", "season", "team"), ("league", "season"), confidence=_CONFIRMED),
     "apifootball_fixture_rounds": Endpoint("/fixtures/rounds", ("league", "season", "current", "dates", "timezone"), ("league", "season"), confidence=_CONFIRMED),
-    "apifootball_fixture_headtohead": Endpoint("/fixtures/headtohead", ("h2h", "last", "next"), ("h2h",), confidence=_CONFIRMED),
+    "apifootball_fixture_headtohead": Endpoint("/fixtures/headtohead", ("h2h", "last", "next", "status", "venue"), ("h2h",), confidence=_CONFIRMED),
     "apifootball_fixture_players": Endpoint("/fixtures/players", ("fixture", "team"), ("fixture",), confidence=_CONFIRMED),
     "apifootball_coaches": Endpoint("/coachs", ("id", "team", "search"), confidence=_CONFIRMED),
     "apifootball_player_seasons": Endpoint("/players/seasons", (), confidence=_CONFIRMED),
@@ -141,6 +142,12 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
             if type(value) is not bool:
                 raise ParameterError("INVALID_BOOLEAN_PARAMETER")
             provided[key] = "true" if value else "false"
+        elif key == "ids":
+            if not isinstance(value, str) or not _IDS.fullmatch(value):
+                raise ParameterError("INVALID_FIXTURE_IDS")
+            provided[key] = value
+        elif key == "round":
+            provided[key] = _string(value, key)
         elif key == "h2h":
             if not isinstance(value, str) or not _H2H.fullmatch(value):
                 raise ParameterError("INVALID_HEAD_TO_HEAD_FILTER")
@@ -161,7 +168,7 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
     if any(k not in provided for k in endpoint.required):
         raise ParameterError("REQUIRED_PARAMETER_MISSING")
     if name == "apifootball_fixtures" and not (
-        "id" in provided or "date" in provided or "live" in provided
+        "id" in provided or "ids" in provided or "date" in provided or "live" in provided
         or ("league" in provided and "season" in provided)
         or ("team" in provided and ("last" in provided or "next" in provided))
     ):
@@ -191,7 +198,7 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
     ):
         raise ParameterError("PLAYER_FILTER_REQUIRED")
     if name == "apifootball_injuries" and not (
-        "fixture" in provided or ("league" in provided and "season" in provided)
+        "fixture" in provided or "ids" in provided or ("league" in provided and "season" in provided)
         or "team" in provided
     ):
         raise ParameterError("INJURY_FILTER_REQUIRED")

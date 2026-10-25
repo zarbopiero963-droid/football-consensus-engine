@@ -66,7 +66,9 @@ def test_candidate_evidence_is_gap_only_and_cannot_promote_runtime_contract(tmp_
     path=tmp_path/"candidate.json"; path.write_text(json.dumps(evidence))
     report=MODULE.candidate_gap_report(build_registry(),path)
     assert report["status"] == "PENDING_OFFICIAL_VERIFICATION"
-    assert report["gaps"][0]["runtime_missing"] == ["ids"]
+    # ids is now implemented in the typed runtime contract; candidate remains non-authoritative.
+    assert report["gaps"][0]["runtime_missing"] == []
+    assert report["gaps"][0]["candidate_only"] == ["ids"]
     assert report["gaps"][0]["promotion_allowed"] is False
 
 
