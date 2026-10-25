@@ -185,3 +185,15 @@ def valid_cert_client(client_id: str, redirect_uri: str) -> bool:
             WHERE client_id_hash=%s AND redirect_uri=%s AND expires_at>NOW()""",
             (digest(client_id),redirect_uri))
         return cur.fetchone() is not None
+
+
+def revoke_cert_client(client_id: str) -> bool:
+    """Administrative offline revocation; never expose as public HTTP endpoint."""
+    if not _CERT_ID_PATTERN.fullmatch(client_id):
+        return False
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE oauth_access_tokens SET revoked_at=NOW() WHERE client_id=%s AND revoked_at IS NULL", (client_id,))
+        cur.execute("UPDATE oauth_refresh_tokens SET revoked_at=NOW() WHERE client_id=%s AND revoked_at IS NULL", (client_id,))
+        cur.execute("DELETE FROM oauth_cert_dcr_clients WHERE client_id_hash=%s", (digest(client_id),))
+        conn.commit()
+    return True
