@@ -44,7 +44,7 @@ def test_live_delta_distinguishes_quote_and_suspension():
 
 def test_live_selection_level_suspend_and_main_are_preserved():
     payload = {"response": [{"fixture": {"id": 77}, "status": {"stopped": False},
-        "bets": [{"id": 5, "name": "Live totals", "values": [
+        "odds": [{"id": 5, "name": "Live totals", "values": [
             {"value": "Over", "odd": "0", "suspended": True, "main": None}]}]}]}
     rows = extract_odds(payload, "LIVE")
     assert len(rows) == 1
