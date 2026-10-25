@@ -1,0 +1,39 @@
+name: fcb-global-e2e-one-command
+on:
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: 'SHA actually observed on the Render LIVE deployment'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: fcb-global-e2e-audit
+  cancel-in-progress: false
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run entire offline and E2E certification gate
+        env:
+          PYTHONPATH: .
+          DEPLOYED_SHA: ${{ inputs.deployed_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          python -m pytest -q tests/test_global_mcp_certification.py tests/test_mcp_connected_inventory.py tests/test_mcp_tool_evidence_gate.py
+          python scripts/run_full_mcp_certification.py --deployed-sha "$DEPLOYED_SHA" --evidence-dir evidence/certification
+      - name: Print manifest SHA even on failure
+        if: always()
+        run: |
+          if test -f /tmp/fcb-global-e2e-result.json; then
+            sha256sum /tmp/fcb-global-e2e-result.json
+            cat /tmp/fcb-global-e2e-result.json
+          fi
