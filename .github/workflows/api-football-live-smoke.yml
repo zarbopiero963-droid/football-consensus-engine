@@ -1,0 +1,47 @@
+name: api-football-live-smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: api-football-live-smoke
+  cancel-in-progress: false
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: api-football-live
+    env:
+      PYTHONPATH: .
+      APIFOOTBALL_ENABLED: 'true'
+      APIFOOTBALL_LIVE_AUTHORIZED: 'true'
+      APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+      APIFOOTBALL_MAX_DAILY_REQUESTS: '4'
+      APIFOOTBALL_MAX_RPM: '4'
+      APIFOOTBALL_MAX_CONCURRENCY: '1'
+    steps:
+      - name: Checkout exact workflow branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Explicit secret preflight (no value output)
+        shell: bash
+        run: |
+          if [ -z "$APIFOOTBALL_API_KEY" ]; then
+            echo 'Missing APIFOOTBALL_API_KEY Actions secret'
+            exit 1
+          fi
+      - name: Bounded four-request live provider test
+        run: python scripts/api_football_live_smoke.py --authorize-live-test --output /tmp/api_football_live_smoke.json
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-football-live-smoke-evidence
+          path: /tmp/api_football_live_smoke.json
+          if-no-files-found: ignore
+          retention-days: 7
