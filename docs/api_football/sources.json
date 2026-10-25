@@ -1,0 +1,15 @@
+{
+  "official": {
+    "url": "https://www.api-football.com/documentation_v3",
+    "access": "PUBLIC_DOCUMENTATION_ONLY",
+    "retrieved_at_utc": "2026-10-25",
+    "status": "PENDING_OFFICIAL_VERIFICATION"
+  },
+  "matchpilot_reference": {
+    "issues": [
+      248,
+      249
+    ],
+    "mode": "READ_ONLY"
+  }
+}
