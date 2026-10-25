@@ -18,8 +18,10 @@ def test_cert_registration_requires_exact_loopback_callback():
 
 def test_cert_registration_scoped_when_enabled(monkeypatch):
     monkeypatch.setenv("FCB_CERT_OAUTH_REGISTRATION_ENABLED","true")
+    monkeypatch.setenv("FCB_CERT_OAUTH_REGISTRATION_SECRET","example-bootstrap-secret")
     monkeypatch.setattr(oauth_store,"register_cert_client",lambda redirect_uri:"fcbe2e1_"+"a"*32)
     class FakeRequest:
+        headers={"X-FCB-Cert-Registration":"example-bootstrap-secret"}
         async def json(self):
             return {"redirect_uri":"http://127.0.0.1:8765/oauth/callback"}
     reply=asyncio.run(oauth.register_cert_client(FakeRequest()))
