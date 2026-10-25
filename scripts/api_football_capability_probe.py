@@ -42,6 +42,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
             and type(record.get("page")) is int):
             prior[(record["path"], json.dumps(record["parameters"], sort_keys=True))] = record
     observed = {}
+    team_scopes = {}
+    season = int(env.get("APIFOOTBALL_SAMPLE_SEASON", "2026"))
     fixtures = []
     teams = []
     live_fixtures = []
@@ -51,7 +53,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
         for idx, path in enumerate(PATHS):
             params = {}
             if path == "/fixtures":
-                params = {"live": "all"} if idx > 0 and PATHS[idx - 1] == "/fixtures" else {"league": 39, "season": 2025, "last": 5}
+                params = {"live": "all"} if idx > 0 and PATHS[idx - 1] == "/fixtures" else {"league": 39, "season": season, "next": 5}
             elif path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/odds"):
                 if "fixture" not in observed:
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_FIXTURE"})
@@ -61,12 +63,12 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                 if "team" not in observed:
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_TEAM"})
                     continue
-                params = {"league": 39, "season": 2025, "team": observed["team"]}
+                params = dict(team_scopes.get(observed["team"], {"league": 39, "season": season}), team=observed["team"])
             elif path == "/players":
                 if "team" not in observed:
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_TEAM"})
                     continue
-                params = {"team": observed["team"], "season": 2025}
+                params = {"team": observed["team"], "season": team_scopes.get(observed["team"], {}).get("season", season)}
             elif path == "/odds/live":
                 if "live_fixture" not in observed:
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_LIVE_FIXTURE"})
@@ -76,9 +78,9 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
             if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/odds"):
                 samples = [{"fixture": fid} for fid in fixtures[:MAX_FIXTURE_SAMPLES]] or [params]
             elif path == "/teams/statistics":
-                samples = [{"league": 39, "season": 2025, "team": tid} for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
+                samples = [dict(team_scopes.get(tid, {"league": 39, "season": season}), team=tid) for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
             elif path == "/players":
-                samples = [{"team": tid, "season": 2025} for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
+                samples = [{"team": tid, "season": team_scopes.get(tid, {}).get("season", season)} for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
             for sample_params in samples:
                 page = 1
                 while True:
@@ -128,6 +130,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                         continue
                                     fixture_obj = match.get("fixture") or {}
                                     teams_obj = match.get("teams") or {}
+                                    league_obj = match.get("league") or {}
                                     fid = fixture_obj.get("id") if isinstance(fixture_obj, dict) else None
                                     if type(fid) is int and fid not in fixtures:
                                         fixtures.append(fid)
@@ -137,6 +140,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                     tid = home.get("id") if isinstance(home, dict) else None
                                     if type(tid) is int and tid not in teams:
                                         teams.append(tid)
+                                    if type(tid) is int and isinstance(league_obj, dict) and type(league_obj.get("id")) is int and type(league_obj.get("season")) is int:
+                                        team_scopes[tid] = {"league": league_obj["id"], "season": league_obj["season"]}
                                     if type(tid) is int:
                                         observed.setdefault("team", tid)
                                     st = fixture_obj.get("status") if isinstance(fixture_obj, dict) else None
