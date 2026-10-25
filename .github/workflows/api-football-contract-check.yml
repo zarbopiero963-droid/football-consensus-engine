@@ -7,6 +7,7 @@ jobs:
   contracts:
     runs-on: ubuntu-latest
     env:
+      PYTHONPATH: .
       APIFOOTBALL_ENABLED: 'false'
       APIFOOTBALL_LIVE_AUTHORIZED: 'false'
     steps:
