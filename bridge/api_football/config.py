@@ -66,10 +66,16 @@ class Settings:
     max_concurrency: int = 2
     cache_enabled: bool = True
     circuit_breaker_enabled: bool = True
+    # Independent server-side authorization; never enabled by API key presence.
+    live_authorized: bool = False
 
     @property
     def configured(self) -> bool:
         return self.enabled and bool(self.api_key)
+
+    @property
+    def real_requests_authorized(self) -> bool:
+        return self.configured and self.live_authorized
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -88,4 +94,5 @@ class Settings:
             max_concurrency=_integer(e, "APIFOOTBALL_MAX_CONCURRENCY", 2, 1, 32),
             cache_enabled=_flag(e, "APIFOOTBALL_CACHE_ENABLED", default=True),
             circuit_breaker_enabled=_flag(e, "APIFOOTBALL_CIRCUIT_BREAKER_ENABLED", default=True),
+            live_authorized=_flag(e, "APIFOOTBALL_LIVE_AUTHORIZED", default=False),
         )
