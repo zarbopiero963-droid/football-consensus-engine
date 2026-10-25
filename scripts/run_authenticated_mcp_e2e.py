@@ -25,9 +25,18 @@ def planned_calls(names: set[str], *, cap: int = 8):
 
 
 async def run(output: Path):
-    bearer = os.getenv("FCB_MCP_BEARER_TOKEN", "")
-    if not bearer:
-        raise ValueError("MCP_OAUTH_BEARER_MISSING")
+    # Never rely on a static bearer token or on MCP_OAUTH_PASSWORD.
+    # Rotated refresh credentials must be persisted securely before reuse.
+    from bridge.oauth_test_client import refresh, write_private_json
+    client_id=os.getenv("FCB_OAUTH_CLIENT_ID","")
+    refresh_token=os.getenv("FCB_OAUTH_REFRESH_TOKEN","")
+    output_credentials=os.getenv("FCB_ROTATED_CREDENTIAL_FILE","")
+    if not client_id or not refresh_token or not output_credentials:
+        raise ValueError("MCP_OAUTH_REFRESH_CLIENT_NOT_PROVISIONED")
+    new_pair=await refresh(client_id=client_id,refresh_token=refresh_token)
+    write_private_json(Path(output_credentials),
+                       {"client_id":client_id,"refresh_token":new_pair["refresh_token"]})
+    bearer=new_pair["access_token"]
     import httpx2
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
