@@ -4,10 +4,12 @@ on:
     paths:
       - 'bridge/api_football/global_mcp_certification.py'
       - 'scripts/fcb_global_mcp_certification.py'
-      - 'tests/test_global_mcp_certification.py tests/test_mcp_connected_inventory.py'
+      - 'tests/test_global_mcp_certification.py tests/test_mcp_connected_inventory.py tests/test_mcp_tool_evidence_gate.py'
       - 'docs/certification/**'
       - 'evidence/mcp/**'
       - 'tests/test_mcp_connected_inventory.py'
+      - 'tests/test_mcp_tool_evidence_gate.py'
+      - 'bridge/api_football/tool_evidence_gate.py'
       - '.github/workflows/fcb-global-mcp-e2e-certification.yml'
   workflow_dispatch:
 permissions:
