@@ -23,7 +23,8 @@ def test_odds_complete_nested_extraction_and_separate_namespaces():
     assert len(rows) == 2
     assert rows[0]["odd"] == "1.90"
     assert rows[1]["handicap"] == "-0.5"
-    assert rows[0]["phase"] != extract_odds(payload, "LIVE")[0]["phase"]
+    live_payload = {"response": [{"fixture": {"id": 20}, "odds": [{"id": 1, "name": "Live totals", "values": [{"value": "Over", "odd": "1.7"}]}]}]}
+    assert rows[0]["phase"] != extract_odds(live_payload, "LIVE")[0]["phase"]
 
 
 def test_field_union_keeps_null_and_zero():
