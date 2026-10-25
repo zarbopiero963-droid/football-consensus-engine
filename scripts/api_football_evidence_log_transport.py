@@ -18,7 +18,7 @@ MAX_TOTAL = 2_000_000
 FILES = ("route_inventory.json", "route_inventory.csv", "capabilities.json",
          "catalogs.csv", "field_registry.csv", "pagination_coverage.json",
          "odds_observations.csv", "bookmaker_availability.json",
-         "statistics_samples.json", "live_delta.json")
+         "statistics_samples.json", "live_delta.json", "five_point_verdict.json")
 
 def encode(paths):
     buffer = io.BytesIO()
