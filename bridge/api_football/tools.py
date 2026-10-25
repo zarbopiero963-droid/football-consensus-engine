@@ -207,9 +207,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_fixtures", dict(id=id, date=date, league=league, season=season, team=team, live=live, timezone=timezone, last=last, next=next, status=status, ids=ids, venue=venue, round=round, **{"from": from_date, "to": to_date}))
 
     @add
-    async def apifootball_fixture_statistics(fixture: int, team: int | None = None) -> dict[str, Any]:
-        """Fixture team statistics. No xG/xGoT availability implied; halftime not yet certified."""
-        return await execute("apifootball_fixture_statistics", dict(fixture=fixture, team=team))
+    async def apifootball_fixture_statistics(fixture: int, team: int | None = None, half: bool | None = None) -> dict[str, Any]:
+        """Fixture statistics; half is provider-supported for seasons from 2024 onward."""
+        return await execute("apifootball_fixture_statistics", dict(fixture=fixture, team=team, half=half))
 
     @add
     async def apifootball_fixture_events(fixture: int) -> dict[str, Any]:
