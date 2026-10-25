@@ -19,7 +19,9 @@ def _items(registry):
 def semantic_diff(previous, current):
     old,new=_items(previous),_items(current); changes=[]
     for key in sorted(set(old)|set(new)):
-        if key not in old: changes.append({"key":key,"kind":"added","classification":"ADDITIVE"})
+        if key not in old:
+            classification = "BREAKING" if key.startswith("parameter:") and new[key].get("required") is True else "ADDITIVE"
+            changes.append({"key":key,"kind":"added","classification":classification})
         elif key not in new: changes.append({"key":key,"kind":"removed","classification":"BREAKING"})
         else:
             before,after=old[key],new[key]
