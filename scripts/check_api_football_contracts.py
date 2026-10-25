@@ -58,7 +58,8 @@ def read_snapshot(path):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--write",type=Path)
-    parser.add_argument("--compare",type=Path)\n    parser.add_argument("--candidate-evidence",type=Path)
+    parser.add_argument("--compare",type=Path)
+    parser.add_argument("--candidate-evidence",type=Path)
     args=parser.parse_args()
     registry=build_registry(); errors=validate_registry(registry)
     if errors: raise SystemExit("\n".join(errors))
@@ -66,7 +67,9 @@ def main():
     if args.write:
         args.write.parent.mkdir(parents=True,exist_ok=True)
         args.write.write_text(json.dumps(payload,sort_keys=True,indent=2)+"\n",encoding="utf-8")
-    if args.candidate_evidence:\n        print(json.dumps(candidate_gap_report(registry,args.candidate_evidence),sort_keys=True))\n    if args.compare:
+    if args.candidate_evidence:
+        print(json.dumps(candidate_gap_report(registry,args.candidate_evidence),sort_keys=True))
+    if args.compare:
         previous=read_snapshot(args.compare)["registry"]
         changes=semantic_diff(previous,registry)
         print(json.dumps({"changes":changes},sort_keys=True))
