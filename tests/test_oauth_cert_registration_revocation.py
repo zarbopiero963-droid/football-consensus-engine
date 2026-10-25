@@ -52,3 +52,13 @@ def test_offline_revoke_invalidates_access_refresh_and_registration(monkeypatch)
     assert "oauth_cert_dcr_clients" in conn.c.commands[2][0]
     assert conn.did_commit
     assert not oauth_store.revoke_cert_client("malformed")
+
+def test_cert_registration_wrong_bootstrap_denied(monkeypatch):
+    monkeypatch.setenv("FCB_CERT_OAUTH_REGISTRATION_ENABLED","true")
+    monkeypatch.setenv("FCB_CERT_OAUTH_REGISTRATION_SECRET","correct-secret")
+    class FakeRequest:
+        headers={"X-FCB-Cert-Registration":"incorrect-secret"}
+        async def json(self):
+            raise AssertionError("Bad bootstrap must fail before reading request body")
+    reply=asyncio.run(oauth.register_cert_client(FakeRequest()))
+    assert reply.status_code==401
