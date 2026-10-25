@@ -75,7 +75,12 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                     continue
                 params = {"fixture": observed["live_fixture"]}
             samples = [params]
-            if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/odds"):
+            if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players"):
+                # Stats from future fixtures are legitimately empty; prefer games in progress.
+                eligible = list(dict.fromkeys(live_fixtures + fixtures))
+                samples = [{"fixture": fid} for fid in eligible[:MAX_FIXTURE_SAMPLES]] or [params]
+            elif path == "/odds":
+                # Pregame prices are probed on upcoming scheduled fixtures.
                 samples = [{"fixture": fid} for fid in fixtures[:MAX_FIXTURE_SAMPLES]] or [params]
             elif path == "/teams/statistics":
                 samples = [dict(team_scopes.get(tid, {"league": 39, "season": season}), team=tid) for tid in teams[:MAX_FIXTURE_SAMPLES]] or [params]
