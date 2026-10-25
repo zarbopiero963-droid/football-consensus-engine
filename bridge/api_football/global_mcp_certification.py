@@ -6,6 +6,7 @@ coordinator, OAuth flow or ChatGPT connector was exercised.
 from __future__ import annotations
 import hashlib
 import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 from bridge.api_football.catalog import ALLOWED_PATHS
@@ -37,11 +38,13 @@ def inventory() -> dict[str, Any]:
     }
 
 
-def verdict(evidence: dict[str, Any], *, deployed_commit: str | None = None) -> dict[str, Any]:
+def verdict(evidence: dict[str, Any], *, deployed_commit: str | None = None,
+            evidence_root: str | Path = 'evidence/certification') -> dict[str, Any]:
     """Only authenticated per-domain evidence on the exact commit can PASS."""
     if not isinstance(evidence, dict):
         raise ValueError("INVALID_EVIDENCE")
     rows = []
+    root = Path(evidence_root).resolve()
     for domain in MANDATORY_DOMAINS:
         item = evidence.get(domain)
         valid = isinstance(item, dict) and item.get("status") in VALID
@@ -49,6 +52,19 @@ def verdict(evidence: dict[str, Any], *, deployed_commit: str | None = None) -> 
         digest = item.get("sha256") if valid else None
         digest_ok = isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
         matching = documented and digest_ok and item.get("commit") == PINNED_BASELINE
+        # Verify actual local evidence bytes, not merely a claimed hash or URL.
+        if matching:
+            uri = item["evidence_uri"]
+            if not isinstance(uri, str) or "://" in uri:
+                matching = False
+            else:
+                candidate = (root / uri).resolve()
+                try:
+                    candidate.relative_to(root)
+                    matching = candidate.is_file() and hashlib.sha256(
+                        candidate.read_bytes()).hexdigest() == digest
+                except (ValueError, OSError):
+                    matching = False
         state = item["status"] if matching else "NOT_VERIFIED"
         rows.append({"domain": domain, "status": state,
                      "evidence_attached": bool(matching)})
