@@ -10,12 +10,18 @@ def test_healthz_reports_configuration(monkeypatch):
     client = TestClient(app)
     response = client.get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {
+    data = response.json()
+    assert all(data[key] is value for key, value in {
         "ok": True,
         "browser_use_configured": False,
         "oauth_password_configured": False,
         "database_configured": False,
-    }
+    }.items())
+    assert isinstance(data["apifootball_enabled"], bool)
+    assert isinstance(data["apifootball_key_configured"], bool)
+    assert isinstance(data["apifootball_live_authorized"], bool)
+    assert isinstance(data["apifootball_registered_count"], int)
+    assert data["apifootball_registration_error_type"] is None or isinstance(data["apifootball_registration_error_type"], str)
 
 
 def test_mcp_requires_bearer_token():
