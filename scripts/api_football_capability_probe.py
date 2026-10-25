@@ -14,7 +14,7 @@ from bridge.api_football.capability_inventory import inventory_payload
 
 # Catalogs first; fixtures provide REAL prerequisites for statistics and odds.
 PATHS = ("/odds/bookmakers", "/odds/bets", "/odds/live/bets",
-         "/fixtures", "/fixtures/statistics", "/odds", "/odds/live",
+         "/fixtures", "/fixtures", "/fixtures/statistics", "/odds", "/odds/live",
          "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics")
 CAP = 60
 MAX_PAGES = 10
@@ -27,10 +27,10 @@ async def run(env, *, transport=None, sleep=asyncio.sleep):
     observed = {}
     async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, trust_env=False,
                                  follow_redirects=False, timeout=cfg.timeout_seconds, transport=transport) as client:
-        for path in PATHS:
+        for idx, path in enumerate(PATHS):
             params = {}
             if path == "/fixtures":
-                params = {"league": 39, "season": 2025, "last": 5}
+                params = {"live": "all"} if idx > 0 and PATHS[idx - 1] == "/fixtures" else {"league": 39, "season": 2025, "last": 5}
             elif path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/odds"):
                 if "fixture" not in observed:
                     evidence.append({"path": path, "status": "BLOCKED_REQUIRES_OBSERVED_FIXTURE"})
@@ -60,7 +60,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep):
                 try:
                     async with client.stream("GET", path, params=query,
                         headers={"x-apisports-key": cfg.api_key, "Accept": "application/json"}) as response:
-                        row = {"path": path, "page": page, "http_status": response.status_code}
+                        row = {"path": path, "page": page, "mode": "LIVE" if params.get("live") == "all" else "STANDARD", "http_status": response.status_code}
                         if response.status_code != 200:
                             row["status"] = "HTTP_ERROR"
                             evidence.append(row)
