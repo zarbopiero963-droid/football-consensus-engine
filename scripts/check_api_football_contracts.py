@@ -25,7 +25,7 @@ def semantic_diff(previous, current):
             before,after=old[key],new[key]
             for field in ("required","type","format","enum","minimum","maximum","pagination","response_schema","error_schema","official_status","notes"):
                 if before.get(field)!=after.get(field):
-                    classification = "UNKNOWN"
+                    classification = "DOCUMENTATION_ONLY" if field == "notes" else "UNKNOWN"
                     if field in {"type","format","enum","minimum","maximum","pagination","response_schema","error_schema"}: classification="BREAKING"
                     elif field=="required" and after.get(field) is True: classification="BREAKING"
                     elif field=="enum" and set(after.get(field, [])) < set(before.get(field, [])): classification="BREAKING"
