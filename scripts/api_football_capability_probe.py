@@ -91,7 +91,7 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                 page = 1
                 while True:
                     if stopped or calls >= CAP:
-                        evidence.append({"path": path, "status": "BLOCKED_QUOTA", "page": page})
+                        evidence.append({"path": path, "status": "BLOCKED_PREVIOUS_ERROR" if stopped else "BLOCKED_QUOTA", "page": page})
                         break
                     query = dict(sample_params)
                     if page > 1:
