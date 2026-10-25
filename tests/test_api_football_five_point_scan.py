@@ -45,7 +45,7 @@ def test_full_12_page_bookmaker_scan_multiple_samples_and_live_delta():
             live_calls += 1
             data = [{"fixture": {"id": int(request.url.params["fixture"])},
                      "status": {"stopped": False},
-                     "bets": [{"id": 1, "name": "Live totals",
+                     "odds": [{"id": 1, "name": "Live totals",
                      "values": [{"value": "Over", "odd": "1.91" if live_calls == 1 else "1.99",
                                  "suspended": live_calls > 1}]}]}]
             paging = {"current": 1, "total": 1}
