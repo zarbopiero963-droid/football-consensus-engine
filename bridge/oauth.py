@@ -267,6 +267,10 @@ async def register_cert_client(request: Request):
     """Registration explicitly enabled for local PKCE one-time consent only."""
     if os.getenv("FCB_CERT_OAUTH_REGISTRATION_ENABLED") != "true":
         return JSONResponse({"error": "not_found"}, status_code=404)
+    expected_bootstrap = os.getenv("FCB_CERT_OAUTH_REGISTRATION_SECRET", "")
+    supplied_bootstrap = request.headers.get("X-FCB-Cert-Registration", "")
+    if not expected_bootstrap or not hmac.compare_digest(supplied_bootstrap, expected_bootstrap):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
     except (ValueError, UnicodeDecodeError):
