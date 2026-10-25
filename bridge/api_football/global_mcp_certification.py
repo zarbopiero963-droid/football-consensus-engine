@@ -12,6 +12,7 @@ from typing import Any
 from bridge.api_football.catalog import ALLOWED_PATHS
 from bridge.api_football.contracts import ENDPOINTS
 from bridge.api_football.full_contract_audit import audit_contract_coverage
+from bridge.api_football.tool_evidence_gate import verify_all_tools
 
 MANDATORY_DOMAINS = (
     "api_contract", "api_live", "mcp_api_tools", "browser_tools",
@@ -39,7 +40,8 @@ def inventory() -> dict[str, Any]:
 
 
 def verdict(evidence: dict[str, Any], *, deployed_commit: str | None = None,
-            evidence_root: str | Path = 'evidence/certification') -> dict[str, Any]:
+            evidence_root: str | Path = 'evidence/certification',
+            tool_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     """Only authenticated per-domain evidence on the exact commit can PASS."""
     if not isinstance(evidence, dict):
         raise ValueError("INVALID_EVIDENCE")
@@ -68,12 +70,13 @@ def verdict(evidence: dict[str, Any], *, deployed_commit: str | None = None,
         state = item["status"] if matching else "NOT_VERIFIED"
         rows.append({"domain": domain, "status": state,
                      "evidence_attached": bool(matching)})
+    tools = verify_all_tools(tool_evidence, root=evidence_root)
     deploy_match = deployed_commit == PINNED_BASELINE
-    complete = all(x["status"] == "PASS" for x in rows) and deploy_match
+    complete = all(x["status"] == "PASS" for x in rows) and deploy_match and tools["status"] == "PASS"
     return {"baseline_commit": PINNED_BASELINE,
             "deployed_commit_match": deploy_match,
             "status": "CERTIFIED" if complete else "NO_GO",
-            "domain_results": rows,
+            "domain_results": rows, "tool_gate": tools,
             "scope": "VERSION_PINNED_FUNCTIONAL_AND_SECURITY_CONTRACT",
             "global_future_data_completeness_claim": False}
 
