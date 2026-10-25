@@ -92,7 +92,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
-                result["error"] = {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
+                result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
                 return result
             result["status"] = status
             result["data"] = data.get("data", data) if status == "REAL_API_RESPONSE" else data
