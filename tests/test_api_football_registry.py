@@ -74,3 +74,17 @@ def test_candidate_evidence_cannot_claim_authority(tmp_path):
     path=tmp_path/"candidate.json"; path.write_text(json.dumps({"authoritative":True,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{}}))
     with pytest.raises(ValueError,match="CANDIDATE_EVIDENCE_MUST_NOT_BE_AUTHORITATIVE"):
         MODULE.candidate_gap_report(build_registry(),path)
+
+
+@pytest.mark.parametrize("candidate,expected", [
+    ({"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{}}, "CANDIDATE_EVIDENCE_MUST_NOT_BE_AUTHORITATIVE"),
+    ({"authoritative":False,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{"/not-an-endpoint":["id"]}}, "CANDIDATE_UNKNOWN_ENDPOINT"),
+    ({"authoritative":False,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{"/fixtures":"ids"}}, "CANDIDATE_PARAMETERS_INVALID"),
+    ({"authoritative":False,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{"/fixtures":[123]}}, "CANDIDATE_PARAMETERS_INVALID"),
+    ({"authoritative":False,"status":"PARTIAL_EVIDENCE_ONLY","endpoints":{"/fixtures":["../../secret"]}}, "CANDIDATE_PARAMETERS_INVALID"),
+])
+def test_candidate_evidence_rejects_invalid_structures(tmp_path,candidate,expected):
+    path=tmp_path/"invalid.json"
+    path.write_text(json.dumps(candidate))
+    with pytest.raises(ValueError,match=expected):
+        MODULE.candidate_gap_report(build_registry(),path)
