@@ -58,18 +58,20 @@ async def run_live(env, *, transport=None):
                 entry = {"path": path, "http_status": response.status_code,
                          "remaining_day": day, "remaining_minute": minute,
                          "outcome": "NOT_VERIFIED"}
-                if response.status_code != 200:
+                if len(response.content) > 524288:
+                    entry["outcome"] = "RESPONSE_TOO_LARGE"
+                elif response.status_code != 200:
                     entry["outcome"] = "HTTP_ERROR"
                 else:
                     try:
                         payload = response.json()
                         if isinstance(payload, dict) and "response" in payload and payload.get("errors") in (None, {}, []):
                             entry["outcome"] = "PASS"
-                            entry["results"] = payload.get("results")
+                            entry["results"] = payload.get("results") if type(payload.get("results")) is int else None
                             entry["response_type"] = type(payload["response"]).__name__
                         else:
                             entry["outcome"] = "PROVIDER_ERROR_OR_INVALID_CONTRACT"
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, UnicodeError):
                         entry["outcome"] = "INVALID_JSON"
                 results.append(entry)
                 # Unknown quota is not assumed exhausted; known zero is a hard stop.
