@@ -1,0 +1,22 @@
+name: api-football-contract-check
+on:
+  pull_request:
+    paths: ['bridge/api_football/**','scripts/check_api_football_contracts.py','docs/api_football/**','.github/workflows/api-football-contract-check.yml']
+  workflow_dispatch:
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate registry offline
+        env:
+          APIFOOTBALL_LIVE_AUTHORIZED: 'false'
+          APIFOOTBALL_ENABLED: 'false'
+        run: python scripts/check_api_football_contracts.py --write /tmp/api-football-registry.json
+      - name: Assert no provider credentials or calls
+        run: |
+          test -z "${APIFOOTBALL_API_KEY:-}"
+          ! rg -n 'https?://(v3\.)?api-football|APIFOOTBALL_API_KEY' /tmp/api-football-registry.json
