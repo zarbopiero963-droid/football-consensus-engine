@@ -167,3 +167,23 @@ def test_transport_cap_is_2mib_only_for_prematch_odds():
         with pytest.raises(ProviderDataError) as info:
             _transport_get(path, size)
         assert info.value.code == "PROVIDER_RESPONSE_TOO_LARGE"
+
+
+def test_oversized_live_odds_fail_closed_explicitly_without_partial_prices():
+    """/odds/live has no manifest: >256 KiB must be an explicit PAYLOAD_TOO_LARGE, never truncated."""
+    live = {"get": "odds/live", "errors": [], "results": 1, "paging": {"current": 1, "total": 1},
+            "response": [{"fixture": {"id": 7}, "odds": [
+                {"id": k, "name": "M%d" % k, "values": [{"value": "Over %d.5" % v, "odd": "1.95",
+                 "handicap": str(v), "main": None, "suspended": False} for v in range(40)]}
+                for k in range(100)]}]}
+    # Measure exactly as the tool does (compact separators).
+    assert len(json.dumps(live, separators=(",", ":"), ensure_ascii=False).encode()) > 262_144
+    registry = _Registry()
+    register_tools(registry, Settings(enabled=True, api_key="fake-test-key", live_authorized=True),
+                   client=_RealShapedClient(live))
+    result = asyncio.run(registry.tools["apifootball_live_odds"](fixture=7))
+    assert result["status"] == "PAYLOAD_TOO_LARGE"
+    assert result["error"] == {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
+    assert result["data"] is None
+    assert "manifest_error" not in result
+    assert "1.95" not in json.dumps(result)
