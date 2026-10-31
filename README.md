@@ -56,7 +56,6 @@ Lo schema `tools/list` espone tutti i 109 parametri dei contratti API-FOOTBALL (
 | `APIFOOTBALL_ENABLED`, `APIFOOTBALL_LIVE_AUTHORIZED`, `APIFOOTBALL_API_KEY` | API-FOOTBALL (entrambi i flag sono necessari per le chiamate reali) |
 | `APIFOOTBALL_MAX_RPM` (8), `APIFOOTBALL_MAX_DAILY_REQUESTS` (80), `APIFOOTBALL_MAX_CONCURRENCY` (2; in produzione 1) | limiti locali del coordinatore di quota, più restrittivi del piano del provider |
 | `APIFOOTBALL_CACHE_ENABLED`, `APIFOOTBALL_CIRCUIT_BREAKER_ENABLED` | resilienza |
-| `COLLECTOR_BRIDGE_TOKEN` | protegge le route interne `/internal/pinnacle/*`, destinate alla rimozione (roadmap M3) |
 
 ## Comportamenti e limiti (verificati)
 

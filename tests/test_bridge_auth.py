@@ -30,8 +30,10 @@ def test_mcp_requires_bearer_token():
     assert response.status_code == 401
 
 
-def test_internal_pinnacle_endpoint_requires_shared_token(monkeypatch):
+def test_legacy_internal_pinnacle_routes_are_removed(monkeypatch):
+    """Collector-only routes were removed with the legacy collector (roadmap #130 M3)."""
     monkeypatch.setenv("COLLECTOR_BRIDGE_TOKEN", "secret-test-token")
     client = TestClient(app)
-    response = client.get("/internal/pinnacle/leagues")
-    assert response.status_code == 401
+    for path in ("/internal/pinnacle/leagues", "/internal/pinnacle/league-batch"):
+        response = client.get(path, headers={"Authorization": "Bearer secret-test-token"})
+        assert response.status_code == 404
