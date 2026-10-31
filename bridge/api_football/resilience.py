@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 import random
+import time
 from typing import Any, Mapping, Protocol
 
 from .cache import BoundedCache, ttl_for_endpoint
@@ -173,7 +174,46 @@ class ResilientFootballClient:
         self._orphan_releases.add(task)
         task.add_done_callback(self._orphan_releases.discard)
 
+    # The one-time coordinator schema check (first quota operation of each
+    # process) has its own bound and does not consume the per-request budget.
+    _PREPARE_TIMEOUT_SECONDS = 10.0
+
+    @staticmethod
+    def _coordinator_unavailable(stage: str, reason: str, exc: BaseException | None, started: float) -> ProviderUnavailable:
+        # Fixed, secret-free diagnostics: stage, reason, exception CLASS name only.
+        _LOG.warning(
+            "QUOTA_COORDINATOR_UNAVAILABLE stage=%s reason=%s error_type=%s elapsed_ms=%d",
+            stage, reason, type(exc).__name__ if exc is not None else "-",
+            int((time.monotonic() - started) * 1000),
+        )
+        return ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False)
+
+    @staticmethod
+    def _consume_outcome(task: asyncio.Future) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _prepare_coordinator(self, started: float) -> None:
+        prepare = getattr(self.quota, "prepare", None)
+        if prepare is None:
+            return
+        task = asyncio.ensure_future(prepare())
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=self._PREPARE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            task.add_done_callback(self._consume_outcome)
+            raise
+        except asyncio.TimeoutError:
+            # Shielded: the init keeps running and later callers reuse it.
+            task.add_done_callback(self._consume_outcome)
+            raise self._coordinator_unavailable("prepare", "TIMEOUT", None, started) from None
+        except Exception as exc:
+            raise self._coordinator_unavailable("prepare", "ERROR", exc, started) from None
+
     async def _lease(self) -> QuotaLease:
+        started = time.monotonic()
+        await self._prepare_coordinator(started)
+        started = time.monotonic()
         reservation = asyncio.ensure_future(self.quota.acquire(self.settings.api_key))
         try:
             # shield(): a timeout must not orphan an in-flight thread's result.
@@ -185,10 +225,10 @@ class ResilientFootballClient:
             raise
         except asyncio.TimeoutError:
             reservation.add_done_callback(self._release_orphan)
-            raise ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False) from None
-        except Exception:
+            raise self._coordinator_unavailable("reserve", "TIMEOUT", None, started) from None
+        except Exception as exc:
             # DSN, psycopg details and API key are never sent to the MCP caller.
-            raise ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False) from None
+            raise self._coordinator_unavailable("reserve", "ERROR", exc, started) from None
 
     async def _release(self, lease: QuotaLease) -> None:
         try:
