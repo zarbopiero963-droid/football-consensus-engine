@@ -161,29 +161,88 @@ def _transport_get(path, size):
     return asyncio.run(run())
 
 
-def test_transport_cap_is_2mib_only_for_prematch_odds():
+def test_transport_cap_is_2mib_only_for_odds_and_live_odds():
     assert _transport_get("/odds", 1_000_000).bytes_received > 524_288
-    for path, size in (("/odds", 2_200_000), ("/odds/live", 600_000), ("/fixtures", 600_000)):
+    assert _transport_get("/odds/live", 1_000_000).bytes_received > 524_288
+    for path, size in (("/odds", 2_200_000), ("/odds/live", 2_200_000), ("/fixtures", 600_000)):
         with pytest.raises(ProviderDataError) as info:
             _transport_get(path, size)
         assert info.value.code == "PROVIDER_RESPONSE_TOO_LARGE"
 
 
-def test_oversized_live_odds_fail_closed_explicitly_without_partial_prices():
-    """/odds/live has no manifest: >256 KiB must be an explicit PAYLOAD_TOO_LARGE, never truncated."""
-    live = {"get": "odds/live", "errors": [], "results": 1, "paging": {"current": 1, "total": 1},
-            "response": [{"fixture": {"id": 7}, "odds": [
-                {"id": k, "name": "M%d" % k, "values": [{"value": "Over %d.5" % v, "odd": "1.95",
-                 "handicap": str(v), "main": None, "suspended": False} for v in range(40)]}
-                for k in range(100)]}]}
-    # Measure exactly as the tool does (compact separators).
-    assert len(json.dumps(live, separators=(",", ":"), ensure_ascii=False).encode()) > 262_144
+def _live_page(fixtures=1, markets=100, values=40, drop=None):
+    response = [{"fixture": {"id": 7 + f, "status": {"long": "First Half", "elapsed": 36}},
+                 "update": "2026-10-31T22:51:31+00:00",
+                 "odds": [{"id": k, "name": "M%d" % k, "values": [
+                     {"value": "Over %d.5" % v, "odd": "1.95", "handicap": str(v), "main": None,
+                      "suspended": v % 4 == 0} for v in range(values)]} for k in range(markets)]}
+                for f in range(fixtures)]
+    if drop == "odds":
+        del response[0]["odds"]
+    if drop == "values":
+        del response[0]["odds"][0]["values"]
+    if drop == "suspended":
+        del response[0]["odds"][0]["values"][0]["suspended"]
+    return {"get": "odds/live", "errors": [], "results": fixtures,
+            "paging": {"current": 1, "total": 1}, "response": response}
+
+
+def _live_tool(payload):
     registry = _Registry()
     register_tools(registry, Settings(enabled=True, api_key="fake-test-key", live_authorized=True),
-                   client=_RealShapedClient(live))
-    result = asyncio.run(registry.tools["apifootball_live_odds"](fixture=7))
+                   client=_RealShapedClient(payload))
+    return registry.tools["apifootball_live_odds"]
+
+
+def test_oversized_live_odds_return_navigable_price_free_manifest():
+    live = _live_page()
+    assert len(json.dumps(live, separators=(",", ":"), ensure_ascii=False).encode()) > 262_144
+    result = asyncio.run(_live_tool(live)(fixture=7))
+    assert result["status"] == "PARTIAL_ODDS_MANIFEST"
+    assert result["source_status"] == "REAL_API_RESPONSE"
+    data = result["data"]
+    assert data["phase"] == "LIVE" and data["prices_included"] is False and data["partial"] is True
+    assert data["fixtures_in_page"] == 1 and data["markets_in_page"] == 100
+    assert data["selections_in_page"] == 4000 and data["suspended_in_page"] == 1000
+    fx = data["fixtures"][0]
+    assert fx["fixture_id"] == 7 and fx["update"] == "2026-10-31T22:51:31+00:00" and fx["elapsed"] == 36
+    assert [m["bet_id"] for m in fx["markets"]] == list(range(100))  # every market retrievable via bet=
+    assert data["market_list_complete"] is True and data["fixture_list_complete"] is True
+    assert "1.95" not in json.dumps(result)
+    assert result["quota_remaining"] == {"day": 123, "minute": 9}
+    assert len(json.dumps(result).encode()) <= 262_144
+
+
+def test_small_live_odds_returned_losslessly():
+    live = _live_page(markets=2, values=3)
+    result = asyncio.run(_live_tool(live)(fixture=7))
+    assert result["status"] == "REAL_API_RESPONSE" and result["data"] == live
+
+
+def test_live_manifest_flags_capped_market_list():
+    from bridge.api_football.odds_manifest import live_odds_manifest
+    out = live_odds_manifest(_live_page(markets=5, values=1), max_markets_per_fixture=3)
+    assert out["market_list_complete"] is False and len(out["fixtures"][0]["markets"]) == 3
+    assert out["markets_in_page"] == 5  # totals never truncated
+
+
+def test_live_manifest_missing_suspended_is_unknown_not_false():
+    from bridge.api_football.odds_manifest import live_odds_manifest
+    out = live_odds_manifest(_live_page(markets=1, values=4, drop="suspended"))
+    m = out["fixtures"][0]["markets"][0]
+    assert m["suspension_unknown"] == 1 and m["suspended"] == 0  # v=0 suspended flag removed
+
+
+@pytest.mark.parametrize("drop", ["odds", "values"])
+def test_oversized_malformed_live_odds_fail_closed(drop):
+    result = asyncio.run(_live_tool(_live_page(fixtures=2, drop=drop))(league=128))
     assert result["status"] == "PAYLOAD_TOO_LARGE"
     assert result["error"] == {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
-    assert result["data"] is None
-    assert "manifest_error" not in result
-    assert "1.95" not in json.dumps(result)
+    assert result["manifest_error"]["code"].startswith("INVALID_LIVE_ODDS_")
+    assert result["data"] is None and "1.95" not in json.dumps(result)
+
+
+def test_live_manifest_rejects_prematch_envelope():
+    from bridge.api_football.odds_manifest import live_odds_manifest
+    with pytest.raises(ValueError):
+        live_odds_manifest({"get": "odds", "response": [], "paging": {}})
