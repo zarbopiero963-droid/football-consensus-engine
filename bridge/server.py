@@ -33,7 +33,7 @@ mcp = MCPServer(
 
 @mcp.tool()
 async def browser_create(proxy_country_code: str | None = None) -> dict[str, Any]:
-    """Create one Browser Use cloud browser. Returns an opaque session id, never the CDP URL."""
+    """Create one Browser Use cloud browser. Returns an opaque session id and live_view_available; never the CDP URL or live URL (operator opt-in only)."""
     return await bridge.create(proxy_country_code)
 
 
