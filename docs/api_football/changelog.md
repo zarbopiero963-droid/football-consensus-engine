@@ -1,5 +1,11 @@
 # Contract registry changelog
 
+## 2026-10-31 (PR #125 hardening)
+- `/odds` oversized-page manifest: missing `bookmakers`/`bets`/`values` and non-string `get` now fail closed with an explicit `manifest_error` code instead of an unhandled exception (`PROVIDER_REQUEST_FAILED`); missing is never counted as zero.
+- Manifest result now keeps `quota_remaining`, `http_status` and `source_status` (mock vs real provenance) and is itself size-checked against the 256 KiB MCP cap.
+- Tool-level and transport-level regressions (2 MiB cap only on `/odds`; `/odds/live` and other routes stay at 512 KiB).
+- No provider calls, secrets, cron, Render or live-gate changes.
+
 ## 2026-10-31 (first call after process start)
 - Owner real test after PR #126: call 1 `QUOTA_COORDINATOR_UNAVAILABLE`, call 2 HTTP 200. Render logs: first API-FOOTBALL call of process [59] (started 21:50:08, no restart); ~3.85 s total; one fresh DB connection measured at ~0.95 s.
 - Root cause: the first PostgresQuota operation per process runs schema init (connect + DDL) and the reservation (connect + statements) inside the same 3 s lease timeout. Reproduced on real PostgreSQL with the measured latency.

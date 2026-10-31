@@ -1,0 +1,26 @@
+[
+  {
+    "path": "/odds/bookmakers",
+    "status": "COMPLETE",
+    "observed_pages": 1,
+    "provider_total_pages": 1
+  },
+  {
+    "path": "/odds/bets",
+    "status": "COMPLETE",
+    "observed_pages": 1,
+    "provider_total_pages": 1
+  },
+  {
+    "path": "/odds/live/bets",
+    "status": "COMPLETE",
+    "observed_pages": 1,
+    "provider_total_pages": 1
+  },
+  {
+    "path": "/odds",
+    "status": "COMPLETE",
+    "observed_pages": 1,
+    "provider_total_pages": 1
+  }
+]

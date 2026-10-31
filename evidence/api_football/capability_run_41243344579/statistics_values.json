@@ -1,0 +1,436 @@
+[
+  {
+    "path": "_fixture_statistic_values",
+    "status": "OBSERVATION_SUMMARY",
+    "observations": [
+      {
+        "fixture_id": 1490592,
+        "fixture_status_at_observation": "1H",
+        "snapshot_kind": "IN_PLAY",
+        "teams": [
+          {
+            "team_id": 1605,
+            "fields": {
+              "xg": {
+                "label": "expected_goals",
+                "status": "VERIFIED_REAL",
+                "value": "0.1"
+              },
+              "shots_total": {
+                "label": "Total Shots",
+                "status": "VERIFIED_REAL",
+                "value": 2
+              },
+              "shots_on_target": {
+                "label": "Shots on Goal",
+                "status": "VERIFIED_REAL",
+                "value": 1
+              },
+              "corners": {
+                "label": "Corner Kicks",
+                "status": "MISSING",
+                "value": null
+              },
+              "possession": {
+                "label": "Ball Possession",
+                "status": "VERIFIED_REAL",
+                "value": "60%"
+              }
+            },
+            "raw_statistics": [
+              {
+                "type": "expected_goals",
+                "value": "0.1"
+              },
+              {
+                "type": "Passes accurate",
+                "value": 73
+              },
+              {
+                "type": "Shots insidebox",
+                "value": 1
+              },
+              {
+                "type": "Shots outsidebox",
+                "value": 1
+              },
+              {
+                "type": "Blocked Shots",
+                "value": 1
+              },
+              {
+                "type": "Free Kicks",
+                "value": 2
+              },
+              {
+                "type": "Shots on Goal",
+                "value": 1
+              },
+              {
+                "type": "Offsides",
+                "value": 1
+              },
+              {
+                "type": "Total passes",
+                "value": 81
+              },
+              {
+                "type": "Total Shots",
+                "value": 2
+              },
+              {
+                "type": "Fouls",
+                "value": 0
+              },
+              {
+                "type": "Yellow Cards",
+                "value": 0
+              },
+              {
+                "type": "Red Cards",
+                "value": 0
+              },
+              {
+                "type": "Shots off Goal",
+                "value": 0
+              },
+              {
+                "type": "Ball Possession",
+                "value": "60%"
+              }
+            ]
+          },
+          {
+            "team_id": 16489,
+            "fields": {
+              "xg": {
+                "label": "expected_goals",
+                "status": "VERIFIED_REAL",
+                "value": "0"
+              },
+              "shots_total": {
+                "label": "Total Shots",
+                "status": "VERIFIED_REAL",
+                "value": 0
+              },
+              "shots_on_target": {
+                "label": "Shots on Goal",
+                "status": "VERIFIED_REAL",
+                "value": 0
+              },
+              "corners": {
+                "label": "Corner Kicks",
+                "status": "MISSING",
+                "value": null
+              },
+              "possession": {
+                "label": "Ball Possession",
+                "status": "VERIFIED_REAL",
+                "value": "40%"
+              }
+            },
+            "raw_statistics": [
+              {
+                "type": "expected_goals",
+                "value": "0"
+              },
+              {
+                "type": "Passes accurate",
+                "value": 42
+              },
+              {
+                "type": "Shots insidebox",
+                "value": 0
+              },
+              {
+                "type": "Shots outsidebox",
+                "value": 0
+              },
+              {
+                "type": "Blocked Shots",
+                "value": 0
+              },
+              {
+                "type": "Free Kicks",
+                "value": 0
+              },
+              {
+                "type": "Shots on Goal",
+                "value": 0
+              },
+              {
+                "type": "Offsides",
+                "value": 1
+              },
+              {
+                "type": "Total passes",
+                "value": 54
+              },
+              {
+                "type": "Total Shots",
+                "value": 0
+              },
+              {
+                "type": "Fouls",
+                "value": 2
+              },
+              {
+                "type": "Yellow Cards",
+                "value": 0
+              },
+              {
+                "type": "Red Cards",
+                "value": 0
+              },
+              {
+                "type": "Shots off Goal",
+                "value": 0
+              },
+              {
+                "type": "Ball Possession",
+                "value": "40%"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "fixture_id": 1490596,
+        "fixture_status_at_observation": "1H",
+        "snapshot_kind": "IN_PLAY",
+        "teams": [
+          {
+            "team_id": 1596,
+            "fields": {
+              "xg": {
+                "label": "expected_goals",
+                "status": "VERIFIED_REAL",
+                "value": "0.06"
+              },
+              "shots_total": {
+                "label": "Total Shots",
+                "status": "VERIFIED_REAL",
+                "value": 1
+              },
+              "shots_on_target": {
+                "label": "Shots on Goal",
+                "status": "VERIFIED_REAL",
+                "value": 1
+              },
+              "corners": {
+                "label": "Corner Kicks",
+                "status": "VERIFIED_REAL",
+                "value": 0
+              },
+              "possession": {
+                "label": "Ball Possession",
+                "status": "VERIFIED_REAL",
+                "value": "23%"
+              }
+            },
+            "raw_statistics": [
+              {
+                "type": "Passes accurate",
+                "value": 17
+              },
+              {
+                "type": "Shots outsidebox",
+                "value": 1
+              },
+              {
+                "type": "Free Kicks",
+                "value": 1
+              },
+              {
+                "type": "Shots on Goal",
+                "value": 1
+              },
+              {
+                "type": "Total passes",
+                "value": 28
+              },
+              {
+                "type": "Total Shots",
+                "value": 1
+              },
+              {
+                "type": "Blocked Shots",
+                "value": 0
+              },
+              {
+                "type": "Corner Kicks",
+                "value": 0
+              },
+              {
+                "type": "Fouls",
+                "value": 2
+              },
+              {
+                "type": "Yellow Cards",
+                "value": 0
+              },
+              {
+                "type": "Red Cards",
+                "value": 0
+              },
+              {
+                "type": "Shots off Goal",
+                "value": 0
+              },
+              {
+                "type": "Ball Possession",
+                "value": "23%"
+              },
+              {
+                "type": "expected_goals",
+                "value": "0.06"
+              }
+            ]
+          },
+          {
+            "team_id": 1606,
+            "fields": {
+              "xg": {
+                "label": "expected_goals",
+                "status": "VERIFIED_REAL",
+                "value": "0.06"
+              },
+              "shots_total": {
+                "label": "Total Shots",
+                "status": "VERIFIED_REAL",
+                "value": 1
+              },
+              "shots_on_target": {
+                "label": "Shots on Goal",
+                "status": "VERIFIED_REAL",
+                "value": 0
+              },
+              "corners": {
+                "label": "Corner Kicks",
+                "status": "VERIFIED_REAL",
+                "value": 1
+              },
+              "possession": {
+                "label": "Ball Possession",
+                "status": "VERIFIED_REAL",
+                "value": "77%"
+              }
+            },
+            "raw_statistics": [
+              {
+                "type": "Passes accurate",
+                "value": 78
+              },
+              {
+                "type": "Shots outsidebox",
+                "value": 1
+              },
+              {
+                "type": "Free Kicks",
+                "value": 2
+              },
+              {
+                "type": "Shots on Goal",
+                "value": 0
+              },
+              {
+                "type": "Total passes",
+                "value": 89
+              },
+              {
+                "type": "Total Shots",
+                "value": 1
+              },
+              {
+                "type": "Blocked Shots",
+                "value": 1
+              },
+              {
+                "type": "Corner Kicks",
+                "value": 1
+              },
+              {
+                "type": "Fouls",
+                "value": 1
+              },
+              {
+                "type": "Yellow Cards",
+                "value": 0
+              },
+              {
+                "type": "Red Cards",
+                "value": 0
+              },
+              {
+                "type": "Shots off Goal",
+                "value": 0
+              },
+              {
+                "type": "Ball Possession",
+                "value": "77%"
+              },
+              {
+                "type": "expected_goals",
+                "value": "0.06"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "fixture_id": 1498927,
+        "fixture_status_at_observation": "1H",
+        "snapshot_kind": "IN_PLAY",
+        "teams": []
+      }
+    ],
+    "summary": {
+      "scope": "OBSERVED_PROVIDER_SAMPLES_ONLY",
+      "global_completeness_claim": false,
+      "fixtures_observed": 3,
+      "fields": {
+        "xg": {
+          "team_rows": 4,
+          "counts": {
+            "VERIFIED_REAL": 4
+          },
+          "verified_on_final_snapshot": 0,
+          "status": "VERIFIED_REAL"
+        },
+        "shots_total": {
+          "team_rows": 4,
+          "counts": {
+            "VERIFIED_REAL": 4
+          },
+          "verified_on_final_snapshot": 0,
+          "status": "VERIFIED_REAL"
+        },
+        "shots_on_target": {
+          "team_rows": 4,
+          "counts": {
+            "VERIFIED_REAL": 4
+          },
+          "verified_on_final_snapshot": 0,
+          "status": "VERIFIED_REAL"
+        },
+        "corners": {
+          "team_rows": 4,
+          "counts": {
+            "MISSING": 2,
+            "VERIFIED_REAL": 2
+          },
+          "verified_on_final_snapshot": 0,
+          "status": "PARTIAL"
+        },
+        "possession": {
+          "team_rows": 4,
+          "counts": {
+            "VERIFIED_REAL": 4
+          },
+          "verified_on_final_snapshot": 0,
+          "status": "VERIFIED_REAL"
+        }
+      }
+    }
+  }
+]
