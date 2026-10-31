@@ -125,6 +125,11 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
                 return result
             result["status"] = status
+            if status == "REAL_API_RESPONSE":
+                # The offline-placeholder warnings contradict a real reply.
+                result["warnings"] = [
+                    "Provider data returned as received; coverage, availability and update timing vary by league and fixture.",
+                ]
             provider_data = data.get("data", data) if status == "REAL_API_RESPONSE" else data
             # The account endpoint exposes private name/email fields upstream:
             # expose only non-personal subscription and quota counters via MCP.
@@ -143,7 +148,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             else:
                 result["data"] = provider_data
             result["http_status"] = data.get("http_status")
-            result["pagination"] = data.get("pagination", data.get("paging"))
+            # Real replies wrap the provider envelope: paging lives in provider_data.
+            provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
+            result["pagination"] = provider_paging if isinstance(provider_paging, dict) else data.get("pagination", data.get("paging"))
             result["cache_status"] = cache_status
             result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else 1
             if status == "REAL_API_RESPONSE":
@@ -211,7 +218,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
 
     @add
     async def apifootball_status() -> dict[str, Any]:
-        """Account status/quotas endpoint; offline, no API key in output."""
+        """Account plan and request counters (/status); no API key or personal data in output."""
         return await execute("apifootball_status", {})
 
     @add
@@ -400,9 +407,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return await execute("apifootball_sidelined", dict(player=player, coach=coach))
 
     @add
-    async def apifootball_odds_mapping() -> dict[str, Any]:
-        """Pre-match odds fixture mapping; no unsupported filter invented."""
-        return await execute("apifootball_odds_mapping", {})
+    async def apifootball_odds_mapping(page: int | None = None) -> dict[str, Any]:
+        """Pre-match odds fixture mapping (provider-paginated, 100 rows/page); only `page`, no filter invented."""
+        return await execute("apifootball_odds_mapping", dict(page=page))
 
     @add
     async def apifootball_live_bets(id: str | None = None, search: str | None = None) -> dict[str, Any]:

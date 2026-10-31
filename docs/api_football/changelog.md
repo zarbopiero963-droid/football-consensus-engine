@@ -1,5 +1,9 @@
 # Contract registry changelog
 
+## 2026-10-31 (real MCP client run findings)
+- Real client run (Claude MCP connector → Render, 14 provider calls) found: top-level `pagination` always null on real replies (read from the wrapper, not the provider envelope); `/odds/mapping` declared `paging.total=45` but the tool exposed no `page` (44/45 pages unreachable); real replies carried the offline placeholder warning.
+- Fixes: `pagination` taken from the provider envelope; `apifootball_odds_mapping(page)` (bounded 1..100, no other filter, still PENDING until `page=2` is verified live); real-reply warning reflects provider data. No change to quota, auth or limits.
+
 ## 2026-10-31 (PR #125 hardening)
 - `/odds` oversized-page manifest: missing `bookmakers`/`bets`/`values` and non-string `get` now fail closed with an explicit `manifest_error` code instead of an unhandled exception (`PROVIDER_REQUEST_FAILED`); missing is never counted as zero.
 - Manifest result now keeps `quota_remaining`, `http_status` and `source_status` (mock vs real provenance) and is itself size-checked against the 256 KiB MCP cap.
