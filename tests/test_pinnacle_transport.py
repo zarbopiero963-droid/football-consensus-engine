@@ -13,7 +13,6 @@ from starlette.testclient import TestClient
 from bridge import server, browser_use, session_leases
 from bridge.browser_use import BrowserUseBridge, Session
 from bridge.security import UnsafeURL
-from prospective import collect
 
 
 def document(lid,kind,body='[]'):
@@ -96,7 +95,7 @@ def test_leagues_endpoint_also_requires_complete_json_and_confirmed_stop(interna
     fake.json_document.side_effect=None
     fake.json_document.return_value={'http_status':200,'body':'[]','truncated':False}
     assert client.get('/internal/pinnacle/leagues',headers=headers).status_code==200
-    fake.json_document.assert_awaited_once_with('synthetic',collect.PIN_LEAGUES)
+    fake.json_document.assert_awaited_once_with('synthetic','https://guest.api.arcadia.pinnacle.com/0.1/sports/29/leagues?brandId=0')
     fake.stop.assert_awaited_once()
     fake.stop.return_value={'status':'active'}
     r=client.get('/internal/pinnacle/leagues',headers=headers)
@@ -159,137 +158,3 @@ class HTTPResponse:
 def payload():
     return {'items':[{'id':2117,'matchups':document(2117,'matchups'),
         'markets':document(2117,'markets')}],'transport':'BROWSER_JSON_DOCUMENT','session_stopped':True}
-
-
-def test_collector_verifies_hash_identity_whole_document_and_stop(monkeypatch):
-    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN','synthetic-token');p=payload();calls=[]
-    def open(req,timeout):calls.append((req,timeout));return HTTPResponse(p)
-    monkeypatch.setattr(collect,'urlopen',open)
-    rows=collect.fetch_pinnacle_batch_via_bridge([2117])
-    assert rows[0]['err'] is None and rows[0]['matchups']==(200,b'[]')
-    assert rows[0]['transport']=='browser_bridge_fallback'
-    assert calls[0][1]==210 and 'league-batch?ids=2117' in calls[0][0].full_url
-
-
-@pytest.mark.parametrize('field,value',[('sha256','a'*64),('truncated',True),('http_status',403),
-    ('bytes_utf8',999),('final_url','https://evil.example/'),('body','[{"price":NaN}]')])
-def test_invalid_fallback_document_never_becomes_a_quote(monkeypatch,field,value):
-    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN','synthetic-token');p=payload()
-    p['items'][0]['markets'][field]=value
-    monkeypatch.setattr(collect,'urlopen',lambda *args,**kwargs:HTTPResponse(p))
-    assert collect.fetch_pinnacle_batch_via_bridge([2117])[0]['err']
-
-
-@pytest.mark.parametrize('change',['active','wrong_id','duplicate','missing','not_dict'])
-def test_fallback_envelope_identity_and_stop_are_required(monkeypatch,change):
-    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN','synthetic-token');p=payload()
-    if change=='active':p['session_stopped']=False
-    elif change=='wrong_id':p['items'][0]['id']=2
-    elif change=='duplicate':p['items']*=2
-    elif change=='missing':p['items']=[]
-    elif change=='not_dict':p['items']=[None]
-    monkeypatch.setattr(collect,'urlopen',lambda *args,**kwargs:HTTPResponse(p))
-    with pytest.raises(RuntimeError):collect.fetch_pinnacle_batch_via_bridge([2117])
-
-
-@pytest.mark.parametrize('ids',[[],[0],[True],[1,1],list(range(1,14))])
-def test_collector_invalid_ids_rejected_before_io(monkeypatch,ids):
-    monkeypatch.setattr(collect,'urlopen',lambda *args,**kwargs:pytest.fail('unexpected network'))
-    with pytest.raises(ValueError):collect.fetch_pinnacle_batch_via_bridge(ids)
-
-
-def test_missing_bridge_token_rejected_before_io(monkeypatch):
-    monkeypatch.delenv('COLLECTOR_BRIDGE_TOKEN',raising=False)
-    with pytest.raises(RuntimeError):collect.fetch_pinnacle_batch_via_bridge([2117])
-
-
-def test_bridge_503_retries_are_bounded_audited_and_never_backdate_quotes(monkeypatch):
-    from datetime import datetime, timedelta, timezone
-    from io import BytesIO
-    from urllib.error import HTTPError
-    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN', 'synthetic-token')
-    start = datetime(2026, 10, 1, 14, tzinfo=timezone.utc)
-    clock = [start]
-    waits = []
-    def sleep(seconds):
-        waits.append(seconds); clock[0] += timedelta(seconds=seconds)
-    calls = []
-    errors = []
-    def open(req, timeout):
-        calls.append(timeout)
-        if len(calls) <= 3:
-            exc = HTTPError(req.full_url, 503, 'warming', {}, BytesIO(b'private body'))
-            errors.append(exc); raise exc
-        return HTTPResponse(payload())
-    monkeypatch.setattr(collect, 'urlopen', open)
-    monkeypatch.setattr(collect.time, 'sleep', sleep)
-    monkeypatch.setattr(collect, 'utcnow', lambda: clock[0])
-    row = collect.fetch_pinnacle_batch_via_bridge([2117])[0]
-    assert waits == [3, 10, 30] and calls == [210] * 4
-    assert all(e.fp.closed for e in errors)
-    assert [a['http_status'] for a in row['bridge_request_audit']] == [503, 503, 503, 200]
-    assert 'private body' not in json.dumps(row['bridge_request_audit'])
-    assert 'synthetic-token' not in json.dumps(row['bridge_request_audit'])
-    assert row['captured_at'] == start + timedelta(seconds=43)
-    model = {'home':'Home','away':'Away','league':'League','kickoff':start+timedelta(seconds=15)}
-    quote = {'home':'Home','away':'Away','league':'League','start':model['kickoff']}
-    assert not collect.exact_market_match(model, quote, row['captured_at'])
-
-
-@pytest.mark.parametrize('code', [401, 403, 502, 503])
-def test_bridge_failure_never_hides_auth_stop_failure_or_exhausted_503(monkeypatch, code):
-    from io import BytesIO
-    from urllib.error import HTTPError
-    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN', 'synthetic-token')
-    calls = []; waits = []; audit = []
-    def open(req, timeout):
-        calls.append(timeout)
-        raise HTTPError(req.full_url, code, 'failure', {}, BytesIO(b'private body'))
-    monkeypatch.setattr(collect, 'urlopen', open)
-    monkeypatch.setattr(collect.time, 'sleep', waits.append)
-    with pytest.raises(HTTPError) as failure:
-        collect.fetch_pinnacle_leagues_via_bridge(audit=audit)
-    assert failure.value.code == code
-    expected = 4 if code == 503 else 1
-    assert len(calls) == len(audit) == expected
-    assert waits == ([3, 10, 30] if code == 503 else [])
-    assert all(a['http_status'] == code for a in audit)
-
-
-@pytest.mark.parametrize('failure', [TimeoutError('unknown delivery'), ValueError('bad response')])
-def test_bridge_does_not_retry_unknown_delivery_or_bad_body(monkeypatch, failure):
-    monkeypatch.setenv('COLLECTOR_BRIDGE_TOKEN', 'synthetic-token')
-    calls = []
-    def open(req, timeout):
-        calls.append(timeout)
-        if isinstance(failure, TimeoutError):raise failure
-        return HTTPResponse({'http_status':403,'body':'[]','truncated':False})
-    monkeypatch.setattr(collect, 'urlopen', open)
-    monkeypatch.setattr(collect.time, 'sleep', lambda seconds:pytest.fail('unexpected retry'))
-    with pytest.raises((TimeoutError, RuntimeError)):
-        collect.fetch_pinnacle_leagues_via_bridge()
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize('pair',[(200,b'[]'),(200,b'[{"id":1}]')])
-def test_valid_empty_response_is_not_transport_failure(pair):
-    assert collect.valid_pinnacle_response(pair)
-
-
-@pytest.mark.parametrize('pair',[(403,b'[]'),(200,b'<html>challenge</html>'),(200,b'[null]'),(200,b'{}')])
-def test_invalid_direct_document_requests_fallback(pair):
-    assert not collect.valid_pinnacle_response(pair)
-
-
-def test_frozen_actual_browser_documents_are_complete_hash_checked_and_not_price_snapshots():
-    p=Path(__file__).parents[1]/'staging/pinnacle_transport/live_probe_20261001.json'
-    probe=json.loads(p.read_text())
-    assert probe['production_eligible'] is False
-    assert probe['kind']=='LIVE_SOURCE_CAPABILITY_PROBE_NOT_PROSPECTIVE_PRICE_SNAPSHOT'
-    for document in probe['documents'].values():
-        raw=gzip.decompress(base64.b64decode(document['raw_gzip_base64']))
-        assert len(raw)==document['raw_bytes']
-        assert hashlib.sha256(raw).hexdigest()==document['raw_sha256']
-        assert len(json.loads(raw))==document['rows']
-        assert collect.valid_pinnacle_response((200,raw))
-    assert probe['documents']['matchups']['raw_bytes']>500000

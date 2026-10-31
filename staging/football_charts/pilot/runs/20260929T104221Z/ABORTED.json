@@ -1,6 +1,0 @@
-{
-  "status": "aborted",
-  "reason": "process killed before manifest, parsed and html were written",
-  "at_utc": "2026-09-29T10:47:00Z",
-  "counts_as_snapshot": false
-}

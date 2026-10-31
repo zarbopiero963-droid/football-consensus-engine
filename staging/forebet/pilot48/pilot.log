@@ -1,5 +1,0 @@
-2026-09-29T15:36:29Z pilot_id=forebet-48h-20260929T153629Z pid=4303 planned=16 deadline_utc=2026-10-01T15:36:29Z ledger=read-only
-2026-09-29T15:36:47Z slot exception NameError: name 'csv' is not defined
-2026-09-29T15:38:49Z slot {"result": {"action": "attempt", "slot": 1, "attempt": 1, "attempt_status": "FAILED", "run_id": "20260929T153847Z-s01a1", "snapshot_ratio": "0/16", "retry": false}, "snapshot_ratio": "0/16", "executed_ratio": "0/16", "retry_attempts": 0, "open_slot": 1}
-2026-09-29T15:42:33Z pilot_id=forebet-48h-20260929T153629Z pid=4846 planned=16 deadline_utc=2026-10-01T15:36:29Z ledger=read-only
-2026-09-29T15:42:33Z sleep_seconds=10435 next_slot=2 reason=None
