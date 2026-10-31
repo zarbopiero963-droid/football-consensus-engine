@@ -195,6 +195,12 @@ class PostgresQuota:
             conn.commit()
         return QuotaLease(lease_id=lease, key_hash=key)
 
+    async def prepare(self) -> None:
+        """One-time schema readiness, run outside the per-request lease budget."""
+        if self._schema_ready:
+            return
+        await asyncio.to_thread(self._ensure_schema)
+
     async def acquire(self, secret: str) -> QuotaLease:
         # Database operations never block the Starlette/MCP event loop.
         return await asyncio.to_thread(self._reserve, secret)

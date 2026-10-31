@@ -7,10 +7,12 @@ this class. All network tests use httpx.MockTransport / deterministic fakes.
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 import random
+import time
 from typing import Any, Mapping, Protocol
 
 from .cache import BoundedCache, ttl_for_endpoint
@@ -23,6 +25,8 @@ from .errors import (
 from .quota import PostgresQuota, QuotaExceeded, QuotaConcurrencyBusy, QuotaLease, QuotaLimits
 from .transport import ProviderReply, validated_request
 
+
+_LOG = logging.getLogger(__name__)
 
 class ProviderTransport(Protocol):
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
@@ -81,6 +85,7 @@ class ResilientFootballClient:
         self._queue = asyncio.Semaphore(settings.max_concurrency * 4)
         self._flights_lock = asyncio.Lock()
         self._flights: dict[tuple, asyncio.Task] = {}
+        self._orphan_releases: set[asyncio.Task] = set()
 
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> dict[str, Any]:
         path, checked = validated_request(path, params)
@@ -138,16 +143,92 @@ class ResilientFootballClient:
         finally:
             self._queue.release()
 
-    async def _lease(self) -> QuotaLease:
+    _LEASE_TIMEOUT_SECONDS = 3.0
+
+    def _release_orphan(self, reservation: asyncio.Future) -> None:
+        """Compensate a reservation that completed after its caller gave up.
+
+        The coordinator runs in a worker thread that cannot be cancelled: when
+        the caller times out, the thread may still commit a lease. Without this
+        release, one slow coordinator call (e.g. serverless DB cold start) held
+        the only concurrency slot for the full 180 s lease, turning every later
+        call into LOCAL_CONCURRENCY_BUSY. The budget counters stay consumed
+        (conservative); only the concurrency lease is returned.
+
+        Known bound: if the event loop itself shuts down while the thread is
+        still running, the reservation task is cancelled and the lease falls
+        back to the 180 s DB expiry. The MCP server keeps one long-lived loop.
+        """
+        if reservation.cancelled() or reservation.exception() is not None:
+            return
+        lease = reservation.result()
+
+        async def release() -> None:
+            try:
+                await self.quota.release(lease)
+            except Exception:
+                # Bounded by the 180 s DB expiry. Fixed event name only: never
+                # log exception text, which may contain DSN or secrets.
+                _LOG.warning("QUOTA_ORPHAN_RELEASE_FAILED")
+        task = asyncio.ensure_future(release())
+        self._orphan_releases.add(task)
+        task.add_done_callback(self._orphan_releases.discard)
+
+    # The one-time coordinator schema check (first quota operation of each
+    # process) has its own bound and does not consume the per-request budget.
+    _PREPARE_TIMEOUT_SECONDS = 10.0
+
+    @staticmethod
+    def _coordinator_unavailable(stage: str, reason: str, exc: BaseException | None, started: float) -> ProviderUnavailable:
+        # Fixed, secret-free diagnostics: stage, reason, exception CLASS name only.
+        _LOG.warning(
+            "QUOTA_COORDINATOR_UNAVAILABLE stage=%s reason=%s error_type=%s elapsed_ms=%d",
+            stage, reason, type(exc).__name__ if exc is not None else "-",
+            int((time.monotonic() - started) * 1000),
+        )
+        return ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False)
+
+    @staticmethod
+    def _consume_outcome(task: asyncio.Future) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _prepare_coordinator(self, started: float) -> None:
+        prepare = getattr(self.quota, "prepare", None)
+        if prepare is None:
+            return
+        task = asyncio.ensure_future(prepare())
         try:
-            return await asyncio.wait_for(self.quota.acquire(self.settings.api_key), timeout=3.0)
+            await asyncio.wait_for(asyncio.shield(task), timeout=self._PREPARE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            task.add_done_callback(self._consume_outcome)
+            raise
+        except asyncio.TimeoutError:
+            # Shielded: the init keeps running and later callers reuse it.
+            task.add_done_callback(self._consume_outcome)
+            raise self._coordinator_unavailable("prepare", "TIMEOUT", None, started) from None
+        except Exception as exc:
+            raise self._coordinator_unavailable("prepare", "ERROR", exc, started) from None
+
+    async def _lease(self) -> QuotaLease:
+        started = time.monotonic()
+        await self._prepare_coordinator(started)
+        started = time.monotonic()
+        reservation = asyncio.ensure_future(self.quota.acquire(self.settings.api_key))
+        try:
+            # shield(): a timeout must not orphan an in-flight thread's result.
+            return await asyncio.wait_for(asyncio.shield(reservation), timeout=self._LEASE_TIMEOUT_SECONDS)
         except (QuotaExceeded, QuotaConcurrencyBusy):
             raise
         except asyncio.CancelledError:
+            reservation.add_done_callback(self._release_orphan)
             raise
-        except Exception:
+        except asyncio.TimeoutError:
+            reservation.add_done_callback(self._release_orphan)
+            raise self._coordinator_unavailable("reserve", "TIMEOUT", None, started) from None
+        except Exception as exc:
             # DSN, psycopg details and API key are never sent to the MCP caller.
-            raise ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False) from None
+            raise self._coordinator_unavailable("reserve", "ERROR", exc, started) from None
 
     async def _release(self, lease: QuotaLease) -> None:
         try:
