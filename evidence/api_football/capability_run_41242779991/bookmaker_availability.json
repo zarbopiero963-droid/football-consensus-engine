@@ -1,0 +1,194 @@
+[
+  {
+    "bookmaker_id": "1",
+    "bookmaker_name": "10Bet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "10",
+    "bookmaker_name": "Ladbrokes",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "11",
+    "bookmaker_name": "1xBet",
+    "observed_prices_in_scope": 1596,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "12",
+    "bookmaker_name": "BetFred",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "13",
+    "bookmaker_name": "188Bet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "15",
+    "bookmaker_name": "Interwetten",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "16",
+    "bookmaker_name": "Unibet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "17",
+    "bookmaker_name": "5Dimes",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "18",
+    "bookmaker_name": "Intertops",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "19",
+    "bookmaker_name": "Bovada",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "2",
+    "bookmaker_name": "Marathonbet",
+    "observed_prices_in_scope": 1064,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "20",
+    "bookmaker_name": "Betcris",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "21",
+    "bookmaker_name": "888Sport",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "22",
+    "bookmaker_name": "Tipico",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "23",
+    "bookmaker_name": "Sportingbet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "24",
+    "bookmaker_name": "Betway",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "25",
+    "bookmaker_name": "Expekt",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "26",
+    "bookmaker_name": "Betsson",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "27",
+    "bookmaker_name": "NordicBet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "28",
+    "bookmaker_name": "ComeOn",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "3",
+    "bookmaker_name": "Betfair",
+    "observed_prices_in_scope": 458,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "30",
+    "bookmaker_name": "Netbet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "32",
+    "bookmaker_name": "Betano",
+    "observed_prices_in_scope": 996,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "33",
+    "bookmaker_name": "Fonbet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "34",
+    "bookmaker_name": "Superbet",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "36",
+    "bookmaker_name": "BetVictor",
+    "observed_prices_in_scope": 428,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "4",
+    "bookmaker_name": "Pinnacle",
+    "observed_prices_in_scope": 498,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "5",
+    "bookmaker_name": "SBO",
+    "observed_prices_in_scope": 231,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "6",
+    "bookmaker_name": "Bwin",
+    "observed_prices_in_scope": 0,
+    "status": "NO_PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "7",
+    "bookmaker_name": "William Hill",
+    "observed_prices_in_scope": 542,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "8",
+    "bookmaker_name": "Bet365",
+    "observed_prices_in_scope": 4244,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  },
+  {
+    "bookmaker_id": "9",
+    "bookmaker_name": "Dafabet",
+    "observed_prices_in_scope": 9,
+    "status": "PRICES_OBSERVED_IN_SAMPLE"
+  }
+]

@@ -55,8 +55,11 @@ Evidenze: `evidence/api_football/capability_run_41240887865/`, con i file piccol
 | Risultato FT | PARTIAL | `goals.home` int; `score.fulltime` osservato solo null |
 | Statistiche squadra | VERIFIED_REAL (forma) | `/teams/statistics` 3 campioni, `/fixtures/statistics` 3 fixture |
 | Statistiche giocatori | VERIFIED_REAL (forma) | `/fixtures/players`, `/players` |
-| xG, tiri, corner, possesso | NOT_TESTED | il probe salva la forma, non le etichette `type` né i valori |
-| Cartellini | PARTIAL | solo a livello giocatore (`cards.yellow/red`) |
+| xG | PARTIAL | run 41242779991: `expected_goals` valido su 4/4 righe squadra (es. `0.1`), **solo in-play 1H** |
+| Tiri totali e nello specchio | PARTIAL | `Total Shots` e `Shots on Goal` int su 4/4 righe, solo in-play |
+| Possesso | PARTIAL | `NN%` su 4/4 righe, coppie a somma 100 (57/43, 42/58), solo in-play |
+| Corner | UNAVAILABLE (nel campione) | etichetta `Corner Kicks` MISSING su 4/4 righe in-play; non trasformata in 0; sulle istantanee finali NOT_TESTED |
+| Cartellini | PARTIAL | `cards.yellow/red` per giocatore; etichette squadra `Yellow Cards`/`Red Cards` presenti, valori non validati |
 | 1X2 | VERIFIED_REAL | Match Winner: 90 valori, 10 bookmaker, 3 fixture |
 | Over/Under | VERIFIED_REAL | 486 valori, 8 bookmaker |
 | Handicap | VERIFIED_REAL | Asian Handicap: 418 valori, 8 bookmaker |
@@ -67,6 +70,8 @@ Evidenze: `evidence/api_football/capability_run_41240887865/`, con i file piccol
 | `main`/`suspended` pre-match | UNAVAILABLE | MISSING su 10066 valori su 10066, mantenuto missing |
 | Quote storiche pre-match | NOT_TESTED | nessuna query su fixture passate |
 
+**Estensione del probe (autorizzata dall'owner):** i valori delle statistiche vengono estratti dalla risposta `/fixtures/statistics` già scaricata, quindi **nessuna chiamata in più**. Le etichette sono confrontate in modo esatto, null e missing restano distinti da 0, e ogni osservazione è marcata FINAL/IN_PLAY. Run 41242779991 (SHA `c4bdaaa`): 3 partite, tutte in 1H, una con risposta vuota. Evidenze in `evidence/api_football/capability_run_41242779991/`.
+
 Le 39 rotte note su 39 rispondono HTTP 200: è una prova di raggiungibilità, non una certificazione dei parametri.
 
 ## D/E. Confronto FutPythonTrader — `BLOCKED_SOURCE_ACCESS`
@@ -74,6 +79,7 @@ Le 39 rotte note su 39 rispondono HTTP 200: è una prova di raggiungibilità, no
 La fonte è `matchpilot_staging` (PostgreSQL 18, porta 5434, VPS MatchPilot), con 161.801 righe in `fpt_match_facts` secondo MatchPilot #12. Questa sessione non ha accesso alla VPS né al database, e i backup cifrati non sono stati toccati. Il repository MatchPilot contiene solo seed sintetici, esclusi dal mandato.
 
 Nessuna partita è stata campionata e nessuna metrica è stata calcolata: tutte le metriche valgono `null`, mai 0.
+Ricontrollato il 31-10 dopo l'autorizzazione dell'owner: nessuna chiave SSH, nessuna credenziale database, nessuna cartella Remote Control disponibile; i backup su Drive sono cifrati (age) e non sono stati toccati. Per decisione dell'owner resta un'**attività separata**, fuori dalla PR #125.
 Accesso minimo necessario: export read-only eseguito dall'owner di 30 righe stratificate, con i campi elencati nel JSON (`fpt_comparison.minimum_access_needed`).
 
 ## Verdetto: `INCONCLUSIVE`

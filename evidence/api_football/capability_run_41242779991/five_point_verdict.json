@@ -1,0 +1,75 @@
+{
+  "scope": "OBSERVED_PROVIDER_SAMPLES_ONLY",
+  "global_completeness_claim": false,
+  "bookmakers": {
+    "status": "PASS_SCOPE",
+    "catalog_entries": 32,
+    "bookmakers_with_prices_observed": 10,
+    "catalog_pagination": {
+      "status": "COMPLETE",
+      "observed_pages": [
+        1
+      ],
+      "total_pages": 1,
+      "next_missing_page": null
+    }
+  },
+  "markets": {
+    "status": "PASS_SCOPE",
+    "prematch_values_observed": 10066,
+    "live_values_observed": 507,
+    "market_pagination": {
+      "/odds/bets": {
+        "status": "COMPLETE",
+        "observed_pages": [
+          1
+        ],
+        "total_pages": 1,
+        "next_missing_page": null
+      },
+      "/odds/live/bets": {
+        "status": "COMPLETE",
+        "observed_pages": [
+          1
+        ],
+        "total_pages": 1,
+        "next_missing_page": null
+      },
+      "/odds": {
+        "status": "COMPLETE",
+        "observed_pages": [
+          1
+        ],
+        "total_pages": 1,
+        "next_missing_page": null
+      }
+    }
+  },
+  "statistics": {
+    "status": "PASS_SCOPE",
+    "distinct_fixture_samples": 2,
+    "distinct_team_samples": 3,
+    "observed_endpoints": [
+      "/fixtures/events",
+      "/fixtures/lineups",
+      "/fixtures/players",
+      "/fixtures/statistics",
+      "/players",
+      "/teams/statistics"
+    ]
+  },
+  "live": {
+    "status": "PASS_SCOPE",
+    "comparable_snapshots": 1,
+    "actual_change_observed": false
+  },
+  "coverage": {
+    "status": "PASS_SCOPE",
+    "verified_known_routes": 39,
+    "total_known_routes": 39,
+    "missing_known_routes": [],
+    "parameter_documentation_certified": false,
+    "blocked_or_incomplete": [],
+    "note": "PASS_SCOPE certifies HTTP200 reachability across the 39 known paths only; parameter combinations are independently unverified"
+  }
+}

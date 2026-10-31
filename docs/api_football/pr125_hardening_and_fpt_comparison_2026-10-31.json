@@ -80,7 +80,8 @@
         }
       ],
       "coderabbit": "skipped (draft PR)"
-    }
+    },
+    "final_head_note": "See PR description for the final head CI runs."
   },
   "provider_real_certification": {
     "verdict": "PARTIAL",
@@ -124,28 +125,28 @@
       },
       {
         "field": "xg",
-        "status": "NOT_TESTED",
-        "evidence": "statistic type labels not retained by the probe; 2026-10-25 owner session saw expected_goals on 2 fixtures (historical, not re-verified)"
+        "status": "PARTIAL",
+        "evidence": "expected_goals published as numeric string on 4/4 team rows (e.g. '0.1','0.06'), IN_PLAY 1H only; no final snapshot"
       },
       {
         "field": "shots_total_on_target",
-        "status": "NOT_TESTED",
-        "evidence": "statistic type labels not retained"
+        "status": "PARTIAL",
+        "evidence": "'Total Shots' and 'Shots on Goal' int on 4/4 team rows, IN_PLAY 1H only"
       },
       {
         "field": "corners",
-        "status": "NOT_TESTED",
-        "evidence": "statistic type labels not retained; live market 'Match Corners' is an odds market, not a statistic"
+        "status": "UNAVAILABLE",
+        "evidence": "'Corner Kicks' label MISSING on 4/4 team rows in this in-play sample; kept MISSING, not 0; absence on final snapshots NOT_TESTED"
       },
       {
         "field": "possession",
-        "status": "NOT_TESTED",
-        "evidence": "statistic type labels not retained"
+        "status": "PARTIAL",
+        "evidence": "'Ball Possession' 'NN%' on 4/4 team rows, pairs sum to 100 (57/43, 42/58), IN_PLAY 1H only"
       },
       {
         "field": "cards",
         "status": "PARTIAL",
-        "evidence": "player-level cards.yellow/cards.red int in /fixtures/players; team-level card statistic not verified"
+        "evidence": "player-level cards.yellow/red int; team-level 'Yellow Cards'/'Red Cards' labels present (values not validated by probe)"
       },
       {
         "field": "odds_1x2",
@@ -192,7 +193,18 @@
         "status": "NOT_TESTED",
         "evidence": "no past-fixture odds query in this run"
       }
-    ]
+    ],
+    "statistics_values_run": {
+      "run_id": 41242779991,
+      "run_sha": "c4bdaaa850263a493b4651a8ce9d677f184a9dd3",
+      "evidence_dir": "evidence/api_football/capability_run_41242779991/",
+      "fixtures": [
+        1490592,
+        1490596,
+        1498927
+      ],
+      "note": "All 3 sampled fixtures were in 1H at observation (IN_PLAY); 1498927 returned an empty statistics response. 4 team rows with values; 0 FINAL snapshots. Values are in-play snapshots, NOT final match statistics and NOT pre-match data."
+    }
   },
   "fpt_comparison": {
     "verdict": "BLOCKED_SOURCE_ACCESS",
@@ -218,5 +230,5 @@
     "metrics_note": "null = not computed; never zero. No demo rows substituted."
   },
   "final_verdict": "INCONCLUSIVE",
-  "final_verdict_reason": "Provider certification is PARTIAL (real, scoped); FPT comparison remains BLOCKED_SOURCE_ACCESS, so no replacement verdict can be derived."
+  "final_verdict_reason": "Provider certification PARTIAL (real, scoped, statistics in-play only); FPT comparison BLOCKED_SOURCE_ACCESS (no VPS/DB access in this session; tracked separately per owner decision)."
 }
