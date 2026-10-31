@@ -81,6 +81,7 @@ class ResilientFootballClient:
         self._queue = asyncio.Semaphore(settings.max_concurrency * 4)
         self._flights_lock = asyncio.Lock()
         self._flights: dict[tuple, asyncio.Task] = {}
+        self._orphan_releases: set[asyncio.Task] = set()
 
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> dict[str, Any]:
         path, checked = validated_request(path, params)
@@ -138,13 +139,45 @@ class ResilientFootballClient:
         finally:
             self._queue.release()
 
+    _LEASE_TIMEOUT_SECONDS = 3.0
+
+    def _release_orphan(self, reservation: asyncio.Future) -> None:
+        """Compensate a reservation that completed after its caller gave up.
+
+        The coordinator runs in a worker thread that cannot be cancelled: when
+        the caller times out, the thread may still commit a lease. Without this
+        release, one slow coordinator call (e.g. serverless DB cold start) held
+        the only concurrency slot for the full 180 s lease, turning every later
+        call into LOCAL_CONCURRENCY_BUSY. The budget counters stay consumed
+        (conservative); only the concurrency lease is returned.
+        """
+        if reservation.cancelled() or reservation.exception() is not None:
+            return
+        lease = reservation.result()
+
+        async def release() -> None:
+            try:
+                await self.quota.release(lease)
+            except Exception:
+                # Bounded by the 180 s DB expiry; never surface DSN/secret text.
+                pass
+        task = asyncio.ensure_future(release())
+        self._orphan_releases.add(task)
+        task.add_done_callback(self._orphan_releases.discard)
+
     async def _lease(self) -> QuotaLease:
+        reservation = asyncio.ensure_future(self.quota.acquire(self.settings.api_key))
         try:
-            return await asyncio.wait_for(self.quota.acquire(self.settings.api_key), timeout=3.0)
+            # shield(): a timeout must not orphan an in-flight thread's result.
+            return await asyncio.wait_for(asyncio.shield(reservation), timeout=self._LEASE_TIMEOUT_SECONDS)
         except (QuotaExceeded, QuotaConcurrencyBusy):
             raise
         except asyncio.CancelledError:
+            reservation.add_done_callback(self._release_orphan)
             raise
+        except asyncio.TimeoutError:
+            reservation.add_done_callback(self._release_orphan)
+            raise ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False) from None
         except Exception:
             # DSN, psycopg details and API key are never sent to the MCP caller.
             raise ProviderUnavailable("QUOTA_COORDINATOR_UNAVAILABLE", retryable=False) from None
