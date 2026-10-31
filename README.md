@@ -10,6 +10,17 @@ Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/fo
 
 > Agenti: leggere prima [AGENTS.md](AGENTS.md) e [CLAUDE.md](CLAUDE.md) (governance vincolante).
 
+### Governance (sintesi, vincolante)
+[AGENTS.md](AGENTS.md) e [CLAUDE.md](CLAUDE.md) prevalgono su codice e documentazione in caso di conflitto. Invarianti sempre attivi:
+- missing resta missing, mai convertito in 0;
+- quote di mercato separate dalla probabilità di modello;
+- UTC canonico; una timezone non dimostrata è `TIMEZONE_UNRESOLVED`;
+- un match `FOUND_NAME_ONLY` non è production-safe;
+- nessun `production_eligible` senza promozione esplicita;
+- qualifica delle fonti con Pass 1 e "Pass 2 — Rigoroso e indipendente";
+- nessun secret o `cdpUrl` esposto;
+- le modifiche ai file di governance richiedono l'approvazione dell'owner.
+
 ## Architettura
 
 | Componente | Codice | Note |
