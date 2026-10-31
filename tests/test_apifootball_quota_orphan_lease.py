@@ -1,6 +1,6 @@
 """A timed-out quota reservation must not leave an orphan concurrency lease.
 
-Reproduced on real PostgreSQL (see tests/integration/test_apifootball_quota_orphan_lease.py):
+Reproduced on real PostgreSQL (see tests/integration/test_apifootball_quota_orphan_lease_postgres.py):
 with max_concurrency=1, one coordinator call slower than the lease timeout
 returned QUOTA_COORDINATOR_UNAVAILABLE while the worker thread still inserted
 the lease, so every later call failed with LOCAL_CONCURRENCY_BUSY for 180 s.
@@ -8,6 +8,8 @@ the lease, so every later call failed with LOCAL_CONCURRENCY_BUSY for 180 s.
 import asyncio
 import threading
 import time
+
+import pytest
 
 from bridge.api_football.config import Settings
 from bridge.api_football.errors import ProviderUnavailable
@@ -61,6 +63,15 @@ class Transport:
         return ProviderReply(200, {"response": [], "errors": []}, "2026-10-31T00:00:00+00:00", 2)
 
 
+async def _until(predicate, deadline=5.0):
+    end = time.monotonic() + deadline
+    while not predicate():
+        if time.monotonic() > end:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
 def _client(quota):
     settings = Settings(enabled=True, api_key=KEY, live_authorized=True, max_concurrency=1,
                         cache_enabled=False, circuit_breaker_enabled=False)
@@ -81,8 +92,7 @@ def test_timed_out_reservation_releases_its_orphan_lease():
         except ProviderUnavailable as exc:
             assert exc.code == "QUOTA_COORDINATOR_UNAVAILABLE"
         assert client.transport.calls == 0  # no HTTP request without a lease
-        await asyncio.sleep(0.4)            # orphan thread completes
-        assert quota.active == {}           # compensating release ran
+        assert await _until(lambda: quota.n == 1 and quota.active == {})  # compensating release ran
         quota.delay = 0.0
         out = await client.get("/fixtures", {"id": 2})  # not LOCAL_CONCURRENCY_BUSY
         assert out["http_status"] == 200
@@ -95,11 +105,10 @@ def test_timeout_where_reservation_itself_fails_leaves_nothing_to_release():
         quota = SlowThreadQuota(max_concurrency=0)
         client = _client(quota)
         quota.delay = 0.2
-        try:
+        with pytest.raises(ProviderUnavailable) as exc:
             await client.get("/fixtures", {"id": 1})
-        except ProviderUnavailable as exc:
-            assert exc.code == "QUOTA_COORDINATOR_UNAVAILABLE"
-        await asyncio.sleep(0.4)
+        assert exc.value.code == "QUOTA_COORDINATOR_UNAVAILABLE"
+        await asyncio.sleep(0.3)
         assert quota.active == {}
         assert not client._orphan_releases
     asyncio.run(go())
@@ -111,15 +120,14 @@ def test_failed_compensating_release_is_contained_and_secret_free(caplog):
         quota.fail_release = True
         client = _client(quota)
         quota.delay = 0.2
-        try:
+        with pytest.raises(ProviderUnavailable):
             await client.get("/fixtures", {"id": 1})
-        except ProviderUnavailable:
-            pass
-        await asyncio.sleep(0.4)
+        assert await _until(lambda: quota.n == 1 and not client._orphan_releases)
         # Release failed: the lease is bounded by the 180 s DB expiry, never raised to callers.
         assert len(quota.active) == 1
         assert not client._orphan_releases
     asyncio.run(go())
+    assert "QUOTA_ORPHAN_RELEASE_FAILED" in caplog.text
     assert "SECRET_DSN" not in caplog.text and KEY not in caplog.text
 
 
@@ -131,4 +139,19 @@ def test_fast_path_unchanged_single_claim_single_release():
         out = await client.get("/fixtures", {"id": 3})
         assert out["http_status"] == 200
         assert quota.n == 1 and quota.active == {}
+    asyncio.run(go())
+
+
+def test_cancelled_caller_releases_lease_committed_after_cancellation():
+    async def go():
+        quota = SlowThreadQuota()
+        client = _client(quota)
+        client._LEASE_TIMEOUT_SECONDS = 5.0
+        quota.delay = 0.2
+        task = asyncio.ensure_future(client._lease())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await _until(lambda: quota.n == 1 and quota.active == {})
     asyncio.run(go())

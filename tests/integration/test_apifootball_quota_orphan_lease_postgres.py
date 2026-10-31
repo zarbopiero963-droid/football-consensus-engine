@@ -60,7 +60,9 @@ def test_coordinator_timeout_does_not_block_following_calls():
             await client.get("/fixtures", {"id": 1})
         assert getattr(first.value, "code", None) == "QUOTA_COORDINATOR_UNAVAILABLE"
         state["slow"] = 0
-        await asyncio.sleep(1.5)
+        deadline = time.monotonic() + 15
+        while active() != 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
         assert active() == 0
         out = await client.get("/fixtures", {"id": 2})
         assert out["http_status"] == 200

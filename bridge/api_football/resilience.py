@@ -7,6 +7,7 @@ this class. All network tests use httpx.MockTransport / deterministic fakes.
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from .errors import (
 from .quota import PostgresQuota, QuotaExceeded, QuotaConcurrencyBusy, QuotaLease, QuotaLimits
 from .transport import ProviderReply, validated_request
 
+
+_LOG = logging.getLogger(__name__)
 
 class ProviderTransport(Protocol):
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
@@ -150,6 +153,10 @@ class ResilientFootballClient:
         the only concurrency slot for the full 180 s lease, turning every later
         call into LOCAL_CONCURRENCY_BUSY. The budget counters stay consumed
         (conservative); only the concurrency lease is returned.
+
+        Known bound: if the event loop itself shuts down while the thread is
+        still running, the reservation task is cancelled and the lease falls
+        back to the 180 s DB expiry. The MCP server keeps one long-lived loop.
         """
         if reservation.cancelled() or reservation.exception() is not None:
             return
@@ -159,8 +166,9 @@ class ResilientFootballClient:
             try:
                 await self.quota.release(lease)
             except Exception:
-                # Bounded by the 180 s DB expiry; never surface DSN/secret text.
-                pass
+                # Bounded by the 180 s DB expiry. Fixed event name only: never
+                # log exception text, which may contain DSN or secrets.
+                _LOG.warning("QUOTA_ORPHAN_RELEASE_FAILED")
         task = asyncio.ensure_future(release())
         self._orphan_releases.add(task)
         task.add_done_callback(self._orphan_releases.discard)
