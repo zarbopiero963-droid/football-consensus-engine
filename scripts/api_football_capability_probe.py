@@ -12,7 +12,7 @@ import httpx
 from bridge.api_football.config import Settings, OFFICIAL_BASE_URL
 from bridge.api_football.capability_inventory import inventory_payload
 from bridge.api_football.coverage_certification import pagination_verdict
-from bridge.api_football.five_point_evidence import extract_odds, field_types, live_delta
+from bridge.api_football.five_point_evidence import extract_odds, extract_fixture_statistics, field_types, live_delta, summarize_fixture_statistics
 from bridge.api_football.five_point_verdict import assess_five_points
 from scripts.verify_api_football_evidence import verify_archive
 
@@ -50,6 +50,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
     teams = []
     live_fixtures = []
     statistics_samples = []
+    fixture_status = {}
+    statistic_values = []
     async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, trust_env=False,
                                  follow_redirects=False, timeout=cfg.timeout_seconds, transport=transport) as client:
         for idx, path in enumerate(PATHS):
@@ -152,12 +154,21 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                     if type(tid) is int:
                                         observed.setdefault("team", tid)
                                     st = fixture_obj.get("status") if isinstance(fixture_obj, dict) else None
+                                    if type(fid) is int and isinstance(st, dict) and isinstance(st.get("short"), str):
+                                        fixture_status[fid] = st["short"]
                                     if type(fid) is int and isinstance(st, dict) and st.get("short") in ("1H","HT","2H","ET","BT","P","LIVE"):
                                         observed.setdefault("live_fixture", fid)
                                         if fid not in live_fixtures:
                                             live_fixtures.append(fid)
                             if path in ("/fixtures/statistics", "/fixtures/events", "/fixtures/lineups", "/fixtures/players", "/teams/statistics", "/players"):
                                 statistics_samples.append({"path": path, "parameters": query, "field_types": field_types([parsed]), "response_sha256": row["response_sha256"], "status": row["status"], "count": row.get("count", 0)})
+                            # Real statistic values (no extra provider call): labels matched exactly.
+                            if path == "/fixtures/statistics" and type(query.get("fixture")) is int:
+                                try:
+                                    statistic_values.append(extract_fixture_statistics(
+                                        parsed, query["fixture"], fixture_status.get(query["fixture"])))
+                                except ValueError as exc:
+                                    statistic_values.append({"fixture_id": query["fixture"], "status": str(exc)})
                             # Observe real bookmaker/market values from odds response, with no invented IDs.
                             if path in ("/odds", "/odds/live") and isinstance(body, list):
                                 row["observed_market_schema"] = True
@@ -214,6 +225,10 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                     evidence.append({"path": "/odds/live", "status": "BLOCKED_NO_LIVE_FIXTURE"})
                 elif calls >= CAP:
                     evidence.append({"path": "/odds/live", "status": "BLOCKED_LIVE_QUOTA"})
+    valid_values = [v for v in statistic_values if "teams" in v]
+    evidence.append({"path": "_fixture_statistic_values", "status": "OBSERVATION_SUMMARY",
+                     "observations": statistic_values,
+                     "summary": summarize_fixture_statistics(valid_values)})
     evidence.append({"path": "_statistics_samples", "status": "OBSERVATION_SUMMARY",
                      "samples": statistics_samples, "distinct_fixtures": len(fixtures),
                      "distinct_teams": len(teams), "requests_attempted": calls})
@@ -275,6 +290,9 @@ if __name__ == "__main__":
         json.dumps(bookmaker_report, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     (args.out_dir / "statistics_samples.json").write_text(json.dumps([
         r for r in output if r.get("path") == "_statistics_samples"
+    ], indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
+    (args.out_dir / "statistics_values.json").write_text(json.dumps([
+        r for r in output if r.get("path") == "_fixture_statistic_values"
     ], indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     (args.out_dir / "live_delta.json").write_text(json.dumps([
         r for r in output if r.get("path") == "/odds/live" and

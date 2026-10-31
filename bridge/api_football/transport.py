@@ -21,6 +21,7 @@ from .errors import ProviderUnavailable, ProviderHTTPError, ProviderDataError
 
 _PARAM = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
 _MAX_BODY = 524288
+_MAX_ODDS_BODY = 2_097_152  # only /odds: bounded, still fail-closed
 _MAX_PARAMS = 16
 
 
@@ -94,7 +95,7 @@ class InjectedHTTPXTransport:
                 count = 0
                 async for chunk in response.aiter_bytes():
                     count += len(chunk)
-                    if count > _MAX_BODY:
+                    if count > (_MAX_ODDS_BODY if path == "/odds" else _MAX_BODY):
                         raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
                     chunks.append(chunk)
                 try:

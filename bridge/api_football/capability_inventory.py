@@ -53,8 +53,18 @@ def inventory_payload(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {"path": path, "status": "OBSERVED" if body else "NO_DATA_OBSERVED",
         "count": len(body), "fields": {k: sorted(v) for k, v in fields(body).items()}}
     if path in ("/odds/bookmakers", "/odds/bets", "/odds/live/bets"):
-        result["catalog"] = [{"id": row.get("id"), "name": row.get("name")}
-                             for row in body if isinstance(row, dict) and type(row.get("id")) in (int, str)
-                             and isinstance(row.get("name"), str)]
+        # Never drop a provider row silently: a null name is published as null
+        # (NULL_PUBLISHED); only rows without a usable id are counted as rejected.
+        catalog = []
+        for row in body:
+            if not isinstance(row, dict) or type(row.get("id")) not in (int, str):
+                continue
+            name = row.get("name")
+            entry = {"id": row["id"], "name": name if isinstance(name, str) else None}
+            if not isinstance(name, str):
+                entry["name_status"] = "NULL_PUBLISHED" if name is None else "INVALID_NAME_TYPE"
+            catalog.append(entry)
+        result["catalog"] = catalog
+        result["catalog_rows_rejected"] = len(body) - len(catalog)
         result["phase"] = "LIVE" if path == "/odds/live/bets" else "PREMATCH"
     return result

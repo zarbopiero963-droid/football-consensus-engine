@@ -109,3 +109,97 @@ def live_delta(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> dic
     return {"added": len(set(new) - set(old)), "removed": len(set(old) - set(new)),
             "changes": changes, "status": "CHANGE_OBSERVED" if changes or set(old) != set(new)
             else "NOT_OBSERVED_DURING_WINDOW"}
+
+
+# Exact provider statistic labels (API-FOOTBALL v3 /fixtures/statistics).
+# Labels are matched exactly: no fuzzy equivalence between different metrics.
+TARGET_FIXTURE_STATISTICS = {
+    "xg": "expected_goals",
+    "shots_total": "Total Shots",
+    "shots_on_target": "Shots on Goal",
+    "corners": "Corner Kicks",
+    "possession": "Ball Possession",
+}
+FINAL_STATUSES = ("FT", "AET", "PEN")
+LIVE_STATUSES = ("1H", "HT", "2H", "ET", "BT", "P", "LIVE")
+
+
+def _valid_statistic(field: str, value: Any) -> bool:
+    if field == "possession":
+        if not isinstance(value, str) or not value.endswith("%"):
+            return False
+        number = value[:-1]
+        return number.isdigit() and 0 <= int(number) <= 100
+    if field == "xg":
+        if isinstance(value, bool):
+            return False
+        try:
+            return float(value) >= 0
+        except (TypeError, ValueError):
+            return False
+    return type(value) is int and value >= 0
+
+
+def extract_fixture_statistics(payload: dict[str, Any], fixture_id: int,
+                               fixture_status: str | None) -> dict[str, Any]:
+    """Real type/value pairs plus per-field verdicts; missing/null never become zero."""
+    body = payload.get("response") if isinstance(payload, dict) else None
+    if not isinstance(body, list):
+        raise ValueError("INVALID_STATISTICS_RESPONSE")
+    snapshot = ("FINAL" if fixture_status in FINAL_STATUSES else
+                "IN_PLAY" if fixture_status in LIVE_STATUSES else "UNKNOWN_OR_NOT_STARTED")
+    teams = []
+    for entry in body:
+        team = entry.get("team") if isinstance(entry, dict) else None
+        stats = entry.get("statistics") if isinstance(entry, dict) else None
+        if not isinstance(team, dict) or type(team.get("id")) is not int or not isinstance(stats, list):
+            raise ValueError("INVALID_STATISTICS_TEAM")
+        raw = []
+        labels: dict[str, list[Any]] = defaultdict(list)
+        for stat in stats:
+            if not isinstance(stat, dict) or not isinstance(stat.get("type"), str):
+                raise ValueError("INVALID_STATISTICS_ENTRY")
+            value = stat.get("value")
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))):
+                raise ValueError("INVALID_STATISTICS_VALUE")
+            raw.append({"type": stat["type"], "value": value})
+            labels[stat["type"]].append(value)
+        fields = {}
+        for field, label in TARGET_FIXTURE_STATISTICS.items():
+            values = labels.get(label)
+            if values is None:
+                fields[field] = {"label": label, "status": "MISSING", "value": None}
+            elif len(values) != 1:
+                fields[field] = {"label": label, "status": "AMBIGUOUS_DUPLICATE_LABEL", "value": None}
+            elif values[0] is None:
+                fields[field] = {"label": label, "status": "NULL_PUBLISHED", "value": None}
+            elif not _valid_statistic(field, values[0]):
+                fields[field] = {"label": label, "status": "INVALID_VALUE", "value": values[0]}
+            else:
+                fields[field] = {"label": label, "status": "VERIFIED_REAL", "value": values[0]}
+        teams.append({"team_id": team["id"], "fields": fields, "raw_statistics": raw})
+    return {"fixture_id": fixture_id, "fixture_status_at_observation": fixture_status,
+            "snapshot_kind": snapshot, "teams": teams}
+
+
+def summarize_fixture_statistics(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per-field counts over observed team rows; no global coverage claim."""
+    summary = {}
+    for field in TARGET_FIXTURE_STATISTICS:
+        counts: dict[str, int] = defaultdict(int)
+        final_verified = 0
+        for obs in observations:
+            for team in obs.get("teams", []):
+                state = team["fields"][field]["status"]
+                counts[state] += 1
+                if state == "VERIFIED_REAL" and obs.get("snapshot_kind") == "FINAL":
+                    final_verified += 1
+        rows = sum(counts.values())
+        verified = counts.get("VERIFIED_REAL", 0)
+        summary[field] = {
+            "team_rows": rows, "counts": dict(counts), "verified_on_final_snapshot": final_verified,
+            "status": ("NOT_TESTED" if rows == 0 else "VERIFIED_REAL" if verified == rows else
+                       "PARTIAL" if verified else "UNAVAILABLE"),
+        }
+    return {"scope": "OBSERVED_PROVIDER_SAMPLES_ONLY", "global_completeness_claim": False,
+            "fixtures_observed": len(observations), "fields": summary}

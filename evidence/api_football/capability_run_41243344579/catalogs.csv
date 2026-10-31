@@ -1,0 +1,638 @@
+source_path,phase,id,name
+/odds/bookmakers,PREMATCH,1,10Bet
+/odds/bookmakers,PREMATCH,2,Marathonbet
+/odds/bookmakers,PREMATCH,3,Betfair
+/odds/bookmakers,PREMATCH,4,Pinnacle
+/odds/bookmakers,PREMATCH,5,SBO
+/odds/bookmakers,PREMATCH,6,Bwin
+/odds/bookmakers,PREMATCH,7,William Hill
+/odds/bookmakers,PREMATCH,8,Bet365
+/odds/bookmakers,PREMATCH,9,Dafabet
+/odds/bookmakers,PREMATCH,10,Ladbrokes
+/odds/bookmakers,PREMATCH,11,1xBet
+/odds/bookmakers,PREMATCH,12,BetFred
+/odds/bookmakers,PREMATCH,13,188Bet
+/odds/bookmakers,PREMATCH,15,Interwetten
+/odds/bookmakers,PREMATCH,16,Unibet
+/odds/bookmakers,PREMATCH,17,5Dimes
+/odds/bookmakers,PREMATCH,18,Intertops
+/odds/bookmakers,PREMATCH,19,Bovada
+/odds/bookmakers,PREMATCH,20,Betcris
+/odds/bookmakers,PREMATCH,21,888Sport
+/odds/bookmakers,PREMATCH,22,Tipico
+/odds/bookmakers,PREMATCH,23,Sportingbet
+/odds/bookmakers,PREMATCH,24,Betway
+/odds/bookmakers,PREMATCH,25,Expekt
+/odds/bookmakers,PREMATCH,26,Betsson
+/odds/bookmakers,PREMATCH,27,NordicBet
+/odds/bookmakers,PREMATCH,28,ComeOn
+/odds/bookmakers,PREMATCH,30,Netbet
+/odds/bookmakers,PREMATCH,32,Betano
+/odds/bookmakers,PREMATCH,33,Fonbet
+/odds/bookmakers,PREMATCH,34,Superbet
+/odds/bookmakers,PREMATCH,36,BetVictor
+/odds/bookmakers,PREMATCH,37,
+/odds/bets,PREMATCH,1,Match Winner
+/odds/bets,PREMATCH,2,Home/Away
+/odds/bets,PREMATCH,3,Second Half Winner
+/odds/bets,PREMATCH,4,Asian Handicap
+/odds/bets,PREMATCH,5,Goals Over/Under
+/odds/bets,PREMATCH,6,Goals Over/Under First Half
+/odds/bets,PREMATCH,7,HT/FT Double
+/odds/bets,PREMATCH,8,Both Teams Score
+/odds/bets,PREMATCH,9,Handicap Result
+/odds/bets,PREMATCH,10,Exact Score
+/odds/bets,PREMATCH,11,Highest Scoring Half
+/odds/bets,PREMATCH,12,Double Chance
+/odds/bets,PREMATCH,13,First Half Winner
+/odds/bets,PREMATCH,14,Team To Score First
+/odds/bets,PREMATCH,15,Team To Score Last
+/odds/bets,PREMATCH,16,Total - Home
+/odds/bets,PREMATCH,17,Total - Away
+/odds/bets,PREMATCH,18,Handicap Result - First Half
+/odds/bets,PREMATCH,19,Asian Handicap First Half
+/odds/bets,PREMATCH,20,Double Chance - First Half
+/odds/bets,PREMATCH,21,Odd/Even
+/odds/bets,PREMATCH,22,Odd/Even - First Half
+/odds/bets,PREMATCH,23,Home Odd/Even
+/odds/bets,PREMATCH,24,Results/Both Teams Score
+/odds/bets,PREMATCH,25,Result/Total Goals
+/odds/bets,PREMATCH,26,Goals Over/Under - Second Half
+/odds/bets,PREMATCH,27,Clean Sheet - Home
+/odds/bets,PREMATCH,28,Clean Sheet - Away
+/odds/bets,PREMATCH,29,Win to Nil - Home
+/odds/bets,PREMATCH,30,Win to Nil - Away
+/odds/bets,PREMATCH,31,Correct Score - First Half
+/odds/bets,PREMATCH,32,Win Both Halves
+/odds/bets,PREMATCH,33,Double Chance - Second Half
+/odds/bets,PREMATCH,34,Both Teams Score - First Half
+/odds/bets,PREMATCH,35,Both Teams To Score - Second Half
+/odds/bets,PREMATCH,36,Win To Nil
+/odds/bets,PREMATCH,37,Home win both halves
+/odds/bets,PREMATCH,38,Exact Goals Number
+/odds/bets,PREMATCH,39,To Win Either Half
+/odds/bets,PREMATCH,40,Home Team Exact Goals Number
+/odds/bets,PREMATCH,41,Away Team Exact Goals Number
+/odds/bets,PREMATCH,42,Second Half Exact Goals Number
+/odds/bets,PREMATCH,43,Home Team Score a Goal
+/odds/bets,PREMATCH,44,Away Team Score a Goal
+/odds/bets,PREMATCH,45,Corners Over Under
+/odds/bets,PREMATCH,46,Exact Goals Number - First Half
+/odds/bets,PREMATCH,47,Winning Margin
+/odds/bets,PREMATCH,48,To Score In Both Halves By Teams
+/odds/bets,PREMATCH,49,Total Goals/Both Teams To Score
+/odds/bets,PREMATCH,50,Goal Line
+/odds/bets,PREMATCH,51,Halftime Result/Total Goals
+/odds/bets,PREMATCH,52,Halftime Result/Both Teams Score
+/odds/bets,PREMATCH,53,Away win both halves
+/odds/bets,PREMATCH,54,First 10 min Winner
+/odds/bets,PREMATCH,55,Corners 1x2
+/odds/bets,PREMATCH,56,Corners Asian Handicap
+/odds/bets,PREMATCH,57,Home Corners Over/Under
+/odds/bets,PREMATCH,58,Away Corners Over/Under
+/odds/bets,PREMATCH,59,Own Goal
+/odds/bets,PREMATCH,60,Away Odd/Even
+/odds/bets,PREMATCH,61,To Qualify
+/odds/bets,PREMATCH,62,Correct Score - Second Half
+/odds/bets,PREMATCH,63,Odd/Even - Second Half
+/odds/bets,PREMATCH,72,Goal Line (1st Half)
+/odds/bets,PREMATCH,73,Both Teams to Score 1st Half - 2nd Half
+/odds/bets,PREMATCH,74,10 Over/Under
+/odds/bets,PREMATCH,75,Last Corner
+/odds/bets,PREMATCH,76,First Corner
+/odds/bets,PREMATCH,77,Total Corners (1st Half)
+/odds/bets,PREMATCH,78,RTG_H1
+/odds/bets,PREMATCH,79,Cards European Handicap
+/odds/bets,PREMATCH,80,Cards Over/Under
+/odds/bets,PREMATCH,81,Cards Asian Handicap
+/odds/bets,PREMATCH,82,Home Team Total Cards
+/odds/bets,PREMATCH,83,Away Team Total Cards
+/odds/bets,PREMATCH,84,Total Corners (3 way) (1st Half)
+/odds/bets,PREMATCH,85,Total Corners (3 way)
+/odds/bets,PREMATCH,86,RCARD
+/odds/bets,PREMATCH,87,Total ShotOnGoal
+/odds/bets,PREMATCH,88,Home Total ShotOnGoal
+/odds/bets,PREMATCH,89,Away Total ShotOnGoal
+/odds/bets,PREMATCH,91,Total Goals (3 way)
+/odds/bets,PREMATCH,92,Anytime Goal Scorer
+/odds/bets,PREMATCH,93,First Goal Scorer
+/odds/bets,PREMATCH,94,Last Goal Scorer
+/odds/bets,PREMATCH,95,To Score Two or More Goals
+/odds/bets,PREMATCH,96,Last Goal Scorer
+/odds/bets,PREMATCH,97,First Goal Method
+/odds/bets,PREMATCH,99,To Score A Penalty
+/odds/bets,PREMATCH,100,To Miss A Penalty
+/odds/bets,PREMATCH,102,Player to be booked
+/odds/bets,PREMATCH,103,Player to be Sent Off
+/odds/bets,PREMATCH,104,Asian Handicap (2nd Half)
+/odds/bets,PREMATCH,105,Home Team Total Goals(1st Half)
+/odds/bets,PREMATCH,106,Away Team Total Goals(1st Half)
+/odds/bets,PREMATCH,107,Home Team Total Goals(2nd Half)
+/odds/bets,PREMATCH,108,Away Team Total Goals(2nd Half)
+/odds/bets,PREMATCH,109,Draw No Bet (1st Half)
+/odds/bets,PREMATCH,110,Scoring Draw
+/odds/bets,PREMATCH,111,Home team will score in both halves
+/odds/bets,PREMATCH,112,Away team will score in both halves
+/odds/bets,PREMATCH,113,Both Teams To Score in Both Halves
+/odds/bets,PREMATCH,114,Home Team Score a Goal (1st Half)
+/odds/bets,PREMATCH,115,Home Team Score a Goal (2nd Half)
+/odds/bets,PREMATCH,116,Away Team Score a Goal (1st Half)
+/odds/bets,PREMATCH,117,Away Team Score a Goal (2nd Half)
+/odds/bets,PREMATCH,118,Home Win/Over
+/odds/bets,PREMATCH,119,Home Win/Under
+/odds/bets,PREMATCH,120,Away Win/Over
+/odds/bets,PREMATCH,121,Away Win/Under
+/odds/bets,PREMATCH,122,Home team will win either half
+/odds/bets,PREMATCH,123,Away team will win either half
+/odds/bets,PREMATCH,124,Home Come From Behind and Win
+/odds/bets,PREMATCH,125,Corners Asian Handicap (1st Half)
+/odds/bets,PREMATCH,126,Corners Asian Handicap (2nd Half)
+/odds/bets,PREMATCH,127,Total Corners (2nd Half)
+/odds/bets,PREMATCH,128,Total Corners (3 way) (2nd Half)
+/odds/bets,PREMATCH,129,Away Come From Behind and Win
+/odds/bets,PREMATCH,130,Corners 1x2 (1st Half)
+/odds/bets,PREMATCH,131,Corners 1x2 (2nd Half)
+/odds/bets,PREMATCH,132,Home Total Corners (1st Half)
+/odds/bets,PREMATCH,133,Home Total Corners (2nd Half)
+/odds/bets,PREMATCH,134,Away Total Corners (1st Half)
+/odds/bets,PREMATCH,135,Away Total Corners (2nd Half)
+/odds/bets,PREMATCH,136,1x2 - 15 minutes
+/odds/bets,PREMATCH,137,1x2 - 60 minutes
+/odds/bets,PREMATCH,138,1x2 - 75 minutes
+/odds/bets,PREMATCH,139,1x2 - 30 minutes
+/odds/bets,PREMATCH,140,DC - 30 minutes
+/odds/bets,PREMATCH,141,DC - 15 minutes
+/odds/bets,PREMATCH,142,DC - 60 minutes
+/odds/bets,PREMATCH,143,DC - 75 minutes
+/odds/bets,PREMATCH,144,Goal in 1-15 minutes
+/odds/bets,PREMATCH,145,Goal in 16-30 minutes
+/odds/bets,PREMATCH,146,Goal in 31-45 minutes
+/odds/bets,PREMATCH,147,Goal in 46-60 minutes
+/odds/bets,PREMATCH,148,Goal in 61-75 minutes
+/odds/bets,PREMATCH,149,Goal in 76-90 minutes
+/odds/bets,PREMATCH,150,Home Team Yellow Cards
+/odds/bets,PREMATCH,151,Away Team Yellow Cards
+/odds/bets,PREMATCH,152,Yellow Asian Handicap
+/odds/bets,PREMATCH,153,Yellow Over/Under
+/odds/bets,PREMATCH,154,Yellow Double Chance
+/odds/bets,PREMATCH,155,Yellow Over/Under (1st Half)
+/odds/bets,PREMATCH,156,Yellow Over/Under (2nd Half)
+/odds/bets,PREMATCH,157,Yellow Odd/Even
+/odds/bets,PREMATCH,158,Yellow Cards 1x2
+/odds/bets,PREMATCH,159,Yellow Asian Handicap (1st Half)
+/odds/bets,PREMATCH,160,Yellow Asian Handicap (2nd Half)
+/odds/bets,PREMATCH,161,Yellow Cards 1x2 (1st Half)
+/odds/bets,PREMATCH,162,Yellow Cards 1x2 (2nd Half)
+/odds/bets,PREMATCH,163,Penalty Awarded
+/odds/bets,PREMATCH,164,Offsides Total
+/odds/bets,PREMATCH,165,Offsides 1x2
+/odds/bets,PREMATCH,166,Offsides Handicap
+/odds/bets,PREMATCH,167,Offsides Home Total
+/odds/bets,PREMATCH,168,Offsides Away Total
+/odds/bets,PREMATCH,169,Offsides Double Chance
+/odds/bets,PREMATCH,170,Fouls. Away Total
+/odds/bets,PREMATCH,171,Fouls. Home Total
+/odds/bets,PREMATCH,172,Fouls. Double Chance
+/odds/bets,PREMATCH,173,Fouls. Total
+/odds/bets,PREMATCH,174,Fouls. Handicap
+/odds/bets,PREMATCH,175,Fouls. 1x2
+/odds/bets,PREMATCH,176,ShotOnTarget 1x2
+/odds/bets,PREMATCH,177,ShotOnTarget Handicap
+/odds/bets,PREMATCH,178,ShotOnTarget Double Chance
+/odds/bets,PREMATCH,179,First Team to Score
+/odds/bets,PREMATCH,180,Last Team to Score
+/odds/bets,PREMATCH,181,European Handicap (2nd Half)
+/odds/bets,PREMATCH,182,Draw No Bet (2nd Half)
+/odds/bets,PREMATCH,183,Double Chance/Total
+/odds/bets,PREMATCH,184,To Score in Both Halves
+/odds/bets,PREMATCH,185,First Team to Score (3 way) 1st Half
+/odds/bets,PREMATCH,186,Total Goals Number By Ranges
+/odds/bets,PREMATCH,187,Total Goals By Ranges (1st Half)
+/odds/bets,PREMATCH,188,Clean Sheet
+/odds/bets,PREMATCH,189,To Advance Handicap
+/odds/bets,PREMATCH,190,Home Exact Goals Number (1st Half)
+/odds/bets,PREMATCH,191,Away Exact Goals Number (1st Half)
+/odds/bets,PREMATCH,192,Home Highest Scoring Half
+/odds/bets,PREMATCH,193,Away Highest Scoring Half
+/odds/bets,PREMATCH,194,Result/Total Goals (2nd Half)
+/odds/bets,PREMATCH,195,Either Team Wins By 1 Goals
+/odds/bets,PREMATCH,196,Either Team Wins By 2 Goals
+/odds/bets,PREMATCH,197,Over/Under 15m-30m
+/odds/bets,PREMATCH,198,Over/Under 30m-45m
+/odds/bets,PREMATCH,199,Home Win To Nill (1st Half)
+/odds/bets,PREMATCH,200,Home Win To Nill (2nd Half)
+/odds/bets,PREMATCH,201,To Score In 1st Half
+/odds/bets,PREMATCH,202,To Score In 2nd Half
+/odds/bets,PREMATCH,203,Yellow Cards. Odd/Even (1st Half)
+/odds/bets,PREMATCH,204,Yellow Cards. Odd/Even (2nd Half)
+/odds/bets,PREMATCH,205,First Team to Score (3 way) 2nd Half
+/odds/bets,PREMATCH,206,Home No Bet
+/odds/bets,PREMATCH,207,Away No Bet
+/odds/bets,PREMATCH,208,Corners. First Corner (3 way)
+/odds/bets,PREMATCH,209,Home Come From Behind and Draw
+/odds/bets,PREMATCH,210,Away Come From Behind and Draw
+/odds/bets,PREMATCH,211,Total Shots
+/odds/bets,PREMATCH,212,Player Assists
+/odds/bets,PREMATCH,213,Player Triples
+/odds/bets,PREMATCH,214,Player Points
+/odds/bets,PREMATCH,215,Player Singles
+/odds/bets,PREMATCH,216,Multi Touchdown Scorer (2 or More)
+/odds/bets,PREMATCH,217,Multi Touchdown Scorer (3 or More)
+/odds/bets,PREMATCH,218,Away Anytime Goal Scorer
+/odds/bets,PREMATCH,219,Away First Goal Scorer
+/odds/bets,PREMATCH,220,Shots. Away Total
+/odds/bets,PREMATCH,221,Shots. Home Total
+/odds/bets,PREMATCH,222,To Win From Behind
+/odds/bets,PREMATCH,223,Number of Goals In Match (Range)
+/odds/bets,PREMATCH,224,Game Decided After Penalties
+/odds/bets,PREMATCH,225,Game Decided in Extra Time
+/odds/bets,PREMATCH,226,Away Last Goal Scorer
+/odds/bets,PREMATCH,227,Goal Method Header
+/odds/bets,PREMATCH,228,Home Goal Method Header
+/odds/bets,PREMATCH,229,Goal Method Outside the Box
+/odds/bets,PREMATCH,230,Home Goal Method Outside the Box
+/odds/bets,PREMATCH,231,Home Anytime Goal Scorer
+/odds/bets,PREMATCH,232,Home First Goal Scorer
+/odds/bets,PREMATCH,233,Home Last Goal Scorer
+/odds/bets,PREMATCH,234,Home To Score Three or More Goals
+/odds/bets,PREMATCH,235,Away To Score Three or More Goals
+/odds/bets,PREMATCH,236,Away To Score Two or More Goals
+/odds/bets,PREMATCH,237,Home To Score Two or More Goals
+/odds/bets,PREMATCH,238,Home Team Goalscorers First
+/odds/bets,PREMATCH,239,Corners. European Handicap
+/odds/bets,PREMATCH,240,Home Player Shots
+/odds/bets,PREMATCH,241,Away Player Shots
+/odds/bets,PREMATCH,242,Player Shots On Target
+/odds/bets,PREMATCH,243,Home Shots On Target
+/odds/bets,PREMATCH,244,Away Shots On Target
+/odds/bets,PREMATCH,245,Away Goal Method Header
+/odds/bets,PREMATCH,246,Away Goal Method Outside the Box
+/odds/bets,PREMATCH,247,Corners Race To
+/odds/bets,PREMATCH,248,Time Of 1st Score
+/odds/bets,PREMATCH,249,Multicorners
+/odds/bets,PREMATCH,250,First Card Received (3 way)
+/odds/bets,PREMATCH,251,Player to be booked
+/odds/bets,PREMATCH,252,Both Teams to Receive a Card
+/odds/bets,PREMATCH,253,Time Of 1st Score
+/odds/bets,PREMATCH,254,Team Performances (Range)
+/odds/bets,PREMATCH,255,Home Player Assists
+/odds/bets,PREMATCH,256,Away Player Assists
+/odds/bets,PREMATCH,257,Player to Score or Assist
+/odds/bets,PREMATCH,258,Home Player to Score or Assist
+/odds/bets,PREMATCH,259,Away Player to Score or Assist
+/odds/bets,PREMATCH,260,Team Time Of 1st Score
+/odds/bets,PREMATCH,261,Total Goal Minutes (Range)
+/odds/bets,PREMATCH,262,Late Goal (Range)
+/odds/bets,PREMATCH,263,Early Goal (Range)
+/odds/bets,PREMATCH,264,Player Shots On Target Total
+/odds/bets,PREMATCH,265,Player Shots Total
+/odds/bets,PREMATCH,266,Player Fouls Committed
+/odds/bets,PREMATCH,267,Goalkeeper Saves
+/odds/bets,PREMATCH,268,Home Goalkeeper Saves
+/odds/bets,PREMATCH,269,Home Player Shots On Target Total
+/odds/bets,PREMATCH,270,Home Player Shots Total
+/odds/bets,PREMATCH,271,Home Player Fouls Committed
+/odds/bets,PREMATCH,272,Home Player Tackles
+/odds/bets,PREMATCH,273,Home Player Passes
+/odds/bets,PREMATCH,274,Away Goalkeeper Saves
+/odds/bets,PREMATCH,275,Away Player Shots On Target Total
+/odds/bets,PREMATCH,276,Away Player Shots Total
+/odds/bets,PREMATCH,277,Away Player Fouls Committed
+/odds/bets,PREMATCH,278,Away Player Tackles
+/odds/bets,PREMATCH,279,Away Player Passes
+/odds/bets,PREMATCH,280,First Set Piece 5 Minutes
+/odds/bets,PREMATCH,281,Total Tackles
+/odds/bets,PREMATCH,282,Double Chance/Both Teams To Score
+/odds/bets,PREMATCH,283,Away Win To Nill (1st Half)
+/odds/bets,PREMATCH,284,Away Win To Nill (2nd Half)
+/odds/bets,PREMATCH,285,Team To Score (Goals)
+/odds/bets,PREMATCH,286,Team Goalscorers First
+/odds/bets,PREMATCH,287,Team Goalscorers Last
+/odds/bets,PREMATCH,288,Home Team Goalscorers Last
+/odds/bets,PREMATCH,289,Away Team Goalscorers First
+/odds/bets,PREMATCH,290,Away Team Goalscorers Last
+/odds/bets,PREMATCH,291,Time of First Goal Brackets (Range)
+/odds/bets,PREMATCH,292,Over/Under between 0 and 10m
+/odds/bets,PREMATCH,293,Double Chance 0-15m
+/odds/bets,PREMATCH,294,Double Chance 15-30m
+/odds/bets,PREMATCH,295,Corners. Total (Range)
+/odds/bets,PREMATCH,296,Double Chance 30-45m
+/odds/bets,PREMATCH,297,Corners. total between 0 and 10m
+/odds/bets,PREMATCH,298,Method of Victory
+/odds/bets,PREMATCH,299,Cards over/under between 0 and 10 m
+/odds/bets,PREMATCH,300,Both Teams to Receive 2+ Cards
+/odds/bets,PREMATCH,301,Tackles. Away Total
+/odds/bets,PREMATCH,302,Tackles. Home Total
+/odds/bets,PREMATCH,303,Over/Under between 0 and 10 m
+/odds/bets,PREMATCH,304,Over/Under between  0 and 10 m
+/odds/bets,PREMATCH,305,Race to the 2nd goal?
+/odds/bets,PREMATCH,306,Race to the 3rd goal?
+/odds/bets,PREMATCH,307,Corners. Double Chance
+/odds/bets,PREMATCH,308,Race To
+/odds/bets,PREMATCH,309,Yellow Cards. Home Total (1st Half)
+/odds/bets,PREMATCH,310,Yellow Cards Away Total (1st Half)
+/odds/bets,PREMATCH,311,Which team will score the 1st goal?
+/odds/bets,PREMATCH,312,1x2 - 20 minutes
+/odds/bets,PREMATCH,313,Offsides Odd/Even
+/odds/bets,PREMATCH,314,Fouls Odd/Even
+/odds/bets,PREMATCH,315,Saves Total
+/odds/bets,PREMATCH,316,Saves 1x2
+/odds/bets,PREMATCH,317,Saves Asian H
+/odds/bets,PREMATCH,318,Saves O/U Home
+/odds/bets,PREMATCH,319,Saves O/U Away
+/odds/bets,PREMATCH,320,Saves Double Chance
+/odds/bets,PREMATCH,321,Penalty Awarded (1st Half)
+/odds/bets,PREMATCH,322,Penalty Awarded (2nd Half)
+/odds/bets,PREMATCH,323,Saves Odd/Even
+/odds/bets,PREMATCH,324,Corner in 1-15 minutes
+/odds/bets,PREMATCH,325,Corner in 16-30 minutes
+/odds/bets,PREMATCH,326,Corner in 31-45 minutes
+/odds/bets,PREMATCH,327,Corner in 45-60 minutes
+/odds/bets,PREMATCH,328,Corner in 60-75 minutes
+/odds/bets,PREMATCH,329,Corner in 75-90 minutes
+/odds/bets,PREMATCH,330,Home Not lose/Over
+/odds/bets,PREMATCH,331,Home Not lose/Under
+/odds/bets,PREMATCH,332,Away Not lose/Over
+/odds/bets,PREMATCH,333,Away Not lose/Under
+/odds/bets,PREMATCH,334,1x2 - 70 minutes
+/odds/bets,PREMATCH,335,Red Cards Over/Under
+/odds/bets,PREMATCH,336,Goal Line
+/odds/bets,PREMATCH,337,Asian Handicap (Sets)
+/odds/bets,PREMATCH,338,Corners. Odd/Even
+/odds/bets,PREMATCH,339,Corners. Double Chance
+/odds/bets,PREMATCH,340,Shots.1x2
+/odds/bets,PREMATCH,341,
+/odds/bets,PREMATCH,342,Red Card In The Match (1st Half)
+/odds/bets,PREMATCH,343,Fouls. Odd/Even
+/odds/bets,PREMATCH,344,Odd/Even (1st Set)
+/odds/bets,PREMATCH,345,Set Betting
+/odds/bets,PREMATCH,346,Extra Point (1st Set)
+/odds/bets,PREMATCH,347,Home Winning Margin (1st Set)
+/odds/bets,PREMATCH,348,Away Winning Margin (1st Set)
+/odds/bets,PREMATCH,349,Number Of Goals In Match
+/odds/live/bets,LIVE,1,Over/Under Extra Time
+/odds/live/bets,LIVE,2,1x2 Extra Time
+/odds/live/bets,LIVE,3,Extra Time Asian Corners
+/odds/live/bets,LIVE,4,Extra Time Total Corners (3 Ways) (1st Half)
+/odds/live/bets,LIVE,5,Extra Time Double Result
+/odds/live/bets,LIVE,6,Which team will score the 1st goal in extra time?
+/odds/live/bets,LIVE,7,Extra Time Asian Corners (1st Half)
+/odds/live/bets,LIVE,8,Method of Victory
+/odds/live/bets,LIVE,9,Both Teams To Score (ET)
+/odds/live/bets,LIVE,10,To Qualify
+/odds/live/bets,LIVE,11,Asian Handicap Extra Time
+/odds/live/bets,LIVE,12,1x2 Extra Time (1st Half)
+/odds/live/bets,LIVE,13,Extra Time Total Corners (3 Ways)
+/odds/live/bets,LIVE,14,Over/Under Extra Time (1st Half)
+/odds/live/bets,LIVE,15,Last Corner
+/odds/live/bets,LIVE,16,How many goals will Away Team score?
+/odds/live/bets,LIVE,17,Asian Handicap (1st Half)
+/odds/live/bets,LIVE,18,1st Goal in Interval
+/odds/live/bets,LIVE,19,1x2 (1st Half)
+/odds/live/bets,LIVE,20,Match Corners
+/odds/live/bets,LIVE,21,3-Way Handicap
+/odds/live/bets,LIVE,22,1x2 - 30 minutes
+/odds/live/bets,LIVE,23,Final Score
+/odds/live/bets,LIVE,24,Over/Under Line (1st Half)
+/odds/live/bets,LIVE,25,Match Goals
+/odds/live/bets,LIVE,26,European Handicap (1st Half)
+/odds/live/bets,LIVE,27,Home Team Score a Goal (2nd Half)
+/odds/live/bets,LIVE,28,Home Team  to Score in Both Halves
+/odds/live/bets,LIVE,29,Result / Both Teams To Score
+/odds/live/bets,LIVE,30,Both Teams To Score (1st Half)
+/odds/live/bets,LIVE,31,Total Corners (3way) (2nd Half)
+/odds/live/bets,LIVE,32,Asian Corners
+/odds/live/bets,LIVE,33,Asian Handicap
+/odds/live/bets,LIVE,34,1x2 - 40 minutes
+/odds/live/bets,LIVE,35,To Win 2nd Half
+/odds/live/bets,LIVE,36,Over/Under Line
+/odds/live/bets,LIVE,37,Total Corners
+/odds/live/bets,LIVE,38,Away Team to Score in Both Halves
+/odds/live/bets,LIVE,39,Away Team Goals
+/odds/live/bets,LIVE,40,Total Corners (3 way) (1st Half)
+/odds/live/bets,LIVE,41,1x2 - 50 minutes
+/odds/live/bets,LIVE,42,Race to the 3rd corner?
+/odds/live/bets,LIVE,43,Both Teams To Score (2nd Half)
+/odds/live/bets,LIVE,44,Race to the 9th corner?
+/odds/live/bets,LIVE,45,Race to the 7th corner?
+/odds/live/bets,LIVE,46,Goal Scorer
+/odds/live/bets,LIVE,47,Away 1st Goal in Interval
+/odds/live/bets,LIVE,48,Draw No Bet
+/odds/live/bets,LIVE,49,Over/Under (1st Half)
+/odds/live/bets,LIVE,50,1x2 - 60 minutes
+/odds/live/bets,LIVE,51,Asian Corners (1st Half)
+/odds/live/bets,LIVE,52,1x2 - 80 minutes
+/odds/live/bets,LIVE,53,To Score 2 or More
+/odds/live/bets,LIVE,54,Home 1st Goal in Interval
+/odds/live/bets,LIVE,55,Correct Score (1st Half)
+/odds/live/bets,LIVE,56,1x2 - 70 minutes
+/odds/live/bets,LIVE,57,Away Team Clean Sheet
+/odds/live/bets,LIVE,58,Home Team Goals
+/odds/live/bets,LIVE,59,Fulltime Result
+/odds/live/bets,LIVE,60,To Score 3 or More
+/odds/live/bets,LIVE,61,Race to the 5th corner?
+/odds/live/bets,LIVE,62,Last Team to Score (3 way)
+/odds/live/bets,LIVE,63,Anytime Goal Scorer
+/odds/live/bets,LIVE,64,Half Time/Full Time
+/odds/live/bets,LIVE,65,Next 10 Minutes Total
+/odds/live/bets,LIVE,66,Home Team Clean Sheet
+/odds/live/bets,LIVE,67,How many goals will Home Team score?
+/odds/live/bets,LIVE,68,Goals Odd/Even
+/odds/live/bets,LIVE,69,Both Teams to Score
+/odds/live/bets,LIVE,70,Away Team Score a Goal (2nd Half)
+/odds/live/bets,LIVE,71,Which team will score the 4th corner? (2 Way)
+/odds/live/bets,LIVE,72,Double Chance
+/odds/live/bets,LIVE,73,Which team will score the 1st goal?
+/odds/live/bets,LIVE,74,Which team will score the 3rd corner? (2 Way)
+/odds/live/bets,LIVE,75,Which team will score the 2nd corner? (2 Way)
+/odds/live/bets,LIVE,76,Corners European Handicap
+/odds/live/bets,LIVE,77,1x2 - 10 minutes
+/odds/live/bets,LIVE,78,Corners 1x2
+/odds/live/bets,LIVE,79,1x2 - 20 minutes
+/odds/live/bets,LIVE,80,Method of 1st Goal
+/odds/live/bets,LIVE,81,Method of Qualification
+/odds/live/bets,LIVE,82,Game Won After Penalties Shootout
+/odds/live/bets,LIVE,83,Game Won In Extra Time
+/odds/live/bets,LIVE,84,Which team will score the 2nd goal?
+/odds/live/bets,LIVE,85,Which team will score the 2nd goal?
+/odds/live/bets,LIVE,86,Which team will score the 6th corner? (2 Way)
+/odds/live/bets,LIVE,87,Which team will score the 5th corner? (2 Way)
+/odds/live/bets,LIVE,88,Which team will score the 7th corner? (2 Way)
+/odds/live/bets,LIVE,89,Which team will score the 9th corner? (2 Way)
+/odds/live/bets,LIVE,90,2nd Goal in Interval
+/odds/live/bets,LIVE,91,Away 2nd Goal in Interval
+/odds/live/bets,LIVE,92,Which team will score the 3rd goal?
+/odds/live/bets,LIVE,93,Which team will score the 10th corner? (2 Way)
+/odds/live/bets,LIVE,94,3rd Goal in Interval
+/odds/live/bets,LIVE,95,Home 2nd Goal in Interval
+/odds/live/bets,LIVE,96,Asian Handicap Converted Penalties
+/odds/live/bets,LIVE,97,Sudden Death
+/odds/live/bets,LIVE,98,Away Penalty Shootout
+/odds/live/bets,LIVE,99,Home Penalty Shootout
+/odds/live/bets,LIVE,100,Home Total Converted Penalties
+/odds/live/bets,LIVE,101,Total Penalties in Shootout
+/odds/live/bets,LIVE,102,Last Penalty Score/Miss
+/odds/live/bets,LIVE,103,Correct Score in Shootouts
+/odds/live/bets,LIVE,104,Total Converted Penalties
+/odds/live/bets,LIVE,105,Total Converted Penalties - Goal Line
+/odds/live/bets,LIVE,106,Away Total Converted Penalties
+/odds/live/bets,LIVE,107,Penalties Shootout Winner
+/odds/live/bets,LIVE,108,Which team will score the 11th corner? (2 Way)
+/odds/live/bets,LIVE,109,Which team will score the 4th goal?
+/odds/live/bets,LIVE,110,Which team will score the 8th corner? (2 Way)
+/odds/live/bets,LIVE,111,Last Penalty Scorer in Shootout
+/odds/live/bets,LIVE,112,Which team will score the 5th goal?
+/odds/live/bets,LIVE,113,Method of 2nd Goal
+/odds/live/bets,LIVE,114,Which team will score the 13th corner? (2 Way)
+/odds/live/bets,LIVE,115,Player to be Booked
+/odds/live/bets,LIVE,116,Action In Next 1 Minutes
+/odds/live/bets,LIVE,117,First Action In Next 5 Minutes
+/odds/live/bets,LIVE,118,Player to be Sent Off
+/odds/live/bets,LIVE,119,Total Cards
+/odds/live/bets,LIVE,120,Which team will score the 12th corner? (2 Way)
+/odds/live/bets,LIVE,121,Which team will score the 14th corner? (2 Way)
+/odds/live/bets,LIVE,122,Which team will score the 15th corner? (2 Way)
+/odds/live/bets,LIVE,123,Which team will score the 16th corner? (2 Way)
+/odds/live/bets,LIVE,124,Which team will score the 17th corner? (2 Way)
+/odds/live/bets,LIVE,125,Home 3rd Goal in Interval
+/odds/live/bets,LIVE,126,Which team will score the 18th corner? (2 Way)
+/odds/live/bets,LIVE,127,Which team will score the 6th goal?
+/odds/live/bets,LIVE,128,Away 3rd Goal in Interval
+/odds/live/bets,LIVE,129,Which team will score the 2nd goal in extra time?
+/odds/live/bets,LIVE,130,Method of 3rd Goal
+/odds/live/bets,LIVE,131,4th Goal in Interval
+/odds/live/bets,LIVE,132,Which team will score the 7th goal?
+/odds/live/bets,LIVE,133,Which team will score the 19th corner? (2 Way)
+/odds/live/bets,LIVE,134,Home 4th Goal in Interval
+/odds/live/bets,LIVE,135,Away 4th Goal in Interval
+/odds/live/bets,LIVE,136,5th Goal in Interval
+/odds/live/bets,LIVE,137,Home 5th Goal in Interval
+/odds/live/bets,LIVE,138,Method of 4th Goal
+/odds/live/bets,LIVE,139,Which team will score the 8th goal?
+/odds/live/bets,LIVE,140,Which team will score the 9th goal?
+/odds/live/bets,LIVE,141,Which team will score the 10th goal?
+/odds/live/bets,LIVE,142,Which team will score the 11th goal?
+/odds/live/bets,LIVE,143,Which team will score the 12th goal?
+/odds/live/bets,LIVE,144,6th Goal in Interval
+/odds/live/bets,LIVE,145,Method of 5th Goal
+/odds/live/bets,LIVE,146,Method of 6th Goal
+/odds/live/bets,LIVE,147,Which team will score the 20th corner? (2 Way)
+/odds/live/bets,LIVE,148,Player Shots
+/odds/live/bets,LIVE,149,Total Shots
+/odds/live/bets,LIVE,150,Total shots on goal
+/odds/live/bets,LIVE,151,Away Total Shots
+/odds/live/bets,LIVE,152,Home Total Shots
+/odds/live/bets,LIVE,153,Player Shots on Targets
+/odds/live/bets,LIVE,154,Home Total shots on goal
+/odds/live/bets,LIVE,155,Player Assists
+/odds/live/bets,LIVE,156,Away Total shots on goal
+/odds/live/bets,LIVE,157,Method of 7th Goal
+/odds/live/bets,LIVE,158,Method of 8th Goal
+/odds/live/bets,LIVE,159,7th Goal in Interval
+/odds/live/bets,LIVE,160,To Win the Trophy
+/odds/live/bets,LIVE,161,Away 5th Goal in Interval
+/odds/live/bets,LIVE,162,Which team will score the 3rd goal in extra time?
+/odds/live/bets,LIVE,163,Which team will score the 13th goal?
+/odds/live/bets,LIVE,164,Which team will score the 4th goal in extra time?
+/odds/live/bets,LIVE,165,Double Chance Extra Time
+/odds/live/bets,LIVE,166,Double Chance Extra Time (1st Half)
+/odds/live/bets,LIVE,167,Asian Handicap Extra Time (1st Half)
+/odds/live/bets,LIVE,168,Corners Double Chance
+/odds/live/bets,LIVE,169,Home Total Corners
+/odds/live/bets,LIVE,170,Which team will score the 10th corner?
+/odds/live/bets,LIVE,171,Away Not lose/Over
+/odds/live/bets,LIVE,172,Away Not lose/Under
+/odds/live/bets,LIVE,173,Home Not lose/Over
+/odds/live/bets,LIVE,174,Corners Asian Handicap
+/odds/live/bets,LIVE,175,Home Not lose/Under
+/odds/live/bets,LIVE,176,Away Total Corners
+/odds/live/bets,LIVE,177,Over/Under (2nd Half)
+/odds/live/bets,LIVE,178,Total shots on goal (1st Half)
+/odds/live/bets,LIVE,179,Home team will win either half
+/odds/live/bets,LIVE,180,Double Chance (1st Half)
+/odds/live/bets,LIVE,181,Which team will score the 13th corner?
+/odds/live/bets,LIVE,182,Yellow Asian Handicap
+/odds/live/bets,LIVE,183,Draw/Over
+/odds/live/bets,LIVE,184,Asian Handicap (2nd Half)
+/odds/live/bets,LIVE,185,Double Chance shots on goal
+/odds/live/bets,LIVE,186,Away Win/Over
+/odds/live/bets,LIVE,187,Yellow Double Chance (1st Half)
+/odds/live/bets,LIVE,188,Away Total Corners (1st Half)
+/odds/live/bets,LIVE,189,Total Corners (1st Half)
+/odds/live/bets,LIVE,190,Home Total Corners (1st Half)
+/odds/live/bets,LIVE,191,Home Team Total (1st Half)
+/odds/live/bets,LIVE,192,Race to the 3rd goal?
+/odds/live/bets,LIVE,193,Corners 1x2 (1st Half)
+/odds/live/bets,LIVE,194,1x2 shots on goal
+/odds/live/bets,LIVE,195,Home Team Total (2nd Half)
+/odds/live/bets,LIVE,196,Away Team Total Goals (2nd Half)
+/odds/live/bets,LIVE,197,Yellow Asian Handicap (1st Half)
+/odds/live/bets,LIVE,198,Away Team Total Points (1st Half)
+/odds/live/bets,LIVE,199,Yellow Double Chance
+/odds/live/bets,LIVE,200,Home Team Yellow cards
+/odds/live/bets,LIVE,201,Home Win/Over
+/odds/live/bets,LIVE,202,1x2 shots on goal (1st Half)
+/odds/live/bets,LIVE,203,Yellow Cards 1x2
+/odds/live/bets,LIVE,204,Corners Asian Handicap (1st Half)
+/odds/live/bets,LIVE,205,Asian Handicap shots on goal
+/odds/live/bets,LIVE,206,Home Team Yellow Cards (1st Half)
+/odds/live/bets,LIVE,207,Yellow Cards 1x2 (1st Half)
+/odds/live/bets,LIVE,208,Double Chance shots on goal (1st Half)
+/odds/live/bets,LIVE,209,Yellow Over/Under (1st Half)
+/odds/live/bets,LIVE,210,Yellow Over/Under
+/odds/live/bets,LIVE,211,Away Team Yellow Cards (1st Half)
+/odds/live/bets,LIVE,212,Asian Handicap shots on goal (1st Half)
+/odds/live/bets,LIVE,213,Away Team Yellow Cards
+/odds/live/bets,LIVE,214,Away team will win either half
+/odds/live/bets,LIVE,215,Both Teams To Score Under
+/odds/live/bets,LIVE,216,Both Halves Over
+/odds/live/bets,LIVE,217,Race to the 2nd goal?
+/odds/live/bets,LIVE,218,Away Team Score a Goal
+/odds/live/bets,LIVE,219,Both Teams To Score Over
+/odds/live/bets,LIVE,220,Both Halves Under
+/odds/live/bets,LIVE,221,Home Win/Under
+/odds/live/bets,LIVE,222,Away Team Score a Goal (1st Half)
+/odds/live/bets,LIVE,223,Which team will score the 5th corner?
+/odds/live/bets,LIVE,224,Which team will score the 4th corner?
+/odds/live/bets,LIVE,225,Home Team Score a Goal (1st Half)
+/odds/live/bets,LIVE,226,Home Team Score a Goal
+/odds/live/bets,LIVE,227,Draw/Under
+/odds/live/bets,LIVE,228,Away Win/Under
+/odds/live/bets,LIVE,229,Home Red Over/Under
+/odds/live/bets,LIVE,230,Away Red Over/Under
+/odds/live/bets,LIVE,231,Which team will score the 7th corner?
+/odds/live/bets,LIVE,232,Red Over/Under
+/odds/live/bets,LIVE,233,Yellow Odd/Even
+/odds/live/bets,LIVE,234,Which team will score the 6th corner?
+/odds/live/bets,LIVE,235,Which team will score the 8th corner?
+/odds/live/bets,LIVE,236,Which team will score the 9th corner?
+/odds/live/bets,LIVE,237,Which team will score the 11th corner?
+/odds/live/bets,LIVE,238,Which team will score the 12th corner?
+/odds/live/bets,LIVE,239,Which team will score the 14th corner?
+/odds/live/bets,LIVE,240,Which team will score the 15th corner?
+/odds/live/bets,LIVE,241,Which team will score the 1st corner?
+/odds/live/bets,LIVE,242,Which team will score the 2nd corner?
+/odds/live/bets,LIVE,243,Away Total shots on goal (1st Half)
+/odds/live/bets,LIVE,244,Home Total shots on goal (1st Half)
+/odds/live/bets,LIVE,245,Away Penalty Over/Under
+/odds/live/bets,LIVE,246,Home Penalty Over/Under
+/odds/live/bets,LIVE,247,Penalty Over/Under
+/odds/live/bets,LIVE,248,Which team will score the 5th goal in extra time?
+/odds/live/bets,LIVE,249,Which team will score the 6th goal in extra time?
+/odds/live/bets,LIVE,250,Extra Time Over/Under Line
+/odds/live/bets,LIVE,251,Result/Total Goals
+/odds/live/bets,LIVE,252,Total Goals/Both Teams To Score
+/odds/live/bets,LIVE,253,Over/Under between 70:01 m and 80:00 m
+/odds/live/bets,LIVE,254,Over/Under between 60:01 m and 70:00 m
+/odds/live/bets,LIVE,255,Over/Under between 50:01 m and 60:00 m
+/odds/live/bets,LIVE,256,Which team will score the 3rd corner?
+/odds/live/bets,LIVE,257,Over/Under between 40:01 m and 50:00 m
+/odds/live/bets,LIVE,258,Over/Under between 30:01 m and 40:00 m
+/odds/live/bets,LIVE,259,Home Win Both Halves
+/odds/live/bets,LIVE,260,Away Win Both Halves
+/odds/live/bets,LIVE,261,Over/Under between 00:00 m and 10:00 m
+/odds/live/bets,LIVE,262,Over/Under between 20:01 m and 30:00 m
+/odds/live/bets,LIVE,263,Over/Under between 10:01 m and 20:00 m
+/odds/live/bets,LIVE,264,Corners over/under between 00:00 m and 10:00 m
+/odds/live/bets,LIVE,265,Corners over/under between 20:01 m and 30:00 m
+/odds/live/bets,LIVE,266,Corners over/under between 10:01 m and 20:00 m

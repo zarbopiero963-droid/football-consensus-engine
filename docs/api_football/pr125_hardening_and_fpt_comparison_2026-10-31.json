@@ -1,0 +1,246 @@
+{
+  "report": "PR125-HARDENING-FPT-COMPARISON",
+  "generated_utc": "2026-10-31",
+  "pr": 125,
+  "baseline_head": "3ddcda702d4bf96e3fdea3d364051ec5435a2bc2",
+  "status_vocabulary": [
+    "VERIFIED_REAL",
+    "PARTIAL",
+    "UNAVAILABLE",
+    "UNSUPPORTED",
+    "NOT_TESTED"
+  ],
+  "github_actions": {
+    "verdict": "EXTERNAL_BILLING_BLOCKER",
+    "evidence": [
+      {
+        "workflow": "Multi-market tests",
+        "run_id": 40228317477,
+        "run_attempt": 2,
+        "jobs": [
+          {
+            "name": "pytest",
+            "job_id": 124569018095
+          },
+          {
+            "name": "decision-postgres",
+            "job_id": 124569017941
+          }
+        ],
+        "run_started_at": "2026-10-31T14:51:44Z",
+        "completed_at": "2026-10-31T14:51:48Z"
+      },
+      {
+        "workflow": "api-football-contract-check",
+        "run_id": 40228317491,
+        "run_attempt": 2,
+        "jobs": [
+          {
+            "name": "contracts",
+            "job_id": 124569006796
+          }
+        ],
+        "run_started_at": "2026-10-31T14:51:40Z",
+        "completed_at": "2026-10-31T14:51:45Z"
+      }
+    ],
+    "annotation": "The job was not started because recent account payments have failed or your spending limit needs to be increased.",
+    "runner_id": 0,
+    "steps_executed": 0,
+    "interpretation": "Jobs never started (no runner assigned, zero steps). Not a test failure, not a code error, not a CI config error.",
+    "update_after_owner_unblock": {
+      "verdict": "GREEN_ON_PR_HEAD",
+      "pr_head": "157b435ff2dc50d40d6ffbf1469e46bd8e75597a",
+      "runs": [
+        {
+          "workflow": "api-football-contract-check",
+          "run_id": 41240887064,
+          "job": "contracts",
+          "conclusion": "success"
+        },
+        {
+          "workflow": "Multi-market tests",
+          "run_id": 41240886931,
+          "jobs": {
+            "pytest": "success",
+            "decision-postgres": "success"
+          }
+        },
+        {
+          "workflow": "api-football-capability-inventory (manual, owner-approved)",
+          "run_id": 41240887865,
+          "job": "catalog",
+          "conclusion": "success"
+        },
+        {
+          "workflow": "Multi-market tests (dispatch on session branch, same SHA)",
+          "run_id": 41240715094,
+          "pytest": "1101 passed, 102 skipped",
+          "decision-postgres": "101 passed"
+        }
+      ],
+      "coderabbit": "skipped (draft PR)"
+    },
+    "final_head_note": "See PR description for the final head CI runs."
+  },
+  "provider_real_certification": {
+    "verdict": "PARTIAL",
+    "run_id": 41240887865,
+    "run_sha": "157b435ff2dc50d40d6ffbf1469e46bd8e75597a",
+    "observed_utc": "2026-10-31T20:52:04Z/20:56:13Z",
+    "budget": "APIFOOTBALL_MAX_DAILY_REQUESTS=60, MAX_RPM=8 (workflow caps)",
+    "evidence_dir": "evidence/api_football/capability_run_41240887865/ (small files + SHA256 of full artifact; full artifact retention 7 days)",
+    "scope": "OBSERVED_PROVIDER_SAMPLES_ONLY; 3 pre-match odds fixtures, 1 live odds fixture, 3 fixture statistics samples, 59 distinct fixtures/teams across statistics routes; 39/39 known routes HTTP 200",
+    "probe_limitation": "The probe stores field SHAPES (json paths and types) for statistics, not the statistic type labels or values. Shots, corners, possession and xG therefore cannot be verified at value level from this run.",
+    "fields": [
+      {
+        "field": "fixture_id_and_utc_kickoff",
+        "status": "VERIFIED_REAL",
+        "evidence": "/fixtures and /odds: fixture.id int, fixture.date str, fixture.timezone str (field_registry.csv)"
+      },
+      {
+        "field": "leagues_seasons",
+        "status": "PARTIAL",
+        "evidence": "season fields present in /teams/statistics and /players samples; no league/season catalog completeness check"
+      },
+      {
+        "field": "results_ft",
+        "status": "PARTIAL",
+        "evidence": "goals.home int observed; score.fulltime.home observed only as null in this sample (no finished match in fulltime path)"
+      },
+      {
+        "field": "results_ht",
+        "status": "VERIFIED_REAL",
+        "evidence": "score.halftime.home/away observed as int in /fixtures"
+      },
+      {
+        "field": "team_statistics",
+        "status": "VERIFIED_REAL",
+        "evidence": "/teams/statistics 3 samples, 660 field paths; /fixtures/statistics 3 fixtures (statistics[].type str, value int|str)"
+      },
+      {
+        "field": "player_statistics",
+        "status": "VERIFIED_REAL",
+        "evidence": "/fixtures/players 3 fixtures; /players 6 samples"
+      },
+      {
+        "field": "xg",
+        "status": "PARTIAL",
+        "evidence": "expected_goals published as numeric string on 4/4 team rows (e.g. '0.1','0.06'), IN_PLAY 1H only; no final snapshot"
+      },
+      {
+        "field": "shots_total_on_target",
+        "status": "PARTIAL",
+        "evidence": "'Total Shots' and 'Shots on Goal' int on 4/4 team rows, IN_PLAY 1H only"
+      },
+      {
+        "field": "corners",
+        "status": "PARTIAL",
+        "evidence": "run 41243344579: 'Corner Kicks' published on fixture 1490596 (values 0 and 1, IN_PLAY), absent on 1490592 (IN_PLAY). Absence is label omission, not zero; final snapshot NOT_TESTED"
+      },
+      {
+        "field": "possession",
+        "status": "PARTIAL",
+        "evidence": "'Ball Possession' 'NN%' on 4/4 team rows, pairs sum to 100 (57/43, 42/58), IN_PLAY 1H only"
+      },
+      {
+        "field": "cards",
+        "status": "PARTIAL",
+        "evidence": "player-level cards.yellow/red int; team-level 'Yellow Cards'/'Red Cards' labels present (values not validated by probe)"
+      },
+      {
+        "field": "odds_1x2",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'Match Winner' 90 values, 10 bookmakers, 3 fixtures; live 'Fulltime Result' 3 values, 1 bookmaker"
+      },
+      {
+        "field": "odds_over_under",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'Goals Over/Under' 486 values, 8 bookmakers; live 'Over/Under Line' 10 values"
+      },
+      {
+        "field": "odds_handicap",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'Asian Handicap' 418 values, 8 bookmakers; live handicap column filled on 174 values"
+      },
+      {
+        "field": "multiple_bookmakers",
+        "status": "PARTIAL",
+        "evidence": "catalog 33/33 after fix (id 37 published with null name); prices observed for 10 bookmakers in 3-fixture sample"
+      },
+      {
+        "field": "live_markets",
+        "status": "PARTIAL",
+        "evidence": "/odds/live fixture 1520959: 382 values, 1 bookmaker, single comparable snapshot"
+      },
+      {
+        "field": "live_suspensions_updates",
+        "status": "PARTIAL",
+        "evidence": "17/382 suspended=True observed; two snapshots identical SHA-256, NOT_OBSERVED_DURING_WINDOW for changes"
+      },
+      {
+        "field": "observation_timestamps",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'updated' 2026-10-31T17:22:17+00:00 on all 10066 values; live 'updated' present"
+      },
+      {
+        "field": "prematch_suspended_main_flags",
+        "status": "UNAVAILABLE",
+        "evidence": "pre-match main/suspended MISSING on 10066/10066 values (kept MISSING, not false)"
+      },
+      {
+        "field": "historical_prematch_odds_retention",
+        "status": "NOT_TESTED",
+        "evidence": "no past-fixture odds query in this run"
+      }
+    ],
+    "statistics_values_run": {
+      "run_id": 41242779991,
+      "run_sha": "c4bdaaa850263a493b4651a8ce9d677f184a9dd3",
+      "evidence_dir": "evidence/api_football/capability_run_41242779991/",
+      "fixtures": [
+        1490592,
+        1490596,
+        1498927
+      ],
+      "note": "All 3 sampled fixtures were in 1H at observation (IN_PLAY); 1498927 returned an empty statistics response. 4 team rows with values; 0 FINAL snapshots. Values are in-play snapshots, NOT final match statistics and NOT pre-match data."
+    },
+    "bookmaker_catalog_discrepancy": {
+      "status": "RESOLVED",
+      "root_cause": "capability_inventory.inventory_payload dropped catalog rows whose name was null (probe evidence only; MCP tool payload was lossless)",
+      "fix_commit": "c99e426f738b563e60562e7cc7589ae60e2048e0",
+      "verification_run": 41243344579,
+      "after_fix": {
+        "/odds/bookmakers": "33/33 (id 37 name=null NULL_PUBLISHED)",
+        "/odds/bets": "338/338 (id 341 name=null NULL_PUBLISHED)",
+        "/odds/live/bets": "266/266"
+      },
+      "evidence_dir": "evidence/api_football/capability_run_41243344579/"
+    }
+  },
+  "fpt_comparison": {
+    "verdict": "BLOCKED_SOURCE_ACCESS",
+    "source_of_truth": "PostgreSQL 18 database matchpilot_staging (port 5434) on the MatchPilot VPS; fpt_match_facts reported at 161,801 rows (MatchPilot issue #12, 2026-10-22 comment)",
+    "accessible_from_this_session": false,
+    "reasons": [
+      "No VPS / database credentials in this container (by design; /srv/matchpilot/secrets/fpt.env is root-600 on the VPS).",
+      "MatchPilot repository contains only synthetic test seeds (test/helpers/fpt-seed.mjs), excluded by mandate.",
+      "No public export of fpt_match_facts exists in the repository.",
+      "Encrypted backups were not touched."
+    ],
+    "minimum_access_needed": "Owner-run, read-only export of 30 stratified rows (>=5 leagues, >=2 seasons, non-demo, deduplicated with provenance) from matchpilot_staging.fpt_match_facts containing: match_key, provider_match_id, dataset/league, season, kickoff (raw + UTC), home, away, FT/HT score, xG, shots, corners, possession, cards, 1X2 odds and their capture timestamps. Plus an authorized API-FOOTBALL lookup path (see provider_real_certification.minimum_access_needed).",
+    "sample_matches": [],
+    "matrix_rows": [],
+    "metrics": {
+      "matches_found_pct": null,
+      "result_agreement_pct": null,
+      "stat_field_coverage_pct": null,
+      "numeric_agreement_within_tolerance_pct": null,
+      "historical_odds_availability_pct": null,
+      "lookahead_safe_backtest_compatible": null
+    },
+    "metrics_note": "null = not computed; never zero. No demo rows substituted."
+  },
+  "final_verdict": "INCONCLUSIVE",
+  "final_verdict_reason": "Provider certification PARTIAL (real, scoped, statistics in-play only); FPT comparison BLOCKED_SOURCE_ACCESS (no VPS/DB access in this session; tracked separately per owner decision)."
+}
