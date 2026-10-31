@@ -1,5 +1,9 @@
 # Contract registry changelog
 
+## 2026-10-31 (live odds manifest)
+- `/odds/live` replies over the 256 KiB MCP cap now return `PARTIAL_ODDS_MANIFEST` with `phase: LIVE`: per fixture `update`, `elapsed`, counts, and every market's `bet_id`/name/selections/suspended (no prices). Prices: `apifootball_live_odds(fixture=<id>, bet=<bet_id>)`. Malformed lists fail closed; missing `suspended` is counted as unknown, not false.
+- `/odds/live` transport read cap aligned with `/odds` (2 MiB, bounded); all other routes stay at 512 KiB.
+
 ## 2026-10-31 (real MCP client run findings)
 - Real client run (Claude MCP connector → Render, 14 provider calls) found: top-level `pagination` always null on real replies (read from the wrapper, not the provider envelope); `/odds/mapping` declared `paging.total=45` but the tool exposed no `page` (44/45 pages unreachable); real replies carried the offline placeholder warning.
 - Fixes: `pagination` taken from the provider envelope; `apifootball_odds_mapping(page)` (bounded 1..100, no other filter, still PENDING until `page=2` is verified live); real-reply warning reflects provider data. No change to quota, auth or limits.

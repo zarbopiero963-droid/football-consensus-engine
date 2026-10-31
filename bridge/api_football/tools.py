@@ -92,11 +92,11 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             if not isinstance(data, dict):
                 raise TypeError("Bad provider response type")
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
-            if size > _MAX_MCP_DATA_BYTES and tool == "apifootball_odds":
+            if size > _MAX_MCP_DATA_BYTES and tool in ("apifootball_odds", "apifootball_live_odds"):
                 # Never pretend a truncated list of prices is complete.
-                from .odds_manifest import odds_page_manifest
+                from .odds_manifest import live_odds_manifest, odds_page_manifest
                 try:
-                    manifest = odds_page_manifest(data)
+                    manifest = (odds_page_manifest if tool == "apifootball_odds" else live_odds_manifest)(data)
                 except ValueError as exc:
                     manifest = None
                     manifest_error = str(exc)
@@ -288,7 +288,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
 
     @add
     async def apifootball_live_odds(fixture: int | None = None, league: int | None = None, bet: int | None = None) -> dict[str, Any]:
-        """In-play odds; bookmaker/market history not guaranteed."""
+        """In-play odds (fixture or league required). Oversized replies return a price-free PARTIAL_ODDS_MANIFEST with bet ids; fetch prices with fixture+bet."""
         return await execute("apifootball_live_odds", dict(fixture=fixture, league=league, bet=bet))
 
     @add
