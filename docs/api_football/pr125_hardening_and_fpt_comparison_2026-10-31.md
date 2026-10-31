@@ -58,12 +58,12 @@ Evidenze: `evidence/api_football/capability_run_41240887865/`, con i file piccol
 | xG | PARTIAL | run 41242779991: `expected_goals` valido su 4/4 righe squadra (es. `0.1`), **solo in-play 1H** |
 | Tiri totali e nello specchio | PARTIAL | `Total Shots` e `Shots on Goal` int su 4/4 righe, solo in-play |
 | Possesso | PARTIAL | `NN%` su 4/4 righe, coppie a somma 100 (57/43, 42/58), solo in-play |
-| Corner | UNAVAILABLE (nel campione) | etichetta `Corner Kicks` MISSING su 4/4 righe in-play; non trasformata in 0; sulle istantanee finali NOT_TESTED |
+| Corner | PARTIAL | run 41243344579: `Corner Kicks` presente sulla fixture 1490596 (0 e 1, in-play), assente sulla 1490592. L'assenza è un'etichetta omessa, non uno 0; istantanee finali NOT_TESTED |
 | Cartellini | PARTIAL | `cards.yellow/red` per giocatore; etichette squadra `Yellow Cards`/`Red Cards` presenti, valori non validati |
 | 1X2 | VERIFIED_REAL | Match Winner: 90 valori, 10 bookmaker, 3 fixture |
 | Over/Under | VERIFIED_REAL | 486 valori, 8 bookmaker |
 | Handicap | VERIFIED_REAL | Asian Handicap: 418 valori, 8 bookmaker |
-| Bookmaker diversi | PARTIAL | catalogo con 32 voci, ma `results` dichiara 33 (discrepanza aperta); prezzi osservati per 10 su 32 |
+| Bookmaker diversi | PARTIAL | catalogo **33/33** dopo la correzione; prezzi osservati per 10 bookmaker nel campione |
 | Mercati live | PARTIAL | 1 fixture, 1 bookmaker, 382 valori |
 | Sospensioni e aggiornamenti live | PARTIAL | 17 sospese; due snapshot identici (stesso SHA), nessuna variazione osservata |
 | Timestamp osservazioni | VERIFIED_REAL | `updated` su tutti i valori pre-match |
@@ -71,6 +71,8 @@ Evidenze: `evidence/api_football/capability_run_41240887865/`, con i file piccol
 | Quote storiche pre-match | NOT_TESTED | nessuna query su fixture passate |
 
 **Estensione del probe (autorizzata dall'owner):** i valori delle statistiche vengono estratti dalla risposta `/fixtures/statistics` già scaricata, quindi **nessuna chiamata in più**. Le etichette sono confrontate in modo esatto, null e missing restano distinti da 0, e ogni osservazione è marcata FINAL/IN_PLAY. Run 41242779991 (SHA `c4bdaaa`): 3 partite, tutte in 1H, una con risposta vuota. Evidenze in `evidence/api_football/capability_run_41242779991/`.
+
+**Discrepanza 33/32 risolta (commit `c99e426`, run 41243344579):** `inventory_payload` scartava le righe di catalogo con `name: null`. È un difetto solo del probe di evidenza: il payload dei tool MCP era integro. Dopo la correzione: bookmaker 33/33 (ID 37 con `name: null`), bet 338/338 (ID 341 con `name: null`), bet live 266/266.
 
 Le 39 rotte note su 39 rispondono HTTP 200: è una prova di raggiungibilità, non una certificazione dei parametri.
 

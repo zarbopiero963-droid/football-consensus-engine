@@ -135,8 +135,8 @@
       },
       {
         "field": "corners",
-        "status": "UNAVAILABLE",
-        "evidence": "'Corner Kicks' label MISSING on 4/4 team rows in this in-play sample; kept MISSING, not 0; absence on final snapshots NOT_TESTED"
+        "status": "PARTIAL",
+        "evidence": "run 41243344579: 'Corner Kicks' published on fixture 1490596 (values 0 and 1, IN_PLAY), absent on 1490592 (IN_PLAY). Absence is label omission, not zero; final snapshot NOT_TESTED"
       },
       {
         "field": "possession",
@@ -166,7 +166,7 @@
       {
         "field": "multiple_bookmakers",
         "status": "PARTIAL",
-        "evidence": "catalog 32 listed (provider results field says 33: unexplained discrepancy); prices observed for 10/32 in sample, 22 NO_PRICES_OBSERVED_IN_SAMPLE"
+        "evidence": "catalog 33/33 after fix (id 37 published with null name); prices observed for 10 bookmakers in 3-fixture sample"
       },
       {
         "field": "live_markets",
@@ -204,6 +204,18 @@
         1498927
       ],
       "note": "All 3 sampled fixtures were in 1H at observation (IN_PLAY); 1498927 returned an empty statistics response. 4 team rows with values; 0 FINAL snapshots. Values are in-play snapshots, NOT final match statistics and NOT pre-match data."
+    },
+    "bookmaker_catalog_discrepancy": {
+      "status": "RESOLVED",
+      "root_cause": "capability_inventory.inventory_payload dropped catalog rows whose name was null (probe evidence only; MCP tool payload was lossless)",
+      "fix_commit": "c99e426f738b563e60562e7cc7589ae60e2048e0",
+      "verification_run": 41243344579,
+      "after_fix": {
+        "/odds/bookmakers": "33/33 (id 37 name=null NULL_PUBLISHED)",
+        "/odds/bets": "338/338 (id 341 name=null NULL_PUBLISHED)",
+        "/odds/live/bets": "266/266"
+      },
+      "evidence_dir": "evidence/api_football/capability_run_41243344579/"
     }
   },
   "fpt_comparison": {
