@@ -29,3 +29,20 @@ def test_provider_error_never_passes():
 def test_unknown_key_types_are_not_projected():
     x=fields({5:"bad","ok":3})
     assert "$.ok" in x and "$.5" not in x
+
+
+def test_catalog_keeps_null_named_rows_and_counts_rejections():
+    """Regression: /odds/bookmakers returned 33 rows but catalog kept 32 (null name dropped)."""
+    from bridge.api_football.capability_inventory import inventory_payload
+    payload = {"errors": [], "response": [
+        {"id": 1, "name": "10Bet"}, {"id": 14, "name": None}, {"id": 99, "name": 7},
+        {"id": None, "name": "no id"}, "garbage"]}
+    out = inventory_payload("/odds/bookmakers", payload)
+    assert out["count"] == 5
+    assert out["catalog"] == [
+        {"id": 1, "name": "10Bet"},
+        {"id": 14, "name": None, "name_status": "NULL_PUBLISHED"},
+        {"id": 99, "name": None, "name_status": "INVALID_NAME_TYPE"},
+    ]
+    assert out["catalog_rows_rejected"] == 2
+    assert len(out["catalog"]) + out["catalog_rows_rejected"] == out["count"]
