@@ -86,10 +86,11 @@ ENDPOINTS: dict[str, Endpoint] = {
     "apifootball_transfers": Endpoint("/transfers", ("player", "team"), confidence=_CONFIRMED),
     "apifootball_trophies": Endpoint("/trophies", ("player", "coach"), confidence=_CONFIRMED),
     "apifootball_sidelined": Endpoint("/sidelined", ("player", "coach"), confidence=_CONFIRMED),
-    # The documentation identifies /odds/mapping but further filter
-    # parameter semantics are not yet verified. Publish zero-argument
-    # read-only diagnostic discovery only; do not invent page support.
-    "apifootball_odds_mapping": Endpoint("/odds/mapping", (), confidence=_PENDING),
+    # /odds/mapping: no filter is invented. `page` is added ONLY because the
+    # provider itself declared pagination on a real MCP call (2026-10-31,
+    # paging {"current": 1, "total": 45}, 100 rows/page); without it 44/45
+    # pages were unreachable. Still PENDING until page=2 is verified live.
+    "apifootball_odds_mapping": Endpoint("/odds/mapping", ("page",), confidence=_PENDING, pagination=True),
     "apifootball_live_bets": Endpoint("/odds/live/bets", ("id", "search"), confidence=_CONFIRMED),
 }
 assert all(documented_path(endpoint.path) for endpoint in ENDPOINTS.values())
