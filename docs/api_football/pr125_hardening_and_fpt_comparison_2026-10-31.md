@@ -3,7 +3,7 @@
 Matrice machine-readable: `pr125_hardening_and_fpt_comparison_2026-10-31.json`.
 Distinzione VERIFIED / ASSUMED come da CLAUDE.md §13. **NO MERGE / NO DEPLOY.**
 
-## A. GitHub Actions — `EXTERNAL BILLING BLOCKER` (VERIFIED)
+## A. GitHub Actions — `EXTERNAL BILLING BLOCKER` alle 14:51Z, poi sbloccato e verde
 
 | Workflow | Run | Attempt | Job (id) | Esito |
 |---|---|---|---|---|
@@ -12,6 +12,9 @@ Distinzione VERIFIED / ASSUMED come da CLAUDE.md §13. **NO MERGE / NO DEPLOY.**
 
 Annotazione su tutti i job: *"The job was not started because recent account payments have failed or your spending limit needs to be increased."* `runner_id = 0`, zero step eseguiti, durata 2 s (2026-10-31T14:51:40–48Z).
 Classificazione: **blocco GitHub Billing / runner non assegnato**. Non è un fallimento dei test, non è un errore del codice né della configurazione CI. Nessun nuovo tentativo, nessuna modifica di billing.
+
+**Aggiornamento dopo lo sblocco da parte dell'owner (31-10, ~20:50Z) — VERIFIED:** head PR `157b435` verde.
+`api-football-contract-check` run 41240887064 ✅; `Multi-market tests` run 41240886931 (pytest ✅, decision-postgres ✅); dispatch sullo stesso SHA run 41240715094: pytest 1101 passed / 102 skipped, decision-postgres 101 passed. CodeRabbit: skipped (draft).
 
 ## B. Review del diff della PR e correzioni
 
@@ -40,12 +43,31 @@ Limiti noti, non risolti in questa PR (scope):
 - La paginazione dei bookmaker resta quella del provider, una pagina per chiamata.
 - La matrice dei parametri resta `INCOMPLETE`.
 
-## C. Certificazione reale API-FOOTBALL — `BLOCKED_SOURCE_ACCESS`
+## C. Certificazione reale API-FOOTBALL — `PARTIAL` (reale, a campione)
 
-In questo container non c'è una chiave provider: `/status` senza chiave risponde HTTP 403 "Missing application key". Il MCP live su Render è protetto da OAuth e non è collegato a questa sessione. Leggere la chiave da Render o eseguire job lì è fuori mandato.
+Workflow manuale `api-football-capability-inventory`, lanciato con l'approvazione dell'owner: run **41240887865**, SHA `157b435`, 20:52–20:56Z. Cap applicati: 60 richieste al giorno, 8 al minuto. Nessun secret compare negli artefatti (verificato con grep).
+Evidenze: `evidence/api_football/capability_run_41240887865/`, con i file piccoli e lo SHA-256 dell'artefatto completo, conservato 7 giorni.
 
-Per questo i campi del JSON sono marcati `PARTIAL` solo dove esiste un'osservazione reale del 25-10 (owner session), e `NOT_TESTED` altrove. Nessun campo è `VERIFIED_REAL` in questa sessione.
-Accesso minimo necessario: eseguire manualmente `api-football-capability-inventory` dopo il ripristino del billing, oppure fare le verifiche dal connettore MCP claude.ai.
+| Campo | Stato | Evidenza |
+|---|---|---|
+| ID fixture, data, timezone | VERIFIED_REAL | `fixture.id/date/timezone` su `/fixtures` e `/odds` |
+| Risultato HT | VERIFIED_REAL | `score.halftime.*` int |
+| Risultato FT | PARTIAL | `goals.home` int; `score.fulltime` osservato solo null |
+| Statistiche squadra | VERIFIED_REAL (forma) | `/teams/statistics` 3 campioni, `/fixtures/statistics` 3 fixture |
+| Statistiche giocatori | VERIFIED_REAL (forma) | `/fixtures/players`, `/players` |
+| xG, tiri, corner, possesso | NOT_TESTED | il probe salva la forma, non le etichette `type` né i valori |
+| Cartellini | PARTIAL | solo a livello giocatore (`cards.yellow/red`) |
+| 1X2 | VERIFIED_REAL | Match Winner: 90 valori, 10 bookmaker, 3 fixture |
+| Over/Under | VERIFIED_REAL | 486 valori, 8 bookmaker |
+| Handicap | VERIFIED_REAL | Asian Handicap: 418 valori, 8 bookmaker |
+| Bookmaker diversi | PARTIAL | catalogo con 32 voci, ma `results` dichiara 33 (discrepanza aperta); prezzi osservati per 10 su 32 |
+| Mercati live | PARTIAL | 1 fixture, 1 bookmaker, 382 valori |
+| Sospensioni e aggiornamenti live | PARTIAL | 17 sospese; due snapshot identici (stesso SHA), nessuna variazione osservata |
+| Timestamp osservazioni | VERIFIED_REAL | `updated` su tutti i valori pre-match |
+| `main`/`suspended` pre-match | UNAVAILABLE | MISSING su 10066 valori su 10066, mantenuto missing |
+| Quote storiche pre-match | NOT_TESTED | nessuna query su fixture passate |
+
+Le 39 rotte note su 39 rispondono HTTP 200: è una prova di raggiungibilità, non una certificazione dei parametri.
 
 ## D/E. Confronto FutPythonTrader — `BLOCKED_SOURCE_ACCESS`
 
@@ -56,4 +78,4 @@ Accesso minimo necessario: export read-only eseguito dall'owner di 30 righe stra
 
 ## Verdetto: `INCONCLUSIVE`
 
-Mancano sia l'evidenza reale API-FOOTBALL sia il campione FPT. Il verdetto non deriva da documentazione o mock.
+La certificazione del provider è `PARTIAL`: reale ma a campione. Il confronto FPT resta `BLOCKED_SOURCE_ACCESS`, quindi non si può derivare un verdetto di sostituzione.

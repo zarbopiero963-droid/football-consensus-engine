@@ -3,48 +3,195 @@
   "generated_utc": "2026-10-31",
   "pr": 125,
   "baseline_head": "3ddcda702d4bf96e3fdea3d364051ec5435a2bc2",
-  "status_vocabulary": ["VERIFIED_REAL", "PARTIAL", "UNAVAILABLE", "UNSUPPORTED", "NOT_TESTED"],
+  "status_vocabulary": [
+    "VERIFIED_REAL",
+    "PARTIAL",
+    "UNAVAILABLE",
+    "UNSUPPORTED",
+    "NOT_TESTED"
+  ],
   "github_actions": {
     "verdict": "EXTERNAL_BILLING_BLOCKER",
     "evidence": [
-      {"workflow": "Multi-market tests", "run_id": 40228317477, "run_attempt": 2, "jobs": [
-        {"name": "pytest", "job_id": 124569018095},
-        {"name": "decision-postgres", "job_id": 124569017941}],
-       "run_started_at": "2026-10-31T14:51:44Z", "completed_at": "2026-10-31T14:51:48Z"},
-      {"workflow": "api-football-contract-check", "run_id": 40228317491, "run_attempt": 2, "jobs": [
-        {"name": "contracts", "job_id": 124569006796}],
-       "run_started_at": "2026-10-31T14:51:40Z", "completed_at": "2026-10-31T14:51:45Z"}
+      {
+        "workflow": "Multi-market tests",
+        "run_id": 40228317477,
+        "run_attempt": 2,
+        "jobs": [
+          {
+            "name": "pytest",
+            "job_id": 124569018095
+          },
+          {
+            "name": "decision-postgres",
+            "job_id": 124569017941
+          }
+        ],
+        "run_started_at": "2026-10-31T14:51:44Z",
+        "completed_at": "2026-10-31T14:51:48Z"
+      },
+      {
+        "workflow": "api-football-contract-check",
+        "run_id": 40228317491,
+        "run_attempt": 2,
+        "jobs": [
+          {
+            "name": "contracts",
+            "job_id": 124569006796
+          }
+        ],
+        "run_started_at": "2026-10-31T14:51:40Z",
+        "completed_at": "2026-10-31T14:51:45Z"
+      }
     ],
     "annotation": "The job was not started because recent account payments have failed or your spending limit needs to be increased.",
     "runner_id": 0,
     "steps_executed": 0,
-    "interpretation": "Jobs never started (no runner assigned, zero steps). Not a test failure, not a code error, not a CI config error."
+    "interpretation": "Jobs never started (no runner assigned, zero steps). Not a test failure, not a code error, not a CI config error.",
+    "update_after_owner_unblock": {
+      "verdict": "GREEN_ON_PR_HEAD",
+      "pr_head": "157b435ff2dc50d40d6ffbf1469e46bd8e75597a",
+      "runs": [
+        {
+          "workflow": "api-football-contract-check",
+          "run_id": 41240887064,
+          "job": "contracts",
+          "conclusion": "success"
+        },
+        {
+          "workflow": "Multi-market tests",
+          "run_id": 41240886931,
+          "jobs": {
+            "pytest": "success",
+            "decision-postgres": "success"
+          }
+        },
+        {
+          "workflow": "api-football-capability-inventory (manual, owner-approved)",
+          "run_id": 41240887865,
+          "job": "catalog",
+          "conclusion": "success"
+        },
+        {
+          "workflow": "Multi-market tests (dispatch on session branch, same SHA)",
+          "run_id": 41240715094,
+          "pytest": "1101 passed, 102 skipped",
+          "decision-postgres": "101 passed"
+        }
+      ],
+      "coderabbit": "skipped (draft PR)"
+    }
   },
   "provider_real_certification": {
-    "verdict": "BLOCKED_SOURCE_ACCESS",
-    "reason": "No API-FOOTBALL key in this execution container (unauthenticated probe of /status returned HTTP 403 'Missing application key'). The live MCP on Render is OAuth-protected and not connected to this session. Reading the key from Render or running jobs there is outside the mandate.",
-    "minimum_access_needed": "Owner runs the already-existing manual workflow api-football-capability-inventory (workflow_dispatch, authorized environment secret) once billing is restored, OR performs the field checks below through the connected claude.ai MCP connector.",
-    "historical_evidence_note": "Statuses below marked PARTIAL rely ONLY on the owner-session observations of 2026-10-25 (docs/api_football/live_five_point_sample_2026-10-25.md, contract_live_reconciliation_checkpoint_2026-10-25.md). They were NOT re-run in this session.",
+    "verdict": "PARTIAL",
+    "run_id": 41240887865,
+    "run_sha": "157b435ff2dc50d40d6ffbf1469e46bd8e75597a",
+    "observed_utc": "2026-10-31T20:52:04Z/20:56:13Z",
+    "budget": "APIFOOTBALL_MAX_DAILY_REQUESTS=60, MAX_RPM=8 (workflow caps)",
+    "evidence_dir": "evidence/api_football/capability_run_41240887865/ (small files + SHA256 of full artifact; full artifact retention 7 days)",
+    "scope": "OBSERVED_PROVIDER_SAMPLES_ONLY; 3 pre-match odds fixtures, 1 live odds fixture, 3 fixture statistics samples, 59 distinct fixtures/teams across statistics routes; 39/39 known routes HTTP 200",
+    "probe_limitation": "The probe stores field SHAPES (json paths and types) for statistics, not the statistic type labels or values. Shots, corners, possession and xG therefore cannot be verified at value level from this run.",
     "fields": [
-      {"field": "fixture_id_and_utc_kickoff", "status": "PARTIAL", "evidence": "2026-10-25 /fixtures?live=all HTTP 200, 104 results; field-level UTC check not recorded"},
-      {"field": "leagues_seasons", "status": "PARTIAL", "evidence": "2026-10-25 /teams/statistics league 210 season 2026 answered; no league catalog check"},
-      {"field": "results_ft", "status": "NOT_TESTED", "evidence": null},
-      {"field": "results_ht", "status": "NOT_TESTED", "evidence": null},
-      {"field": "team_statistics", "status": "PARTIAL", "evidence": "/fixtures/statistics on fixtures 1548550, 1549040; /teams/statistics team 616"},
-      {"field": "player_statistics", "status": "PARTIAL", "evidence": "/players teams 616 and 406 season 2026, paging 1/2 observed"},
-      {"field": "xg", "status": "PARTIAL", "evidence": "expected_goals observed on 2 fixtures only; availability per league/season unknown"},
-      {"field": "shots_total_on_target", "status": "NOT_TESTED", "evidence": "statistics observed as heterogeneous; field-level values not recorded"},
-      {"field": "corners", "status": "NOT_TESTED", "evidence": null},
-      {"field": "possession", "status": "NOT_TESTED", "evidence": "percent strings observed, specific field not recorded"},
-      {"field": "cards", "status": "NOT_TESTED", "evidence": null},
-      {"field": "odds_1x2", "status": "NOT_TESTED", "evidence": "bet-level 1X2 presence not recorded"},
-      {"field": "odds_over_under", "status": "NOT_TESTED", "evidence": null},
-      {"field": "odds_handicap", "status": "NOT_TESTED", "evidence": null},
-      {"field": "multiple_bookmakers", "status": "PARTIAL", "evidence": "/odds fixture 1557450: 9 operators; 1557448: 10; catalog 33 bookmakers"},
-      {"field": "live_markets", "status": "PARTIAL", "evidence": "/odds/live fixture 1548550: 48-52 markets, 248-291 selections"},
-      {"field": "live_suspensions_updates", "status": "PARTIAL", "evidence": "aggregate suspended counts across two provider updates; per-selection diff not retained"},
-      {"field": "observation_timestamps", "status": "PARTIAL", "evidence": "provider 'update' on /odds/live observed (2026-10-25T17:27:29Z, 17:28:25Z)"},
-      {"field": "historical_prematch_odds_retention", "status": "NOT_TESTED", "evidence": "provider docs declare limited retention; /odds historical returned 0 results in run 40205480029"}
+      {
+        "field": "fixture_id_and_utc_kickoff",
+        "status": "VERIFIED_REAL",
+        "evidence": "/fixtures and /odds: fixture.id int, fixture.date str, fixture.timezone str (field_registry.csv)"
+      },
+      {
+        "field": "leagues_seasons",
+        "status": "PARTIAL",
+        "evidence": "season fields present in /teams/statistics and /players samples; no league/season catalog completeness check"
+      },
+      {
+        "field": "results_ft",
+        "status": "PARTIAL",
+        "evidence": "goals.home int observed; score.fulltime.home observed only as null in this sample (no finished match in fulltime path)"
+      },
+      {
+        "field": "results_ht",
+        "status": "VERIFIED_REAL",
+        "evidence": "score.halftime.home/away observed as int in /fixtures"
+      },
+      {
+        "field": "team_statistics",
+        "status": "VERIFIED_REAL",
+        "evidence": "/teams/statistics 3 samples, 660 field paths; /fixtures/statistics 3 fixtures (statistics[].type str, value int|str)"
+      },
+      {
+        "field": "player_statistics",
+        "status": "VERIFIED_REAL",
+        "evidence": "/fixtures/players 3 fixtures; /players 6 samples"
+      },
+      {
+        "field": "xg",
+        "status": "NOT_TESTED",
+        "evidence": "statistic type labels not retained by the probe; 2026-10-25 owner session saw expected_goals on 2 fixtures (historical, not re-verified)"
+      },
+      {
+        "field": "shots_total_on_target",
+        "status": "NOT_TESTED",
+        "evidence": "statistic type labels not retained"
+      },
+      {
+        "field": "corners",
+        "status": "NOT_TESTED",
+        "evidence": "statistic type labels not retained; live market 'Match Corners' is an odds market, not a statistic"
+      },
+      {
+        "field": "possession",
+        "status": "NOT_TESTED",
+        "evidence": "statistic type labels not retained"
+      },
+      {
+        "field": "cards",
+        "status": "PARTIAL",
+        "evidence": "player-level cards.yellow/cards.red int in /fixtures/players; team-level card statistic not verified"
+      },
+      {
+        "field": "odds_1x2",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'Match Winner' 90 values, 10 bookmakers, 3 fixtures; live 'Fulltime Result' 3 values, 1 bookmaker"
+      },
+      {
+        "field": "odds_over_under",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'Goals Over/Under' 486 values, 8 bookmakers; live 'Over/Under Line' 10 values"
+      },
+      {
+        "field": "odds_handicap",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'Asian Handicap' 418 values, 8 bookmakers; live handicap column filled on 174 values"
+      },
+      {
+        "field": "multiple_bookmakers",
+        "status": "PARTIAL",
+        "evidence": "catalog 32 listed (provider results field says 33: unexplained discrepancy); prices observed for 10/32 in sample, 22 NO_PRICES_OBSERVED_IN_SAMPLE"
+      },
+      {
+        "field": "live_markets",
+        "status": "PARTIAL",
+        "evidence": "/odds/live fixture 1520959: 382 values, 1 bookmaker, single comparable snapshot"
+      },
+      {
+        "field": "live_suspensions_updates",
+        "status": "PARTIAL",
+        "evidence": "17/382 suspended=True observed; two snapshots identical SHA-256, NOT_OBSERVED_DURING_WINDOW for changes"
+      },
+      {
+        "field": "observation_timestamps",
+        "status": "VERIFIED_REAL",
+        "evidence": "pre-match 'updated' 2026-10-31T17:22:17+00:00 on all 10066 values; live 'updated' present"
+      },
+      {
+        "field": "prematch_suspended_main_flags",
+        "status": "UNAVAILABLE",
+        "evidence": "pre-match main/suspended MISSING on 10066/10066 values (kept MISSING, not false)"
+      },
+      {
+        "field": "historical_prematch_odds_retention",
+        "status": "NOT_TESTED",
+        "evidence": "no past-fixture odds query in this run"
+      }
     ]
   },
   "fpt_comparison": {
@@ -70,5 +217,6 @@
     },
     "metrics_note": "null = not computed; never zero. No demo rows substituted."
   },
-  "final_verdict": "INCONCLUSIVE"
+  "final_verdict": "INCONCLUSIVE",
+  "final_verdict_reason": "Provider certification is PARTIAL (real, scoped); FPT comparison remains BLOCKED_SOURCE_ACCESS, so no replacement verdict can be derived."
 }

@@ -1,0 +1,15 @@
+[
+  {
+    "path": "/odds/live",
+    "fixture": 1520959,
+    "status": "LIVE_DELTA_OBSERVED",
+    "delta": {
+      "added": 0,
+      "removed": 0,
+      "changes": [],
+      "status": "NOT_OBSERVED_DURING_WINDOW"
+    },
+    "previous_sha256": "be684c03e97952b4064fbd603992d21d99c544e02184d868e28a10da5b6003a3",
+    "current_sha256": "be684c03e97952b4064fbd603992d21d99c544e02184d868e28a10da5b6003a3"
+  }
+]
