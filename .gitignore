@@ -20,9 +20,3 @@ venv/
 # captured pages, screenshots, network bodies
 *.png
 *.bin
-prospective/raw/footinsights/
-prospective/raw/pinnacle/
-backtest/raw/html/
-backtest/raw/statarea/
-staging/**/page.html
-staging/**/all.js
