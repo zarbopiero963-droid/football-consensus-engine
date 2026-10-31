@@ -8,7 +8,8 @@ from typing import Any
 
 def odds_page_manifest(data: dict[str, Any], *, max_fixtures: int = 200) -> dict[str, Any]:
     envelope=data.get("data",data)
-    if not isinstance(envelope,dict) or envelope.get("get","").lstrip("/")!="odds":
+    if not isinstance(envelope,dict) or not isinstance(envelope.get("get"),str) \
+            or envelope["get"].lstrip("/")!="odds":
         raise ValueError("INVALID_ODDS_ENVELOPE")
     response=envelope.get("response")
     paging=envelope.get("paging")
@@ -23,16 +24,17 @@ def odds_page_manifest(data: dict[str, Any], *, max_fixtures: int = 200) -> dict
         fixture_id=item["fixture"].get("id")
         if type(fixture_id) is not int or fixture_id<1:
             raise ValueError("INVALID_ODDS_FIXTURE_ID")
-        bookmakers=item.get("bookmakers",[])
+        # Missing stays missing: an absent list is malformed, never zero.
+        bookmakers=item.get("bookmakers")
         if not isinstance(bookmakers,list):
             raise ValueError("INVALID_ODDS_BOOKMAKERS")
         markets=0
         selections=0
         for book in bookmakers:
-            if not isinstance(book,dict) or not isinstance(book.get("bets",[]),list):
+            if not isinstance(book,dict) or not isinstance(book.get("bets"),list):
                 raise ValueError("INVALID_ODDS_MARKETS")
             for bet in book["bets"]:
-                if not isinstance(bet,dict) or not isinstance(bet.get("values",[]),list):
+                if not isinstance(bet,dict) or not isinstance(bet.get("values"),list):
                     raise ValueError("INVALID_ODDS_SELECTIONS")
                 markets+=1
                 selections+=len(bet["values"])

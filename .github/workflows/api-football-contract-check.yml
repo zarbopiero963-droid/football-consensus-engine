@@ -1,7 +1,7 @@
 name: api-football-contract-check
 on:
   pull_request:
-    paths: ['bridge/api_football/**','scripts/check_api_football_contracts.py','scripts/verify_api_football_evidence.py','evidence/api_football/**','tests/test_api_football_registry.py','tests/test_api_football_five_point_evidence.py','tests/test_api_football_five_point_scan.py','tests/test_api_football_full_contract_audit.py','docs/api_football/**','.github/workflows/api-football-contract-check.yml']
+    paths: ['bridge/api_football/**','scripts/check_api_football_contracts.py','scripts/verify_api_football_evidence.py','evidence/api_football/**','tests/test_api_football_registry.py','tests/test_api_football_five_point_evidence.py','tests/test_api_football_five_point_scan.py','tests/test_api_football_full_contract_audit.py','tests/test_odds_manifest_and_parameter_matrix.py','scripts/print_api_football_parameter_matrix.py','docs/api_football/**','.github/workflows/api-football-contract-check.yml']
   workflow_dispatch:
 jobs:
   contracts:
@@ -29,6 +29,8 @@ jobs:
         run: |
           python -m pytest -q tests/test_api_football_full_contract_audit.py
           python -c "import json; from bridge.api_football.full_contract_audit import audit_contract_coverage; print(json.dumps({k:v for k,v in audit_contract_coverage().items() if k != 'routes'}, sort_keys=True))"
+      - name: Bounded /odds manifest and parameter matrix regression
+        run: python -m pytest -q tests/test_odds_manifest_and_parameter_matrix.py
       - name: Inspect signed real LIVE scanner evidence for root causes
         run: python scripts/inspect_api_football_run_40218205457.py
       - name: Assert live gate remains off and no secret enters output

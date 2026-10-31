@@ -96,15 +96,30 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 # Never pretend a truncated list of prices is complete.
                 from .odds_manifest import odds_page_manifest
                 try:
-                    manifest=odds_page_manifest(data)
+                    manifest = odds_page_manifest(data)
+                except ValueError as exc:
+                    manifest = None
+                    manifest_error = str(exc)
+                if manifest is not None and len(json.dumps(
+                        manifest, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) <= _MAX_MCP_DATA_BYTES:
                     result["status"] = "PARTIAL_ODDS_MANIFEST"
+                    # Keep provenance explicit: a mock manifest is not real evidence.
+                    result["source_status"] = status
                     result["data"] = manifest
                     result["pagination"] = manifest["paging"]
+                    result["http_status"] = data.get("http_status")
                     result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else 1
                     result["cache_status"] = cache_status
+                    if status == "REAL_API_RESPONSE":
+                        result["quota_remaining"] = {
+                            "day": data.get("quota_remaining_provider_day"),
+                            "minute": data.get("quota_remaining_provider_minute"),
+                        }
                     return result
-                except ValueError:
-                    pass
+                if manifest is None:
+                    result["manifest_error"] = {"code": manifest_error}
+                else:
+                    result["manifest_error"] = {"code": "ODDS_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"}
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}

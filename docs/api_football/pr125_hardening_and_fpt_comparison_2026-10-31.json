@@ -1,0 +1,74 @@
+{
+  "report": "PR125-HARDENING-FPT-COMPARISON",
+  "generated_utc": "2026-10-31",
+  "pr": 125,
+  "baseline_head": "3ddcda702d4bf96e3fdea3d364051ec5435a2bc2",
+  "status_vocabulary": ["VERIFIED_REAL", "PARTIAL", "UNAVAILABLE", "UNSUPPORTED", "NOT_TESTED"],
+  "github_actions": {
+    "verdict": "EXTERNAL_BILLING_BLOCKER",
+    "evidence": [
+      {"workflow": "Multi-market tests", "run_id": 40228317477, "run_attempt": 2, "jobs": [
+        {"name": "pytest", "job_id": 124569018095},
+        {"name": "decision-postgres", "job_id": 124569017941}],
+       "run_started_at": "2026-10-31T14:51:44Z", "completed_at": "2026-10-31T14:51:48Z"},
+      {"workflow": "api-football-contract-check", "run_id": 40228317491, "run_attempt": 2, "jobs": [
+        {"name": "contracts", "job_id": 124569006796}],
+       "run_started_at": "2026-10-31T14:51:40Z", "completed_at": "2026-10-31T14:51:45Z"}
+    ],
+    "annotation": "The job was not started because recent account payments have failed or your spending limit needs to be increased.",
+    "runner_id": 0,
+    "steps_executed": 0,
+    "interpretation": "Jobs never started (no runner assigned, zero steps). Not a test failure, not a code error, not a CI config error."
+  },
+  "provider_real_certification": {
+    "verdict": "BLOCKED_SOURCE_ACCESS",
+    "reason": "No API-FOOTBALL key in this execution container (unauthenticated probe of /status returned HTTP 403 'Missing application key'). The live MCP on Render is OAuth-protected and not connected to this session. Reading the key from Render or running jobs there is outside the mandate.",
+    "minimum_access_needed": "Owner runs the already-existing manual workflow api-football-capability-inventory (workflow_dispatch, authorized environment secret) once billing is restored, OR performs the field checks below through the connected claude.ai MCP connector.",
+    "historical_evidence_note": "Statuses below marked PARTIAL rely ONLY on the owner-session observations of 2026-10-25 (docs/api_football/live_five_point_sample_2026-10-25.md, contract_live_reconciliation_checkpoint_2026-10-25.md). They were NOT re-run in this session.",
+    "fields": [
+      {"field": "fixture_id_and_utc_kickoff", "status": "PARTIAL", "evidence": "2026-10-25 /fixtures?live=all HTTP 200, 104 results; field-level UTC check not recorded"},
+      {"field": "leagues_seasons", "status": "PARTIAL", "evidence": "2026-10-25 /teams/statistics league 210 season 2026 answered; no league catalog check"},
+      {"field": "results_ft", "status": "NOT_TESTED", "evidence": null},
+      {"field": "results_ht", "status": "NOT_TESTED", "evidence": null},
+      {"field": "team_statistics", "status": "PARTIAL", "evidence": "/fixtures/statistics on fixtures 1548550, 1549040; /teams/statistics team 616"},
+      {"field": "player_statistics", "status": "PARTIAL", "evidence": "/players teams 616 and 406 season 2026, paging 1/2 observed"},
+      {"field": "xg", "status": "PARTIAL", "evidence": "expected_goals observed on 2 fixtures only; availability per league/season unknown"},
+      {"field": "shots_total_on_target", "status": "NOT_TESTED", "evidence": "statistics observed as heterogeneous; field-level values not recorded"},
+      {"field": "corners", "status": "NOT_TESTED", "evidence": null},
+      {"field": "possession", "status": "NOT_TESTED", "evidence": "percent strings observed, specific field not recorded"},
+      {"field": "cards", "status": "NOT_TESTED", "evidence": null},
+      {"field": "odds_1x2", "status": "NOT_TESTED", "evidence": "bet-level 1X2 presence not recorded"},
+      {"field": "odds_over_under", "status": "NOT_TESTED", "evidence": null},
+      {"field": "odds_handicap", "status": "NOT_TESTED", "evidence": null},
+      {"field": "multiple_bookmakers", "status": "PARTIAL", "evidence": "/odds fixture 1557450: 9 operators; 1557448: 10; catalog 33 bookmakers"},
+      {"field": "live_markets", "status": "PARTIAL", "evidence": "/odds/live fixture 1548550: 48-52 markets, 248-291 selections"},
+      {"field": "live_suspensions_updates", "status": "PARTIAL", "evidence": "aggregate suspended counts across two provider updates; per-selection diff not retained"},
+      {"field": "observation_timestamps", "status": "PARTIAL", "evidence": "provider 'update' on /odds/live observed (2026-10-25T17:27:29Z, 17:28:25Z)"},
+      {"field": "historical_prematch_odds_retention", "status": "NOT_TESTED", "evidence": "provider docs declare limited retention; /odds historical returned 0 results in run 40205480029"}
+    ]
+  },
+  "fpt_comparison": {
+    "verdict": "BLOCKED_SOURCE_ACCESS",
+    "source_of_truth": "PostgreSQL 18 database matchpilot_staging (port 5434) on the MatchPilot VPS; fpt_match_facts reported at 161,801 rows (MatchPilot issue #12, 2026-10-22 comment)",
+    "accessible_from_this_session": false,
+    "reasons": [
+      "No VPS / database credentials in this container (by design; /srv/matchpilot/secrets/fpt.env is root-600 on the VPS).",
+      "MatchPilot repository contains only synthetic test seeds (test/helpers/fpt-seed.mjs), excluded by mandate.",
+      "No public export of fpt_match_facts exists in the repository.",
+      "Encrypted backups were not touched."
+    ],
+    "minimum_access_needed": "Owner-run, read-only export of 30 stratified rows (>=5 leagues, >=2 seasons, non-demo, deduplicated with provenance) from matchpilot_staging.fpt_match_facts containing: match_key, provider_match_id, dataset/league, season, kickoff (raw + UTC), home, away, FT/HT score, xG, shots, corners, possession, cards, 1X2 odds and their capture timestamps. Plus an authorized API-FOOTBALL lookup path (see provider_real_certification.minimum_access_needed).",
+    "sample_matches": [],
+    "matrix_rows": [],
+    "metrics": {
+      "matches_found_pct": null,
+      "result_agreement_pct": null,
+      "stat_field_coverage_pct": null,
+      "numeric_agreement_within_tolerance_pct": null,
+      "historical_odds_availability_pct": null,
+      "lookahead_safe_backtest_compatible": null
+    },
+    "metrics_note": "null = not computed; never zero. No demo rows substituted."
+  },
+  "final_verdict": "INCONCLUSIVE"
+}
