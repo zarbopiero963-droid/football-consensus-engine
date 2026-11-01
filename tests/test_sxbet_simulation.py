@@ -467,12 +467,23 @@ def test_signer_never_imports_bridge_or_network_libraries():
 
 
 def test_no_submission_code_in_signer_or_sxbet_module():
+    # Intentional change (PR feat/sxbet-signer-adapter-cancel-ledger): signer/rest_adapter.py and
+    # signer/cancellation.py are request BUILDERS for the documented POST /orders-v3 and DELETE /orders-v3*
+    # routes, so the HTTP method names appear there as data (RestRequest.method). They still contain no
+    # network call (no .post( / .delete( / client library: see also the AST import checks) and no heartbeat
+    # sender. Every other signer module and the whole bridge/sxbet package keep the full ban.
+    builders = {ROOT / "signer" / "rest_adapter.py", ROOT / "signer" / "cancellation.py"}
     files = list((ROOT / "signer").rglob("*.py")) + list((ROOT / "bridge" / "sxbet").rglob("*.py"))
     for p in files:
         src = p.read_text(encoding="utf-8")
-        for needle in ("requests.post", "httpx.post", '"POST"', '"DELETE"', "'POST'", "'DELETE'",
-                       ".post(", ".delete(", "heartbeat"):
+        needles = ["requests.post", "httpx.post", ".post(", ".delete(", "heartbeat"]
+        if p not in builders:
+            needles += ['"POST"', '"DELETE"', "'POST'", "'DELETE'"]
+        for needle in needles:
             assert needle not in src, (p, needle)
+    for p in builders:
+        src = p.read_text(encoding="utf-8")
+        assert "RestRequest(" in src  # builds request objects; the I/O is an abstract sender's job
 
 
 def test_signer_deps_not_in_runtime_requirements():

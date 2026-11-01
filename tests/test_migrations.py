@@ -80,3 +80,17 @@ def test_sxbet_rate_limits_migration_is_versioned_consecutive_and_additive():
     assert 'CREATE TABLE IF NOT EXISTS sxbet_rate_cooldowns' in m7.sql
     for word in ('DROP ','TRUNCATE','DELETE ','ALTER ','UPDATE '):
         assert word not in m7.sql.upper()
+
+
+def test_signer_ledger_anchor_migration_is_additive_and_append_only():
+    items=migrations.load_migrations()
+    m8=items[7]
+    assert m8.version==8 and m8.name=='0008_signer_ledger_anchor.sql'
+    sql=m8.sql.upper()
+    assert 'CREATE TABLE IF NOT EXISTS SIGNER_LEDGER_ANCHORS' in sql
+    assert 'CREATE TABLE IF NOT EXISTS SIGNER_LEDGER_WRITER_LEASES' in sql
+    assert 'PRIMARY KEY (LEDGER_ID, SEQ)' in sql
+    # Append-only is enforced in the database, not only by the signer.
+    assert 'CREATE OR REPLACE TRIGGER' in sql and 'BEFORE UPDATE OR DELETE' in sql and 'BEFORE TRUNCATE' in sql
+    for word in ('DROP ','ALTER TABLE','DELETE FROM','TRUNCATE TABLE','UPDATE SIGNER','INSERT INTO'):
+        assert word not in sql, word

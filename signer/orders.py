@@ -60,12 +60,35 @@ POISONS the instance: every later write raises LEDGER_POISONED until the
 process restarts and replays the file (a torn last line then fails closed as
 LEDGER_CORRUPT and needs an owner decision).
 
-Residual (documented) limitations: a hash chain cannot detect truncation of the
-TAIL of the file by someone with write access; anchoring the head hash outside
-the signer host is an owner deployment decision. The pre-append check reads
-only the size and the last line: an in-place rewrite of earlier lines that
-keeps the size is detected only at the next replay. flock is advisory and
-local: the ledger must live on a local filesystem of the signer host.
+External anchor (optional, signer/anchor.py): with an `AnchorStore` the
+ledger (a) takes a writer LEASE from the store instead of flock (LEDGER_LOCKED
+for a second writer, on any host), (b) after EVERY fsync'd append advances the
+anchored head (seq = number of lines, head hash, fencing token) -- write-ahead
+order: local line first, anchor second, so a crash in between leaves the local
+file exactly one step AHEAD of the anchor, never behind -- and (c) refuses to
+start when the local tail is behind the anchor (truncation / rollback:
+LEDGER_ANCHOR_AHEAD_OF_LOCAL), different at the anchored seq (fork / rewrite:
+LEDGER_ANCHOR_HASH_MISMATCH), ahead of it (LEDGER_LOCAL_AHEAD_OF_ANCHOR), or
+not anchored at all (LEDGER_ANCHOR_MISSING). Local-ahead and missing are
+accepted only with `owner_ack_head` equal to the exact local head hash, i.e. an
+explicit owner decision after reviewing the extra lines. An unreachable store
+fails closed (LEDGER_ANCHOR_UNREACHABLE at start; LEDGER_ANCHOR_WRITE_FAILED +
+poison on append); a stale writer whose lease was taken over is LEDGER_FENCED.
+
+Residual (documented) limitations: without an anchor, a hash chain cannot detect
+truncation of the TAIL of the file by someone with write access. The pre-append
+check reads only the size and the last line: an in-place rewrite of earlier
+lines that keeps the size is detected only at the next replay. In local-only
+mode flock is advisory and local: the ledger must live on a local filesystem of
+the signer host.
+
+REJECTED is not a dead end once the signature was released (H3): exchange
+evidence that the order rested or executed after all (a fill, a live row) moves
+it to SUBMITTED / OPEN / PARTIALLY_FILLED / FILLED (or CANCELLED / EXPIRED with
+a fill), so no financial event is lost. A never-signed REJECTED stays final.
+
+CANCEL_REQUEST lines (signer/cancellation.py) consume a cancel-approval nonce and
+record what was requested; they never change any order state or exposure.
 """
 from __future__ import annotations
 
@@ -79,6 +102,8 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Mapping
+
+from . import anchor as an
 
 LEDGER_SCHEMA = "sxbet.order_ledger.v1"
 GENESIS_PREV = "sha256:" + "0" * 64
@@ -106,13 +131,15 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     CANCELLED: frozenset({CANCELLED, SETTLED}),   # CANCELLED -> CANCELLED only to record a late fill
     EXPIRED: frozenset({EXPIRED, FILLED, SETTLED}),  # EXPIRED -> EXPIRED / FILLED only to record a late fill
     SETTLED: frozenset(),
-    REJECTED: frozenset(),
+    # H3: only on exchange evidence, only after the signature was released, CANCELLED/EXPIRED only with a fill.
+    REJECTED: frozenset({SUBMITTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED}),
 }
 RESERVING = frozenset({AUTHORIZED, SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED, EXPIRED_UNCONFIRMED})
 MATCHED_HOLDING = frozenset({SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED,
                              EXPIRED_UNCONFIRMED})
 OPEN_ORDER_STATES = RESERVING
 TERMINAL = frozenset({SETTLED, REJECTED})
+CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
 
 # A 404 from GET /orders-v3/{orderId} proves nothing about an order in flight. A
 # "reconciled absent" verdict (the only path to a re-send) needs: 404 by id AND by
@@ -133,6 +160,8 @@ _ADDRESS = re.compile(r"^0x[0-9a-f]{40}$")
 _KEY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _REASON = re.compile(r"^[A-Z0-9_]{1,64}$")
+_LEDGER_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+_SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class LedgerError(RuntimeError):
@@ -270,13 +299,23 @@ def evidence_from_exchange(order: Order, *, lookup: Mapping[str, Any] | None,
                 return none("EVIDENCE_INACTIVE_REASON_UNKNOWN")
         else:
             return none("EVIDENCE_STATUS_UNKNOWN")
+        reason = "EXCHANGE_ORDER_" + status
+        if order.state == REJECTED:
+            # H3: a rejection reported after the signature was released can be contradicted by the exchange.
+            if not order.signature_released:
+                return none("EVIDENCE_REJECTED_NEVER_SIGNED")
+            if target in (CANCELLED, EXPIRED) and not filled:
+                return none("EVIDENCE_REJECTED_NO_EXECUTION")  # off the book, nothing executed: hold continues
+            reason = "REJECTED_ORDER_FOUND_EXECUTED" if filled else "REJECTED_ORDER_FOUND_LIVE"
         pnl = None
         if target in (FILLED, CANCELLED, EXPIRED) and filled and fills_ok and fills.get("complete") is True:
             pnl = _settlement_pnl(order, fills["fills"], filled)
-        return Evidence(target, filled, "EXCHANGE_ORDER_" + status, sha, pnl)
+        return Evidence(target, filled, reason, sha, pnl)
     if kind == "NOT_FOUND":
         if order.state in (EXPIRED_UNCONFIRMED, EXPIRED, CANCELLED):
             return _not_found_after_expiry(order, fills if fills_ok else None, now, sha)
+        if order.state in (REJECTED, PARTIALLY_FILLED):
+            return _not_found_late_fill(order, fills if fills_ok else None, sha)
         if order.filled or not fills_ok or fills.get("complete") is not True or fills["fills"]:
             return none("EVIDENCE_NOT_FOUND_INCONCLUSIVE")
         if now > order.expiry + EXPIRY_GRACE_SECONDS:
@@ -310,6 +349,21 @@ def _own_fill_sum(order: Order, fills: Mapping[str, Any] | None) -> int | None:
         if f["status"] in _COUNTED_FILL_STATUSES:
             total += amount
     return total
+
+
+def _not_found_late_fill(order: Order, fills: Mapping[str, Any] | None, sha: str) -> Evidence:
+    """404 for a REJECTED (signature released) or PARTIALLY_FILLED order: the order row may be gone (it is
+    purged ~10-20 min after INACTIVE), but complete fills of this order that exceed the recorded fill are
+    an execution that must be recorded. Never releases anything else."""
+    none = Evidence(None, None, "EVIDENCE_NOT_FOUND_INCONCLUSIVE", sha)
+    if order.state == REJECTED and not order.signature_released:
+        return none
+    total = _own_fill_sum(order, fills)
+    if total is None or total > order.stake or total <= order.filled:
+        return none
+    target = FILLED if total == order.stake else PARTIALLY_FILLED
+    reason = "LATE_FILL_AFTER_REJECT" if order.state == REJECTED else "LATE_FILL_WHILE_NOT_FOUND"
+    return Evidence(target, total, reason, sha)
 
 
 def _not_found_after_expiry(order: Order, fills: Mapping[str, Any] | None, now: int, sha: str) -> Evidence:
@@ -361,13 +415,17 @@ def _settlement_pnl(order: Order, rows: list, filled: int) -> int | None:
 # ---------------------------------------------------------------- ledger
 class OrderLedger:
     def __init__(self, path: str, *, signer_id: str, signer_address: str, clock: Callable[[], float],
-                 _create: bool = False):
+                 _create: bool = False, anchor: "an.AnchorStore | None" = None, owner_ack_head: str | None = None):
         if not isinstance(signer_address, str) or not _ADDRESS.fullmatch(signer_address.lower()):
             raise LedgerError("LEDGER_SIGNER_ADDRESS_INVALID")
         self._path = path
         self.signer_id = signer_id
         self.signer_address = signer_address.lower()
+        self.ledger_id = f"{signer_id}:{self.signer_address}"
         self._clock = clock
+        self._anchor = anchor
+        self._lease = None
+        self._seq = 0               # number of lines in the file (GENESIS = 1)
         self._lock = threading.RLock()
         self._orders: dict[str, Order] = {}
         self._by_order_id: dict[str, str] = {}
@@ -378,13 +436,28 @@ class OrderLedger:
         self._size = 0              # bytes this instance knows are in the file
         self._last_line = b""       # last line (with "\n"), hash == self._prev
         self._poisoned = False
-        self._fd = self._open_locked(path, create=_create)
+        self._flocked = False
+        if anchor is not None:
+            if not isinstance(signer_id, str) or not _LEDGER_ID.fullmatch(self.ledger_id):
+                raise LedgerError("LEDGER_ID_INVALID")
+            try:
+                self._lease = anchor.acquire_writer(self.ledger_id)
+            except an.AnchorLocked:
+                raise LedgerError("LEDGER_LOCKED") from None  # another writer, on any host
+            except Exception:
+                raise LedgerError("LEDGER_ANCHOR_UNREACHABLE") from None
         try:
+            if anchor is not None and _create and self._anchor_head() is not None:
+                raise LedgerError("LEDGER_ANCHOR_EXISTS")  # a fresh file never replaces an anchored history
+            self._fd = self._open_locked(path, create=_create, lock=anchor is None)
+            self._flocked = anchor is None
             if _create:
                 self._append({"kind": "GENESIS", "schema": LEDGER_SCHEMA, "signer_id": signer_id,
                               "signer_address": self.signer_address})
             else:
-                self._replay()
+                hashes = self._replay()
+                if anchor is not None:
+                    self._verify_anchor(hashes, owner_ack_head)
         except BaseException:
             self.close()
             raise
@@ -392,16 +465,73 @@ class OrderLedger:
     # ---- construction (explicit: a missing ledger never means "start from zero") ----
     @classmethod
     def create(cls, path: str, *, signer_id: str, signer_address: str,
-               clock: Callable[[], float] = time.time) -> "OrderLedger":
-        return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock, _create=True)
+               clock: Callable[[], float] = time.time, anchor: "an.AnchorStore | None" = None) -> "OrderLedger":
+        return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock, _create=True,
+                   anchor=anchor)
 
     @classmethod
     def open(cls, path: str, *, signer_id: str, signer_address: str,
-             clock: Callable[[], float] = time.time) -> "OrderLedger":
-        return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock)
+             clock: Callable[[], float] = time.time, anchor: "an.AnchorStore | None" = None,
+             owner_ack_head: str | None = None) -> "OrderLedger":
+        """`owner_ack_head`: only for an owner who reviewed the local lines beyond the anchored head (or a
+        ledger never anchored before): the exact local head hash to anchor. Anything else is refused."""
+        return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock, anchor=anchor,
+                   owner_ack_head=owner_ack_head)
+
+    # ---- external anchor ----
+    @property
+    def anchored(self) -> bool:
+        return self._anchor is not None
+
+    @property
+    def fencing_token(self) -> int | None:
+        return None if self._lease is None else self._lease.token
+
+    @property
+    def head_hash(self) -> str:
+        return self._prev
+
+    @property
+    def seq(self) -> int:
+        return self._seq
+
+    def _anchor_head(self) -> "an.AnchorHead | None":
+        try:
+            return self._anchor.head(self.ledger_id)
+        except Exception:
+            raise LedgerError("LEDGER_ANCHOR_UNREACHABLE") from None
+
+    def _anchor_advance(self, expected_seq: int, seq: int, head_hash: str) -> None:
+        try:
+            self._anchor.advance(self.ledger_id, token=self._lease.token, expected_seq=expected_seq, seq=seq,
+                                 head_hash=head_hash)
+        except an.AnchorFenced:
+            raise LedgerError("LEDGER_FENCED") from None
+        except an.AnchorConflict:
+            raise LedgerError("LEDGER_ANCHOR_CONFLICT") from None
+        except Exception:
+            raise LedgerError("LEDGER_ANCHOR_WRITE_FAILED") from None
+
+    def _verify_anchor(self, hashes: list[str], owner_ack_head: str | None) -> None:
+        head = self._anchor_head()
+        local_seq, local_head = len(hashes), self._prev
+        acked = isinstance(owner_ack_head, str) and owner_ack_head == local_head
+        if head is None:
+            if not acked:
+                raise LedgerError("LEDGER_ANCHOR_MISSING")
+            self._anchor_advance(0, local_seq, local_head)
+            return
+        if head.seq > local_seq:
+            raise LedgerError("LEDGER_ANCHOR_AHEAD_OF_LOCAL")  # truncated tail or rolled-back file
+        if hashes[head.seq - 1] != head.head_hash:
+            raise LedgerError("LEDGER_ANCHOR_HASH_MISMATCH")   # rewritten history / fork
+        if head.seq < local_seq:
+            if not acked:
+                raise LedgerError("LEDGER_LOCAL_AHEAD_OF_ANCHOR")
+            self._anchor_advance(head.seq, local_seq, local_head)
 
     @staticmethod
-    def _open_locked(path: str, *, create: bool) -> int:
+    def _open_locked(path: str, *, create: bool, lock: bool = True) -> int:
         flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
         try:
             fd = os.open(path, flags | (os.O_CREAT | os.O_EXCL if create else 0), 0o600)
@@ -411,6 +541,8 @@ class OrderLedger:
             raise LedgerError("LEDGER_MISSING") from None
         except OSError:
             raise LedgerError("LEDGER_UNREADABLE") from None
+        if not lock:
+            return fd  # anchored mode: the store's writer lease replaces the local flock
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -422,11 +554,17 @@ class OrderLedger:
         """Release the file lock. The instance refuses every later write (LEDGER_CLOSED)."""
         with self._lock:
             fd, self._fd = self._fd, None
-            if fd is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(fd)
+            lease, self._lease = self._lease, None
+            try:
+                if fd is not None:
+                    try:
+                        if self._flocked:
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(fd)
+            finally:
+                if lease is not None:
+                    lease.release()
 
     def __enter__(self) -> "OrderLedger":
         return self
@@ -491,6 +629,15 @@ class OrderLedger:
         self._size += len(data)
         self._last_line = data
         self._prev = _line_hash(line)
+        self._seq += 1
+        if self._anchor is not None:
+            # Write-ahead order: the line is durable locally BEFORE the anchor moves, so a crash here leaves
+            # the file one line ahead of the anchor (refused at start until the owner acknowledges it).
+            try:
+                self._anchor_advance(self._seq - 1, self._seq, self._prev)
+            except BaseException:
+                self._poisoned = True
+                raise
         return rec
 
     def _commit(self, rec: dict[str, Any]) -> None:
@@ -516,8 +663,8 @@ class OrderLedger:
             off += len(chunk)
         return b"".join(chunks)
 
-    def _replay(self) -> None:
-        prev, first, last = GENESIS_PREV, True, b""
+    def _replay(self) -> list[str]:
+        prev, first, last, hashes = GENESIS_PREV, True, b"", []
         try:
             data = self._read_all()
         except OSError:
@@ -536,6 +683,7 @@ class OrderLedger:
                 if rec.get("prev_sha256") != prev:
                     raise LedgerError("LEDGER_CHAIN_BROKEN")
                 prev = _line_hash(line)
+                hashes.append(prev)
                 last = raw + b"\n"
                 if first:
                     first = False
@@ -549,7 +697,8 @@ class OrderLedger:
             raise LedgerError("LEDGER_CORRUPT") from None
         if first:
             raise LedgerError("LEDGER_EMPTY")
-        self._prev, self._size, self._last_line = prev, len(data), last
+        self._prev, self._size, self._last_line, self._seq = prev, len(data), last, len(hashes)
+        return hashes
 
     def _apply(self, rec: Mapping[str, Any]) -> None:
         kind = rec["kind"]
@@ -575,6 +724,12 @@ class OrderLedger:
             self._orders[o.client_order_id] = new
             if new.state == SETTLED:
                 self._settlements.append((int(rec["ts"]), int(new.realized_pnl)))
+        elif kind == "CANCEL_REQUEST":
+            # Consumes a cancel-approval nonce; changes no order state and no exposure.
+            if rec["scope"] not in CANCEL_SCOPES or not isinstance(rec["order_ids"], list) \
+                    or rec["approval_nonce"] in self._nonces:
+                raise OrderStateError("LEDGER_CANCEL_REQUEST_INVALID")
+            self._nonces.add(rec["approval_nonce"])
         else:
             raise OrderStateError("LEDGER_UNKNOWN_RECORD")
 
@@ -585,6 +740,11 @@ class OrderLedger:
         f = o.filled if filled is None else filled
         if type(f) is not int or not o.filled <= f <= o.stake:
             raise OrderStateError("FILLED_AMOUNT_INVALID")  # never decreases, never above stake
+        if o.state == REJECTED:
+            if not o.signature_released:
+                raise OrderStateError("REJECTED_NEVER_SIGNED_IS_FINAL")
+            if to in (CANCELLED, EXPIRED) and not f:
+                raise OrderStateError("REJECTED_RELEASE_REQUIRES_EXECUTION")
         if to == SETTLED:
             if not o.filled or type(pnl) is not int or f != o.filled:
                 raise OrderStateError("SETTLEMENT_INVALID")
@@ -687,6 +847,32 @@ class OrderLedger:
                 rec["evidence_sha256"] = evidence_sha256
             self._commit(rec)
             return self._orders[client_order_id]
+
+    def record_cancel_request(self, *, approval_nonce: str, scope: str, binding_sha256: str,
+                              order_ids: list[str], market_hash: str | None = None,
+                              event_id: str | None = None) -> None:
+        """One fsync'd CANCEL_REQUEST line, written BEFORE the cancel is sent: consumes the cancel approval's
+        nonce (single use, survives restarts). It records the request only; no order state or exposure
+        changes here -- only exchange evidence (apply_evidence) does that."""
+        ids = list(order_ids) if isinstance(order_ids, (list, tuple)) else None
+        if not (_NONCE.fullmatch(approval_nonce or "") and scope in CANCEL_SCOPES
+                and isinstance(binding_sha256, str) and _SHA.fullmatch(binding_sha256)
+                and ids is not None and len(ids) <= 1000 and len(set(ids)) == len(ids)
+                and all(isinstance(i, str) and _HEX32.fullmatch(i) for i in ids)
+                and (market_hash is None or (isinstance(market_hash, str) and _HEX32.fullmatch(market_hash)))
+                and (event_id is None or (isinstance(event_id, str) and 0 < len(event_id) <= 64))):
+            raise OrderStateError("CANCEL_REQUEST_FIELDS_INVALID")
+        with self._lock:
+            self._writable()
+            if approval_nonce in self._nonces:
+                raise OrderStateError("APPROVAL_NONCE_REPLAYED")
+            rec = {"kind": "CANCEL_REQUEST", "approval_nonce": approval_nonce, "scope": scope,
+                   "binding_sha256": binding_sha256, "order_ids": ids}
+            if market_hash is not None:
+                rec["market_hash"] = market_hash
+            if event_id is not None:
+                rec["event_id"] = event_id
+            self._commit(rec)
 
     def apply_evidence(self, client_order_id: str, evidence: Evidence) -> Order:
         """Idempotent: the same evidence twice, or evidence that changes nothing, writes nothing."""

@@ -44,14 +44,20 @@ MCP preview (sxbet_simulate_order, bridge, nessuna chiave)
    → approvazione dell'owner (Ed25519, binding v2, monouso, ≤120 s, fuori banda)
    → firma del wallet (signer/core.py, EIP-712; ledger AUTHORIZED → SIGNED)
    → gateway (signer/gateway.py, DISABILITATO; nessun trasporto di rete nel repository)
+        └ adapter ufficiale (signer/rest_adapter.py: builder di POST /orders-v3 + parser, RestSender astratto)
    → riconciliazione (GET /orders-v3/{orderId}, /orders-v3/client/{clientOrderId}, /fills-v3)
+   → cancellazione (signer/cancellation.py: approvazione dell'owner per ogni cancel, rilascio solo da letture)
+   ledger ancorato fuori dall'host (signer/anchor.py + migration 0008, opzionale) con lease e fencing token
 ```
 
 - **Stati dell'ordine:** `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `EXPIRED_UNCONFIRMED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Le transizioni ammesse e l'esposizione per stato sono in [`signer/README.md`](../../signer/README.md#stati-degli-ordini-ed-esposizione-signerorderspy).
 - **L'esposizione scende solo con evidenza dell'exchange:** un cancel o una scadenza confermati, oppure un settlement con fill completi. `UNKNOWN` (timeout, risposta ambigua, crash durante l'invio) resta riservato all'intero importo finché non è riconciliato.
   - Un 404 dopo la scadenza non è una prova: porta a `EXPIRED_UNCONFIRMED`, che resta riservato fino a una riga `INACTIVE` dell'exchange o a una seconda osservazione identica dopo 24 h. Un fill tardivo viene sempre registrato e contato, anche dopo `EXPIRED` o `CANCELLED`.
   - Una volta uscita la firma, un rifiuto (400, riga `FAILED`, `SIGNED → REJECTED` manuale) non libera l'importo prima della scadenza dell'ordine (più 30 s): l'ordine firmato resta pubblicabile da chi lo possiede.
-- **Ledger a scrittore unico:** `flock` esclusivo per tutta la vita dell'istanza (`LEDGER_LOCKED` per una seconda istanza, anche in un altro processo), controllo della testa del file prima di ogni append (`LEDGER_HEAD_MISMATCH`) e istanza avvelenata dopo un append fallito (`LEDGER_POISONED` fino a riavvio e replay).
+  - Se l'exchange mostra poi che un ordine `REJECTED` (con firma uscita) è stato eseguito o è a riposo, l'evidenza lo porta a `PARTIALLY_FILLED`/`FILLED`/`OPEN` con l'esposizione registrata: nessun evento finanziario si perde (audit `EVIDENCE_REJECTED_ORDER_EXECUTED`).
+- **Ledger a scrittore unico:** in modalità locale `flock` esclusivo per tutta la vita dell'istanza (`LEDGER_LOCKED` per una seconda istanza, anche in un altro processo), controllo della testa del file prima di ogni append (`LEDGER_HEAD_MISMATCH`) e istanza avvelenata dopo un append fallito (`LEDGER_POISONED` fino a riavvio e replay).
+- **Ancoraggio esterno (opzionale, `PostgresAnchorStore`):** dopo ogni append fsync la testa (seq, hash, fencing token) viene scritta in una tabella append-only; all'avvio il signer rifiuta un file più corto (troncamento, rollback), diverso o più lungo dell'ancora, e uno store irraggiungibile. Il lease PostgreSQL (advisory lock di sessione + fencing token) sostituisce `flock`, quindi il ledger non dipende più da un filesystem locale; uno scrittore stantio viene respinto (`LEDGER_FENCED`). Dettagli in [`signer/README.md`](../../signer/README.md#ancoraggio-esterno-della-testa-e-lease-di-scrittura-signeranchorpy-h1h2).
+- **Cancellazione:** quattro rotte (`DELETE /orders-v3` per id fino a `maxCancelOrders`, `/market`, `/event`, `/all`), ciascuna con un'approvazione Ed25519 dell'owner legata a scope e bersaglio, monouso e con TTL ≤ 120 s. Tutte rispondono 200 anche se non hanno cancellato nulla: un cancel non libera mai esposizione da solo, solo una lettura che mostra `INACTIVE`/`USER_REQUESTED` (o i fill) cambia il ledger.
 - **Limiti** (tutti a zero per default, quindi rifiuto):
   - importo massimo per ordine;
   - esposizione per mercato, per evento e totale;
@@ -74,16 +80,16 @@ Finché un solo punto è aperto, `LIVE_TRADING` resta non attivabile (§2.6).
    - fuori dal servizio Render MCP: `RENDER` non deve essere impostata e `SXBET_SIGNER_PROCESS=1` sì;
    - con il proprio segreto, fuori da GitHub secrets;
    - con un canale autenticato verso il chiamante;
-   - ledger e audit su storage durevole, con ancoraggio esterno dell'hash di testa (la troncatura della coda non è rilevabile dalla sola hash chain).
+   - ledger e audit su storage durevole, con ancoraggio esterno dell'hash di testa (la troncatura della coda non è rilevabile dalla sola hash chain). Il codice esiste (`PostgresAnchorStore`, migration 0008): resta da scegliere il database dell'owner che lo ospita, separato da quello del bridge MCP, e applicarvi la migration.
 4. [ ] **Config di rischio** (`SXBET_SIGNER_RISK_CONFIG`): valori reali scelti e firmati dall'owner.
 5. [ ] **Provenienza dei dati di rischio:** oggi il contesto (mercato, quota, saldo, commissioni) è fornito dal chiamante, e il signer ne verifica solo freschezza e coerenza. Serve una fonte autenticata, per esempio letture del signer stesso o snapshot firmati.
-6. [ ] **Trasporto reale del gateway** (`POST /orders-v3`, letture di riconciliazione):
-   - PR separata, revisionata e mergiata dall'owner, con rate limit e timeout;
-   - test su testnet, incluso il formato di `salt` (`DOCS_UNVERIFIED`);
+6. [ ] **Sender reale per l'adapter** (`RestSender` per `POST /orders-v3`, `DELETE /orders-v3*` e le letture di riconciliazione). Builder e parser del contratto ufficiale esistono (`signer/rest_adapter.py`, `signer/cancellation.py`); manca solo l'I/O:
+   - PR separata, revisionata e mergiata dall'owner, con rate limit tramite il coordinatore condiviso e timeout;
+   - test su testnet, incluso il formato di `salt` (`DOCS_UNVERIFIED`; default dell'adapter: stringa esadecimale di 32 byte dello schema OpenAPI, decimale come opzione);
    - verifica del comportamento sul reinvio dopo un timeout (`DOCS_UNVERIFIED`);
-   - decisione su `waitForOutcome`.
+   - decisione su `waitForOutcome`/`maxWaitTime` e `postOnly` (configurazione dell'adapter, oggi spenti).
 7. [ ] **Flag `LIVE_TRADING` firmato dall'owner** (`load_live_trading_flag`): con scadenza breve e legato a `signer_id` e rete. L'agente non lo crea mai. Il gateway riverifica la firma dell'owner e la scadenza a ogni invio (`LIVE_TRADING_FLAG_EXPIRED`); la chiave pubblica dell'owner gli arriva dalla propria configurazione.
-8. [ ] **Cancellazione** (`DELETE /orders-v3*`, scope `Orders: cancel`): oggi non esiste un percorso di cancel. Va progettato con la stessa riconciliazione: un cancel conta solo se l'exchange lo conferma.
+8. [ ] **Cancellazione** (`DELETE /orders-v3*`, scope `Orders: cancel`): il flusso esiste (`signer/cancellation.py`) con approvazione dell'owner per ogni cancel e rilascio solo da letture dell'exchange. Mancano il sender reale (punto 6) e, sul dispositivo di approvazione (punto 2), la schermata che mostra e firma il binding di cancel (`sxbet.cancel_approval.v1`). Un heartbeat (`POST /heartbeat/v3`) è solo documentato: armarlo è una decisione dell'owner, perché un lapse cancella tutti gli ordini.
 9. [ ] **Proxy wallet e fondi:** verificare che il proxy sia deployato (`sxbet_proxy_wallet` → `deployed`) e che ci sia USDC sul proxy. Deploy e depositi sono operazioni finanziarie con conferme proprie.
 10. [ ] **API key con `Orders: create`/`Orders: cancel`:** si concede solo con la decisione di attivare il trading.
 11. [ ] Verifica di idoneità del servizio nella giurisdizione applicabile.
