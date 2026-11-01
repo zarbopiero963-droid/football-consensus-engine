@@ -504,11 +504,20 @@ def test_no_submission_code_in_signer_or_sxbet_module():
     # routes, so the HTTP method names appear there as data (RestRequest.method). They still contain no
     # network call (no .post( / .delete( / client library: see also the AST import checks) and no heartbeat
     # sender. Every other signer module and the whole bridge/sxbet package keep the full ban.
+    # Intentional change (branch test/sxbet-e2e-simulated-engine): signer/monitor.py EVALUATES the heartbeat
+    # POLICY (when a renewal of POST /heartbeat/v3 is due / a lapse happened) and therefore names it. It is
+    # exempt from the "heartbeat" word ONLY; every other needle still applies to it, and it must not build or
+    # send any request at all (stricter than the builders): no RestRequest(, no .send(, no POST/DELETE.
     builders = {ROOT / "signer" / "rest_adapter.py", ROOT / "signer" / "cancellation.py"}
+    policy_only = {ROOT / "signer" / "monitor.py"}
     files = list((ROOT / "signer").rglob("*.py")) + list((ROOT / "bridge" / "sxbet").rglob("*.py"))
     for p in files:
         src = p.read_text(encoding="utf-8")
-        needles = ["requests.post", "httpx.post", ".post(", ".delete(", "heartbeat"]
+        needles = ["requests.post", "httpx.post", ".post(", ".delete("]
+        if p not in policy_only:
+            needles.append("heartbeat")
+        else:
+            needles += ["RestRequest(", ".send(", "submit_orders(", "send_heartbeat"]
         if p not in builders:
             needles += ['"POST"', '"DELETE"', "'POST'", "'DELETE'"]
         for needle in needles:

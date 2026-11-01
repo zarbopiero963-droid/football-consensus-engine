@@ -315,7 +315,9 @@ def evidence_from_exchange(order: Order, *, lookup: Mapping[str, Any] | None,
             pnl = _settlement_pnl(order, fills["fills"], filled)
         return Evidence(target, filled, reason, sha, pnl)
     if kind == "NOT_FOUND":
-        if order.state in (EXPIRED_UNCONFIRMED, EXPIRED, CANCELLED):
+        if order.state in (EXPIRED_UNCONFIRMED, EXPIRED, CANCELLED, FILLED):
+            # FILLED too: the row is purged ~10-20 min after INACTIVE, settlement comes hours later, so only
+            # complete SETTLED fills can settle it (regression: tests/test_sxbet_orders_filled_purged_settlement.py).
             return _not_found_after_expiry(order, fills if fills_ok else None, now, sha)
         if order.state in (REJECTED, PARTIALLY_FILLED):
             return _not_found_late_fill(order, fills if fills_ok else None, sha)
@@ -324,16 +326,25 @@ def evidence_from_exchange(order: Order, *, lookup: Mapping[str, Any] | None,
         if now > order.expiry + EXPIRY_GRACE_SECONDS:
             # NOT proof: a 404 may also mean "purged" or a lagging index. The stake stays reserved
             # (EXPIRED_UNCONFIRMED) until positive terminal evidence; see the module docstring.
-            return Evidence(EXPIRED_UNCONFIRMED, 0, "NOT_FOUND_AFTER_EXPIRY_NO_FILLS", sha)
+            # Same bytes as a RECONCILED_ABSENT seen before expiry: a distinct evidence id, else the dedupe in
+            # apply_evidence drops it (regression: tests/test_sxbet_orders_absence_evidence.py).
+            return Evidence(EXPIRED_UNCONFIRMED, 0, "NOT_FOUND_AFTER_EXPIRY_NO_FILLS", _context_sha("AFTER_EXPIRY", sha))
         client_kind = client_lookup.get("kind") if isinstance(client_lookup, Mapping) else None
         if (order.state == UNKNOWN and client_kind == "NOT_FOUND" and order.last_send_at is not None
                 and now - order.last_send_at >= ABSENT_SETTLE_SECONDS):
             # DOCS_UNVERIFIED: the docs do not state that a 404 after the settle window proves the
             # order was never accepted. It only re-opens the SAME signed order with the SAME
             # clientOrderId for re-send; exposure stays fully reserved.
-            return Evidence(SIGNED, 0, "RECONCILED_ABSENT", sha)
+            # One verdict per send attempt: a later attempt that is absent again has the same bytes.
+            return Evidence(SIGNED, 0, "RECONCILED_ABSENT",
+                            _context_sha(f"RECONCILED_ABSENT_AFTER_SEND_AT_{order.last_send_at}", sha))
         return none("EVIDENCE_NOT_FOUND_INCONCLUSIVE")
     return none("EVIDENCE_LOOKUP_ERROR")
+
+
+def _context_sha(context: str, sha: str) -> str:
+    """Evidence id of a verdict that depends on WHEN identical exchange bytes were observed."""
+    return "sha256:" + hashlib.sha256((context + "|" + sha).encode("ascii")).hexdigest()
 
 
 def _own_fill_sum(order: Order, fills: Mapping[str, Any] | None) -> int | None:
@@ -370,7 +381,7 @@ def _not_found_late_fill(order: Order, fills: Mapping[str, Any] | None, sha: str
 
 
 def _not_found_after_expiry(order: Order, fills: Mapping[str, Any] | None, now: int, sha: str) -> Evidence:
-    """404 for an order already EXPIRED_UNCONFIRMED / EXPIRED / CANCELLED: only fills can teach something."""
+    """404 for an order already EXPIRED_UNCONFIRMED / EXPIRED / CANCELLED / FILLED: only fills can teach something."""
     none = Evidence(None, None, "EVIDENCE_NOT_FOUND_INCONCLUSIVE", sha)
     total = _own_fill_sum(order, fills)
     if total is None or total > order.stake or total < order.filled:

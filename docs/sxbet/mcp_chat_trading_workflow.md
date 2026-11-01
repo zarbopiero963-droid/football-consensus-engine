@@ -69,7 +69,7 @@ Le funzioni native dell'exchange sono: ordini, cancellazione, heartbeat, letture
 3. l'app o il dispositivo di approvazione dell'owner, con le schermate dei binding per ordine e per cancel;
 4. un adattatore KMS, se si sceglie l'opzione D;
 5. la modifica del guard `RENDER` per ospitare il signer su un servizio Render separato (governance);
-6. un worker di monitoraggio per trailing e per l'heartbeat;
+6. un processo che esegua periodicamente il worker di monitoraggio (la logica c'è: `signer/monitor.py`, §9) e un sender di heartbeat;
 7. una prova su testnet di: formato del `salt` (hex o decimale), reinvio dopo timeout, unità di `fillAmount`, 400 su un batch.
 
 ## 4. Risk engine (`signer/risk.py`)
@@ -100,6 +100,7 @@ Tutti i limiti valgono **0 per default** (`RiskLimits`), quindi con la configura
 | Firma EIP-712 con EOA fittizi, recovery, formato della chiave, domini mainnet/Toronto, casi negativi | `tests/test_sxbet_eip712_official_vectors.py` (26 test, #153) | `PASS` |
 | Vettore ufficiale SX Bet | l'esempio OpenAPI è incoerente: nessun vettore riproducibile | `NOT_VERIFIED` (difetto documentale) |
 | Stati dell'ordine, idempotenza, replay, crash e restart, concorrenza tra processi, UNKNOWN, fill tardivi | `tests/test_sxbet_orders.py`, `test_sxbet_gateway.py`, `test_sxbet_signer*.py` | `PASS` |
+| Motore di trading end-to-end **SIMULATO** (intent → rischio → approvazione → firma → gateway → exchange simulato → riconciliazione → P&L → settlement) | `tests/test_sxbet_e2e_simulated*.py`, `test_sxbet_monitor.py`, `test_sxbet_sim_exchange.py`; vedi §9 | `PASS` (simulato) |
 | Ordini maker e taker, fill parziali, cancellazioni simulate, timeout, risposte 400/ambigue | `tests/test_sxbet_rest_adapter.py`, `test_sxbet_cancellation.py` (#152) | `PASS` (fake transport) |
 | Ledger ancorato e lease su PostgreSQL reale | `tests/integration/test_signer_ledger_anchor_postgres.py` (#152, 7/7) | `PASS` |
 | Limiti di rischio | `tests/test_sxbet_risk.py` | `PASS` |
@@ -126,7 +127,7 @@ Il ciclo completo è collaudabile con sole credenziali di prova, perché Toronto
 6. PR del `RestSender` reale **solo verso Toronto**, con il coordinatore di quota. Merge dell'owner; test su testnet: un ordine minimo più cancel, `salt`, reinvio dopo timeout.
 7. (Opzionale) adattatore AWS KMS.
 8. PR di attivazione mainnet: sender verso mainnet dietro il flag `LIVE_TRADING` firmato. Merge dell'owner, dopo la verifica legale.
-9. Worker di monitoraggio: trailing e heartbeat; propone ordini, mai li esegue senza conferma.
+9. Worker di monitoraggio: la logica è in `signer/monitor.py` (§9: riconciliazione, scadenze, policy di heartbeat, trailing persistito; propone, non esegue). Restano lo scheduler, il sender di heartbeat e il collegamento alle notifiche dell'owner.
 
 ## 7. Azioni che richiedono l'owner
 
@@ -154,3 +155,71 @@ Il ciclo completo è collaudabile con sole credenziali di prova, perché Toronto
 5. L'owner firma la config di rischio con limiti piccoli (proposta in `activation_readiness.md` §5) e il flag `LIVE_TRADING` con scadenza breve.
 6. Primo ordine mainnet di importo minimo, confermato sul dispositivo, poi la sua cancellazione. Si verificano ledger, exchange e saldo.
 7. Solo dopo, uso normale dalla chat: ogni ordine con conferma sul dispositivo.
+
+## 9. Motore di trading SIMULATO: verifica end-to-end (mandato SXBET-SECURE-SIGNER-PREPARATION-01)
+
+**Cosa è stato verificato:** il nostro motore (signer, risk engine, approvazioni, ledger, gateway, adapter, cancellazione, positions, hedging, regole, monitor) collegato a un **exchange simulato** in memoria (`tests/sxbet_sim_exchange.py`, solo nei test). L'exchange simulato implementa il protocollo `RestSender` e riproduce il contratto documentato (frame maker/taker, capacità `size × (1e20 − p) / p`, ritorno `stake × 1e20 / odds`, ciclo `PENDING → ACTIVE → INACTIVE` con `inactiveReason`, fill parziali, batch non atomici, bucket di cancel, paginazione dei fill, saldo con escrow, settlement 1/2/0 con fee sul profitto, heartbeat). Le scelte non documentate sono elencate in `SIM_ASSUMPTIONS` (`DOCS_UNVERIFIED`).
+
+**Cosa NON è stato verificato:** il comportamento reale di SX Bet. Nessun ordine è stato inviato, nessuna rete è stata usata. Le chiavi sono usa e getta; la config di rischio e il flag `LIVE_TRADING` dei test sono firmati con una chiave owner di test, come nei test esistenti. Nessun `RestSender` eseguibile esiste fuori da `tests/`. `LIVE_TRADING` resta `UNAVAILABLE`.
+
+### Nativo SX Bet o nostro
+
+| Funzione | Nativa SX Bet | Nostra (su ordini normali) | Stato della verifica | Test |
+|---|---|---|---|---|
+| Ordine maker (GTC, `postOnly`) | sì, `POST /orders-v3` | — | `SIMULATED` | `test_sxbet_e2e_simulated.py`, `test_sxbet_sim_exchange.py` |
+| Ordine taker (IOC/FOK) | sì, stesso endpoint | — | `SIMULATED` | idem |
+| Fill parziali ed esposizione residua | sì (letture) | contabilità del ledger | `SIMULATED` | `test_simulated_partial_fill_residual_exposure_*` |
+| Cancel per id, mercato, evento, tutti | sì, `DELETE /orders-v3*` | approvazione dell'owner per ogni cancel | `SIMULATED` | `test_sxbet_e2e_simulated_cancel.py` |
+| Heartbeat | sì, `POST /heartbeat/v3` | solo **policy** in `signer/monitor.py`, nessun sender | `SIMULATED` (lapse) | `test_sxbet_monitor.py` |
+| Settlement e P&L realizzato | sì (`outcome` 1/2/0, `settleReturnAmount`) | P&L nel ledger, limiti di perdita | `SIMULATED` | `test_simulated_maker_order_profit_loss_void` |
+| Hedging | **no** | `bridge/sxbet/hedging.py` → ordine sull'esito opposto | `SIMULATED`: P1/P2 eseguiti = previsione del simulatore | `test_simulated_hedge_executed_matches_simulator_prediction` |
+| "Cashout" / chiusura posizione | **no** (nessun endpoint documentato; il simulatore risponde 404) | cancel del residuo + hedge FULL, etichetta `CLOSE_POSITION_OURS_NOT_NATIVE_SX_BET` | `SIMULATED` | `test_simulated_close_position_is_ours_*` |
+| Stop-loss, take-profit | **no** | `bridge/sxbet/rules.py`: solo proposte | `SIMULATED` | `test_simulated_stop_loss_and_take_profit_*` |
+| Trailing stop | **no** | regola + picco persistito dal monitor | `SIMULATED`, anche dopo restart | `test_simulated_trailing_stop_monitor_persists_peak_across_restart` |
+| Ledger ancorato e lease | — | `signer/anchor.py` + migration 0008 | `VERIFIED` su PostgreSQL 16 reale usa e getta (locale) | `tests/integration/test_signer_e2e_postgres.py` (5) e `test_signer_ledger_anchor_postgres.py` (7) |
+| Firma EIP-712 | contratto ufficiale | `signer/eip712.py` | vettori locali (#153); l'exchange simulato verifica la firma con la stessa libreria | `test_sxbet_eip712_official_vectors.py` |
+
+### Scenari coperti (tutti con asserzioni sui numeri)
+
+- **Profitto, perdita, void** (maker 5 USDC a 40%): +7,5 / −5 / 0 USDC; saldo 57,5 / 45 / 50 USDC. Taker a 41%: +5,9 USDC meno la fee taker del 3% sul profitto (177.000 unità).
+- **Rifiuti prima dell'exchange:** quota mossa oltre lo slippage, liquidità insufficiente (IOC/FOK), saldo insufficiente, stake sopra il massimo, quota fuori dalla banda dell'owner, nessuna approvazione, approvazione firmata da un'altra chiave, testo "approvato" in chat.
+- **Idempotenza e replay:** stesso `clientOrderId` due volte ⇒ un solo ordine; replay dell'approvazione ⇒ rifiutato; invii concorrenti (8 thread e 2 processi) ⇒ un solo ordine e un solo `SEND_ATTEMPT`.
+- **Guasti:** timeout e 500 dopo l'accettazione ⇒ `UNKNOWN`, poi la riconciliazione lo trova, nessun doppio ordine; timeout, 500 e 429 prima ⇒ assente dopo 60 s, reinvio dello **stesso** ordine; visibilità ritardata oltre la finestra ⇒ il reinvio è rifiutato dall'exchange (collisione di `clientOrderId`), l'esposizione resta riservata e l'ordine viene ritrovato (H3).
+- **Crash** a ogni punto write-ahead (dopo `AUTHORIZE`, dopo `SIGNED`, dopo `UNKNOWN`, dopo l'accettazione, dopo la risposta, durante il cancel), poi restart e replay ⇒ stato coerente, nessuna riserva persa.
+- **Cancel:** il bucket `cancelled` con una lettura vecchia, `unconfirmed`, un fill in corsa col cancel e un fill tardivo dopo il cancel ⇒ l'esposizione cambia solo con evidenza di lettura.
+
+### Bug trovati e corretti (con test di regressione RED → GREEN)
+
+1. **`FILLED` non poteva mai andare a `SETTLED` dopo il purge della riga** (404 circa 10–20 minuti dopo `INACTIVE`, mentre il settlement arriva ore dopo). Il matched restava contato per sempre e la perdita realizzata non arrivava ai limiti di perdita. Correzione: `FILLED` è aggiunto al ramo 404 basato sui fill completi e `SETTLED` (`signer/orders.py`; test `tests/test_sxbet_orders_filled_purged_settlement.py`).
+2. **Le evidenze di "assenza" identiche venivano scartate dal dedupe.** Dopo `RECONCILED_ABSENT`, gli stessi 404 dopo la scadenza non portavano più a `EXPIRED_UNCONFIRMED` (riserva bloccata per sempre). Un secondo invio perso non poteva più tornare `SIGNED` (`UNKNOWN` per sempre). Correzione: id di evidenza legato al contesto (tentativo d'invio, "dopo la scadenza"), come già per `CONFIRM_AFTER_WINDOW` (`signer/orders.py`; test `tests/test_sxbet_orders_absence_evidence.py`).
+
+Entrambi fallivano in modo sicuro (riserva in eccesso) ma bloccavano capitale in modo permanente. Le modifiche di comportamento sono intenzionali e dichiarate; nessun test esistente è stato cambiato.
+
+### Gap documentati (decisioni dell'owner, non corretti)
+
+- Il signer non conosce `orderSizeMinimumBaseUnits`: un intent sotto il minimo costruito senza il bridge viene firmato. L'exchange lo rifiuta (400) e lo stake resta riservato fino alla scadenza.
+- La quota del contesto di rischio (snapshot del book) include i nostri ordini a riposo, che l'exchange non abbina mai con noi (prevenzione del self-match). Il risk engine può quindi vedere una liquidità che non è utilizzabile.
+- Un `PARTIALLY_FILLED` la cui riga `INACTIVE` viene purgata prima di una lettura resta riservato (fallisce in modo sicuro). La mitigazione è il monitor, che rilegge con una frequenza inferiore alla finestra di purge.
+- Riconciliazione concorrente (analisi del codice, non coperta da test): nel processo del signer il monitor va costruito con `lock=gateway._lock`. Con un lock diverso, una riconciliazione del monitor durante un invio può far fallire la transizione del gateway (`ILLEGAL_TRANSITION_*`), senza liberare esposizione.
+
+### Worker di monitoraggio (`signer/monitor.py`, solo libreria)
+
+Ogni `tick()`:
+- **riconcilia** gli ordini aperti, parziali, `UNKNOWN`, scaduti e in attesa di settlement, usando solo tre letture iniettate (`get_order`, `get_order_by_client_id`, `get_fills`). Non può chiamare nient'altro;
+- produce **alert** sulle scadenze, sugli `AUTHORIZED` mai firmati e sugli `UNKNOWN`;
+- valuta la **policy di heartbeat**, senza alcun sender;
+- valuta le **regole** con un valutatore iniettato e persiste il **picco del trailing** (scrittura atomica, sha256, legata al `ledger_id`) **prima** di emettere proposte.
+
+Una proposta con `executable`, `signed` o `submitted` diversi da `false` è un errore (`MONITOR_PROPOSAL_CLAIMS_EXECUTABLE`). Non esiste uno scheduler né un processo in esecuzione: è logica pura, testata anche dopo un restart.
+
+### PostgreSQL
+
+Migration 0008 e ledger ancorato sono stati collaudati su un **PostgreSQL 16 usa e getta** avviato in locale (cartella temporanea, solo socket Unix, nessun `DATABASE_URL` di produzione, cluster rimosso a fine prova). Collaudi:
+- migrate due volte (idempotente);
+- 6 scrittori concorrenti (un solo lease, poi takeover con fencing);
+- un processo reale ucciso tra fsync locale e ancora (ripartenza solo con `LedgerHeadAck` firmato dall'owner, nessuna riserva persa);
+- una copia vecchia che non può riaccettare;
+- la riconciliazione dopo il drop delle sessioni e dopo un vero `pg_ctl restart`.
+
+In CI questi test richiedono `TEST_DATABASE_URL`; senza, sono `SKIPPED`.
+

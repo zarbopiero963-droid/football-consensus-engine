@@ -49,7 +49,7 @@ def test_signer_import_refused_for_any_render_value():
 
 
 def test_signer_submodules_cannot_bypass_the_guard():
-    for mod in ("signer.core", "signer.gateway", "signer.orders", "signer.risk", "signer.eip712"):
+    for mod in ("signer.core", "signer.gateway", "signer.orders", "signer.risk", "signer.eip712", "signer.monitor"):
         proc = subprocess.run([sys.executable, "-c", f"import {mod}"], env=_env(RENDER="true"),
                               capture_output=True, text=True, timeout=60, cwd=str(ROOT))
         assert proc.returncode != 0 and "SXBET_SIGNER_IMPORT_REFUSED" in proc.stderr, mod

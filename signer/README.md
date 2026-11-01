@@ -221,6 +221,23 @@ Cancellare è un'operazione finanziaria (§2.6): **ogni** cancel richiede un'app
 - Mercato/evento/tutti: confermano solo che il comando è stato accettato. Gli id in `cancelledSubmitted` che il ledger non conosce (ordini piazzati altrove) sono riportati in `foreign_order_ids`.
 - Un nonce consumato resta consumato anche dopo un timeout e dopo il riavvio: un nuovo tentativo richiede una nuova approvazione.
 
+## Worker di monitoraggio (`signer/monitor.py`)
+
+Logica pura, senza rete: **non invia, non firma e non cancella mai**. Un `Monitor.tick()`:
+- riconcilia, con tre letture iniettate (`get_order`, `get_order_by_client_id`, `get_fills`, esposte da `_ReadOnly`), gli ordini che possono ancora cambiare. Usa la stessa `evidence_from_exchange` e la stessa `apply_evidence` del gateway; nel processo del signer va passato `lock=gateway._lock`;
+- emette alert su scadenze, `EXPIRED_UNCONFIRMED`, `AUTHORIZED` mai firmati (`abandon_unsigned` resta un passo dell'operatore), `UNKNOWN` e reinvii possibili (il reinvio resta una decisione del gateway);
+- valuta la policy di heartbeat (`HeartbeatPolicy`, `evaluate_heartbeat`). Non esiste un sender di heartbeat;
+- valuta le regole con un valutatore e uno snapshot iniettati (per esempio `bridge.sxbet.rules.evaluate`, che `signer/` non importa). Restituisce solo proposte: una proposta "eseguibile" produce `MONITOR_PROPOSAL_CLAIMS_EXECUTABLE`.
+
+`MonitorState` è un file JSON scritto in modo atomico (fsync e rename), con sha256 del corpo e legato al `ledger_id`; si crea solo con `create`. Un file corrotto o di un altro ledger produce un errore (fail closed). Contiene il picco del trailing (monotono, salvato prima di ogni proposta), l'ultimo ack di heartbeat e le proposte già emesse. Lo stato degli ordini si ricostruisce sempre dal ledger.
+
+## Correzioni trovate con il motore simulato (modifiche di comportamento intenzionali)
+
+- **`FILLED` con 404 (riga purgata):** ora si porta a `SETTLED` con fill completi, tutti `SETTLED` e con somma uguale al matched, come già avveniva per `CANCELLED`/`EXPIRED`. Prima restava `FILLED` per sempre. Test: `tests/test_sxbet_orders_filled_purged_settlement.py`.
+- **Evidenze di assenza ripetute:** `RECONCILED_ABSENT` (per tentativo d'invio) e `NOT_FOUND_AFTER_EXPIRY_NO_FILLS` hanno un id di evidenza legato al contesto. Prima il dedupe le scartava: un `SIGNED` mai inviato non arrivava mai a `EXPIRED_UNCONFIRMED`, e un secondo invio perso restava `UNKNOWN` per sempre. Test: `tests/test_sxbet_orders_absence_evidence.py`.
+
+Il motore end-to-end simulato è in `tests/sxbet_sim_exchange.py` (exchange in memoria, solo test) e `tests/test_sxbet_e2e_simulated*.py`; vedi `docs/sxbet/mcp_chat_trading_workflow.md` §9.
+
 ## Custodia della chiave
 
 L'audit (`signer/audit.py`) ammette in più i campi `command_id` (id del comando dell'exchange), `scope` e `bucket` (cancellazioni); mai chiave, firma o firma di approvazione.
