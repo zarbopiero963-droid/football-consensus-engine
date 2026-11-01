@@ -23,6 +23,15 @@ NETWORKS = {
 }
 _MAX_BODY = 524_288
 _TIMEOUT_SECONDS = 15.0
+_DEADLINE_SECONDS = 30.0  # whole request, not per phase
+
+
+def _ascii_int(raw: str) -> int | None:
+    return int(raw) if raw.isascii() and raw.isdecimal() and len(raw) <= 9 else None
+
+
+def _reject_constant(value: str):
+    raise ValueError("non-finite JSON number")
 
 
 def _flag(name: str) -> bool:
@@ -49,7 +58,10 @@ class Settings:
         if not 1 <= rpm <= 600:
             raise ValueError("SXBET_MAX_RPM out of bounds 1..600")
         enabled = e.get("SXBET_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
-        return cls(enabled=enabled, network=network, api_key=e.get("SXBET_API_KEY", "").strip(), max_rpm=rpm)
+        key = e.get("SXBET_API_KEY", "").strip()
+        if key and not (key.isascii() and key.isprintable() and len(key) <= 512):
+            raise ValueError("SXBET_API_KEY must be printable ASCII")
+        return cls(enabled=enabled, network=network, api_key=key, max_rpm=rpm)
 
     @property
     def base_url(self) -> str:
@@ -111,12 +123,19 @@ class SXBetReadClient:
     async def get(self, path: str, params: Mapping[str, Any], *, auth: bool) -> dict[str, Any]:
         if not path.startswith("/") or "//" in path or ".." in path:
             raise SXBetError("SXBET_INVALID_PATH")
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         if auth:
             if not self.settings.api_key:
                 raise SXBetError("SXBET_KEY_NOT_CONFIGURED")
             headers["x-sx-api-key"] = self.settings.api_key
         await self._limiter.acquire()
+        try:
+            async with asyncio.timeout(_DEADLINE_SECONDS):
+                return await self._fetch(path, params, headers)
+        except TimeoutError:
+            raise SXBetError("SXBET_TIMEOUT") from None
+
+    async def _fetch(self, path: str, params: Mapping[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(base_url=self.settings.base_url, timeout=_TIMEOUT_SECONDS,
                                          follow_redirects=False, trust_env=True,
@@ -127,8 +146,7 @@ class SXBetReadClient:
                         raise SXBetError("SXBET_REDIRECT_REJECTED", http_status=code)
                     if code == 429:
                         raw = response.headers.get("retry-after", "")
-                        raise SXBetError("SXBET_RATE_LIMITED", http_status=code,
-                                         retry_after=int(raw) if raw.isdigit() and len(raw) <= 6 else None)
+                        raise SXBetError("SXBET_RATE_LIMITED", http_status=code, retry_after=_ascii_int(raw))
                     if code in (401, 403):
                         raise SXBetError("SXBET_UNAUTHORIZED", http_status=code)
                     if not 200 <= code <= 299:
@@ -145,10 +163,10 @@ class SXBetReadClient:
         except httpx.RequestError:
             raise SXBetError("SXBET_NETWORK_ERROR") from None
         try:
-            body = json.loads(b"".join(chunks))
-        except (UnicodeDecodeError, ValueError):
+            body = json.loads(b"".join(chunks), parse_constant=_reject_constant)
+        except (UnicodeDecodeError, ValueError, RecursionError):
             raise SXBetError("SXBET_INVALID_JSON", http_status=code) from None
         if not isinstance(body, dict) or body.get("status") != "success" or "data" not in body:
             raise SXBetError("SXBET_PROVIDER_STATUS_NOT_SUCCESS", http_status=code)
         return {"http_status": code, "data": body["data"],
-                "rate_limit_remaining": int(remaining) if remaining.isdigit() else None}
+                "rate_limit_remaining": _ascii_int(remaining)}

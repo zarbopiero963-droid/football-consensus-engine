@@ -168,3 +168,59 @@ def test_settings_reject_unknown_network_and_hide_key():
     with pytest.raises(ValueError):
         Settings.from_env({"SXBET_NETWORK": "https://evil.example"})
     assert KEY not in repr(Settings(enabled=True, api_key=KEY))
+
+
+@pytest.mark.parametrize("headers", [{"retry-after": "\xb3"}, {"retry-after": "99999999999"}])
+def test_non_ascii_or_huge_retry_after_never_escapes_fixed_codes(headers):
+    tools, _ = _tools(lambda r: httpx.Response(429, headers={k: v.encode("latin-1") for k, v in headers.items()}))
+    out = run(tools["sxbet_sports"]())
+    assert out["error"]["code"] == "SXBET_RATE_LIMITED" and out["error"].get("retry_after_seconds") is None
+
+
+def test_non_ascii_rate_limit_header_on_success_is_ignored():
+    tools, _ = _tools(lambda r: httpx.Response(200, json={"status": "success", "data": []},
+                                               headers={"x-ratelimit-remaining": "\xb2".encode("latin-1")}))
+    assert run(tools["sxbet_sports"]())["rate_limit_remaining"] is None
+
+
+@pytest.mark.parametrize("body", [b"[" * 200_000, b'{"status":"success","data":NaN}'])
+def test_pathological_json_fails_closed_with_fixed_code(body):
+    tools, _ = _tools(lambda r: httpx.Response(200, content=body))
+    out = run(tools["sxbet_sports"]())
+    assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_INVALID_JSON"
+
+
+def test_identity_encoding_requested_and_overall_deadline(monkeypatch):
+    tools, calls = _tools(_ok([]))
+    run(tools["sxbet_sports"]())
+    assert calls[0].headers["accept-encoding"] == "identity"
+    monkeypatch.setattr(sx_client, "_DEADLINE_SECONDS", 0.05)
+
+    async def slow(request):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json={"status": "success", "data": []})
+
+    settings = Settings(enabled=True, api_key=KEY)
+    registry = _Registry()
+    register_sxbet_tools(registry, settings, client=SXBetReadClient(settings, transport=httpx.MockTransport(slow)))
+    assert run(registry.tools["sxbet_sports"]())["error"]["code"] == "SXBET_TIMEOUT"
+
+
+@pytest.mark.parametrize("start,end,code", [
+    ("----", None, "INVALID_DATE"),
+    ("2026-06-01T00:00:00", None, "DATE_TIMEZONE_REQUIRED"),
+    ("2026-06-08T00:00:00Z", "2026-06-01T00:00:00Z", "END_DATE_BEFORE_START_DATE"),
+])
+def test_dates_follow_openapi_date_time_with_offset(start, end, code):
+    tools, calls = _tools(_ok({}))
+    out = run(tools["sxbet_trades"](start_date=start, end_date=end))
+    assert out["error"]["code"] == code and calls == []
+    out = run(tools["sxbet_trades"](start_date="2026-06-01T00:00:00Z", end_date="2026-06-08T00:00:00+00:00"))
+    assert out["status"] == "REAL_API_RESPONSE"
+
+
+def test_active_only_must_be_boolean_and_key_must_be_ascii():
+    tools, calls = _tools(_ok([]))
+    assert run(tools["sxbet_leagues"](active_only="no"))["error"]["code"] == "INVALID_ACTIVE_ONLY" and calls == []
+    with pytest.raises(ValueError):
+        Settings.from_env({"SXBET_API_KEY": "chiave-é"})

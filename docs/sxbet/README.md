@@ -39,7 +39,9 @@ La chiave SX Bet permette di **cancellare tutti gli ordini** dell'account (lo di
 
 **Unità:** `percentageOdds` è la probabilità implicita × 10^20 (per esempio `52500000000000000000` = 52,5%). Gli importi USDC sono in unità base con 6 decimali (`1000000` = 1 USDC). I dati sono restituiti così come arrivano dal provider.
 
-**Errori** (codici fissi, mai il body del provider né la chiave): `INVALID_INPUT`, `KEY_NOT_CONFIGURED`, `SXBET_RATE_LIMITED` (con `retry_after_seconds`), `SXBET_LOCAL_RATE_LIMITED`, `SXBET_UNAUTHORIZED`, `SXBET_HTTP_ERROR`, `SXBET_REDIRECT_REJECTED`, `SXBET_TIMEOUT`, `SXBET_INVALID_JSON`, `SXBET_PROVIDER_STATUS_NOT_SUCCESS`, `SXBET_RESPONSE_TOO_LARGE`, `PAYLOAD_TOO_LARGE`. Non ci sono retry automatici.
+**Errori** (codici fissi, mai il body del provider né la chiave): `INVALID_INPUT`, `KEY_NOT_CONFIGURED`, `SXBET_RATE_LIMITED` (con `retry_after_seconds`), `SXBET_LOCAL_RATE_LIMITED`, `SXBET_UNAUTHORIZED`, `SXBET_HTTP_ERROR`, `SXBET_REDIRECT_REJECTED`, `SXBET_TIMEOUT` (scadenza complessiva di 30 s), `SXBET_NETWORK_ERROR`, `SXBET_INVALID_JSON`, `SXBET_PROVIDER_STATUS_NOT_SUCCESS`, `SXBET_RESPONSE_TOO_LARGE`, `PAYLOAD_TOO_LARGE`. Non ci sono retry automatici. Il cap di 256 KiB si misura sul JSON compatto della risposta; oltre il cap la risposta è `PAYLOAD_TOO_LARGE`, senza troncature.
+
+**Rate limit:** il limiter `SXBET_MAX_RPM` vale **per processo**. Oggi il servizio Render gira con 1 istanza e `WEB_CONCURRENCY=1`. Se si scala a più worker o istanze, il ritmo effettivo si moltiplica: in quel caso va spostato sul coordinatore condiviso PostgreSQL (governance §2.4). Decisione dell'owner.
 
 ## Verifica (01-11-2026, backend contro l'API pubblica reale, senza chiave)
 | Prova | Esito |

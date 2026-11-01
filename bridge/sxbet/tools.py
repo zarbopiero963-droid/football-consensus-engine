@@ -73,9 +73,24 @@ def _enum(v, allowed, name):
 
 
 def _date(v):
+    """ISO-8601 date-time with an explicit offset or Z (OpenAPI format: date-time)."""
     if not isinstance(v, str) or not _DATE.fullmatch(v):
         raise InvalidInput("INVALID_DATE")
+    try:
+        parsed = datetime.fromisoformat(v.replace("z", "Z").replace("Z", "+00:00"))
+    except ValueError:
+        raise InvalidInput("INVALID_DATE") from None
+    if parsed.tzinfo is None:
+        raise InvalidInput("DATE_TIMEZONE_REQUIRED")
     return v
+
+
+def _date_range(start, end):
+    s = None if start is None else _date(start)
+    e = None if end is None else _date(end)
+    if s and e and datetime.fromisoformat(e.replace("Z", "+00:00")) < datetime.fromisoformat(s.replace("Z", "+00:00")):
+        raise InvalidInput("END_DATE_BEFORE_START_DATE")
+    return s, e
 
 
 def _bool(v, name):
@@ -147,6 +162,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
     @add
     async def sxbet_leagues(sport_id: int | None = None, active_only: bool = True) -> dict[str, Any]:
         """List leagues, optionally for one sport (GET /leagues/active or /leagues)."""
+        if not isinstance(active_only, bool):
+            return await call("sxbet_leagues", "/leagues/active", lambda: _raise("INVALID_ACTIVE_ONLY"), auth=False)
         path = "/leagues/active" if active_only else "/leagues"
         return await call("sxbet_leagues", path,
                           lambda: {"sportId": None if sport_id is None else _int(sport_id, "sport_id")}, auth=False)
@@ -308,10 +325,11 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             "nextKey": None if next_key is None else _cursor(next_key)}, auth=True)
 
     def _history(market_hash, status, start_date, end_date, sort_asc, per_page, next_key, extra=None):
+        start, end = _date_range(start_date, end_date)
         out = {"marketHash": None if market_hash is None else _hash(market_hash),
                "status": None if status is None else _enum(status, _TRADE_STATUS, "status"),
-               "startDate": None if start_date is None else _date(start_date),
-               "endDate": None if end_date is None else _date(end_date),
+               "startDate": start,
+               "endDate": end,
                "sortAsc": None if sort_asc is None else _bool(sort_asc, "sort_asc"),
                "perPage": None if per_page is None else _int(per_page, "per_page", 1, 100),
                "nextKey": None if next_key is None else _cursor(next_key)}
