@@ -5,8 +5,8 @@ Fonte tecnica: OpenAPI ufficiale **https://docs.sx.bet/openapi.json** (SX Bet AP
 ## Stato
 | Modalità | Stato |
 |---|---|
-| `READ_ONLY` | **implementata**: 23 tool `sxbet_*` di lettura |
-| `SIMULATION` | **implementata**: 1 tool, `sxbet_simulate_order` (totale 24 tool `sxbet_*`). Non firma e non invia |
+| `READ_ONLY` | **implementata**: 36 tool `sxbet_*` (tutte le 36 operazioni GET ufficiali) |
+| `SIMULATION` | **implementata**: 1 tool, `sxbet_simulate_order` (totale 37 tool `sxbet_*`). Non firma e non invia |
 | `LIVE_TRADING` | **non disponibile**. Per la governance §2.6 non può essere attivata finché non esiste ed è testato un signer isolato con conferma fuori banda, verificata dal signer, per ogni singolo ordine |
 
 Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. In `bridge/` non esistono percorsi di codice per creare, eseguire o cancellare ordini, né per approval, transfer o firma. Lo verificano `tests/test_sxbet_read_only.py::test_no_write_capability_exists` e `tests/test_sxbet_simulation.py::test_no_submission_code_in_signer_or_sxbet_module`. La firma esiste solo nel package separato [`signer/`](../../signer/README.md), che `bridge/` non importa mai.
@@ -33,6 +33,36 @@ La documentazione ufficiale dice: "Each API key can call only the routes for the
 | `Account: read` | `GET /user/balance-v3`, `GET /user/fees-v3`, `GET /positions-v3`, `GET /trades-v3`, `GET /fills-v3`, `GET /ledger-v3` | `sxbet_balance`, `sxbet_fees`, `sxbet_positions`, `sxbet_trades`, `sxbet_fills`, `sxbet_ledger` |
 
 Il modulo non richiede `Orders: create`, `Orders: cancel`, `Account: write` né alcuno scope `Wallet: *`. Una chiave senza questi scope riduce il danno in caso di fuga. Se manca uno scope di lettura, il tool risponde `SXBET_UNAUTHORIZED` (HTTP 401/403) senza esporre il body. La documentazione indica che è attiva una sola chiave alla volta: cambiare gli scope significa generare una nuova chiave, e lo decide l'owner.
+
+## Inventario ufficiale (01-11-2026)
+Fonte: `https://docs.sx.bet/openapi.json` (SX Bet API 1.0.0), con gli scope presi da `developers/api-key-permissions`. File: `docs/sxbet/official_api_inventory.json`, che riporta per ogni operazione metodo, path, auth, scope, parametri, classificazione e tool MCP.
+
+| Classe | Operazioni | MCP |
+|---|---:|---|
+| `PUBLIC_READ` (GET senza chiave) | 13 | tutte esposte |
+| `AUTHENTICATED_READ` (GET con `x-sx-api-key`) | 23 | tutte esposte |
+| `STATE_MUTATION` (cancellazioni, heartbeat, privacy, proxy e multisig admin) | 15 | **non esposte** |
+| `REAL_FUNDS_RISK` (creazione ordini, depositi, prelievi e trasferimenti) | 6 | **non esposte** |
+| **Totale** | **57** (54 path) | 36 GET → 36 tool, perché `sxbet_leagues` copre 2 route e `sxbet_health` non chiama il provider |
+
+Operazioni documentate fuori dall'OpenAPI:
+- `GET /user/realtime-token-v3/api-key`: restituisce una credenziale, quindi non è esposta come tool e la usa solo il probe realtime.
+- `GET /positions-v3/settled/pnl`: compare negli scope `Account: read`, ma l'OpenAPI non ne riporta i parametri (`DOCS_UNVERIFIED`), quindi non è implementata.
+
+Route di lettura aggiunte il 01-11-2026:
+- **Orders: read:** `sxbet_order` e `sxbet_order_by_client_id`.
+- **Account: read:** `sxbet_trade` e `sxbet_privacy`.
+- **Market data: read:** `sxbet_public_market_orders`, `sxbet_public_user_orders`, `sxbet_public_positions`.
+- **Wallet: read:** `sxbet_proxy_wallet`, `sxbet_proxy_deploy_pending`, `sxbet_proxy_funding_pending`, `sxbet_proxy_funding_status`, `sxbet_proxy_address_check`, `sxbet_safe_info`.
+
+Per i tool `Wallet: read` la chiave deve avere quello scope. Senza scope il tool risponde `SXBET_UNAUTHORIZED` e il workflow registra `BLOCKED_EXTERNAL`.
+
+## Realtime (WebSocket)
+- Endpoint: `wss://realtime.sx.bet/connection/websocket` (Centrifugo v6.9.1). Il token si ottiene con `GET /user/realtime-token-v3/api-key`.
+- Canali pubblici (8): `orderbook_v3:{marketHash}`, `orderbook_v3_event:{eventId}`, `best_odds_v3:global`, `recent_trades_v3:global`, `markets:global`, `main_line:global`, `fixtures:global` / `fixtures:live_scores`, `parlay_markets:global`.
+- Canali dell'account (3): `account:orders_v3_#{address}`, `account:trades_v3_#{address}`, `account:fills_v3_#{address}`.
+- Limiti: 512 sottoscrizioni per connessione, ping ogni 30 s, timeout del pong 8 s, coda in uscita di 1 MB. La history per namespace è documentata in `developers/realtime-reference`.
+- Il realtime è verificato dal workflow **SX Bet Full API Read-Only Audit**, che resta in ascolto per un tempo limitato e poi si disconnette. Il server MCP non tiene connessioni persistenti.
 
 ## Strumenti
 - **Pubblici** (nessuna chiave):
@@ -99,7 +129,7 @@ Come verificarlo senza credenziali:
 - `GET /healthz` riporta `deploy_commit`, `mcp_tools_total` e `mcp_tools_by_component`, calcolati sullo stesso catalogo servito da `tools/list` nel processo che risponde.
 - All'avvio ogni processo scrive nei log la riga `MCP_TOOL_REGISTRY total=… browser=… apifootball=… sxbet=… commit=…`.
 
-Se il server riporta `sxbet` 23 (24 dopo l'aggiunta di `sxbet_simulate_order`) e il client ne mostra 0, il problema è nel catalogo in cache del client: va aggiornato il connettore nel client (refresh, oppure disconnessione e nuova connessione).
+Se il server riporta il conteggio atteso di `sxbet` e il client ne mostra 0, il problema è nel catalogo in cache del client: va aggiornato il connettore nel client (refresh, oppure disconnessione e nuova connessione).
 
 
 ## Prossimi passi (decisioni owner)

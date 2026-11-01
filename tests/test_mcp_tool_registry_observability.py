@@ -69,13 +69,13 @@ def test_sxbet_enabled_catalogue_is_reported_by_healthz_and_startup_log():
     sx = [n for n in names if n.startswith("sxbet_")]
     af = [n for n in names if n.startswith("apifootball_")]
     browser = [n for n in names if n.startswith("browser_")]
-    assert len(sx) == 24 and len(names) == len(sx) + len(af) + len(browser)
+    assert len(sx) == 37 and len(names) == len(sx) + len(af) + len(browser)
     h = out["healthz"]
     assert h["mcp_tools_total"] == len(names)
-    assert h["mcp_tools_by_component"] == {"browser": len(browser), "apifootball": len(af), "sxbet": 24, "other": 0}
+    assert h["mcp_tools_by_component"] == {"browser": len(browser), "apifootball": len(af), "sxbet": 37, "other": 0}
     assert h["deploy_commit"] == "0123456789ab"
     lines = _registry_lines(logs)
-    assert lines and f"total={len(names)}" in lines[0] and "sxbet=24" in lines[0] and "commit=0123456789ab" in lines[0]
+    assert lines and f"total={len(names)}" in lines[0] and "sxbet=37" in lines[0] and "commit=0123456789ab" in lines[0]
     assert FAKE_KEY not in logs and FAKE_KEY not in json.dumps(out)
 
 
@@ -86,3 +86,28 @@ def test_sxbet_disabled_catalogue_reports_zero_sxbet_and_unknown_commit():
     assert h["mcp_tools_by_component"]["sxbet"] == 0 and h["mcp_tools_total"] == len(out["tool_names"])
     assert h["deploy_commit"] is None
     assert "sxbet=0" in _registry_lines(logs)[0]
+
+
+BROWSER_TOOLS = sorted("""browser_back browser_cleanup_report browser_click browser_close_page browser_create
+browser_create_cloak browser_fill browser_focus browser_forward browser_get_dom browser_get_elements browser_get_html
+browser_get_network_responses browser_health browser_hover browser_list_pages browser_list_sessions browser_new_page
+browser_open_url browser_press browser_reap browser_reload browser_screenshot browser_scroll browser_select_option
+browser_session_status browser_set_checked browser_stop browser_stop_all browser_stop_all_idle browser_switch_page
+browser_type browser_wait browser_wait_for_selector""".split())
+SXBET_TOOLS = sorted("""sxbet_balance sxbet_best_odds sxbet_fees sxbet_fills sxbet_fixture_status
+sxbet_fixtures_active sxbet_health sxbet_leagues sxbet_ledger sxbet_live_scores sxbet_markets_active
+sxbet_markets_find sxbet_markets_popular sxbet_metadata sxbet_open_orders sxbet_orderbook_event
+sxbet_orderbook_market sxbet_positions sxbet_public_trades sxbet_search sxbet_sports sxbet_teams
+sxbet_trades sxbet_order sxbet_order_by_client_id sxbet_trade sxbet_public_market_orders sxbet_public_user_orders
+sxbet_public_positions sxbet_privacy sxbet_proxy_wallet sxbet_proxy_deploy_pending sxbet_proxy_funding_pending
+sxbet_proxy_funding_status sxbet_proxy_address_check sxbet_safe_info sxbet_simulate_order""".split())
+
+
+def test_browser_and_sxbet_catalogues_are_pinned():
+    """API-FOOTBALL work must never add, drop or rename browser/SX Bet tools by accident."""
+    out, _ = _run({"APIFOOTBALL_ENABLED": "true", "APIFOOTBALL_LIVE_AUTHORIZED": "false",
+                   "SXBET_ENABLED": "true", "SXBET_API_KEY": FAKE_KEY})
+    names = out["tool_names"]
+    assert sorted(n for n in names if n.startswith("browser_")) == BROWSER_TOOLS and len(BROWSER_TOOLS) == 34
+    assert sorted(n for n in names if n.startswith("sxbet_")) == SXBET_TOOLS and len(SXBET_TOOLS) == 37
+    assert len([n for n in names if n.startswith("apifootball_")]) == 42

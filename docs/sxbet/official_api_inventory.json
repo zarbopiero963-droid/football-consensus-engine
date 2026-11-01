@@ -1,0 +1,1094 @@
+{
+ "source": "https://docs.sx.bet/openapi.json",
+ "openapi_info_version": "1.0.0",
+ "retrieved_at_utc": "2026-11-01T10:05:00Z",
+ "scopes_source": "https://docs.sx.bet/developers/api-key-permissions",
+ "not_in_openapi_but_documented": [
+  {
+   "method": "GET",
+   "path": "/user/realtime-token-v3/api-key",
+   "source": "https://docs.sx.bet/developers/realtime-initialization",
+   "mcp": "NOT_EXPOSED_AS_TOOL (returns a credential); used internally by the realtime probe only"
+  },
+  {
+   "method": "GET",
+   "path": "/positions-v3/settled/pnl",
+   "source": "https://docs.sx.bet/developers/api-key-permissions (Account: read)",
+   "mcp": "NOT_IMPLEMENTED: parameters absent from the OpenAPI (DOCS_UNVERIFIED)"
+  }
+ ],
+ "operation_count": 57,
+ "operations": [
+  {
+   "method": "GET",
+   "path": "/fills-v3",
+   "summary": "Get your fills",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "tradeId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "orderId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "status",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "startDate",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "endDate",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortAsc",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_fills",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/fixture/active",
+   "summary": "Get active fixtures",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "leagueId",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_fixtures_active",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/fixture/status",
+   "summary": "Get fixture status",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "sportXEventIds",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_fixture_status",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/heartbeat",
+   "summary": "Register heartbeat",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "DOCS_UNVERIFIED (not listed on api-key-permissions)",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/heartbeat/v3",
+   "summary": "Set heartbeat",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: cancel",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/leagues",
+   "summary": "Get leagues",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "sportId",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_leagues",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/leagues/active",
+   "summary": "Get active leagues",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "sportId",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_leagues",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/ledger-v3",
+   "summary": "Get your ledger",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "eventType",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_ledger",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/live-scores",
+   "summary": "Get live scores",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "sportXEventIds",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_live_scores",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/markets/active",
+   "summary": "Get active markets",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "onlyMainLine",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "leagueId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sportIds",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "liveOnly",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "betGroup",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "type",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "paginationKey",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "pageSize",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "gameTime",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_markets_active",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/markets/find",
+   "summary": "Find markets by hash",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "marketHashes",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_markets_find",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/markets/popular",
+   "summary": "Get popular markets",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_markets_popular",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/metadata/obv3",
+   "summary": "Get OBv3 metadata",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_metadata",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/orderbook-v3/snapshot/event",
+   "summary": "Get an event orderbook snapshot",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Market data: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "showTakerPerspective",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_orderbook_event",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/orderbook-v3/snapshot/market",
+   "summary": "Get an orderbook snapshot",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Market data: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "marketHash",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "showTakerPerspective",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_orderbook_market",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/orders-v3",
+   "summary": "Get your orders",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "marketHash",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortBy",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortAsc",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_open_orders",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/orders-v3",
+   "summary": "Create orders",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: create",
+   "classification": "REAL_FUNDS_RISK",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/orders-v3",
+   "summary": "Cancel orders by id",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: cancel",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/orders-v3/all",
+   "summary": "Cancel all orders",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: cancel",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/orders-v3/client/{clientOrderId}",
+   "summary": "Get an order by client ID",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "clientOrderId",
+     "in": "path",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_order_by_client_id",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "DELETE",
+   "path": "/orders-v3/event",
+   "summary": "Cancel orders on an event",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: cancel",
+   "classification": "STATE_MUTATION",
+   "parameters": [
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/orders-v3/market",
+   "summary": "Cancel orders on a market",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: cancel",
+   "classification": "STATE_MUTATION",
+   "parameters": [
+    {
+     "name": "marketHash",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/orders-v3/odds/best",
+   "summary": "Get best odds",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Market data: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "marketHashes",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "showTakerPerspective",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_best_odds",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/orders-v3/public",
+   "summary": "Get de-anonymized orders on a market",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Market data: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "marketHash",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_public_market_orders",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/orders-v3/public/user",
+   "summary": "Get a maker's de-anonymized orders",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Market data: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "userAddress",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_public_user_orders",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/orders-v3/{orderId}",
+   "summary": "Get an order by ID",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Orders: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "orderId",
+     "in": "path",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_order",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/positions-v3",
+   "summary": "Get your positions",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "status",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortBy",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortAsc",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_positions",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/positions-v3/public",
+   "summary": "Get a bettor's de-anonymized positions",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Market data: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "userAddress",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "status",
+     "in": "query",
+     "required": true
+    },
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortBy",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortAsc",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_public_positions",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/search",
+   "summary": "Search fixtures by team name",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "query",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_search",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/sports",
+   "summary": "Get sports",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_sports",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/teams",
+   "summary": "Get teams",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "sportId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "page",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "id",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_teams",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/trades-v3",
+   "summary": "Get your trades",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "marketHash",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "status",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "startDate",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "endDate",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "sortAsc",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_trades",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/trades-v3/public",
+   "summary": "Get the trade tape",
+   "auth": "none",
+   "api_key_scope": null,
+   "classification": "PUBLIC_READ",
+   "parameters": [
+    {
+     "name": "marketHash",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "eventId",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "perPage",
+     "in": "query",
+     "required": false
+    },
+    {
+     "name": "nextKey",
+     "in": "query",
+     "required": false
+    }
+   ],
+   "mcp_tool": "sxbet_public_trades",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/trades-v3/{tradeId}",
+   "summary": "Get a trade by ID",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "tradeId",
+     "in": "path",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_trade",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/user/balance-v3",
+   "summary": "Get your balance",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_balance",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/user/deploy-proxy",
+   "summary": "Deploy a proxy wallet",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/user/fees-v3",
+   "summary": "Get your fees",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_fees",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/add-signer/execute",
+   "summary": "Execute adding a signer",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/add-signer/prepare",
+   "summary": "Prepare adding a signer",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/cancel",
+   "summary": "Cancel a pending transaction",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/user/multisig/proxy/{proxyAddress}",
+   "summary": "Check a proxy address",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "proxyAddress",
+     "in": "path",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_proxy_address_check",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/remove-signer/execute",
+   "summary": "Execute removing a signer",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/remove-signer/prepare",
+   "summary": "Prepare removing a signer",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/set-threshold/execute",
+   "summary": "Execute a threshold change",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/set-threshold/prepare",
+   "summary": "Prepare a threshold change",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: admin",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/transfer/execute",
+   "summary": "Execute a transfer",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: transfer",
+   "classification": "REAL_FUNDS_RISK",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/transfer/prepare",
+   "summary": "Prepare a transfer",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: transfer",
+   "classification": "REAL_FUNDS_RISK",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/withdraw/execute",
+   "summary": "Execute a withdrawal",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: withdraw",
+   "classification": "REAL_FUNDS_RISK",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "POST",
+   "path": "/user/multisig/withdraw/prepare",
+   "summary": "Prepare a withdrawal",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: withdraw",
+   "classification": "REAL_FUNDS_RISK",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/user/multisig/{safeAddress}/info",
+   "summary": "Get Safe info",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "safeAddress",
+     "in": "path",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_safe_info",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/user/pending-deploy-proxy",
+   "summary": "Pending proxy deployment",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_proxy_deploy_pending",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/user/privacy-v3",
+   "summary": "Read your privacy setting",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_privacy",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/user/privacy-v3",
+   "summary": "Change your privacy setting",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Account: write",
+   "classification": "STATE_MUTATION",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/user/proxy",
+   "summary": "Get your proxy wallet",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_proxy_wallet",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "POST",
+   "path": "/user/transfer-to-proxy",
+   "summary": "Fund a proxy wallet",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: deposit",
+   "classification": "REAL_FUNDS_RISK",
+   "parameters": [],
+   "mcp_tool": null,
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+  },
+  {
+   "method": "GET",
+   "path": "/user/transfer-to-proxy/pending",
+   "summary": "Check a pending deposit",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [],
+   "mcp_tool": "sxbet_proxy_funding_pending",
+   "mcp": "EXPOSED"
+  },
+  {
+   "method": "GET",
+   "path": "/user/transfer-to-proxy/status",
+   "summary": "Deposit status by session",
+   "auth": "x-sx-api-key",
+   "api_key_scope": "Wallet: read",
+   "classification": "AUTHENTICATED_READ",
+   "parameters": [
+    {
+     "name": "sessionId",
+     "in": "query",
+     "required": true
+    }
+   ],
+   "mcp_tool": "sxbet_proxy_funding_status",
+   "mcp": "EXPOSED"
+  }
+ ]
+}

@@ -359,9 +359,9 @@ def run(c):
     return asyncio.run(c)
 
 
-def test_tool_registered_as_24th_tool_in_simulation_mode():
+def test_tool_registered_as_37th_sxbet_tool_in_simulation_mode():
     _, _, names = _tool(_router())
-    assert len(names) == 24 and names[-1] == "sxbet_simulate_order"
+    assert len(names) == 37 and names.count("sxbet_simulate_order") == 1
 
 
 def test_tool_simulates_without_signing_or_submitting():

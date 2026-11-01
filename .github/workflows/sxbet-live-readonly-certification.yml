@@ -1,0 +1,89 @@
+name: SX Bet Full API Read-Only Audit (Live Read-Only Certification)
+# Manual only. Never on push/pull_request: the SXBET_API_KEY secret must never
+# reach code from an untrusted PR. Read-only GET routes and read-only realtime
+# subscriptions; no order, cancel, heartbeat, approval, transfer or signature.
+on:
+  workflow_dispatch:
+    inputs:
+      ws_seconds:
+        description: 'Seconds to listen on the realtime WebSocket (5-60)'
+        required: false
+        default: '20'
+permissions:
+  contents: read
+concurrency:
+  group: sxbet-live-readonly-certification
+  cancel-in-progress: false
+jobs:
+  certify:
+    # Trusted code only: the protected default branch.
+    if: github.ref == 'refs/heads/main'
+    # Owner action: restrict this environment to the `main` branch and move the
+    # SXBET_API_KEY secret into it (Settings -> Environments). The `if:` above is
+    # only a second layer: a workflow file can be edited on another branch.
+    environment: sxbet-live-readonly
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      WS_SECONDS: ${{ github.event.inputs.ws_seconds }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Secret preflight (presence only, never the value)
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$SXBET_API_KEY" ]; then
+            echo 'SXBET_API_KEY Actions secret is absent: authenticated routes will be NOT_TESTED'
+          else
+            echo 'SXBET_API_KEY Actions secret is present'
+          fi
+      - name: Live read-only certification (bounded, sequential)
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+        shell: bash
+        run: |
+          case "$WS_SECONDS" in ''|*[!0-9]*) WS_SECONDS=20 ;; esac
+          python scripts/sxbet_live_readonly_certification.py --authorize-live-read \
+            --ws-seconds "$WS_SECONDS" --output "$RUNNER_TEMP/sxbet_live_readonly.json"
+      - name: Publish sanitized summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = Path(os.environ["RUNNER_TEMP"]) / "sxbet_live_readonly.json"
+          out = Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8")
+          if not report.is_file():
+              out.write("### SX Bet live read-only certification\n\nNo report generated.\n")
+          else:
+              data = json.loads(report.read_text(encoding="utf-8"))
+              lines = ["### SX Bet live read-only certification (mainnet, READ_ONLY)", "",
+                       f"Outcomes: {data.get('outcome_counts')}; write operations attempted: {data.get('write_operations_attempted')}", "",
+                       "| Test | Kind | Outcome | Status | HTTP | Error code | Detail |", "|---|---|---|---|---:|---|---|"]
+              for r in data.get("results", []):
+                  detail = {k: v for k, v in r.items() if k not in ("test", "kind", "outcome", "status", "http_status", "error_code")}
+                  lines.append(f"| {r.get('test')} | {r.get('kind')} | {r.get('outcome')} | {r.get('status', '')} | "
+                               f"{r.get('http_status', '')} | {r.get('error_code', '')} | {json.dumps(detail)[:300]} |")
+              lines += ["", "Report is leak-checked for the API key, realtime token and account address before it is written."]
+              out.write("\n".join(lines) + "\n")
+          PY
+      - name: Upload sanitized report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sxbet-live-readonly-report
+          path: ${{ runner.temp }}/sxbet_live_readonly.json
+          if-no-files-found: ignore
+          retention-days: 30
