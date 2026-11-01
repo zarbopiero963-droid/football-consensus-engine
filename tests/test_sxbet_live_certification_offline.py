@@ -87,7 +87,9 @@ def test_local_rate_limit_is_respected_by_waiting_not_by_raising_the_limit():
     src = SCRIPT.read_text(encoding="utf-8")
     assert '"SXBET_MAX_RPM": "30"' in src            # the audit keeps the conservative local limit
     assert 'err.get("code") == "SXBET_LOCAL_RATE_LIMITED"' in src and "time.sleep(wait)" in src
-    assert "min(int(err.get(\"retry_after_seconds\") or 61), 61)" in src
+    # Composite tools need several GETs: the retry waits the full 60 s sliding window (+1 s), not just
+    # the time until one slot frees (run 10: hedge/close previews refused again after a short wait).
+    assert "wait = 61" in src
 
 
 def test_sxbet_secret_is_only_used_by_the_environment_scoped_audit_job():
