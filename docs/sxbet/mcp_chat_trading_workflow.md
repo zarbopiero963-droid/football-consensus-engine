@@ -1,6 +1,6 @@
 # SX Bet: trading dalla chat (ChatGPT/Claude) con il wallet Magic esistente
 
-Inventario, gap analysis, roadmap e checklist di attivazione. Mandato `FCB-SXBET-MAGIC-WALLET-FULL-AUDIT-01`, sezioni §8, §10, §11, §12, §13 e §18. Stato del codice: `main` 3ddec62, più le PR aperte #152 (signer: adapter, cancellazione, ledger) e #153 (vettori EIP-712).
+Inventario, gap analysis, roadmap e checklist di attivazione. Mandato `FCB-SXBET-MAGIC-WALLET-FULL-AUDIT-01`, sezioni §8, §10, §11, §12, §13 e §18. Stato del codice: `main` 54b2cb7, che include #151 (positions, hedging, regole), #152 (signer: adapter, cancellazione, ledger; mergiata su autorizzazione scritta dell'owner, eccezione al §2.6 limitata a quella PR), #153 (vettori EIP-712) e #154 (ritmo dell'audit).
 
 **LIVE_TRADING resta non disponibile.** Nessun tool MCP può firmare, inviare o cancellare.
 
@@ -50,7 +50,7 @@ Le funzioni native dell'exchange sono: ordini, cancellazione, heartbeat, letture
 
 ## 3. Gateway attuale e codice mancante per il trasporto reale
 
-**Già presente in `signer/`** (#149 mergiata, #152 in review):
+**Già presente in `signer/`** (#149 e #152 mergiate):
 - validazione del payload e binding v2;
 - digest e ordine pari all'id;
 - verifica del firmatario (`INTENT_MAKER_IS_NOT_SIGNER`);
@@ -118,8 +118,8 @@ Il ciclo completo è collaudabile con sole credenziali di prova, perché Toronto
 
 ## 6. Roadmap (PR in ordine)
 
-1. #152: adapter, cancellazione, ancoraggio del ledger (nessun sender). In review; merge dell'owner (§2.6).
-2. #153: vettori EIP-712 (solo test).
+1. ~~#152: adapter, cancellazione, ancoraggio del ledger (nessun sender).~~ Mergiata (54b2cb7).
+2. ~~#153: vettori EIP-712 (solo test).~~ Mergiata (e60c3d4).
 3. PR di governance: consentire il signer su un servizio Render **separato** (guard `RENDER` per service ID). Merge dell'owner.
 4. PR del servizio signer: HTTP privato, autenticazione MCP→signer, endpoint "richiesta di ordine" che restituisce il binding da approvare. Nessun sender.
 5. PR dell'app di approvazione: PWA o passkey, schermate dei binding per ordine e per cancel, verifica nel signer.
@@ -133,7 +133,7 @@ Il ciclo completo è collaudabile con sole credenziali di prova, perché Toronto
 1. **Parere legale in Italia** (`BLOCKED_LEGAL_VERIFICATION`).
 2. Decisione sulla custodia: chiave Magic esportata (custodisce **tutti** i fondi del proxy) oppure EOA dedicato; KMS sì o no.
 3. Confronto, dal proprio connettore, tra l'EOA mostrato da sx.bet e i `owners` della Safe (`sxbet_safe_info`).
-4. Approvazione e merge di #152 e delle PR 3–8.
+4. Approvazione e merge delle PR 3–8 della roadmap.
 5. Creazione del servizio Render privato (circa $7,25 al mese) e, se scelto, dell'account AWS KMS (circa $1 al mese). Sono nuovi costi.
 6. Account testnet su toronto.sx.bet, testnet USDC dal supporto, API key testnet.
 7. Generazione della chiave di approvazione sul proprio dispositivo; firma della config di rischio e del flag `LIVE_TRADING`.
