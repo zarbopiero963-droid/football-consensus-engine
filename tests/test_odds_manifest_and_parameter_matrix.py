@@ -41,6 +41,26 @@ def test_existing_official_fields_present_in_source():
 import asyncio
 import json
 
+
+def _assert_no_prices(result, price="1.95"):
+    """No price may leak: no `odd` key anywhere and the price value absent.
+
+    `retrieved_at_utc` is excluded from the value scan: its microseconds can
+    legitimately contain the digits of a price (e.g. ...:31.950123), which made
+    a plain substring check fail intermittently without any price present.
+    """
+    def walk(node):
+        if isinstance(node, dict):
+            assert "odd" not in node, node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    walk(result)
+    scrubbed = {k: v for k, v in result.items() if k != "retrieved_at_utc"}
+    assert price not in json.dumps(scrubbed)
+
 import httpx
 
 from bridge.api_football.config import Settings
@@ -109,7 +129,7 @@ def test_oversized_real_page_returns_bounded_manifest_with_quota_and_provenance(
     assert result["data"]["fixture_list_complete"] is False
     assert result["data"]["selections_in_page"] == 400 * 5 * 10 * 6
     assert result["pagination"] == {"current": 1, "total": 3}
-    assert "1.95" not in json.dumps(result)
+    _assert_no_prices(result)
     assert len(json.dumps(result).encode()) <= 262_144
 
 
@@ -208,7 +228,7 @@ def test_oversized_live_odds_return_navigable_price_free_manifest():
     assert fx["fixture_id"] == 7 and fx["update"] == "2026-10-31T22:51:31+00:00" and fx["elapsed"] == 36
     assert [m["bet_id"] for m in fx["markets"]] == list(range(100))  # every market retrievable via bet=
     assert data["market_list_complete"] is True and data["fixture_list_complete"] is True
-    assert "1.95" not in json.dumps(result)
+    _assert_no_prices(result)
     assert result["quota_remaining"] == {"day": 123, "minute": 9}
     assert len(json.dumps(result).encode()) <= 262_144
 
@@ -239,10 +259,19 @@ def test_oversized_malformed_live_odds_fail_closed(drop):
     assert result["status"] == "PAYLOAD_TOO_LARGE"
     assert result["error"] == {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
     assert result["manifest_error"]["code"].startswith("INVALID_LIVE_ODDS_")
-    assert result["data"] is None and "1.95" not in json.dumps(result)
+    assert result["data"] is None
+    _assert_no_prices(result)
 
 
 def test_live_manifest_rejects_prematch_envelope():
     from bridge.api_football.odds_manifest import live_odds_manifest
     with pytest.raises(ValueError):
         live_odds_manifest({"get": "odds", "response": [], "paging": {}})
+
+
+def test_no_price_helper_still_detects_real_leaks_and_ignores_timestamp_digits():
+    with pytest.raises(AssertionError):
+        _assert_no_prices({"data": {"fixtures": [{"odd": "2.10"}]}})
+    with pytest.raises(AssertionError):
+        _assert_no_prices({"data": {"value": "1.95"}, "retrieved_at_utc": "x"})
+    _assert_no_prices({"data": {"n": 1}, "retrieved_at_utc": "2026-11-01T00:12:31.950123+00:00"})
