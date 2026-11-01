@@ -316,37 +316,6 @@ class BrowserUseBridge:
             session.last_network = list(network)
 
     @session_operation
-    async def json_document(self, session_id: str, url: str, max_bytes: int = 5 * 1024 * 1024):
-        """Complete public JSON document bytes, never truncated DOM text."""
-        await asyncio.to_thread(validate_public_http_url, url)
-        if type(max_bytes) is not int or not 1 <= max_bytes <= 5 * 1024 * 1024:
-            raise ValueError('invalid document size limit')
-        session = await self._session(session_id)
-        page = await self._page(session)
-        session.last_network = []
-        response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
-        await asyncio.to_thread(validate_public_http_url, page.url)
-        if page.url != url or response is None or response.status != 200:
-            raise RuntimeError('JSON document status or final URL mismatch')
-        if 'application/json' not in response.headers.get('content-type', '').lower():
-            raise RuntimeError('JSON document content type mismatch')
-        length = response.headers.get('content-length')
-        if length and int(length) > max_bytes:
-            raise RuntimeError('JSON document exceeds size limit')
-        raw = await response.body()
-        if len(raw) > max_bytes:
-            raise RuntimeError('JSON document exceeds size limit')
-        body = raw.decode('utf-8')
-        def invalid_constant(value):
-            raise ValueError('nonfinite JSON constant')
-        rows = json.loads(body, parse_constant=invalid_constant)
-        if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
-            raise RuntimeError('JSON document is not an object list')
-        return {'requested_url': url, 'final_url': page.url, 'http_status': response.status,
-                'body': body, 'bytes_utf8': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
-                'captured_at_utc': datetime.now(timezone.utc).isoformat(), 'truncated': False}
-
-    @session_operation
     async def html(self, session_id: str, selector: str | None = None) -> dict[str, Any]:
         session = await self._session(session_id)
         page = await self._page(session)
