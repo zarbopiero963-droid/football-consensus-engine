@@ -69,3 +69,14 @@ def test_runner_commits_once_and_sql_failure_propagates(tmp_path):
     with pytest.raises(RuntimeError,match='migration SQL failed'):
         migrations.apply_migrations(lambda:broken,tmp_path)
     assert broken.commits==0 and broken.error is not None
+
+
+def test_sxbet_rate_limits_migration_is_versioned_consecutive_and_additive():
+    items=migrations.load_migrations()
+    assert [m.version for m in items]==list(range(1,len(items)+1))
+    m7=items[6]
+    assert m7.version==7 and m7.name=='0007_sxbet_rate_limits.sql'
+    assert 'CREATE TABLE IF NOT EXISTS sxbet_rate_attempts' in m7.sql
+    assert 'CREATE TABLE IF NOT EXISTS sxbet_rate_cooldowns' in m7.sql
+    for word in ('DROP ','TRUNCATE','DELETE ','ALTER ','UPDATE '):
+        assert word not in m7.sql.upper()

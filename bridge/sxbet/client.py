@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
-from collections import deque
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 import httpx
+
+from .ratelimit import LocalRateLimiter, PostgresRateCoordinator, RateLimited, build_plan
+
+_LOG = logging.getLogger(__name__)
 
 NETWORKS = {
     "mainnet": "https://api.sx.bet",
@@ -24,6 +28,13 @@ NETWORKS = {
 _MAX_BODY = 524_288
 _TIMEOUT_SECONDS = 15.0
 _DEADLINE_SECONDS = 30.0  # whole request, not per phase
+# Rate coordinator budgets: one-time schema ensure (cold start) and each reservation.
+# Either expiring means SXBET_RATE_COORDINATOR_UNAVAILABLE and no provider call.
+_COORDINATOR_PREPARE_SECONDS = 10.0
+_COORDINATOR_TIMEOUT_SECONDS = 3.0
+# Errors raised before any request leaves the process.
+NO_NETWORK_CODES = frozenset({"SXBET_LOCAL_RATE_LIMITED", "SXBET_KEY_NOT_CONFIGURED",
+                              "SXBET_RATE_COORDINATOR_UNAVAILABLE", "SXBET_INVALID_PATH"})
 
 
 def _ascii_int(raw: str) -> int | None:
@@ -44,6 +55,9 @@ class Settings:
     network: str = "mainnet"
     api_key: str = ""
     max_rpm: int = 60
+    # "postgres" when DATABASE_URL is set (production): shared, fail-closed coordinator.
+    # "local" only without a database (tests/local); never a fallback for PG errors.
+    rate_coordinator: str = "local"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -61,14 +75,15 @@ class Settings:
         key = e.get("SXBET_API_KEY", "").strip()
         if key and not (key.isascii() and key.isprintable() and len(key) <= 512):
             raise ValueError("SXBET_API_KEY must be printable ASCII")
-        return cls(enabled=enabled, network=network, api_key=key, max_rpm=rpm)
+        coordinator = "postgres" if e.get("DATABASE_URL", "").strip() else "local"
+        return cls(enabled=enabled, network=network, api_key=key, max_rpm=rpm, rate_coordinator=coordinator)
 
     @property
     def base_url(self) -> str:
         return NETWORKS[self.network]
 
     def __repr__(self) -> str:  # never print the key
-        return f"Settings(enabled={self.enabled}, network={self.network!r}, key_present={bool(self.api_key)}, max_rpm={self.max_rpm})"
+        return f"Settings(enabled={self.enabled}, network={self.network!r}, key_present={bool(self.api_key)}, max_rpm={self.max_rpm}, rate_coordinator={self.rate_coordinator!r})"
 
 
 class SXBetError(Exception):
@@ -79,24 +94,46 @@ class SXBetError(Exception):
         self.retry_after = retry_after
 
 
-class _RateLimiter:
-    """Local sliding 60 s window; conservative versus the provider limits."""
+# Back-compatible name: the in-process limiter now applies the same documented buckets.
+_RateLimiter = LocalRateLimiter
 
-    def __init__(self, per_minute: int, clock=time.monotonic):
-        self.per_minute = per_minute
-        self.clock = clock
-        self.calls: deque[float] = deque()
-        self.lock = asyncio.Lock()
 
-    async def acquire(self) -> None:
-        async with self.lock:
-            now = self.clock()
-            while self.calls and now - self.calls[0] >= 60:
-                self.calls.popleft()
-            if len(self.calls) >= self.per_minute:
-                raise SXBetError("SXBET_LOCAL_RATE_LIMITED",
-                                 retry_after=max(1, int(60 - (now - self.calls[0])) + 1))
-            self.calls.append(now)
+def default_limiter(settings: Settings):
+    if settings.rate_coordinator == "postgres":
+        return PostgresRateCoordinator()
+    if settings.rate_coordinator == "local":
+        return LocalRateLimiter(settings.max_rpm)
+    raise ValueError("unknown rate coordinator")
+
+
+def _consume(task: asyncio.Future) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+def _coordinator_unavailable(stage: str, reason: str, exc: BaseException | None) -> SXBetError:
+    # Fixed, secret-free diagnostics: exception CLASS name only, never its text (DSN, key).
+    _LOG.warning("SXBET_RATE_COORDINATOR_UNAVAILABLE stage=%s reason=%s error_type=%s",
+                 stage, reason, type(exc).__name__ if exc is not None else "-")
+    return SXBetError("SXBET_RATE_COORDINATOR_UNAVAILABLE")
+
+
+async def _bounded(coro, timeout: float, stage: str) -> None:
+    """Run a coordinator step shielded and time-bounded; fail closed on anything but a decision."""
+    task = asyncio.ensure_future(coro)
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except RateLimited:
+        raise
+    except asyncio.CancelledError:
+        task.add_done_callback(_consume)
+        raise
+    except (asyncio.TimeoutError, TimeoutError):
+        # The worker thread cannot be cancelled; a late reservation stays consumed (conservative).
+        task.add_done_callback(_consume)
+        raise _coordinator_unavailable(stage, "TIMEOUT", None) from None
+    except Exception as exc:  # psycopg errors, broken adapters, anything else
+        raise _coordinator_unavailable(stage, "ERROR", exc) from None
 
 
 def _encode(params: Mapping[str, Any]) -> dict[str, str]:
@@ -118,7 +155,7 @@ class SXBetReadClient:
                  limiter: _RateLimiter | None = None):
         self.settings = settings
         self._transport = transport
-        self._limiter = limiter or _RateLimiter(settings.max_rpm)
+        self._limiter = limiter or default_limiter(settings)
 
     async def get(self, path: str, params: Mapping[str, Any], *, auth: bool) -> dict[str, Any]:
         if not path.startswith("/") or "//" in path or ".." in path:
@@ -128,12 +165,37 @@ class SXBetReadClient:
             if not self.settings.api_key:
                 raise SXBetError("SXBET_KEY_NOT_CONFIGURED")
             headers["x-sx-api-key"] = self.settings.api_key
-        await self._limiter.acquire()
+        plan = build_plan(network=self.settings.network, api_key=self.settings.api_key,
+                          max_rpm=self.settings.max_rpm, path=path, auth=auth)
+        await self._admit(plan)
         try:
             async with asyncio.timeout(_DEADLINE_SECONDS):
                 return await self._fetch(path, params, headers)
         except TimeoutError:
             raise SXBetError("SXBET_TIMEOUT") from None
+        except SXBetError as exc:
+            if exc.code == "SXBET_RATE_LIMITED":
+                await self._record_rate_limited(plan, exc.retry_after)
+            raise
+
+    async def _admit(self, plan) -> None:
+        """Reserve a slot in every bucket of the plan, or raise without any network call."""
+        try:
+            prepare = getattr(self._limiter, "prepare", None)
+            if prepare is not None:
+                await _bounded(prepare(), _COORDINATOR_PREPARE_SECONDS, "prepare")
+            await _bounded(self._limiter.acquire(plan), _COORDINATOR_TIMEOUT_SECONDS, "reserve")
+        except RateLimited as exc:
+            raise SXBetError("SXBET_LOCAL_RATE_LIMITED", retry_after=exc.retry_after) from None
+
+    async def _record_rate_limited(self, plan, retry_after: int | None) -> None:
+        # Share the provider's back-off with every process. The 429 itself is still returned:
+        # a failure here is logged with a fixed event and never retried or hidden.
+        try:
+            await _bounded(self._limiter.record_rate_limited(plan, retry_after),
+                           _COORDINATOR_TIMEOUT_SECONDS, "cooldown")
+        except SXBetError:
+            pass
 
     async def _fetch(self, path: str, params: Mapping[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         try:
