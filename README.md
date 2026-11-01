@@ -1,12 +1,13 @@
 # Football Consensus Browser — MCP server
 
-Server **MCP** (Model Context Protocol) remoto, protetto da OAuth. Espone ai client MCP (ChatGPT, Claude.ai/Claude Code) tre componenti:
+Server **MCP** (Model Context Protocol) remoto, protetto da OAuth. Espone ai client MCP (ChatGPT, Claude.ai/Claude Code) quattro componenti:
 
 1. **API-FOOTBALL v3**: dati calcistici, statistiche, quote pre-match e live, cataloghi bookmaker e mercati. 42 tool `apifootball_*`.
 2. **Browser Use**: browser cloud controllato via CDP + Playwright. Tool `browser_*`.
 3. **CloakBrowser**: provider browser locale opzionale, integrato nello stesso bridge (`browser_create_cloak`). Non è un server MCP separato.
+4. **SX Bet**: modulo **READ_ONLY** opzionale (`SXBET_ENABLED`), con 23 tool `sxbet_*` basati sull'OpenAPI ufficiale V3. Il trading reale **non è disponibile** (governance §2.6). Vedi [`docs/sxbet/README.md`](docs/sxbet/README.md).
 
-Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/football-consensus-engine/issues/130). L'integrazione **SX Bet** è in roadmap (M2B) e **non è ancora implementata**.
+Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/football-consensus-engine/issues/130).
 
 > Agenti: leggere prima [AGENTS.md](AGENTS.md) e [CLAUDE.md](CLAUDE.md) (governance vincolante).
 
@@ -57,6 +58,7 @@ Lo schema `tools/list` espone tutti i 109 parametri dei contratti API-FOOTBALL (
 | `APIFOOTBALL_ENABLED`, `APIFOOTBALL_LIVE_AUTHORIZED`, `APIFOOTBALL_API_KEY` | API-FOOTBALL (entrambi i flag sono necessari per le chiamate reali) |
 | `APIFOOTBALL_MAX_RPM` (8), `APIFOOTBALL_MAX_DAILY_REQUESTS` (80), `APIFOOTBALL_MAX_CONCURRENCY` (2; in produzione 1) | limiti locali del coordinatore di quota, più restrittivi del piano del provider |
 | `APIFOOTBALL_CACHE_ENABLED`, `APIFOOTBALL_CIRCUIT_BREAKER_ENABLED` | resilienza |
+| `SXBET_ENABLED`, `SXBET_NETWORK` (`mainnet`/`testnet`), `SXBET_API_KEY`, `SXBET_MAX_RPM` (60) | SX Bet, solo lettura; la chiave serve solo per le route autenticate |
 
 ## Comportamenti e limiti (verificati)
 
@@ -96,4 +98,5 @@ CI (GitHub Actions): `Multi-market tests` (pytest e decision-postgres) e `api-fo
 
 - API-FOOTBALL: [`docs/api_football/`](docs/api_football/) (changelog, runbook, evidenze) e [`docs/audits/`](docs/audits/).
 - Browser Use e CloakBrowser: [`docs/browser/README.md`](docs/browser/README.md).
+- SX Bet: [`docs/sxbet/README.md`](docs/sxbet/README.md).
 - Il codice storico dell'engine di consensus, dei collector e dei pilot è stato rimosso con la PR #132; resta consultabile nella storia Git.

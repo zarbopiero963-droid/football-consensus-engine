@@ -307,6 +307,27 @@ def _register_optional_api_football_tools(registry) -> tuple[str, ...]:
 # The OFF state is indistinguishable from the original tool registry.
 APIFOOTBALL_REGISTERED_TOOLS = _register_optional_api_football_tools(mcp)
 
+SXBET_REGISTRATION_ERROR_TYPE: str | None = None
+
+
+def _register_optional_sxbet_tools(registry) -> tuple[str, ...]:
+    """Opt-in READ_ONLY SX Bet tools; isolated from OAuth, browser and API-FOOTBALL."""
+    global SXBET_REGISTRATION_ERROR_TYPE
+    if os.environ.get("SXBET_ENABLED", "false").strip().lower() not in ("true", "1"):
+        return ()
+    try:
+        from bridge.sxbet.client import Settings as SXBetSettings
+        from bridge.sxbet.tools import register_sxbet_tools
+        return register_sxbet_tools(registry, SXBetSettings.from_env())
+    except Exception as exc:
+        SXBET_REGISTRATION_ERROR_TYPE = type(exc).__name__
+        logging.getLogger(__name__).error(
+            "optional_sxbet_registration_failed type=%s; other tools unaffected", SXBET_REGISTRATION_ERROR_TYPE)
+        return ()
+
+
+SXBET_REGISTERED_TOOLS = _register_optional_sxbet_tools(mcp)
+
 
 class OAuthBearerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -341,6 +362,9 @@ async def healthz(_request: Request):
             "apifootball_live_authorized": os.environ.get("APIFOOTBALL_LIVE_AUTHORIZED", "false").strip().lower() in ("true", "1"),
             "apifootball_registered_count": len(APIFOOTBALL_REGISTERED_TOOLS),
             "apifootball_registration_error_type": APIFOOTBALL_REGISTRATION_ERROR_TYPE,
+            "sxbet_registered_count": len(SXBET_REGISTERED_TOOLS),
+            "sxbet_registration_error_type": SXBET_REGISTRATION_ERROR_TYPE,
+            "sxbet_key_configured": bool(os.environ.get("SXBET_API_KEY", "").strip()),
         }
     )
 
