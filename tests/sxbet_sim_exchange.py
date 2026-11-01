@@ -63,6 +63,10 @@ SIM_ASSUMPTIONS = (
     "IOC_REMAINDER: an IOC / FOK remainder ends INACTIVE NO_LIQUIDITY",
     "BALANCE: maker check resting + new <= available per market:outcome at POST; a match moves stake to escrow",
 )
+# FILL_AMOUNT_UNITS and SETTLE_RETURN_NET are the SAME DOCS_UNVERIFIED assumptions signer/orders.py relies on
+# (settlement condition and realized P&L). The simulator satisfies them by construction, so simulated tests
+# CANNOT validate them: only a testnet (Toronto) partial fill + settlement can.
+CIRCULAR_ASSUMPTIONS = ("FILL_AMOUNT_UNITS", "SETTLE_RETURN_NET")
 
 
 class SimCrash(BaseException):
