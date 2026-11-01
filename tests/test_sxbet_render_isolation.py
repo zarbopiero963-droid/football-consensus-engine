@@ -105,7 +105,7 @@ def test_bridge_on_render_never_loads_signer_and_exposes_no_signing_inputs():
     out = json.loads(line[len("RESULT_JSON="):])
     assert out["loaded"] == []
     names = [t["name"] for t in out["tools"]]
-    assert sum(n.startswith("sxbet_") for n in names) == 37  # unchanged catalogue
+    assert sum(n.startswith("sxbet_") for n in names) == 46  # 37 + 9 DERIVED read/simulation tools, still no write tool
     offenders = []
     for t in out["tools"]:
         for p in (t.get("inputSchema") or {}).get("properties", {}):
