@@ -107,11 +107,20 @@ class BrowserUseBridge:
             self._sessions[session.id] = session
 
         # cdpUrl is intentionally never returned: treat it as a bearer-like capability.
-        return {
+        # Browser Use's liveUrl embeds the session CDP host (`wss=...cdp...`), so it
+        # is treated the same way: withheld unless the operator explicitly opts in.
+        result = {
             "session_id": session.id,
             "status": data.get("status", "active"),
-            "live_url": session.live_url,
+            "live_view_available": bool(session.live_url),
         }
+        if self._expose_live_url() and session.live_url:
+            result["live_url"] = session.live_url
+        return result
+
+    @staticmethod
+    def _expose_live_url() -> bool:
+        return os.environ.get("BROWSER_USE_EXPOSE_LIVE_URL", "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _cloak_enabled() -> bool:
