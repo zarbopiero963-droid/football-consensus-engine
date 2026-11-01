@@ -69,13 +69,13 @@ def test_sxbet_enabled_catalogue_is_reported_by_healthz_and_startup_log():
     sx = [n for n in names if n.startswith("sxbet_")]
     af = [n for n in names if n.startswith("apifootball_")]
     browser = [n for n in names if n.startswith("browser_")]
-    assert len(sx) == 23 and len(names) == len(sx) + len(af) + len(browser)
+    assert len(sx) == 24 and len(names) == len(sx) + len(af) + len(browser)
     h = out["healthz"]
     assert h["mcp_tools_total"] == len(names)
-    assert h["mcp_tools_by_component"] == {"browser": len(browser), "apifootball": len(af), "sxbet": 23, "other": 0}
+    assert h["mcp_tools_by_component"] == {"browser": len(browser), "apifootball": len(af), "sxbet": 24, "other": 0}
     assert h["deploy_commit"] == "0123456789ab"
     lines = _registry_lines(logs)
-    assert lines and f"total={len(names)}" in lines[0] and "sxbet=23" in lines[0] and "commit=0123456789ab" in lines[0]
+    assert lines and f"total={len(names)}" in lines[0] and "sxbet=24" in lines[0] and "commit=0123456789ab" in lines[0]
     assert FAKE_KEY not in logs and FAKE_KEY not in json.dumps(out)
 
 

@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
+      # Signer-only deps (eth-account, cryptography): test-only here, never in the Render runtime.
+      - run: pip install -r signer/requirements.txt
       - run: pytest -q
 
   decision-postgres:

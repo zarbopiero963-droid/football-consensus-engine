@@ -1,0 +1,4 @@
+# Signer-only dependencies. NOT part of the Render runtime (requirements.txt):
+# the MCP bridge must never ship signing libraries (governance §2.6).
+eth-account>=0.14,<0.15
+cryptography>=42
