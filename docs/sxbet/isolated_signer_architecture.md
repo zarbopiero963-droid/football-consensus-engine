@@ -86,11 +86,14 @@ Progetto (compatibile con il codice attuale, binding v2 Ed25519 in `signer/appro
 
 Non serve aprire Magic né MetaMask. La firma EIP-712 la fa il signer; l'owner approva con un tap fuori dalla chat.
 
-**Componenti mancanti:**
-- l'app di approvazione;
-- un verificatore WebAuthn, se si sceglie la passkey invece di Ed25519;
-- il canale autenticato MCP → signer;
-- il trasporto reale.
+**Stato dei componenti (mandato `SXBET-SECURE-SIGNER-PREPARATION-01`, prototipo locale, vedi [`signer_service/README.md`](../../signer_service/README.md)):**
+- app di approvazione: **prototipo** PWA servita dal servizio signer (`/approve/{id}`, `/enroll`), con dati **simulati**; nessuna prova manuale su Android reale (`NOT_TESTED`);
+- verificatore WebAuthn: **implementato** in `signer/webauthn.py` (ES256/P-256, solo `cryptography`; registrazione con attestation `none`; asserzione con tipo, challenge, origin, rpIdHash, UP+UV, signCount monotono). La challenge è lo SHA-256 dell'envelope `{binding v2, display leggibile, decisione, nonce, scadenza, signer_id}`: qualunque modifica di stake, quota, mercato o selezione la invalida. Il percorso Ed25519 resta disponibile;
+- canale autenticato MCP → signer: **implementato lato signer** (HMAC-SHA256 con skew ±30 s, nonce persistente, scope `request:create`/`request:read`); il client lato MCP e il tool MCP di richiesta **mancano** (il catalogo MCP non cambia);
+- trasporto reale: **mancante** per scelta. Il servizio non ha alcun client in uscita; il gateway viene invocato e rifiuta sempre (`LIVE_TRADING_DISABLED`);
+- il servizio firma solo con una chiave **effimera** generata in memoria, accetta solo `testnet` e rifiuta di avviarsi se trova `SXBET_SIGNER_PRIVATE_KEY` o `SXBET_LIVE_TRADING_FLAG`. **Nessuna capacità finanziaria è eseguibile.**
+
+Uso reale dal telefono: serve HTTPS su un'origine **privata** (per esempio Tailscale/VPN o rete locale con certificato dell'owner); nessun endpoint pubblico, nessun deploy.
 
 **Conflitto da decidere (governance §0):** un "mandato di sessione" (per esempio: N ordini entro i limiti per 30 minuti con una sola approvazione) ridurrebbe i tap, ma **viola il §2.6** ("Un mandato generale non autorizza ordini reali"). Non è progettato. Serve una modifica di governance da parte dell'owner, se mai la volesse.
 

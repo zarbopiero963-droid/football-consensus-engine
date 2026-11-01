@@ -1,0 +1,8 @@
+{
+  "name": "FCB signer approval (DEV prototype)",
+  "short_name": "FCB approve",
+  "start_url": "/enroll",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#00bb66"
+}

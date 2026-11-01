@@ -43,7 +43,17 @@ signer/ (processo separato, SXBET_SIGNER_PROCESS=1, mai su Render MCP)
              rilascio dell'esposizione solo da letture dell'exchange
   anchor.py  ancoraggio esterno della testa del ledger + lease di scrittura con fencing token (PostgreSQL)
   audit.py   audit JSONL append-only con hash chain (allowlist di campi, mai chiave né firma)
+  webauthn.py  verifica WebAuthn (passkey ES256/P-256, solo cryptography): registrazione "none", asserzione
 ```
+
+## Approvazione con passkey WebAuthn (alternativa a Ed25519)
+
+`signer.approval.WebAuthnApproval` porta il binding v2 (invariato), un `display` leggibile e l'asserzione WebAuthn. `Signer(..., webauthn=WebAuthnApprovalVerifier(policy, store))` la accetta; senza verificatore è `WEBAUTHN_APPROVAL_NOT_CONFIGURED`.
+- La challenge è `SHA-256` dell'envelope canonico `{domain: sxbet.order_approval.webauthn.v1, decision, binding, display, approval_nonce, issued_at, expires_at, signer_id}`. Cambiare stake, quota, mercato, selezione, scadenza o la decisione cambia la challenge (`WEBAUTHN_CHALLENGE_MISMATCH`).
+- Il `display` (`sxbet.order_display.v1`) deve essere esattamente `build_display(binding, etichette)`: quota decimale e implicita, perdita massima (= stake), slippage in bps rispetto alla quota vista, ritorno lordo prima delle fee, scadenza UTC, semantica `BACK_OUTCOME_ONE`/`BACK_OUTCOME_TWO` (SX Bet non ha BUY/SELL). Un display incoerente è `APPROVAL_DISPLAY_MISMATCH_<CAMPO>`.
+- Stesse regole dell'envelope Ed25519 (TTL ≤ 120 s, skew 5 s, `signer_id`, `intent_hash`); poi tipo `webauthn.get`, origin in allowlist, niente `crossOrigin`, rpIdHash, flag UP e UV obbligatori, firma DER su `authenticatorData || SHA-256(clientDataJSON)`.
+- signCount: se il valore salvato o il nuovo è diverso da 0 il nuovo deve essere strettamente maggiore (`WEBAUTHN_SIGN_COUNT_REGRESSION`). Il contatore si aggiorna (compare-and-set) prima della riga `AUTHORIZE`: un rifiuto successivo brucia solo il contatore, mai il nonce. Con passkey sincronizzate che riportano sempre 0 la protezione dal replay è il nonce monouso del ledger.
+- Il servizio HTTP di prova che usa questo percorso è in [`signer_service/`](../signer_service/README.md).
 
 ## Binding dell'approvazione (v2)
 

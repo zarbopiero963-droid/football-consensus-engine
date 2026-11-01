@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approvazione ordine</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/approve.js" defer></script>
+</head>
+<body>
+<main>
+  <p class="banner">PROTOTIPO · dati SIMULATI · LIVE_TRADING non disponibile · nessun ordine viene inviato</p>
+  <h1>Approvazione</h1>
+  <p id="state" class="state">Caricamento…</p>
+  <dl id="fields"></dl>
+  <p id="countdown" class="muted"></p>
+  <div class="actions">
+    <button id="approve" type="button" disabled>Approva con impronta / blocco schermo</button>
+    <button id="reject" type="button" class="secondary" disabled>Rifiuta</button>
+  </div>
+  <p id="result" class="result" role="status"></p>
+  <details><summary>Binding firmato (JSON canonico)</summary><pre id="raw"></pre></details>
+</main>
+</body>
+</html>

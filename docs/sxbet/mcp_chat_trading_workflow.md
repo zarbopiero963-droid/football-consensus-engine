@@ -9,10 +9,10 @@ Inventario, gap analysis, roadmap e checklist di attivazione. Mandato `FCB-SXBET
 ```
 ChatGPT / Claude
  → Football Consensus MCP (Render, pubblico, OAuth)    preparazione e anteprima: sxbet_simulate_order, hedge/close/rules preview
- → canale autenticato MCP→signer                        MANCANTE
- → signer isolato (servizio separato)                   signer/core.py, risk.py, approval.py, orders.py
+ → canale autenticato MCP→signer                        PROTOTIPO lato signer (HMAC, signer_service/auth.py); client MCP MANCANTE
+ → signer isolato (servizio separato)                   signer/core.py, risk.py, approval.py, orders.py; servizio HTTP dev in signer_service/
      → risk engine (limiti firmati dall'owner, default 0)
-     → approvazione owner fuori banda (app sul telefono)  MANCANTE (app); verifica Ed25519 già presente
+     → approvazione owner fuori banda (app sul telefono)  PROTOTIPO PWA + passkey WebAuthn (signer/webauthn.py), dati SIMULATI; Ed25519 resta disponibile
      → firma EIP-712 dell'Order con la chiave EOA         presente (chiave da owner; KMS: adattatore MANCANTE)
      → gateway (DISABILITATO, flag LIVE_TRADING firmato dall'owner)
      → OfficialRestAdapter → RestSender                  builder/parser in #152; sender reale MANCANTE
@@ -121,8 +121,8 @@ Il ciclo completo è collaudabile con sole credenziali di prova, perché Toronto
 1. ~~#152: adapter, cancellazione, ancoraggio del ledger (nessun sender).~~ Mergiata (54b2cb7).
 2. ~~#153: vettori EIP-712 (solo test).~~ Mergiata (e60c3d4).
 3. PR di governance: consentire il signer su un servizio Render **separato** (guard `RENDER` per service ID). Merge dell'owner.
-4. PR del servizio signer: HTTP privato, autenticazione MCP→signer, endpoint "richiesta di ordine" che restituisce il binding da approvare. Nessun sender.
-5. PR dell'app di approvazione: PWA o passkey, schermate dei binding per ordine e per cancel, verifica nel signer.
+4. PR del servizio signer: HTTP privato, autenticazione MCP→signer, endpoint "richiesta di ordine" che restituisce il binding da approvare. Nessun sender. **Prototipo locale in `feat/sxbet-signer-service-approval`** (`signer_service/`): HMAC, ciclo di vita persistente, chiave effimera, solo testnet, gateway sempre rifiutato. Mancano il client lato MCP e il tool di richiesta.
+5. PR dell'app di approvazione: PWA o passkey, schermate dei binding per ordine e per cancel, verifica nel signer. **Prototipo nella stessa PR**: PWA `/approve/{id}` e `/enroll`, verifica WebAuthn ES256 server-side, challenge legata a binding e display; dati simulati, nessuna prova su Android reale.
 6. PR del `RestSender` reale **solo verso Toronto**, con il coordinatore di quota. Merge dell'owner; test su testnet: un ordine minimo più cancel, `salt`, reinvio dopo timeout.
 7. (Opzionale) adattatore AWS KMS.
 8. PR di attivazione mainnet: sender verso mainnet dietro il flag `LIVE_TRADING` firmato. Merge dell'owner, dopo la verifica legale.

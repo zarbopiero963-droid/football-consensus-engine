@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registrazione passkey</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/common.js" defer></script>
+<script src="/static/enroll.js" defer></script>
+</head>
+<body>
+<main>
+  <p class="banner">PROTOTIPO · solo sviluppo locale</p>
+  <h1>Registra la passkey dell'owner</h1>
+  <p class="muted">Il codice monouso si trova nel file <code>enrollment-code.txt</code> della state dir del signer (valido 10 minuti).</p>
+  <label for="code">Codice di registrazione</label>
+  <input id="code" autocomplete="off" spellcheck="false">
+  <div class="actions"><button id="enroll" type="button">Registra passkey</button></div>
+  <p id="result" class="result" role="status"></p>
+</main>
+</body>
+</html>

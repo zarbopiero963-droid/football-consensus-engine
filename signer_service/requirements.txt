@@ -1,0 +1,6 @@
+# DEV signer service prototype. NOT part of the Render runtime (requirements.txt is unchanged).
+# starlette and uvicorn are already present in the runtime environment (via mcp / uvicorn[standard]);
+# they are listed here only so the signer host can be provisioned on its own.
+-r ../signer/requirements.txt
+starlette>=0.40,<2
+uvicorn>=0.30,<1

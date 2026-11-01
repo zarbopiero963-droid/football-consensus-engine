@@ -7,7 +7,9 @@ Guarantees (governance §2.6):
   recomputed hash equals the approval binding's intent_hash, every binding
   field agrees with the intent / config / risk context, and (b) the approval is
   a valid Ed25519 signature by the owner's approval key, unused (nonce), fresh
-  (TTL <= 120 s) and addressed to this signer_id;
+  (TTL <= 120 s) and addressed to this signer_id. Alternatively (b') a WebAuthn
+  passkey assertion (ES256) over SHA-256 of the binding + its human display,
+  verified by signer/webauthn.py against a registered owner credential;
 - risk limits come only from the owner-signed config (signer/risk.py); the
   all-zero default refuses every request;
 - transactional authorization: the approval is verified WITHOUT consuming it,
@@ -42,6 +44,7 @@ from eth_account import Account
 from . import approval as appr
 from . import eip712
 from . import risk as rk
+from . import webauthn as wa
 from .audit import AuditLog
 from .intent import IntentInvalid, intent_hash, validate
 from .orders import AUTHORIZED, REJECTED, SIGNED, ExposureView, LedgerError, OrderLedger, OrderStateError
@@ -87,8 +90,22 @@ def _plain(obj: Any, depth: int = 0) -> Any:
     raise _NotPlain()
 
 
+def _bytes_or_same(v: Any) -> Any:
+    return bytes(v) if isinstance(v, (bytes, bytearray)) else v
+
+
 def _snapshot_approval(approval: Any) -> Any:
     """A private copy of the approval; a non-Approval is returned as is (verify refuses it)."""
+    if isinstance(approval, appr.WebAuthnApproval):
+        try:
+            return appr.WebAuthnApproval(_plain(approval.binding), _plain(approval.display), approval.approval_nonce,
+                                         approval.issued_at, approval.expires_at, approval.signer_id,
+                                         _bytes_or_same(approval.credential_id),
+                                         _bytes_or_same(approval.authenticator_data),
+                                         _bytes_or_same(approval.client_data_json),
+                                         _bytes_or_same(approval.signature))
+        except Exception:
+            raise SignerRefused("APPROVAL_MALFORMED") from None
     if not isinstance(approval, appr.Approval):
         return approval
     try:
@@ -116,7 +133,7 @@ class SignerConfig:
 class Signer:
     def __init__(self, config: SignerConfig, *, owner_public_key: bytes, ledger: OrderLedger, audit: AuditLog,
                  risk_config: rk.LoadedRiskConfig | None = None, env: Mapping[str, str] | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, webauthn: Any = None):
         if not _ADDRESS.fullmatch(config.verifying_contract) or not _ADDRESS.fullmatch(config.base_token):
             raise SignerConfigError("SIGNER_CONFIG_ADDRESS_INVALID")
         if not isinstance(config.signer_id, str) or not 1 <= len(config.signer_id) <= 64:
@@ -144,6 +161,10 @@ class Signer:
         self._risk = risk_config if risk_config is not None else rk.load_from_env(env, self._owner_key)
         if not isinstance(self._risk, rk.LoadedRiskConfig):
             raise SignerConfigError("RISK_CONFIG_INVALID")
+        # Optional passkey verifier (signer.webauthn.WebAuthnApprovalVerifier). None => WebAuthn approvals refused.
+        if webauthn is not None and not isinstance(webauthn, wa.WebAuthnApprovalVerifier):
+            raise SignerConfigError("WEBAUTHN_VERIFIER_INVALID")
+        self._webauthn = webauthn
         self._session_started_at = int(clock())
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -210,9 +231,16 @@ class Signer:
                 if clean["expiry"] < now + MIN_EXPIRY_MARGIN_SECONDS:
                     raise SignerRefused("INTENT_EXPIRED_OR_TOO_SOON")
                 # 1. verify the approval WITHOUT consuming it
+                sign_count = None
                 try:
-                    appr.verify(approval, self._owner_key, expected_intent_hash=ihash,
-                                signer_id=self.config.signer_id, now=now)
+                    if isinstance(approval, appr.WebAuthnApproval):
+                        if self._webauthn is None:
+                            raise appr.ApprovalError("WEBAUTHN_APPROVAL_NOT_CONFIGURED")
+                        sign_count = self._webauthn.verify_order_approval(
+                            approval, expected_intent_hash=ihash, signer_id=self.config.signer_id, now=now)
+                    else:
+                        appr.verify(approval, self._owner_key, expected_intent_hash=ihash,
+                                    signer_id=self.config.signer_id, now=now)
                 except appr.ApprovalError as exc:
                     raise SignerRefused(str(exc)) from None
                 field = appr.binding_mismatch(approval.binding, clean)
@@ -222,6 +250,13 @@ class Signer:
                     raise SignerRefused("APPROVAL_BINDING_MISMATCH_ACCOUNT_ID")
                 if self._ledger.nonce_consumed(approval.approval_nonce):
                     raise SignerRefused("APPROVAL_NONCE_REPLAYED")
+                if sign_count is not None:
+                    # Passkey counter committed before AUTHORIZE (monotonic CAS). A later refusal burns only the
+                    # counter, never the nonce: the owner taps again to produce a fresh assertion.
+                    try:
+                        self._webauthn.commit(approval.credential_id, sign_count)
+                    except appr.ApprovalError as exc:
+                        raise SignerRefused(str(exc)) from None
                 msg = eip712.signable(clean)
                 oid = eip712.order_id(msg)
 
