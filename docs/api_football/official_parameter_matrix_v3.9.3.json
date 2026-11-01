@@ -1,0 +1,1153 @@
+{
+ "source": "https://www.api-football.com/documentation-v3",
+ "documentation_version": "3.9.3",
+ "retrieved_at_utc": "2026-11-01T09:52:00Z",
+ "retrieval": "Rendered official Redoc page read through the bridge's Browser Use session (the browser passed the site's standard challenge on its own; no bypass). The OpenAPI file it references (public/doc/openapi.yaml) is not directly downloadable (HTTP 403).",
+ "header_parameters_all_endpoints": [
+  "x-apisports-key (required)"
+ ],
+ "endpoint_count": 38,
+ "endpoints": [
+  {
+   "path": "/timezone",
+   "method": "GET",
+   "redoc_operation_id": "tag/Timezone/operation/get-timezone",
+   "query_parameters": [],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/countries",
+   "method": "GET",
+   "redoc_operation_id": "tag/Countries/operation/get-countries",
+   "query_parameters": [
+    {
+     "name": "name",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The name of the country"
+    },
+    {
+     "name": "code",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "[ 2 .. 6 ] characters | FR, GB-ENG, IT… | The Alpha code of the country"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "= 3 characters | The name of the country"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/leagues",
+   "method": "GET",
+   "redoc_operation_id": "tag/Leagues/operation/get-leagues",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "name",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The name of the league"
+    },
+    {
+     "name": "country",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The country name of the league"
+    },
+    {
+     "name": "code",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "[ 2 .. 6 ] characters | FR, GB-ENG, IT… | The Alpha code of the country"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Enum: | \"league\" | \"cup\" | The type of the league"
+    },
+    {
+     "name": "current",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Return the list of active seasons or the las... | Show pattern | Enum: | \"true\" | \"false\" | The state of the league"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": ">= 3 characters | The name or the country of the league"
+    },
+    {
+     "name": "last",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "<= 2 characters | The X last leagues/cups added in the API"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/leagues/seasons",
+   "method": "GET",
+   "redoc_operation_id": "tag/Leagues/operation/get-seasons",
+   "query_parameters": [],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/teams",
+   "method": "GET",
+   "redoc_operation_id": "tag/Teams/operation/get-teams",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "name",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The name of the team"
+    },
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "country",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The country name of the team"
+    },
+    {
+     "name": "code",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "= 3 characters | The code of the team"
+    },
+    {
+     "name": "venue",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the venue"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": ">= 3 characters | The name or the country name of the team"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/teams/statistics",
+   "method": "GET",
+   "redoc_operation_id": "tag/Teams/operation/get-teams-statistics",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "date",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD | The limit date"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/teams/seasons",
+   "method": "GET",
+   "redoc_operation_id": "tag/Teams/operation/get-teams-seasons",
+   "query_parameters": [
+    {
+     "name": "team",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the team"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/teams/countries",
+   "method": "GET",
+   "redoc_operation_id": "tag/Teams/operation/get-teams-countries",
+   "query_parameters": [],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/venues",
+   "method": "GET",
+   "redoc_operation_id": "tag/Venues/operation/get-venues",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the venue"
+    },
+    {
+     "name": "name",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The name of the venue"
+    },
+    {
+     "name": "city",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The city of the venue"
+    },
+    {
+     "name": "country",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The country name of the venue"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": ">= 3 characters | The name, city or the country of the venue"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/standings",
+   "method": "GET",
+   "redoc_operation_id": "tag/Standings/operation/get-standings",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures/rounds",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures-rounds",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "current",
+     "type": "boolean",
+     "required": false,
+     "constraints_and_description": "Enum: | \"true\" | \"false\" | The current round only"
+    },
+    {
+     "name": "dates",
+     "type": "boolean",
+     "required": false,
+     "constraints_and_description": "Default: | false | Enum: | \"true\" | \"false\" | Add the dates of each round in the response"
+    },
+    {
+     "name": "timezone",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "A valid timezone from the endpoint Timezone"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "Value: | \"id\" | The id of the fixture"
+    },
+    {
+     "name": "ids",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Maximum of 20 fixtures ids | Value: | \"id-id-id\" | One or more fixture ids"
+    },
+    {
+     "name": "live",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Enum: | \"all\" | \"id-id\" | All or several leagues ids"
+    },
+    {
+     "name": "date",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD | A valid date"
+    },
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "last",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "<= 2 characters | For the X last fixtures"
+    },
+    {
+     "name": "next",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "<= 2 characters | For the X next fixtures"
+    },
+    {
+     "name": "from",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD | A valid date"
+    },
+    {
+     "name": "to",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD | A valid date"
+    },
+    {
+     "name": "round",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The round of the fixture"
+    },
+    {
+     "name": "status",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Enum: | \"NS\" | \"NS-PST-FT\" | One or more fixture status short"
+    },
+    {
+     "name": "venue",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The venue id of the fixture"
+    },
+    {
+     "name": "timezone",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "A valid timezone from the endpoint Timezone"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures/headtohead",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures-headtohead",
+   "query_parameters": [
+    {
+     "name": "h2h",
+     "type": "string",
+     "required": true,
+     "constraints_and_description": "ID-ID | The ids of the teams"
+    },
+    {
+     "name": "date",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD"
+    },
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "last",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "For the X last fixtures"
+    },
+    {
+     "name": "next",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "For the X next fixtures"
+    },
+    {
+     "name": "from",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD"
+    },
+    {
+     "name": "to",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD"
+    },
+    {
+     "name": "status",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Enum: | \"NS\" | \"NS-PST-FT\" | One or more fixture status short"
+    },
+    {
+     "name": "venue",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The venue id of the fixture"
+    },
+    {
+     "name": "timezone",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "A valid timezone from the endpoint Timezone"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures/statistics",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures-statistics",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The type of statistics"
+    },
+    {
+     "name": "half",
+     "type": "boolean",
+     "required": false,
+     "constraints_and_description": "Default: | false | Enum: | \"true\" | \"false\" | Add the halftime statistics in the response Data start from 2024 season for half parameter"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures/events",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures-events",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The type"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures/lineups",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures-lineups",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "type",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The type"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/fixtures/players",
+   "method": "GET",
+   "redoc_operation_id": "tag/Fixtures/operation/get-fixtures-players",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/injuries",
+   "method": "GET",
+   "redoc_operation_id": "tag/Injuries/operation/get-injuries",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league, required with league, team and player parameters"
+    },
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "date",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD | A valid date"
+    },
+    {
+     "name": "ids",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Maximum of 20 fixtures ids | Value: | \"id-id-id\" | One or more fixture ids"
+    },
+    {
+     "name": "timezone",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "A valid timezone from the endpoint Timezone"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/predictions",
+   "method": "GET",
+   "redoc_operation_id": "tag/Predictions/operation/get-predictions",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the fixture"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/coachs",
+   "method": "GET",
+   "redoc_operation_id": "tag/Coachs/operation/get-coachs",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the coach"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": ">= 3 characters | The name of the coach"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/seasons",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-seasons",
+   "query_parameters": [
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/profiles",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-profiles",
+   "query_parameters": [
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": ">= 4 characters | The lastname of the player"
+    },
+    {
+     "name": "page",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "Default: | 1 | Use for the pagination"
+    }
+   ],
+   "pagination_results_per_page": 250
+  },
+  {
+   "path": "/players",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | Requires the fields Id, League or Team... | The season of the league"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": ">= 4 characters | Requires the fields League or Team | The name of the player"
+    },
+    {
+     "name": "page",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "Default: | 1 | Use for the pagination"
+    }
+   ],
+   "pagination_results_per_page": 20
+  },
+  {
+   "path": "/players/squads",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-squads",
+   "query_parameters": [
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    },
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/teams",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-teams",
+   "query_parameters": [
+    {
+     "name": "player",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the player"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/topscorers",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-topscorers",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/topassists",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-topassists",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/topyellowcards",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-topyellowcards",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/players/topredcards",
+   "method": "GET",
+   "redoc_operation_id": "tag/Players/operation/get-players-topredcards",
+   "query_parameters": [
+    {
+     "name": "league",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": true,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/transfers",
+   "method": "GET",
+   "redoc_operation_id": "tag/Transfers/operation/get-transfers",
+   "query_parameters": [
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "team",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the team"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/trophies",
+   "method": "GET",
+   "redoc_operation_id": "tag/Trophies/operation/get-trophies",
+   "query_parameters": [
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "players",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Maximum of 20 players ids | Value: | \"id-id-id\" | One or more players ids"
+    },
+    {
+     "name": "coach",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the coach"
+    },
+    {
+     "name": "coachs",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Maximum of 20 coachs ids | Value: | \"id-id-id\" | One or more coachs ids"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/sidelined",
+   "method": "GET",
+   "redoc_operation_id": "tag/Sidelined/operation/get-sidelined",
+   "query_parameters": [
+    {
+     "name": "player",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the player"
+    },
+    {
+     "name": "players",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Maximum of 20 players ids | Value: | \"id-id-id\" | One or more players ids"
+    },
+    {
+     "name": "coach",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the coach"
+    },
+    {
+     "name": "coachs",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "Maximum of 20 coachs ids | Value: | \"id-id-id\" | One or more coachs ids"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/odds/live",
+   "method": "GET",
+   "redoc_operation_id": "tag/Odds-(In-Play)/operation/get-odds-live",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "(In this endpoint the \"season\" parameter is ... | Show pattern | The id of the league"
+    },
+    {
+     "name": "bet",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the bet"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/odds/live/bets",
+   "method": "GET",
+   "redoc_operation_id": "tag/Odds-(In-Play)/operation/get-bets",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The id of the bet name"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "= 3 characters | The name of the bet"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/odds",
+   "method": "GET",
+   "redoc_operation_id": "tag/Odds-(Pre-Match)/operation/get-odds",
+   "query_parameters": [
+    {
+     "name": "fixture",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the fixture"
+    },
+    {
+     "name": "league",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the league"
+    },
+    {
+     "name": "season",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "= 4 characters | YYYY | The season of the league"
+    },
+    {
+     "name": "date",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "YYYY-MM-DD | A valid date"
+    },
+    {
+     "name": "timezone",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "A valid timezone from the endpoint Timezone"
+    },
+    {
+     "name": "page",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "Default: | 1 | Use for the pagination"
+    },
+    {
+     "name": "bookmaker",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the bookmaker"
+    },
+    {
+     "name": "bet",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the bet"
+    }
+   ],
+   "pagination_results_per_page": 10
+  },
+  {
+   "path": "/odds/mapping",
+   "method": "GET",
+   "redoc_operation_id": "tag/Odds-(Pre-Match)/operation/get-odds-mapping",
+   "query_parameters": [
+    {
+     "name": "page",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "Default: | 1 | Use for the pagination"
+    }
+   ],
+   "pagination_results_per_page": 100
+  },
+  {
+   "path": "/odds/bookmakers",
+   "method": "GET",
+   "redoc_operation_id": "tag/Odds-(Pre-Match)/operation/get-bookmakers",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "integer",
+     "required": false,
+     "constraints_and_description": "The id of the bookmaker"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "= 3 characters | The name of the bookmaker"
+    }
+   ],
+   "pagination_results_per_page": null
+  },
+  {
+   "path": "/odds/bets",
+   "method": "GET",
+   "redoc_operation_id": "tag/Odds-(Pre-Match)/operation/get-bets",
+   "query_parameters": [
+    {
+     "name": "id",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "The id of the bet name"
+    },
+    {
+     "name": "search",
+     "type": "string",
+     "required": false,
+     "constraints_and_description": "= 3 characters | The name of the bet"
+    }
+   ],
+   "pagination_results_per_page": null
+  }
+ ]
+}

@@ -40,7 +40,7 @@ Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/fo
 
 **Browser (34):** `browser_create`, `browser_create_cloak`, `browser_open_url`, `browser_get_html`, `browser_get_dom`, `browser_get_elements`, `browser_screenshot`, `browser_click`, `browser_fill`, `browser_type`, `browser_press`, `browser_select_option`, `browser_set_checked`, `browser_hover`, `browser_focus`, `browser_scroll`, `browser_wait_for_selector`, `browser_wait`, `browser_back`, `browser_forward`, `browser_reload`, `browser_list_pages`, `browser_new_page`, `browser_switch_page`, `browser_close_page`, `browser_get_network_responses`, `browser_stop`, `browser_list_sessions`, `browser_session_status`, `browser_reap`, `browser_stop_all_idle`, `browser_stop_all`, `browser_health`, `browser_cleanup_report`.
 
-Lo schema `tools/list` espone tutti i 109 parametri dei contratti API-FOOTBALL (`from`/`to` di `/fixtures` compaiono come `from_date`/`to_date`). Il test `tests/test_mcp_offline_protocol_e2e.py` verifica questa corrispondenza.
+Lo schema `tools/list` espone tutti i 140 parametri di query della documentazione ufficiale API-FOOTBALL v3.9.3 sui 38 endpoint (matrice: `docs/api_football/official_parameter_matrix_v3.9.3.json`; `from`/`to` compaiono come `from_date`/`to_date`). Il test `tests/test_mcp_offline_protocol_e2e.py` verifica questa corrispondenza.
 
 ## Collegare un client
 
@@ -79,7 +79,7 @@ Lo schema `tools/list` espone tutti i 109 parametri dei contratti API-FOOTBALL (
 |---|---|---|
 | Protocollo MCP e OAuth | PASS (offline e client Claude reale) | `tests/test_mcp_offline_protocol_e2e.py`; connettore Claude.ai |
 | API-FOOTBALL via client reale | PARTIAL | statistiche FT, quote di 10 bookmaker, manifest pre-match, live con due osservazioni, `page` 2/45: vedi #130 |
-| Parametri ufficiali dei 6 contratti `PENDING` | **DOCS_UNVERIFIED** | la documentazione ufficiale risponde 403 alla lettura automatica |
+| Parametri ufficiali API-FOOTBALL (38 endpoint, 140 parametri, v3.9.3) | **DOCS_VERIFIED** (01-11-2026) | documentazione ufficiale letta nel browser del bridge; matrice `docs/api_football/official_parameter_matrix_v3.9.3.json`, test `tests/test_apifootball_official_parameter_matrix.py` |
 | Manifest `/odds/live` | OFFLINE_VERIFIED | nessun payload live abbastanza grande osservato finora |
 | Browser Use e Cloak via MCP | PASS (create, open, read, stop, SSRF) | #130 M2 |
 | Client ChatGPT | CLIENT_ACTION_REQUIRED | runbook `docs/api_football/mcp_client_certification_runbook.md` |
