@@ -350,10 +350,30 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _deploy_commit() -> str | None:
+    """Short deployed git SHA from Render's build env; not a secret."""
+    raw = os.environ.get("RENDER_GIT_COMMIT", "").strip().lower()
+    return raw[:12] if raw and all(c in "0123456789abcdef" for c in raw) else None
+
+
+async def _tool_registry_counts() -> tuple[int, dict[str, int]]:
+    """Counts from the exact catalogue served by MCP tools/list in this process."""
+    counts = {"browser": 0, "apifootball": 0, "sxbet": 0, "other": 0}
+    tools = await mcp.list_tools()
+    for tool in tools:
+        prefix = tool.name.split("_", 1)[0]
+        counts[prefix if prefix in counts else "other"] += 1
+    return len(tools), counts
+
+
 async def healthz(_request: Request):
+    total, by_component = await _tool_registry_counts()
     return JSONResponse(
         {
             "ok": True,
+            "deploy_commit": _deploy_commit(),
+            "mcp_tools_total": total,
+            "mcp_tools_by_component": by_component,
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
@@ -398,6 +418,11 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     # artifact is actually present. This moves the expensive cold download
     # out of the first user MCP request.
     await bridge.prepare_cloak_runtime()
+    total, by_component = await _tool_registry_counts()
+    logging.getLogger(__name__).info(
+        "MCP_TOOL_REGISTRY total=%d browser=%d apifootball=%d sxbet=%d other=%d commit=%s",
+        total, by_component["browser"], by_component["apifootball"], by_component["sxbet"],
+        by_component["other"], _deploy_commit() or "unknown")
     async with mcp.session_manager.run():
         reaper = asyncio.create_task(bridge.reaper_loop())
         try:

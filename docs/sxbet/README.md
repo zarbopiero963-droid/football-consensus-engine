@@ -23,6 +23,17 @@ Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. 
 
 La chiave SX Bet permette di **cancellare tutti gli ordini** dell'account (lo dice la documentazione SX Bet). Va trattata come un secret di alto valore.
 
+### Permessi della chiave (fonte: https://docs.sx.bet/developers/api-key-permissions)
+La documentazione ufficiale dice: "Each API key can call only the routes for the scopes you select when you create it". Per i tool di questo modulo bastano tre scope di **sola lettura**:
+
+| Scope SX Bet | Route usate | Tool |
+|---|---|---|
+| `Market data: read` | `GET /orderbook-v3/snapshot/market`, `GET /orderbook-v3/snapshot/event`, `GET /orders-v3/odds/best` | `sxbet_orderbook_market`, `sxbet_orderbook_event`, `sxbet_best_odds` |
+| `Orders: read` | `GET /orders-v3` | `sxbet_open_orders` |
+| `Account: read` | `GET /user/balance-v3`, `GET /user/fees-v3`, `GET /positions-v3`, `GET /trades-v3`, `GET /fills-v3`, `GET /ledger-v3` | `sxbet_balance`, `sxbet_fees`, `sxbet_positions`, `sxbet_trades`, `sxbet_fills`, `sxbet_ledger` |
+
+Il modulo non richiede `Orders: create`, `Orders: cancel`, `Account: write` né alcuno scope `Wallet: *`. Una chiave senza questi scope riduce il danno in caso di fuga. Se manca uno scope di lettura, il tool risponde `SXBET_UNAUTHORIZED` (HTTP 401/403) senza esporre il body. La documentazione indica che è attiva una sola chiave alla volta: cambiare gli scope significa generare una nuova chiave, e lo decide l'owner.
+
 ## Strumenti
 - **Pubblici** (nessuna chiave):
   - `sxbet_health` (0 chiamate), `sxbet_sports`, `sxbet_leagues(sport_id, active_only)`;
@@ -51,10 +62,21 @@ La chiave SX Bet permette di **cancellare tutti gli ordini** dell'account (lo di
 | `sxbet_markets_find` (3 hash) | PASS: 3 su 3 |
 | `sxbet_public_trades`, `sxbet_fixture_status` | PASS |
 | route autenticata senza chiave | PASS: `KEY_NOT_CONFIGURED`, 0 chiamate |
-| route autenticate con chiave | **NOT_TESTED**: serve `SXBET_API_KEY` su Render |
-| via client MCP | **NOT_TESTED**: serve `SXBET_ENABLED=true` su Render |
+| route autenticate con chiave | **NOT_TESTED** dal backend: la chiave esiste solo su Render; si verifica dal client MCP |
+| registrazione in produzione (`/healthz`, deploy delle 09:25:52 UTC) | PASS: `sxbet_registered_count` 23, `sxbet_key_configured` true |
+| `tools/list` offline con SX Bet acceso | PASS: 99 tool (34 browser + 42 API-FOOTBALL + 23 SX Bet), nessuna paginazione |
+
+## Diagnosi: un client vede 76 tool e nessun `sxbet_*`
+76 = 34 browser + 42 API-FOOTBALL: è il catalogo di un processo avviato **senza** `SXBET_ENABLED`. Le variabili d'ambiente Render valgono solo per i processi avviati dopo il salvataggio e un nuovo deploy. Un client che ha letto `tools/list` prima di quel deploy, o che conserva il catalogo in cache, continua a mostrare 76 tool.
+
+Come verificarlo senza credenziali:
+- `GET /healthz` riporta `deploy_commit`, `mcp_tools_total` e `mcp_tools_by_component`, calcolati sullo stesso catalogo servito da `tools/list` nel processo che risponde.
+- All'avvio ogni processo scrive nei log la riga `MCP_TOOL_REGISTRY total=… browser=… apifootball=… sxbet=… commit=…`.
+
+Se il server riporta `sxbet` 23 e il client ne mostra 0, il problema è nel catalogo in cache del client: va aggiornato il connettore nel client (refresh, oppure disconnessione e nuova connessione).
+
 
 ## Prossimi passi (decisioni owner)
-1. **Attivare la lettura:** impostare `SXBET_ENABLED=true` e `SXBET_API_KEY` sul servizio Render, poi ricollegare il connettore.
+1. **Lettura attiva** su Render dal 01-11-2026 09:25:52 UTC. Resta da verificare dal client MCP, dopo l'aggiornamento del connettore.
 2. **SIMULATION:** validazione degli ordini senza invio (mercato attivo, scala quote, minimi, liquidità dall'order book).
 3. **LIVE_TRADING:** progettare il signer isolato EIP-712, primary type `Order` con 8 campi e dominio da `/metadata/obv3`, con conferma fuori banda per ogni ordine. Va valutata anche la gestione del proxy wallet (`/user/deploy-proxy`, `/user/transfer-to-proxy`), che è a sua volta un'operazione finanziaria (§2.6). Ogni passo verso il trading reale si mergia solo dall'owner.
