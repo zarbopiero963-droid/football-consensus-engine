@@ -202,6 +202,15 @@ DISPLAY_SCHEMA = "sxbet.order_display.v1"
 DATA_SOURCES = frozenset({"SIMULATED", "EXCHANGE_READ"})
 ODDS_ONE = 10 ** 20
 _LABEL = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
+# Control, format (bidi overrides, zero-width, BOM), surrogate, private-use, unassigned and line/paragraph
+# separator characters could make a label render differently from what is signed: refused.
+_LABEL_BAD_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def _label_ok(v: Any) -> bool:
+    import unicodedata
+    return isinstance(v, str) and _LABEL.fullmatch(v) is not None and \
+        not any(unicodedata.category(ch) in _LABEL_BAD_CATEGORIES for ch in v)
 DISPLAY_KEYS = frozenset({
     "schema", "operation_id", "data_source", "network", "chain_id", "verifying_contract", "base_token", "maker",
     "account_id", "event_id", "event_label", "market_hash", "market_label", "selection", "time_in_force",
@@ -252,7 +261,7 @@ def build_display(binding: Mapping[str, Any], *, operation_id: str, event_label:
     if not _binding_well_formed(binding):
         raise ApprovalError("APPROVAL_MALFORMED")
     for v in (operation_id, event_label, market_label):
-        if not isinstance(v, str) or not _LABEL.fullmatch(v):
+        if not _label_ok(v):
             raise ApprovalError("APPROVAL_DISPLAY_LABEL_INVALID")
     if data_source not in DATA_SOURCES:
         raise ApprovalError("APPROVAL_DISPLAY_LABEL_INVALID")

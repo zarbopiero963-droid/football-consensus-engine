@@ -70,11 +70,15 @@ class FakePasskey:
         return {"attestation_object": att, "client_data_json": self._client_data("webauthn.create", challenge, origin)}
 
     def assert_(self, challenge, *, flags=FLAG_UP | FLAG_UV, rp_id=None, origin=None, sign_count=None,
-                typ="webauthn.get", **cd_extra):
+                typ="webauthn.get", attested=False, **cd_extra):
         if sign_count is None:
             self.sign_count += self.counter_step
             sign_count = self.sign_count
+        if attested:  # well-formed attested credential data inside an ASSERTION (must be refused)
+            flags |= FLAG_AT
         ad = hashlib.sha256((rp_id or self.rp_id).encode()).digest() + bytes([flags]) + sign_count.to_bytes(4, "big")
+        if attested:
+            ad += b"\x00" * 16 + len(self.credential_id).to_bytes(2, "big") + self.credential_id + cbor(self._cose())
         cdj = self._client_data(typ, challenge, origin, **cd_extra)
         sig = self.key.sign(ad + hashlib.sha256(cdj).digest(), ec.ECDSA(hashes.SHA256()))
         return {"credential_id": self.credential_id, "authenticator_data": ad, "client_data_json": cdj,

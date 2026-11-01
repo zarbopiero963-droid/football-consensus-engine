@@ -37,7 +37,7 @@ TRANSITIONS = {
     HANDED: set(), REJECTED: set(), EXPIRED: set(),
 }
 DETAIL_FIELDS = frozenset({"kind", "order_id", "intent_hash", "client_order_id", "gateway", "code", "decision",
-                           "credential_prefix", "key_id", "data_source"})
+                           "credential_prefix", "key_id", "data_source", "count", "suppressed_event"})
 GENESIS = "sha256:" + "0" * 64
 
 _SCHEMA = """
@@ -93,7 +93,7 @@ class ServiceStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript(_SCHEMA)
-        self._head = self._verify_chain()
+        self._verify_chain()
 
     def close(self) -> None:
         self._db.close()
@@ -116,14 +116,19 @@ class ServiceStore:
         detail = dict(detail or {})
         if set(detail) - DETAIL_FIELDS:
             raise StoreError("AUDIT_FIELD_NOT_ALLOWED")
-        seq = (self._db.execute("SELECT COALESCE(MAX(seq), 0) FROM audit").fetchone()[0]) + 1
+        # Always called inside BEGIN IMMEDIATE: the head is read from the database under the write lock, so a
+        # second process appending to the same file (e.g. the enroll-code CLI while `serve` runs) never forks
+        # the chain. Nothing about the chain is cached in memory.
+        if not self._db.in_transaction:
+            raise StoreError("AUDIT_APPEND_OUTSIDE_TRANSACTION")
+        last = self._db.execute("SELECT seq, line_hash FROM audit ORDER BY seq DESC LIMIT 1").fetchone()
+        seq, prev = (last[0] + 1, last[1]) if last else (1, GENESIS)
         row = {"seq": seq, "at": int(self._clock()), "event": event, "request_id": request_id, "state": state,
                "reason": reason, "detail_json": canonical(detail)}
-        h = _line_hash(self._head, row)
+        h = _line_hash(prev, row)
         self._db.execute("INSERT INTO audit (seq, at, event, request_id, state, reason, detail_json, prev_hash, "
                          "line_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                         (seq, row["at"], event, request_id, state, reason, row["detail_json"], self._head, h))
-        self._head = h
+                         (seq, row["at"], event, request_id, state, reason, row["detail_json"], prev, h))
 
     def audit(self, event: str, **kw: Any) -> None:
         with self._lock:
@@ -133,7 +138,6 @@ class ServiceStore:
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
-                self._head = self._verify_chain()
                 raise
 
     def audit_rows(self) -> list[dict[str, Any]]:
@@ -183,7 +187,6 @@ class ServiceStore:
             except BaseException:
                 if self._db.in_transaction:
                     self._db.execute("ROLLBACK")
-                self._head = self._verify_chain()
                 raise
 
     def transition(self, request_id: str, new: str, *, reason: str | None = None,
@@ -198,7 +201,6 @@ class ServiceStore:
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
-                self._head = self._verify_chain()
                 raise
 
     def get(self, request_id: str) -> dict[str, Any] | None:

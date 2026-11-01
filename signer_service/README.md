@@ -7,9 +7,11 @@ Mandato owner `SXBET-SECURE-SIGNER-PREPARATION-01`. **Nessuna capacità finanzia
 ```
 MCP (futuro client, NON incluso) ──HMAC──► POST /v1/requests/order|cancel   crea una RICHIESTA (intent)
                                            GET  /v1/requests/{id}           legge lo stato
-telefono Android dell'owner (PWA) ───────► GET  /approve/{id}               pagina di approvazione
-                                           GET  /approve/{id}/challenge     binding + display + challenge
-                                           POST /approve/{id}/assertion     asserzione passkey (APPROVA / RIFIUTA)
+telefono Android dell'owner (PWA) ───────► GET  /approve/{id}               pagina statica (stessi byte per ogni id, nessun dato)
+                                           POST /approve/{id}/unlock/options challenge opaca di sblocco (nessun campo d'ordine)
+                                           POST /approve/{id}/unlock        asserzione passkey → cookie di sessione
+                                           GET  /approve/{id}/challenge     [sessione] binding + display + challenge, una volta
+                                           POST /approve/{id}/assertion     [sessione, consumata] asserzione legata all'ordine
                                            GET  /enroll, POST /enroll/*     registrazione passkey con codice monouso
 ```
 
@@ -30,6 +32,9 @@ Ciclo di vita (SQLite append-only, `signer_service/store.py`):
 | Idempotenza | stesso `client_request_id` + stesso payload canonico ⇒ stessa richiesta (200); payload diverso ⇒ `409 DUPLICATE_REQUEST_CONFLICT` |
 | Approvazione | passkey WebAuthn ES256 (P-256): challenge = SHA-256 dell'envelope canonico `{dominio, decisione, binding v2, display, nonce, issued_at, expires_at, signer_id}`; verifica in `signer/webauthn.py` (solo `cryptography`): tipo, challenge, origin in allowlist, `crossOrigin`, rpIdHash, flag UP e UV, signCount monotono, firma DER |
 | Audit | tabella `audit` append-only con hash chain (trigger SQLite rifiutano UPDATE/DELETE); solo campi in allowlist; mai segreti HMAC, firme, asserzioni o nonce di approvazione. Il signer core scrive anche `signer-audit.jsonl` (`signer/audit.py`) |
+| Nessun dettaglio prima dell'autenticazione | prima di tutto la pagina riceve solo l'id opaco e una challenge di sblocco casuale (legata alla richiesta, monouso, 60 s). Un'asserzione valida di una passkey registrata produce un token di sessione (32 byte casuali; in memoria solo lo SHA-256) consegnato in un cookie `HttpOnly; Secure; SameSite=Strict; Path=/approve/<id>`, valido 60 s, legato alla richiesta e alla credenziale che ha sbloccato, usabile per **una** lettura dei dettagli e **una** decisione. La decisione richiede comunque una seconda asserzione sulla challenge esatta dell'ordine, dalla stessa credenziale (`APPROVAL_CREDENTIAL_MISMATCH`). Prima dello sblocco ogni errore è generico (`APPROVAL_LOCKED`, `UNLOCK_REFUSED`) e non rivela se la richiesta esiste. Le passkey sono discoverable (`residentKey: required`): nessun elenco di credential id esce dal server (niente `allowCredentials`, niente `excludeCredentials`). Il riavvio invalida tutte le sessioni (fail closed) |
+| DNS rebinding | `TrustedHostMiddleware` con allowlist dell'header `Host` (`SXBET_SIGNER_SERVICE_ALLOWED_HOSTS`, default `127.0.0.1,localhost`, nessun wildcard) |
+| Audit degli errori non autenticati | al massimo 10 righe per tipo (`ENROLLMENT_REFUSED`, `UNLOCK_REFUSED`, `APPROVAL_ATTEMPT_REFUSED`) ogni 60 s; il resto è contato in una riga `AUDIT_SUPPRESSED {suppressed_event, count}`. Le challenge di sblocco in attesa sono al massimo 256 (`429 UNLOCK_BUSY`) |
 | Pagina PWA | HTML/JS/CSS statici, nessun CDN, nessuno script inline, CSP `default-src 'none'; script-src 'self'…`, `textContent` per i dati, `Cache-Control: no-store` |
 
 ### Semantica SX Bet mostrata all'owner
@@ -73,5 +78,7 @@ python -m signer_service serve                          # http://127.0.0.1:8787
 | Prova dell'hardware della passkey (attestation) | MANCANTE: con `none` il modello del dispositivo non è dimostrato; la registrazione è un atto fidato dell'owner (codice monouso letto sull'host) |
 | Revoca di una passkey | MANCANTE (le credenziali non si cancellano; serve una tabella di revoca append-only) |
 | Prova manuale su Android Chrome reale | NON ESEGUITA (`NOT_TESTED`) |
+| Contatori di esposizione e perdita tra riavvii | **GAP DA CHIUDERE prima di qualunque chiave reale**: il ledger è per indirizzo della chiave effimera (un file nuovo a ogni avvio) e `session_started_at` riparte a ogni avvio, quindi esposizione, ordini aperti e perdite di sessione/giornaliere ripartono da zero dopo un riavvio. Accettabile solo perché la chiave è usa e getta e nulla viene inviato; con una chiave reale serve un unico ledger persistente (eventualmente ancorato, `signer/anchor.py`) e l'esposizione letta dall'exchange |
+| Rate limit delle chiamate (non solo dell'audit) | MANCANTE: il prototipo limita le righe di audit e la tabella delle challenge, non il numero di richieste |
 
 Test: `tests/test_signer_service.py`, `tests/test_sxbet_webauthn.py`.

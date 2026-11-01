@@ -332,6 +332,8 @@ def verify_assertion(cred: StoredCredential, *, policy: WebAuthnPolicy, challeng
     """Return the new signCount (to commit) or raise ApprovalError. Never mutates the store."""
     _client_data(client_data_json, "webauthn.get", challenge, policy)
     ad = parse_authenticator_data(authenticator_data)
+    if ad.flags & FLAG_AT:  # attested credential data belongs to registration only (WebAuthn §6.1)
+        raise ApprovalError("WEBAUTHN_MALFORMED")
     _flags_and_rp(ad, policy)
     if not sign_count_acceptable(cred.sign_count, ad.sign_count):
         raise ApprovalError("WEBAUTHN_SIGN_COUNT_REGRESSION")

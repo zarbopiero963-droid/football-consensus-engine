@@ -12,6 +12,13 @@ Who may do what:
   signer config and the (simulated) market data provider, never from the MCP;
 - only a registered owner passkey (WebAuthn assertion over SHA-256 of the exact binding + display)
   moves a request out of PENDING_APPROVAL. No HMAC scope can approve, sign, enrol or change limits;
+- nothing about an order is shown to the phone before authentication. The page first gets an opaque
+  UNLOCK challenge (random, request-bound, single-use, 60 s, no credential id: discoverable passkeys);
+  a valid passkey assertion over it yields a session token (random 32 bytes, only its SHA-256 kept in
+  memory, bound to the request and to the unlocking credential, 60 s, usable for ONE details read and
+  ONE decision). The decision itself still needs a second assertion over the exact order challenge, from
+  the same credential. Every pre-auth failure is a generic code (APPROVAL_LOCKED / UNLOCK_REFUSED) that
+  does not reveal whether the request exists;
 - signing happens in signer.core.Signer with an EPHEMERAL key generated in memory at start; the risk
   limits come only from the owner-signed risk config (default all zero => every order REJECTED);
 - the hand-off to the gateway always fails closed: the LIVE_TRADING flag path is hard-wired to None and
@@ -45,6 +52,13 @@ from .auth import HmacKey, HmacVerifier, NonceCache
 from .market import MarketDataProvider, MarketDataUnavailable
 
 MAX_REQUEST_TTL_SECONDS = 120
+UNLOCK_CHALLENGE_TTL_SECONDS = 60
+SESSION_TTL_SECONDS = 60
+MAX_PENDING_UNLOCKS = 256
+UNLOCK_DOMAIN = b"sxbet.approval_unlock.v1"
+REFUSAL_AUDIT_PER_WINDOW = 10
+REFUSAL_AUDIT_WINDOW_SECONDS = 60
+_HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
 ENROLLMENT_CODE_TTL_SECONDS = 600
 REGISTRATION_CHALLENGE_TTL_SECONDS = 120
 ALLOWED_NETWORKS = frozenset({"testnet"})  # this PR: never mainnet
@@ -81,6 +95,29 @@ class ServiceConfig:
     rp_id: str = "localhost"
     origins: tuple[str, ...] = ("http://localhost:8787",)
     risk_config_path: str | None = None
+    allowed_hosts: tuple[str, ...] = ("127.0.0.1", "localhost")  # Host header allowlist (DNS rebinding)
+
+
+class RefusalAuditLimiter:
+    """At most N audit rows per event kind per window; the rest is counted and summarised once per window
+    (AUDIT_SUPPRESSED {suppressed_event, count}), so unauthenticated traffic cannot grow the audit freely."""
+
+    def __init__(self, store, clock):
+        self._store, self._clock = store, clock
+        self._win: dict[str, list[int]] = {}  # event -> [window_start, written, suppressed]
+
+    def audit(self, event: str, **kw: Any) -> None:
+        now = int(self._clock())
+        w = self._win.get(event)
+        if w is None or now - w[0] >= REFUSAL_AUDIT_WINDOW_SECONDS:
+            if w is not None and w[2]:
+                self._store.audit("AUDIT_SUPPRESSED", detail={"suppressed_event": event, "count": w[2]})
+            w = self._win[event] = [now, 0, 0]
+        if w[1] < REFUSAL_AUDIT_PER_WINDOW:
+            w[1] += 1
+            self._store.audit(event, **kw)
+        else:
+            w[2] += 1
 
 
 def _canon_sha(obj: Any) -> str:
@@ -118,6 +155,8 @@ class SignerService:
             raise ServiceConfigError("SIGNER_SERVICE_REQUEST_TTL_INVALID")
         if not config.hmac_keys:
             raise ServiceConfigError("AUTH_CONFIG_MISSING")
+        if not config.allowed_hosts or not all(isinstance(h, str) and _HOST.fullmatch(h) for h in config.allowed_hosts):
+            raise ServiceConfigError("SIGNER_SERVICE_ALLOWED_HOSTS_INVALID")
         if getattr(market, "data_source", None) not in appr.DATA_SOURCES:
             raise ServiceConfigError("MARKET_PROVIDER_INVALID")
         meta = market.metadata()
@@ -140,6 +179,9 @@ class SignerService:
         self.webauthn = wa.WebAuthnApprovalVerifier(self.policy, st.CredentialView(self.store))
         self._meta = meta
         self._reg_challenges: dict[str, tuple[bytes, str, int]] = {}
+        self._unlocks: dict[str, tuple[bytes, str, int]] = {}       # unlock_id -> (challenge, request_id, exp)
+        self._sessions: dict[str, dict[str, Any]] = {}              # sha256(token) -> session
+        self.refusals = RefusalAuditLimiter(self.store, clock)
 
         # EPHEMERAL throwaway order-signing key: generated here, in memory only, never read from env or disk.
         ephemeral = secrets.token_hex(32)
@@ -224,7 +266,83 @@ class SignerService:
         return out
 
     # ---------------------------------------------------------------- owner device: page data + decision
-    def approval_view(self, request_id: Any) -> dict[str, Any]:
+    # ---------------------------------------------------------------- owner device: unlock (pre-auth)
+    def unlock_options(self, request_id: Any) -> dict[str, Any]:
+        """Opaque challenge for ANY well-formed id: existence, state and order fields are not disclosed."""
+        if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
+            raise ServiceError("NOT_FOUND", 404)
+        now = int(self._clock())
+        with self._lock:
+            self._unlocks = {k: v for k, v in self._unlocks.items() if v[2] > now}
+            if len(self._unlocks) >= MAX_PENDING_UNLOCKS:
+                raise ServiceError("UNLOCK_BUSY", 429)
+            uid = secrets.token_hex(16)
+            challenge = hashlib.sha256(UNLOCK_DOMAIN + b"\n" + request_id.encode("ascii") + b"\n"
+                                       + secrets.token_bytes(32)).digest()
+            self._unlocks[uid] = (challenge, request_id, now + UNLOCK_CHALLENGE_TTL_SECONDS)
+        # allowCredentials omitted on purpose: passkeys are discoverable (residentKey required), so no
+        # credential id ever leaves the server before authentication.
+        return {"request_id": request_id, "unlock_id": uid, "challenge": wa.b64url_encode(challenge),
+                "rp_id": self.policy.rp_id, "user_verification": "required", "timeout": 60000}
+
+    def unlock(self, request_id: Any, body: Any) -> tuple[str, int]:
+        """Verify the unlock assertion; return (session token, expires_at). Failures: UNLOCK_REFUSED only."""
+        refused = ServiceError("UNLOCK_REFUSED", 401)
+        keys = {"unlock_id", "credential_id", "authenticator_data", "client_data_json", "signature"}
+        if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id) \
+                or not isinstance(body, Mapping) or set(body) != keys or not isinstance(body["unlock_id"], str):
+            raise refused
+        with self._lock:
+            now = int(self._clock())
+            entry = self._unlocks.pop(body["unlock_id"], None)  # single use, whatever happens next
+            code = None
+            if entry is None or entry[2] <= now or entry[1] != request_id:
+                code = "UNLOCK_CHALLENGE_INVALID"
+            parts = None
+            if code is None:
+                try:
+                    parts = {k: wa.b64url_decode(body[k]) for k in keys - {"unlock_id"}}
+                    count = self.webauthn.verify_challenge(challenge=entry[0], **parts)
+                    self.webauthn.commit(parts["credential_id"], count)
+                except appr.ApprovalError as exc:
+                    code = str(exc)
+            if code is None and self.store.get(request_id) is None:
+                code = "REQUEST_NOT_FOUND"
+            if code is not None:
+                self.refusals.audit("UNLOCK_REFUSED", request_id=None, reason=code)
+                raise refused
+            token = secrets.token_urlsafe(32)
+            expires = now + SESSION_TTL_SECONDS
+            self._sessions = {k: v for k, v in self._sessions.items() if v["expires_at"] > now}
+            self._sessions[hashlib.sha256(token.encode("ascii")).hexdigest()] = {
+                "request_id": request_id, "credential_id": parts["credential_id"], "expires_at": expires,
+                "details_served": False}
+            self.store.audit("UNLOCK_GRANTED", request_id=request_id,
+                             detail={"credential_prefix": wa.b64url_encode(parts["credential_id"])[:8]})
+            return token, expires
+
+    def _session(self, request_id: Any, token: Any, *, consume: bool) -> dict[str, Any]:
+        """The session for (request, token) or APPROVAL_LOCKED. Details: once. Decision: consumes it."""
+        locked = ServiceError("APPROVAL_LOCKED", 401)
+        if not isinstance(token, str) or not 16 <= len(token) <= 128:
+            raise locked
+        h = hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+        s = self._sessions.get(h)
+        if s is None or not secrets.compare_digest(s["request_id"].encode("ascii"),
+                                                         str(request_id).encode("utf-8", "replace")) \
+                or int(self._clock()) >= s["expires_at"]:
+            raise locked
+        if consume:
+            del self._sessions[h]
+        else:
+            if s["details_served"]:
+                raise locked
+            s["details_served"] = True
+        return s
+
+    def approval_view(self, request_id: Any, token: Any = None) -> dict[str, Any]:
+        with self._lock:
+            self._session(request_id, token, consume=False)
         r = self._expire_if_due(self._load(request_id))
         view = {"request_id": r["request_id"], "kind": r["kind"], "state": r["state"], "expires_at": r["expires_at"],
                 "data_source": self._market.data_source, "live_trading": "UNAVAILABLE"}
@@ -239,11 +357,12 @@ class SignerService:
             for d in (appr.DECISION_APPROVE, appr.DECISION_REJECT)}
         view.update({"display": rec["display"], "binding": rec["binding"], "issued_at": a["issued_at"],
                      "signer_id": a["signer_id"], "challenge_approve": chal[appr.DECISION_APPROVE],
-                     "challenge_reject": chal[appr.DECISION_REJECT], "rp_id": self.policy.rp_id,
-                     "credential_ids": [wa.b64url_encode(c) for c in self.store.credential_ids()]})
+                     "challenge_reject": chal[appr.DECISION_REJECT], "rp_id": self.policy.rp_id})
         return view
 
-    def submit_assertion(self, request_id: Any, body: Any) -> dict[str, Any]:
+    def submit_assertion(self, request_id: Any, body: Any, token: Any = None) -> dict[str, Any]:
+        with self._lock:
+            session = self._session(request_id, token, consume=True)  # single use, even if refused below
         if not isinstance(body, Mapping) or set(body) != {"decision", "credential_id", "authenticator_data",
                                                           "client_data_json", "signature"}:
             raise ServiceError("ASSERTION_MALFORMED")
@@ -255,6 +374,8 @@ class SignerService:
                                                             "signature")}
         except appr.ApprovalError:
             raise ServiceError("ASSERTION_MALFORMED") from None
+        if not secrets.compare_digest(parts["credential_id"], session["credential_id"]):
+            raise ServiceError("APPROVAL_CREDENTIAL_MISMATCH", 403)
         with self._lock:
             r = self._expire_if_due(self._load(request_id))
             rid = r["request_id"]
@@ -281,7 +402,7 @@ class SignerService:
                         expires_at=a["expires_at"], signer_id=a["signer_id"])
                     count = self.webauthn.verify_challenge(challenge=chal, **parts)
             except appr.ApprovalError as exc:
-                self.store.audit("APPROVAL_ATTEMPT_REFUSED", request_id=rid, reason=str(exc),
+                self.refusals.audit("APPROVAL_ATTEMPT_REFUSED", request_id=rid, reason=str(exc),
                                  detail={"decision": decision, "credential_prefix": prefix})
                 raise ServiceError(str(exc), 403) from None
 
@@ -349,7 +470,7 @@ class SignerService:
     def enroll_options(self, body: Any) -> dict[str, Any]:
         code = body.get("enrollment_code") if isinstance(body, Mapping) else None
         if not isinstance(code, str) or not self.store.enrollment_code_valid(_canon_sha(code), int(self._clock())):
-            self.store.audit("ENROLLMENT_REFUSED", reason="ENROLLMENT_CODE_INVALID")
+            self.refusals.audit("ENROLLMENT_REFUSED", reason="ENROLLMENT_CODE_INVALID")
             raise ServiceError("ENROLLMENT_CODE_INVALID", 403)
         now = int(self._clock())
         with self._lock:
@@ -360,9 +481,9 @@ class SignerService:
         return {"challenge_id": cid, "challenge": wa.b64url_encode(challenge), "rp": {"id": self.policy.rp_id,
                 "name": "FCB signer (DEV)"}, "user": {"id": wa.b64url_encode(b"fcb-owner"), "name": "owner",
                 "displayName": "Owner"}, "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
-                "authenticatorSelection": {"userVerification": "required", "residentKey": "preferred"},
-                "attestation": "none", "timeout": 60000,
-                "excludeCredentials": [wa.b64url_encode(c) for c in self.store.credential_ids()]}
+                "authenticatorSelection": {"userVerification": "required", "residentKey": "required",
+                                           "requireResidentKey": True},
+                "attestation": "none", "timeout": 60000}
 
     def enroll_finish(self, body: Any) -> dict[str, Any]:
         if not isinstance(body, Mapping) or set(body) != {"challenge_id", "attestation_object", "client_data_json"}:
@@ -378,7 +499,7 @@ class SignerService:
                                               client_data_json=wa.b64url_decode(body["client_data_json"]),
                                               expected_challenge=challenge, policy=self.policy)
             except appr.ApprovalError as exc:
-                self.store.audit("ENROLLMENT_REFUSED", reason=str(exc))
+                self.refusals.audit("ENROLLMENT_REFUSED", reason=str(exc))
                 raise ServiceError(str(exc), 403) from None
             if not self.store.enrollment_code_valid(code_hash, now) or not self.store.consume_enrollment_code(code_hash):
                 raise ServiceError("ENROLLMENT_CODE_INVALID", 403)

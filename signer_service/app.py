@@ -5,9 +5,12 @@ Routes
 - POST /v1/requests/order               HMAC (request:create)   MCP files an order REQUEST
 - POST /v1/requests/cancel              HMAC (request:create)   MCP files a cancel REQUEST
 - GET  /v1/requests/{request_id}        HMAC (request:read)     MCP reads the status
-- GET  /approve/{request_id}            owner phone: PWA page (static HTML, no inline script, no CDN)
-- GET  /approve/{request_id}/challenge  owner phone: binding + display + WebAuthn challenges
-- POST /approve/{request_id}/assertion  owner phone: passkey assertion (APPROVE / REJECT)
+- GET  /approve/{request_id}            owner phone: PWA page, the same static bytes for any id (no data)
+- POST /approve/{request_id}/unlock/options  pre-auth: opaque unlock challenge only (no order field)
+- POST /approve/{request_id}/unlock     passkey assertion over it -> session cookie (HttpOnly, Secure,
+                                        SameSite=Strict, Path=/approve/<id>, 60 s, single use)
+- GET  /approve/{request_id}/challenge  session required: binding + display + order challenges (once)
+- POST /approve/{request_id}/assertion  session required (consumed): order-bound passkey assertion
 - GET  /enroll, POST /enroll/options, POST /enroll/finish   passkey enrolment with a one-time code
 - GET  /static/<file>                   fixed allowlist of the PWA assets
 The approval and enrolment routes never accept HMAC credentials as authority: only a passkey assertion
@@ -21,15 +24,18 @@ import pathlib
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from . import LIVE_TRADING, SERVICE_MODE
 from .auth import SCOPE_CREATE, SCOPE_READ, AuthError
-from .service import ServiceError, SignerService
+from .service import _REQUEST_ID, ServiceError, SignerService
 
 MAX_BODY_BYTES = 16 * 1024
+SESSION_COOKIE = "fcb_approval"
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
 STATIC_FILES = {"approve.js": "text/javascript", "enroll.js": "text/javascript", "common.js": "text/javascript",
                 "style.css": "text/css", "manifest.webmanifest": "application/manifest+json"}
@@ -107,15 +113,40 @@ def build_app(service: SignerService) -> Starlette:
         return Response((STATIC / name).read_bytes(), media_type="text/html; charset=utf-8", headers=SECURITY_HEADERS)
 
     async def approve_page(request: Request) -> Response:
-        service._load(request.path_params["request_id"])
+        # No lookup: identical bytes for every well-formed id, so the page is not an oracle on existence.
+        if not _REQUEST_ID.fullmatch(request.path_params["request_id"]):
+            raise ServiceError("NOT_FOUND", 404)
         return page("approve.html")
 
+    async def unlock_options(request: Request) -> Response:
+        return _json(service.unlock_options(request.path_params["request_id"]))
+
+    async def unlock(request: Request) -> Response:
+        rid = request.path_params["request_id"]
+        token, expires = service.unlock(rid, _parse(await _body(request)))
+        resp = _json({"unlocked": True, "expires_at": expires})
+        resp.set_cookie(SESSION_COOKIE, token, max_age=60, path=f"/approve/{rid}", secure=True, httponly=True,
+                        samesite="strict")
+        return resp
+
     async def approve_challenge(request: Request) -> Response:
-        return _json(service.approval_view(request.path_params["request_id"]))
+        return _json(service.approval_view(request.path_params["request_id"], request.cookies.get(SESSION_COOKIE)))
 
     async def approve_assertion(request: Request) -> Response:
-        raw = await _body(request)
-        return _json(service.submit_assertion(request.path_params["request_id"], _parse(raw)))
+        rid = request.path_params["request_id"]
+        token = request.cookies.get(SESSION_COOKIE)
+        try:
+            raw = await _body(request)
+        except ServiceError:
+            service.submit_assertion(rid, None, token)  # consume / refuse the session first, then report
+            raise
+        try:
+            body = _parse(raw)
+        except ServiceError:
+            body = None  # a locked request must answer APPROVAL_LOCKED, not a parse error
+        resp = _json(service.submit_assertion(rid, body, token))
+        resp.delete_cookie(SESSION_COOKIE, path=f"/approve/{rid}", secure=True, httponly=True, samesite="strict")
+        return resp
 
     async def enroll_page(request: Request) -> Response:
         return page("enroll.html")
@@ -138,6 +169,8 @@ def build_app(service: SignerService) -> Starlette:
         Route("/v1/requests/cancel", guarded(create_cancel), methods=["POST"]),
         Route("/v1/requests/{request_id}", guarded(read_request), methods=["GET"]),
         Route("/approve/{request_id}", guarded(approve_page), methods=["GET"]),
+        Route("/approve/{request_id}/unlock/options", guarded(unlock_options), methods=["POST"]),
+        Route("/approve/{request_id}/unlock", guarded(unlock), methods=["POST"]),
         Route("/approve/{request_id}/challenge", guarded(approve_challenge), methods=["GET"]),
         Route("/approve/{request_id}/assertion", guarded(approve_assertion), methods=["POST"]),
         Route("/enroll", guarded(enroll_page), methods=["GET"]),
@@ -155,4 +188,7 @@ def build_app(service: SignerService) -> Starlette:
     async def internal(request: Request, exc: Exception) -> Response:
         return _err("INTERNAL_ERROR", 500)
 
-    return Starlette(routes=routes, exception_handlers={404: not_found, 405: not_allowed, 500: internal})
+    # DNS rebinding: refuse any Host header outside the configured allowlist (loopback by default).
+    middleware = [Middleware(TrustedHostMiddleware, allowed_hosts=list(service.config.allowed_hosts))]
+    return Starlette(routes=routes, middleware=middleware,
+                     exception_handlers={404: not_found, 405: not_allowed, 500: internal})

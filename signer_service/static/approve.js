@@ -58,15 +58,8 @@
     try {
       const cred = await navigator.credentials.get({ publicKey: {
         challenge: fcb.b64urlToBytes(challenge), rpId: view.rp_id, userVerification: "required", timeout: 60000,
-        allowCredentials: view.credential_ids.map((c) => ({ type: "public-key", id: fcb.b64urlToBytes(c) })),
-      } });
-      const r = await fcb.postJSON("/approve/" + id + "/assertion", {
-        decision,
-        credential_id: fcb.bytesToB64url(cred.rawId),
-        authenticator_data: fcb.bytesToB64url(cred.response.authenticatorData),
-        client_data_json: fcb.bytesToB64url(cred.response.clientDataJSON),
-        signature: fcb.bytesToB64url(cred.response.signature),
-      });
+      } });  // discoverable passkey: no credential id list is ever sent to the page
+      const r = await fcb.postJSON("/approve/" + id + "/assertion", { decision, ...parts(cred) });
       fcb.text($("result"), r.body.error ? "Rifiutato: " + r.body.error
         : "Stato: " + r.body.state + (r.body.reason ? " (" + r.body.reason + ")" : "") +
           (r.body.gateway ? " · gateway: " + r.body.gateway : "") + " · nessun invio all'exchange");
@@ -75,8 +68,37 @@
     }
   }
 
+  function parts(cred) {
+    return {
+      credential_id: fcb.bytesToB64url(cred.rawId),
+      authenticator_data: fcb.bytesToB64url(cred.response.authenticatorData),
+      client_data_json: fcb.bytesToB64url(cred.response.clientDataJSON),
+      signature: fcb.bytesToB64url(cred.response.signature),
+    };
+  }
+
+  // Step 1: unlock. The server returns only an opaque challenge; no order detail before this succeeds.
+  async function unlock() {
+    $("unlock").disabled = true;
+    try {
+      const o = await fcb.postJSON("/approve/" + id + "/unlock/options", {});
+      if (o.body.error) { fcb.text($("state"), "Errore: " + o.body.error); return; }
+      const cred = await navigator.credentials.get({ publicKey: {
+        challenge: fcb.b64urlToBytes(o.body.challenge), rpId: o.body.rp_id,
+        userVerification: o.body.user_verification, timeout: o.body.timeout } });
+      const u = await fcb.postJSON("/approve/" + id + "/unlock", { unlock_id: o.body.unlock_id, ...parts(cred) });
+      if (u.body.error) { fcb.text($("state"), "Sblocco rifiutato"); $("unlock").disabled = false; return; }
+      $("unlock").hidden = true;
+      await load();
+    } catch (e) {
+      fcb.text($("state"), "Sblocco annullato o passkey non disponibile");
+      $("unlock").disabled = false;
+    }
+  }
+
+  // Step 2: details (session cookie, once), then the order-bound decision.
   async function load() {
-    const r = await fetch("/approve/" + id + "/challenge", { cache: "no-store", credentials: "omit" });
+    const r = await fetch("/approve/" + id + "/challenge", { cache: "no-store", credentials: "same-origin" });
     view = await r.json();
     if (view.error) { fcb.text($("state"), "Errore: " + view.error); return; }
     fcb.text($("state"), (view.kind === "ORDER" ? "Ordine" : "Cancellazione") + " · stato " + view.state);
@@ -88,5 +110,5 @@
     $("reject").addEventListener("click", () => decide("REJECT"));
     tick(); setInterval(tick, 1000);
   }
-  load();
+  $("unlock").addEventListener("click", unlock);
 })();

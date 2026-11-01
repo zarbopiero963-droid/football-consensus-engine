@@ -64,7 +64,8 @@ class Env:
 
     def start(self):
         self.svc = SignerService(ServiceConfig(**self.cfg), self.market, clock=self.clock, env=self.env)
-        self.client = TestClient(build_app(self.svc), base_url="http://127.0.0.1:8787")
+        # https base URL: the approval session cookie is Secure, so the test client only returns it over https.
+        self.client = TestClient(build_app(self.svc), base_url="https://127.0.0.1:8787")
 
     def restart(self):
         self.svc.close()
@@ -93,14 +94,24 @@ class Env:
         reg = passkey.register(b64url_decode(opt["challenge"]))
         r = self.client.post("/enroll/finish", json={"challenge_id": opt["challenge_id"], **to_wire(reg)})
         assert r.status_code == 200, r.text
+        self.passkeys = getattr(self, "passkeys", []) + [passkey]
         return passkey
 
-    def view(self, rid):
+    def unlock(self, passkey, rid, **kw):
+        """Owner unlock: passkey assertion over an opaque server challenge -> session cookie for `rid`."""
+        from signer.webauthn import b64url_decode
+        o = self.client.post(f"/approve/{rid}/unlock/options").json()
+        parts = passkey.assert_(b64url_decode(o["challenge"]), **kw)
+        return self.client.post(f"/approve/{rid}/unlock", json={"unlock_id": o["unlock_id"], **to_wire(parts)})
+
+    def view(self, rid, passkey=None):
+        if passkey is not None:
+            assert self.unlock(passkey, rid).status_code == 200
         return self.client.get(f"/approve/{rid}/challenge").json()
 
     def assertion(self, passkey, rid, decision="APPROVE", challenge=None, **kw):
         from signer.webauthn import b64url_decode
-        v = self.view(rid)
+        v = self.view(rid, passkey)
         chal = challenge or b64url_decode(v["challenge_approve" if decision == "APPROVE" else "challenge_reject"])
         return {"decision": decision, **to_wire(passkey.assert_(chal, **kw))}
 
@@ -196,7 +207,7 @@ def test_hmac_refusals_have_fixed_codes(e):
     cases = [
         ({}, "AUTH_MISSING", 401),
         ({**ok, "X-FCB-Signature": "0" * 64}, "AUTH_SIGNATURE_INVALID", 401),
-        ({**ok, "X-FCB-Key-Id": "mcp-other"}, "AUTH_KEY_UNKNOWN", 401),
+        ({**ok, "X-FCB-Key-Id": "mcp-other"}, "AUTH_SIGNATURE_INVALID", 401),  # no key-id oracle
         ({**ok, "X-FCB-Nonce": "short"}, "AUTH_MALFORMED", 401),
     ]
     for headers, code, status in cases:
@@ -244,7 +255,7 @@ def test_mcp_credential_cannot_approve_enrol_or_change_limits(e):
     rid = created(e)
     # an HMAC-signed request is not an approval: the route wants a passkey assertion and nothing else
     r = e.signed("POST", f"/approve/{rid}/assertion", {"decision": "APPROVE"})
-    assert r.json() == {"error": "ASSERTION_MALFORMED"}
+    assert r.json() == {"error": "APPROVAL_LOCKED"}
     r = e.signed("POST", "/enroll/options", {})
     assert r.json() == {"error": "ENROLLMENT_CODE_INVALID"}
     assert e.svc.status(KEY, rid)["state"] == "PENDING_APPROVAL"
@@ -308,7 +319,8 @@ def test_body_limits_and_non_json(e):
 def test_full_lifecycle_ends_handed_to_disabled_gateway(e):
     passkey = e.enroll()
     rid = created(e)
-    v = e.view(rid)
+    v = e.view(rid, passkey)
+    assert "credential_ids" not in v
     assert v["display"]["selection"]["semantics"] == "BACK_OUTCOME_ONE" and v["display"]["decimal_odds_limit"] == "2.5000"
     r = e.approve(passkey, rid)
     assert r.status_code == 200, r.text
@@ -380,6 +392,9 @@ def test_replayed_assertion_is_refused(e):
     body = e.assertion(passkey, rid)
     assert e.client.post(f"/approve/{rid}/assertion", json=body).json()["state"] == "HANDED_TO_GATEWAY"
     r = e.client.post(f"/approve/{rid}/assertion", json=body)
+    assert r.json() == {"error": "APPROVAL_LOCKED"}  # the session token was single-use
+    assert e.unlock(passkey, rid).status_code == 200
+    r = e.client.post(f"/approve/{rid}/assertion", json=body)
     assert (r.status_code, r.json()) == (409, {"error": "REQUEST_NOT_PENDING"})
 
 
@@ -388,6 +403,7 @@ def test_expired_request_cannot_be_approved(e):
     rid = created(e)
     body = e.assertion(passkey, rid)
     e.clock.t += 90  # request TTL is 90 s
+    assert e.unlock(passkey, rid).status_code == 200
     r = e.client.post(f"/approve/{rid}/assertion", json=body)
     assert (r.status_code, r.json()) == (410, {"error": "REQUEST_EXPIRED"})
     assert e.signed("GET", f"/v1/requests/{rid}").json()["state"] == "EXPIRED"
@@ -397,16 +413,23 @@ def test_approval_for_a_cannot_be_used_on_b(e):
     passkey = e.enroll()
     a = created(e, cid="client-req-A001")
     b = created(e, cid="client-req-B002")
-    r = e.client.post(f"/approve/{b}/assertion", json=e.assertion(passkey, a))
+    body_a = e.assertion(passkey, a)
+    assert e.unlock(passkey, b).status_code == 200
+    r = e.client.post(f"/approve/{b}/assertion", json=body_a)
     assert (r.status_code, r.json()) == (403, {"error": "WEBAUTHN_CHALLENGE_MISMATCH"})
     assert e.svc.status(KEY, b)["state"] == "PENDING_APPROVAL"
 
 
 def test_unregistered_passkey_cannot_approve(e):
-    e.enroll()
+    owner_pk = e.enroll()
     rid = created(e)
-    r = e.approve(FakePasskey(), rid)
-    assert r.json() == {"error": "WEBAUTHN_CREDENTIAL_UNKNOWN"}
+    stranger = FakePasskey()
+    assert e.unlock(stranger, rid).json() == {"error": "UNLOCK_REFUSED"}
+    assert e.unlock(owner_pk, rid).status_code == 200
+    v = e.view(rid)
+    from signer.webauthn import b64url_decode
+    body = {"decision": "APPROVE", **to_wire(stranger.assert_(b64url_decode(v["challenge_approve"])))}
+    assert e.client.post(f"/approve/{rid}/assertion", json=body).json() == {"error": "APPROVAL_CREDENTIAL_MISMATCH"}
 
 
 def test_owner_reject_decision(e):
@@ -433,11 +456,12 @@ def test_stake_above_owner_limit_is_rejected(e):
 
 def test_cancel_request_lifecycle(e):
     passkey = e.enroll()
+    other = e.enroll()
     r = e.signed("POST", "/v1/requests/cancel", {"client_request_id": "client-cancel-01", "network": "testnet",
                                                  "scope": "MARKET", "market_hash": DEV_MARKET_HASH})
     assert r.status_code == 201, r.text
     rid = r.json()["request_id"]
-    assert e.view(rid)["display"]["effect"] == "CANCEL_ALL_ORDERS_IN_MARKET"
+    assert e.view(rid, other)["display"]["effect"] == "CANCEL_ALL_ORDERS_IN_MARKET"
     out = e.approve(passkey, rid).json()
     assert out["state"] == "HANDED_TO_GATEWAY" and out["gateway"] == "LIVE_TRADING_DISABLED"
     bad = e.signed("POST", "/v1/requests/cancel", {"client_request_id": "client-cancel-02", "network": "testnet",
@@ -493,7 +517,7 @@ def test_store_is_append_only_at_the_database_level(e):
         with pytest.raises(sqlite3.DatabaseError):
             db.execute(sql)
     assert e.approve(passkey, rid).json()["state"] == "HANDED_TO_GATEWAY"
-    assert db.execute("SELECT sign_count FROM credentials").fetchone()[0] == 1
+    assert db.execute("SELECT sign_count FROM credentials").fetchone()[0] == 2  # unlock + decision
     with pytest.raises(sqlite3.DatabaseError):  # counter can never go back
         db.execute("UPDATE credentials SET sign_count = 0")
     db.close()
@@ -526,6 +550,7 @@ def test_approval_page_is_static_csp_locked_and_has_no_external_resources(e):
     rid = created(e)
     r = e.client.get(f"/approve/{rid}")
     assert r.status_code == 200 and "script-src 'self'" in r.headers["content-security-policy"]
+    assert r.content == e.client.get("/approve/req_" + "0" * 32).content  # same static page, no data
     assert r.headers["cache-control"] == "no-store"
     static = ROOT / "signer_service" / "static"
     for p in static.iterdir():
@@ -535,7 +560,7 @@ def test_approval_page_is_static_csp_locked_and_has_no_external_resources(e):
         if p.suffix == ".html":
             assert not re.search(r"<script(?![^>]*\bsrc=)", src), p   # no inline script
     assert e.client.get("/static/../service.py").status_code == 404
-    assert e.client.get("/approve/not-an-id").json() == {"error": "REQUEST_NOT_FOUND"}
+    assert e.client.get("/approve/not-an-id").json() == {"error": "NOT_FOUND"}
 
 
 # ---------------------------------------------------------------- structural guards (added, never relaxed)

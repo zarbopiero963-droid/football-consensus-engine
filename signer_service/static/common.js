@@ -13,8 +13,9 @@ const fcb = {
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   },
   async postJSON(url, body) {
+    // same-origin: the approval session cookie (HttpOnly, SameSite=Strict) travels only to this origin.
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
-                                 body: JSON.stringify(body), credentials: "omit", cache: "no-store" });
+                                 body: JSON.stringify(body), credentials: "same-origin", cache: "no-store" });
     return { status: r.status, body: await r.json() };
   },
   text(el, value) { el.textContent = value; },  // textContent only (never HTML injection): labels come from data

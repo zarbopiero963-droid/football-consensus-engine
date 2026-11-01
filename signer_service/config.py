@@ -9,6 +9,8 @@ Env (all SXBET_SIGNER_SERVICE_* unless noted):
   SXBET_SIGNER_RISK_CONFIG        owner-signed risk config path (missing => all-zero limits => all refused)
   MARKET_FILE                     simulated market data JSON (the only provider in this repository)
   SIGNER_ID, ACCOUNT_ID, REQUEST_TTL (<= 120), RP_ID (default localhost), ORIGINS (comma separated)
+  ALLOWED_HOSTS                   Host header allowlist, comma separated (default 127.0.0.1,localhost;
+                                  no wildcard). Add the private HTTPS host used by the phone (e.g. tailnet)
 Refused at start: SXBET_SIGNER_PRIVATE_KEY or SXBET_LIVE_TRADING_FLAG present (see service.py).
 """
 from __future__ import annotations
@@ -66,7 +68,9 @@ def load(env: Mapping[str, str] | None = None) -> tuple[ServiceConfig, str, str,
                         signer_id=env.get(P + "SIGNER_ID", "signer-service-dev"),
                         account_id=env.get(P + "ACCOUNT_ID", ""), request_ttl_seconds=ttl,
                         rp_id=env.get(P + "RP_ID", "localhost"), origins=origins,
-                        risk_config_path=env.get("SXBET_SIGNER_RISK_CONFIG"))
+                        risk_config_path=env.get("SXBET_SIGNER_RISK_CONFIG"),
+                        allowed_hosts=tuple(h.strip() for h in env.get(P + "ALLOWED_HOSTS",
+                                                                       "127.0.0.1,localhost").split(",") if h.strip()))
     host = env.get(P + "HOST", "127.0.0.1")
     check_bind(host, env)
     return cfg, market, host, port

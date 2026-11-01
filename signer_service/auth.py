@@ -116,8 +116,9 @@ class HmacVerifier:
         key = self._keys.get(key_id)
         if key is None:
             # Compute anyway so an unknown key id costs the same as a known one.
+            # Same work and the same code as a bad signature: no oracle on which key ids exist.
             hmac.compare_digest(sign(b"\x00" * MIN_SECRET_BYTES, method, path, body, ts, nonce, key_id), sig)
-            raise AuthError("AUTH_KEY_UNKNOWN")
+            raise AuthError("AUTH_SIGNATURE_INVALID")
         if abs(int(self._clock()) - int(ts)) > MAX_SKEW_SECONDS:
             raise AuthError("AUTH_TIMESTAMP_SKEW")
         if not hmac.compare_digest(sign(key.secret, method, path, body, ts, nonce, key_id), sig):
