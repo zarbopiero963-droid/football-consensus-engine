@@ -18,6 +18,12 @@ Guarantees (governance §2.6):
   signature is released;
 - one idempotency key = one intent: same key + same hash returns the cached
   result (no second signature), same key + different hash is refused;
+- snapshot: the approval binding and the risk context are copied into plain
+  JSON-like values (dict / list / str / int / bool / None) BEFORE anything is
+  verified, and only that snapshot is used afterwards, so a caller-owned
+  object mutated during signing cannot change what was checked or recorded;
+- a released signature keeps its stake reserved even if the order is later
+  REJECTED, until its expiry has passed (signer/orders.py);
 - every decision is appended to the audit log;
 - there is no network or submission code here: the caller gets the signature
   back and nothing is sent. LIVE_TRADING remains UNAVAILABLE.
@@ -38,7 +44,7 @@ from . import eip712
 from . import risk as rk
 from .audit import AuditLog
 from .intent import IntentInvalid, intent_hash, validate
-from .orders import AUTHORIZED, REJECTED, SIGNED, ExposureView, OrderLedger, OrderStateError
+from .orders import AUTHORIZED, REJECTED, SIGNED, ExposureView, LedgerError, OrderLedger, OrderStateError
 
 KEY_ENV = "SXBET_SIGNER_PRIVATE_KEY"
 MIN_EXPIRY_MARGIN_SECONDS = 12  # docs: expiry inside betting delay + 2 s is rejected; local margin on top
@@ -54,6 +60,45 @@ class SignerRefused(RuntimeError):
 
 class SignerConfigError(RuntimeError):
     pass
+
+
+_MAX_SNAPSHOT_DEPTH = 16
+
+
+class _NotPlain(Exception):
+    pass
+
+
+def _plain(obj: Any, depth: int = 0) -> Any:
+    """Deep, one-pass copy into plain JSON-like values; anything else raises _NotPlain."""
+    if depth > _MAX_SNAPSHOT_DEPTH:
+        raise _NotPlain()
+    if obj is None or type(obj) in (str, int, bool, float):
+        return obj
+    if isinstance(obj, Mapping):
+        out = {}
+        for k, v in list(obj.items()):
+            if type(k) is not str:
+                raise _NotPlain()
+            out[k] = _plain(v, depth + 1)
+        return out
+    if type(obj) in (list, tuple):
+        return [_plain(v, depth + 1) for v in obj]
+    raise _NotPlain()
+
+
+def _snapshot_approval(approval: Any) -> Any:
+    """A private copy of the approval; a non-Approval is returned as is (verify refuses it)."""
+    if not isinstance(approval, appr.Approval):
+        return approval
+    try:
+        binding = _plain(approval.binding)
+        sig = approval.signature
+        sig = bytes(sig) if isinstance(sig, (bytes, bytearray)) else sig
+        return appr.Approval(binding, approval.approval_nonce, approval.issued_at, approval.expires_at,
+                             approval.signer_id, sig)
+    except Exception:
+        raise SignerRefused("APPROVAL_MALFORMED") from None
 
 
 @dataclass(frozen=True)
@@ -136,6 +181,13 @@ class Signer:
             key = intent.get("idempotency_key") if isinstance(intent, Mapping) else None
             ihash = None
             try:
+                # Snapshot FIRST (before anything else reads caller-owned objects); only the copies are used.
+                approval = _snapshot_approval(approval)
+                if context is not None:
+                    try:
+                        context = _plain(context)
+                    except Exception:
+                        raise SignerRefused("RISK_CONTEXT_MALFORMED") from None
                 try:
                     clean = validate(intent, odds_ladder_step_size=self.config.odds_ladder_step_size)
                 except IntentInvalid as exc:
@@ -186,7 +238,7 @@ class Signer:
                                            market_hash=clean["market_hash"], event_id=approval.binding["event_id"],
                                            stake=int(clean["total_bet_size"]), expiry=clean["expiry"],
                                            approval_nonce=approval.approval_nonce, precheck=precheck)
-                except OrderStateError as exc:
+                except (OrderStateError, LedgerError) as exc:
                     raise SignerRefused(exc.code) from None
                 self._log("AUTHORIZED", None, key, ihash, oid, clean, nonce=approval.approval_nonce)
 
@@ -195,9 +247,17 @@ class Signer:
                     signature = self._produce_signature(msg)
                 except Exception:
                     # In-process failure: the signature never left, so the reservation can be released.
-                    self._ledger.transition(key, REJECTED, reason="SIGNING_FAILED")
+                    try:
+                        self._ledger.transition(key, REJECTED, reason="SIGNING_FAILED")
+                    except LedgerError:
+                        pass  # stays AUTHORIZED (reserved); abandon_unsigned after restart
                     raise SignerRefused("SIGNING_FAILED") from None
-                self._ledger.transition(key, SIGNED, reason="SIGNED")
+                try:
+                    self._ledger.transition(key, SIGNED, reason="SIGNED")
+                except LedgerError as exc:
+                    # SIGNED not durably recorded: the signature is discarded and never returned.
+                    del signature
+                    raise SignerRefused(exc.code) from None
                 result = {"order_id": oid, "intent_hash": ihash, "signer_address": self.address,
                           "order": eip712.order_payload(clean, signature), "submitted": False,
                           "live_trading": "UNAVAILABLE"}

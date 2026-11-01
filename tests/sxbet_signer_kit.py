@@ -75,7 +75,21 @@ def load_limits(tmp_path, owner, **overrides) -> risk.LoadedRiskConfig:
     return risk.load_risk_config(p, owner.public_key())
 
 
+_OPEN_LEDGERS: dict = {}
+
+
 def open_or_create_ledger(path, address, clock):
+    """Each call models a (re)started signer process. The ledger holds an exclusive file lock for its
+    lifetime, so the previous instance on the same path (the "dead" process) is closed first."""
+    prev = _OPEN_LEDGERS.pop(str(path), None)
+    if prev is not None:
+        prev.close()
+    led = _open_or_create(path, address, clock)
+    _OPEN_LEDGERS[str(path)] = led
+    return led
+
+
+def _open_or_create(path, address, clock):
     if os.path.exists(path):
         return OrderLedger.open(str(path), signer_id=SIGNER_ID, signer_address=address, clock=clock)
     return OrderLedger.create(str(path), signer_id=SIGNER_ID, signer_address=address, clock=clock)

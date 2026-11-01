@@ -47,8 +47,11 @@ MCP preview (sxbet_simulate_order, bridge, nessuna chiave)
    → riconciliazione (GET /orders-v3/{orderId}, /orders-v3/client/{clientOrderId}, /fills-v3)
 ```
 
-- **Stati dell'ordine:** `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Le transizioni ammesse e l'esposizione per stato sono in [`signer/README.md`](../../signer/README.md#stati-degli-ordini-ed-esposizione-signerorderspy).
+- **Stati dell'ordine:** `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `EXPIRED_UNCONFIRMED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Le transizioni ammesse e l'esposizione per stato sono in [`signer/README.md`](../../signer/README.md#stati-degli-ordini-ed-esposizione-signerorderspy).
 - **L'esposizione scende solo con evidenza dell'exchange:** un cancel o una scadenza confermati, oppure un settlement con fill completi. `UNKNOWN` (timeout, risposta ambigua, crash durante l'invio) resta riservato all'intero importo finché non è riconciliato.
+  - Un 404 dopo la scadenza non è una prova: porta a `EXPIRED_UNCONFIRMED`, che resta riservato fino a una riga `INACTIVE` dell'exchange o a una seconda osservazione identica dopo 24 h. Un fill tardivo viene sempre registrato e contato, anche dopo `EXPIRED` o `CANCELLED`.
+  - Una volta uscita la firma, un rifiuto (400, riga `FAILED`, `SIGNED → REJECTED` manuale) non libera l'importo prima della scadenza dell'ordine (più 30 s): l'ordine firmato resta pubblicabile da chi lo possiede.
+- **Ledger a scrittore unico:** `flock` esclusivo per tutta la vita dell'istanza (`LEDGER_LOCKED` per una seconda istanza, anche in un altro processo), controllo della testa del file prima di ogni append (`LEDGER_HEAD_MISMATCH`) e istanza avvelenata dopo un append fallito (`LEDGER_POISONED` fino a riavvio e replay).
 - **Limiti** (tutti a zero per default, quindi rifiuto):
   - importo massimo per ordine;
   - esposizione per mercato, per evento e totale;
@@ -79,7 +82,7 @@ Finché un solo punto è aperto, `LIVE_TRADING` resta non attivabile (§2.6).
    - test su testnet, incluso il formato di `salt` (`DOCS_UNVERIFIED`);
    - verifica del comportamento sul reinvio dopo un timeout (`DOCS_UNVERIFIED`);
    - decisione su `waitForOutcome`.
-7. [ ] **Flag `LIVE_TRADING` firmato dall'owner** (`load_live_trading_flag`): con scadenza breve e legato a `signer_id` e rete. L'agente non lo crea mai.
+7. [ ] **Flag `LIVE_TRADING` firmato dall'owner** (`load_live_trading_flag`): con scadenza breve e legato a `signer_id` e rete. L'agente non lo crea mai. Il gateway riverifica la firma dell'owner e la scadenza a ogni invio (`LIVE_TRADING_FLAG_EXPIRED`); la chiave pubblica dell'owner gli arriva dalla propria configurazione.
 8. [ ] **Cancellazione** (`DELETE /orders-v3*`, scope `Orders: cancel`): oggi non esiste un percorso di cancel. Va progettato con la stessa riconciliazione: un cancel conta solo se l'exchange lo conferma.
 9. [ ] **Proxy wallet e fondi:** verificare che il proxy sia deployato (`sxbet_proxy_wallet` → `deployed`) e che ci sia USDC sul proxy. Deploy e depositi sono operazioni finanziarie con conferme proprie.
 10. [ ] **API key con `Orders: create`/`Orders: cancel`:** si concede solo con la decisione di attivare il trading.

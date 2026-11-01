@@ -262,3 +262,66 @@ def test_signer_without_account_id_refuses(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, account_id="")
     i = make_intent(throwaway[0].address)
     assert refused(lambda: s.sign_order(i, approve(owner, i), context(i))) == "APPROVAL_BINDING_MISMATCH_ACCOUNT_ID"
+
+
+# ---------------------------------------------------------------- L1: approval binding / context snapshot
+def test_l1_binding_mutated_during_risk_evaluation_has_no_effect(tmp_path, throwaway, owner):
+    """A caller-owned binding dict mutated after verification (here: while the risk engine reads the
+    context) must not change what is checked or recorded: only the verified snapshot is used."""
+    from collections.abc import Mapping
+
+    from sxbet_signer_kit import EVENT_ID
+    s = make_signer(tmp_path, throwaway, owner, limits={"max_exposure_per_event_base_units": 6_000_000})
+    first = make_intent(throwaway[0].address, idempotency_key="order-key-L001")
+    s.sign_order(first, approve(owner, first), context(first))
+    i = make_intent(throwaway[0].address, idempotency_key="order-key-L002")
+    a = approve(owner, i)
+    base = context(i)
+
+    class Sneaky(Mapping):
+        def __getitem__(self, k):
+            if k == "balance":  # read after the event-id check, before the per-event limit check
+                a.binding["event_id"] = "L-OTHER-EVENT"
+            return base[k]
+
+        def __iter__(self):
+            return iter(base)
+
+        def __len__(self):
+            return len(base)
+
+    assert refused(lambda: s.sign_order(i, a, Sneaky())) == "EVENT_EXPOSURE_ABOVE_LIMIT"
+    assert s.exposure().by_event == {EVENT_ID: 5_000_000} and s._ledger.get("order-key-L002") is None
+
+
+def test_l1_snapshot_refuses_non_plain_binding(tmp_path, throwaway, owner):
+    s = make_signer(tmp_path, throwaway, owner)
+    i = make_intent(throwaway[0].address)
+    a = approve(owner, i)
+    weird = appr.Approval({**a.binding, "expected_fees": {1: "0.01"}}, a.approval_nonce, a.issued_at,
+                          a.expires_at, a.signer_id, a.signature)
+    assert refused(lambda: s.sign_order(i, weird, context(i))) == "APPROVAL_MALFORMED"
+    ctx = {**context(i), "quote": {**context(i)["quote"], "observed_at": object()}}
+    assert refused(lambda: s.sign_order(i, a, ctx)) == "RISK_CONTEXT_MALFORMED"
+    assert not s._ledger.nonce_consumed(a.approval_nonce)
+
+
+def test_l3_signed_line_not_persisted_means_no_signature_returned(tmp_path, throwaway, owner, monkeypatch):
+    from signer import orders as od
+    s = make_signer(tmp_path, throwaway, owner)
+    i = make_intent(throwaway[0].address)
+    a = approve(owner, i)
+    real = od.OrderLedger._append
+
+    def fail_on_signed(self, rec):
+        if rec.get("to") == SIGNED:
+            self._poisoned = True
+            raise od.LedgerError("LEDGER_WRITE_FAILED")
+        return real(self, rec)
+
+    monkeypatch.setattr(od.OrderLedger, "_append", fail_on_signed)
+    assert refused(lambda: s.sign_order(i, a, context(i))) == "LEDGER_WRITE_FAILED"
+    monkeypatch.undo()
+    assert s._ledger.get(i["idempotency_key"]).state == AUTHORIZED  # reserved, never handed out
+    other = make_intent(throwaway[0].address, idempotency_key="order-key-P002")
+    assert refused(lambda: s.sign_order(other, approve(owner, other), context(other))) == "LEDGER_POISONED"

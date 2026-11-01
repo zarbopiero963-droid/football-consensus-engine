@@ -18,13 +18,30 @@ UNKNOWN ─► SIGNED only on "reconciled absent" exchange evidence (the only pa
 to a safe re-send, always with the same signed order and the same
 clientOrderId), or to any state the exchange evidence proves.
 
+EXPIRED_UNCONFIRMED (404 after expiry is NOT proof). A 404 by order id after
+expiry + EXPIRY_GRACE_SECONDS with a complete, empty fills list moves a live
+order to EXPIRED_UNCONFIRMED, which still RESERVES the full unfilled stake. It
+is released (-> EXPIRED) only on positive terminal evidence: the exchange row
+INACTIVE with a documented inactiveReason, or the same 404 + complete fills
+whose sum equals the recorded fill observed again at least
+EXPIRY_CONFIRM_SECONDS after the first observation. A late fill is never
+dropped: fills seen while the order is EXPIRED_UNCONFIRMED / EXPIRED /
+CANCELLED raise `filled` (self-transition), and EXPIRED -> FILLED is allowed,
+so the matched exposure is recorded and counted again.
+
 Exposure accounting (base units, per order; `filled` = matched stake):
-- AUTHORIZED, SIGNED, SUBMITTED, OPEN, UNKNOWN: reserved = stake - filled,
-  matched = filled. UNKNOWN never releases anything until reconciled.
+- AUTHORIZED, SIGNED, SUBMITTED, OPEN, UNKNOWN, EXPIRED_UNCONFIRMED:
+  reserved = stake - filled, matched = filled. UNKNOWN never releases anything
+  until reconciled.
 - PARTIALLY_FILLED: matched = filled; the unfilled part stays reserved until a
   terminal CANCELLED / EXPIRED / FILLED proven by exchange data.
 - FILLED / CANCELLED / EXPIRED: reserved = 0, matched = filled (stays until SETTLED).
-- SETTLED, REJECTED: 0. SETTLED records realized P&L for the loss limits.
+- REJECTED after the signature was released (SIGNED reached, e.g. HTTP 400 on
+  submit or a manual SIGNED -> REJECTED): the signed order stays postable by
+  whoever holds it, so the whole stake stays reserved (and counted as an open
+  order) until now > expiry + EXPIRY_GRACE_SECONDS; only then 0.
+- REJECTED never signed (signing failed / abandoned), SETTLED: 0. SETTLED
+  records realized P&L for the loss limits.
 
 Persistence: one JSON object per line, each with the sha256 of the previous
 line, fsync'd. The first line (GENESIS) binds the file to one signer_id and
@@ -32,12 +49,27 @@ one signer address. A missing, empty, foreign or tampered ledger fails closed
 (LedgerError) instead of silently starting from zero exposure; a new ledger is
 created only by the explicit `OrderLedger.create`.
 
-Residual (documented) limitation: a hash chain cannot detect truncation of the
+Single writer: an OrderLedger holds an exclusive, non-blocking flock on the
+file for its whole lifetime (until `close()`); a second instance, in this or
+any other process, fails with LEDGER_LOCKED. Before every append the instance
+re-checks that the file is still the one it locked (same inode), has exactly
+the size it wrote, and ends with the line whose hash is its in-memory head;
+anything else (an external writer ignoring the advisory lock, a replaced file)
+is LEDGER_HEAD_MISMATCH. Any failed or partial append, or a head mismatch,
+POISONS the instance: every later write raises LEDGER_POISONED until the
+process restarts and replays the file (a torn last line then fails closed as
+LEDGER_CORRUPT and needs an owner decision).
+
+Residual (documented) limitations: a hash chain cannot detect truncation of the
 TAIL of the file by someone with write access; anchoring the head hash outside
-the signer host is an owner deployment decision.
+the signer host is an owner deployment decision. The pre-append check reads
+only the size and the last line: an in-place rewrite of earlier lines that
+keeps the size is detected only at the next replay. flock is advisory and
+local: the ledger must live on a local filesystem of the signer host.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -54,25 +86,31 @@ GENESIS_PREV = "sha256:" + "0" * 64
 PREPARED, AUTHORIZED, SIGNED, SUBMITTED, OPEN = "PREPARED", "AUTHORIZED", "SIGNED", "SUBMITTED", "OPEN"
 PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED = "PARTIALLY_FILLED", "FILLED", "CANCELLED", "EXPIRED"
 SETTLED, REJECTED, UNKNOWN = "SETTLED", "REJECTED", "UNKNOWN"
+EXPIRED_UNCONFIRMED = "EXPIRED_UNCONFIRMED"
 STATES = frozenset({PREPARED, AUTHORIZED, SIGNED, SUBMITTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED,
-                    EXPIRED, SETTLED, REJECTED, UNKNOWN})
+                    EXPIRED, EXPIRED_UNCONFIRMED, SETTLED, REJECTED, UNKNOWN})
 
 TRANSITIONS: dict[str, frozenset[str]] = {
     PREPARED: frozenset({AUTHORIZED, REJECTED}),
     AUTHORIZED: frozenset({SIGNED, REJECTED}),
-    SIGNED: frozenset({UNKNOWN, SUBMITTED, REJECTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED}),
-    SUBMITTED: frozenset({OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, UNKNOWN}),
-    OPEN: frozenset({PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, UNKNOWN}),
+    SIGNED: frozenset({UNKNOWN, SUBMITTED, REJECTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED,
+                       EXPIRED_UNCONFIRMED}),
+    SUBMITTED: frozenset({OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED, UNKNOWN}),
+    OPEN: frozenset({PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED, UNKNOWN}),
     PARTIALLY_FILLED: frozenset({PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, UNKNOWN}),
-    UNKNOWN: frozenset({SIGNED, SUBMITTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, REJECTED}),
+    UNKNOWN: frozenset({SIGNED, SUBMITTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED,
+                        REJECTED}),
+    EXPIRED_UNCONFIRMED: frozenset({EXPIRED_UNCONFIRMED, SUBMITTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED,
+                                    EXPIRED}),
     FILLED: frozenset({SETTLED}),
-    CANCELLED: frozenset({SETTLED}),
-    EXPIRED: frozenset({SETTLED}),
+    CANCELLED: frozenset({CANCELLED, SETTLED}),   # CANCELLED -> CANCELLED only to record a late fill
+    EXPIRED: frozenset({EXPIRED, FILLED, SETTLED}),  # EXPIRED -> EXPIRED / FILLED only to record a late fill
     SETTLED: frozenset(),
     REJECTED: frozenset(),
 }
-RESERVING = frozenset({AUTHORIZED, SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED})
-MATCHED_HOLDING = frozenset({SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED})
+RESERVING = frozenset({AUTHORIZED, SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED, EXPIRED_UNCONFIRMED})
+MATCHED_HOLDING = frozenset({SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED,
+                             EXPIRED_UNCONFIRMED})
 OPEN_ORDER_STATES = RESERVING
 TERMINAL = frozenset({SETTLED, REJECTED})
 
@@ -83,6 +121,11 @@ TERMINAL = frozenset({SETTLED, REJECTED})
 ABSENT_SETTLE_SECONDS = 60
 # After expiry the exchange cannot match the order any more (docs: order-lifecycle EXPIRED).
 EXPIRY_GRACE_SECONDS = 30
+# A 404 after expiry is only a hint (EXPIRED_UNCONFIRMED, still reserved). It becomes EXPIRED (released)
+# only when re-observed, with complete fills unchanged, at least this long after the first observation.
+EXPIRY_CONFIRM_SECONDS = 24 * 3600
+_COUNTED_FILL_STATUSES = frozenset({"MATCHED", "LOCKED", "SETTLED"})
+_FILL_STATUSES = _COUNTED_FILL_STATUSES | {"FAILED"}
 
 _DECIMAL = re.compile(r"^(0|[1-9][0-9]{0,77})$")
 _HEX32 = re.compile(r"^0x[0-9a-f]{64}$")
@@ -120,18 +163,27 @@ class Order:
     realized_pnl: int | None = None
     last_send_at: int | None = None
     evidence: tuple[str, ...] = field(default_factory=tuple)
+    signature_released: bool = False       # SIGNED was reached: the signed order may exist outside the signer
+    unconfirmed_since: int | None = None   # ts of the first EXPIRED_UNCONFIRMED observation
 
-    @property
-    def reserved(self) -> int:
-        return self.stake - self.filled if self.state in RESERVING else 0
+    def rejected_hold_active(self, now: int) -> bool:
+        """REJECTED after a released signature: still postable until expiry (+ grace) has passed."""
+        return self.state == REJECTED and self.signature_released and now <= self.expiry + EXPIRY_GRACE_SECONDS
+
+    def reserved_at(self, now: int) -> int:
+        if self.state in RESERVING:
+            return self.stake - self.filled
+        return self.stake if self.rejected_hold_active(now) else 0
 
     @property
     def matched(self) -> int:
         return self.filled if self.state in MATCHED_HOLDING else 0
 
-    @property
-    def exposure(self) -> int:
-        return self.reserved + self.matched
+    def exposure_at(self, now: int) -> int:
+        return self.reserved_at(now) + self.matched
+
+    def is_open_at(self, now: int) -> bool:
+        return self.state in OPEN_ORDER_STATES or self.rejected_hold_active(now)
 
 
 @dataclass(frozen=True)
@@ -223,11 +275,14 @@ def evidence_from_exchange(order: Order, *, lookup: Mapping[str, Any] | None,
             pnl = _settlement_pnl(order, fills["fills"], filled)
         return Evidence(target, filled, "EXCHANGE_ORDER_" + status, sha, pnl)
     if kind == "NOT_FOUND":
+        if order.state in (EXPIRED_UNCONFIRMED, EXPIRED, CANCELLED):
+            return _not_found_after_expiry(order, fills if fills_ok else None, now, sha)
         if order.filled or not fills_ok or fills.get("complete") is not True or fills["fills"]:
             return none("EVIDENCE_NOT_FOUND_INCONCLUSIVE")
         if now > order.expiry + EXPIRY_GRACE_SECONDS:
-            # Past expiry nothing can match any more and no fill exists: the reservation can be released.
-            return Evidence(EXPIRED, 0, "NOT_FOUND_AFTER_EXPIRY_NO_FILLS", sha)
+            # NOT proof: a 404 may also mean "purged" or a lagging index. The stake stays reserved
+            # (EXPIRED_UNCONFIRMED) until positive terminal evidence; see the module docstring.
+            return Evidence(EXPIRED_UNCONFIRMED, 0, "NOT_FOUND_AFTER_EXPIRY_NO_FILLS", sha)
         client_kind = client_lookup.get("kind") if isinstance(client_lookup, Mapping) else None
         if (order.state == UNKNOWN and client_kind == "NOT_FOUND" and order.last_send_at is not None
                 and now - order.last_send_at >= ABSENT_SETTLE_SECONDS):
@@ -237,6 +292,51 @@ def evidence_from_exchange(order: Order, *, lookup: Mapping[str, Any] | None,
             return Evidence(SIGNED, 0, "RECONCILED_ABSENT", sha)
         return none("EVIDENCE_NOT_FOUND_INCONCLUSIVE")
     return none("EVIDENCE_LOOKUP_ERROR")
+
+
+def _own_fill_sum(order: Order, fills: Mapping[str, Any] | None) -> int | None:
+    """Sum of fillAmount over a COMPLETE fills list that belongs entirely to this order; FAILED fills do
+    not count. Anything malformed, foreign, of unknown status or incomplete => None (learn nothing)."""
+    if fills is None or fills.get("complete") is not True:
+        return None
+    total = 0
+    for f in fills["fills"]:
+        if not isinstance(f, Mapping) or not isinstance(f.get("orderId"), str) \
+                or f["orderId"].lower() != order.order_id or f.get("status") not in _FILL_STATUSES:
+            return None
+        amount = _dec(f.get("fillAmount"))
+        if amount is None:
+            return None
+        if f["status"] in _COUNTED_FILL_STATUSES:
+            total += amount
+    return total
+
+
+def _not_found_after_expiry(order: Order, fills: Mapping[str, Any] | None, now: int, sha: str) -> Evidence:
+    """404 for an order already EXPIRED_UNCONFIRMED / EXPIRED / CANCELLED: only fills can teach something."""
+    none = Evidence(None, None, "EVIDENCE_NOT_FOUND_INCONCLUSIVE", sha)
+    total = _own_fill_sum(order, fills)
+    if total is None or total > order.stake or total < order.filled:
+        return none
+    if total > order.filled:
+        # A late fill is recorded (and counted), never dropped.
+        target = order.state
+        if order.state == EXPIRED_UNCONFIRMED and total == order.stake:
+            target = FILLED
+        return Evidence(target, total, "LATE_FILL_AFTER_EXPIRY", sha)
+    if order.state == EXPIRED_UNCONFIRMED:
+        if order.unconfirmed_since is not None and now >= order.unconfirmed_since + EXPIRY_CONFIRM_SECONDS:
+            pnl = _settlement_pnl(order, fills["fills"], total) if total else None
+            # Same exchange bytes as the first observation, so a distinct evidence id (the dedupe in
+            # apply_evidence would otherwise ignore the confirming re-observation).
+            confirm_sha = "sha256:" + hashlib.sha256(("CONFIRM_AFTER_WINDOW|" + sha).encode("ascii")).hexdigest()
+            return Evidence(EXPIRED, total, "NOT_FOUND_CONFIRMED_AFTER_WINDOW", confirm_sha, pnl)
+        return Evidence(None, None, "NOT_FOUND_EXPIRY_UNCONFIRMED", sha)
+    if order.filled:
+        pnl = _settlement_pnl(order, fills["fills"], total)
+        if pnl is not None:
+            return Evidence(order.state, total, "EXCHANGE_FILLS_SETTLED", sha, pnl)
+    return none
 
 
 def _settlement_pnl(order: Order, rows: list, filled: int) -> int | None:
@@ -274,13 +374,20 @@ class OrderLedger:
         self._nonces: set[str] = set()
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
-        if _create:
-            if os.path.exists(path):
-                raise LedgerError("LEDGER_ALREADY_EXISTS")
-            self._append({"kind": "GENESIS", "schema": LEDGER_SCHEMA, "signer_id": signer_id,
-                          "signer_address": self.signer_address}, exclusive=True)
-        else:
-            self._replay()
+        self._fd: int | None = None
+        self._size = 0              # bytes this instance knows are in the file
+        self._last_line = b""       # last line (with "\n"), hash == self._prev
+        self._poisoned = False
+        self._fd = self._open_locked(path, create=_create)
+        try:
+            if _create:
+                self._append({"kind": "GENESIS", "schema": LEDGER_SCHEMA, "signer_id": signer_id,
+                              "signer_address": self.signer_address})
+            else:
+                self._replay()
+        except BaseException:
+            self.close()
+            raise
 
     # ---- construction (explicit: a missing ledger never means "start from zero") ----
     @classmethod
@@ -293,40 +400,143 @@ class OrderLedger:
              clock: Callable[[], float] = time.time) -> "OrderLedger":
         return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock)
 
+    @staticmethod
+    def _open_locked(path: str, *, create: bool) -> int:
+        flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(path, flags | (os.O_CREAT | os.O_EXCL if create else 0), 0o600)
+        except FileExistsError:
+            raise LedgerError("LEDGER_ALREADY_EXISTS") from None
+        except FileNotFoundError:
+            raise LedgerError("LEDGER_MISSING") from None
+        except OSError:
+            raise LedgerError("LEDGER_UNREADABLE") from None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise LedgerError("LEDGER_LOCKED") from None  # another instance (any process) owns this ledger
+        return fd
+
+    def close(self) -> None:
+        """Release the file lock. The instance refuses every later write (LEDGER_CLOSED)."""
+        with self._lock:
+            fd, self._fd = self._fd, None
+            if fd is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+    def __enter__(self) -> "OrderLedger":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    @property
+    def poisoned(self) -> bool:
+        return self._poisoned
+
     # ---- persistence ----
-    def _append(self, rec: dict[str, Any], *, exclusive: bool = False) -> dict[str, Any]:
+    def _writable(self) -> None:
+        if self._fd is None:
+            raise LedgerError("LEDGER_CLOSED")
+        if self._poisoned:
+            raise LedgerError("LEDGER_POISONED")
+
+    def _check_head(self) -> None:
+        """The file must still be exactly what this instance wrote: same inode, same size, same last line."""
+        try:
+            st = os.fstat(self._fd)
+            on_disk = os.stat(self._path)
+            same = (st.st_dev, st.st_ino) == (on_disk.st_dev, on_disk.st_ino) and st.st_size == self._size
+            if same and self._last_line:
+                n = len(self._last_line)
+                same = os.pread(self._fd, n, self._size - n) == self._last_line
+        except OSError:
+            same = False
+        if not same:
+            self._poisoned = True
+            raise LedgerError("LEDGER_HEAD_MISMATCH")
+
+    def _append(self, rec: dict[str, Any]) -> dict[str, Any]:
+        """Write ONE fsync'd line. Any failure from here on poisons the instance (no further writes
+        until restart + replay), because the file and the in-memory state may now disagree."""
+        self._writable()
+        self._check_head()
         rec = {"ts": int(self._clock()), "prev_sha256": self._prev, **rec}
         line = _canon(rec)
-        with open(self._path, "x" if exclusive else "a", encoding="ascii") as fh:
-            fh.write(line + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        data = (line + "\n").encode("ascii")
+        try:
+            view = memoryview(data)
+            while view:
+                n = os.write(self._fd, view)
+                if n <= 0:
+                    raise OSError("LEDGER_SHORT_WRITE")
+                view = view[n:]
+            os.fsync(self._fd)
+        except Exception:
+            self._poisoned = True
+            raise LedgerError("LEDGER_WRITE_FAILED") from None
+        except BaseException:
+            self._poisoned = True
+            raise
+        self._size += len(data)
+        self._last_line = data
         self._prev = _line_hash(line)
         return rec
 
-    def _lines(self) -> Iterator[tuple[str, dict[str, Any]]]:
-        if not os.path.exists(self._path):
-            raise LedgerError("LEDGER_MISSING")
-        with open(self._path, encoding="ascii") as fh:
-            for line in fh:
-                line = line.rstrip("\n")
-                if not line:
-                    raise LedgerError("LEDGER_CORRUPT")
+    def _commit(self, rec: dict[str, Any]) -> None:
+        """Append + apply; if applying a written line fails, the instance is poisoned."""
+        written = self._append(rec)
+        try:
+            self._apply(written)
+        except Exception:
+            self._poisoned = True
+            raise LedgerError("LEDGER_APPLY_FAILED") from None
+        except BaseException:
+            self._poisoned = True
+            raise
+
+    def _read_all(self) -> bytes:
+        size = os.fstat(self._fd).st_size
+        chunks, off = [], 0
+        while off < size:
+            chunk = os.pread(self._fd, min(1 << 20, size - off), off)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            off += len(chunk)
+        return b"".join(chunks)
+
+    def _replay(self) -> None:
+        prev, first, last = GENESIS_PREV, True, b""
+        try:
+            data = self._read_all()
+        except OSError:
+            raise LedgerError("LEDGER_UNREADABLE") from None
+        if data and not data.endswith(b"\n"):
+            raise LedgerError("LEDGER_CORRUPT")  # torn last line
+        try:
+            for raw in data.split(b"\n")[:-1] if data else []:
                 try:
-                    rec = json.loads(line)
+                    line = raw.decode("ascii")
+                    rec = json.loads(line) if line else None
                 except ValueError:
                     raise LedgerError("LEDGER_CORRUPT") from None
                 if not isinstance(rec, dict):
                     raise LedgerError("LEDGER_CORRUPT")
-                yield line, rec
-
-    def _replay(self) -> None:
-        prev, first = GENESIS_PREV, True
-        try:
-            for line, rec in self._lines():
                 if rec.get("prev_sha256") != prev:
                     raise LedgerError("LEDGER_CHAIN_BROKEN")
                 prev = _line_hash(line)
+                last = raw + b"\n"
                 if first:
                     first = False
                     if rec.get("kind") != "GENESIS" or rec.get("schema") != LEDGER_SCHEMA:
@@ -339,7 +549,7 @@ class OrderLedger:
             raise LedgerError("LEDGER_CORRUPT") from None
         if first:
             raise LedgerError("LEDGER_EMPTY")
-        self._prev = prev
+        self._prev, self._size, self._last_line = prev, len(data), last
 
     def _apply(self, rec: Mapping[str, Any]) -> None:
         kind = rec["kind"]
@@ -359,7 +569,9 @@ class OrderLedger:
                 raise OrderStateError("LEDGER_TRANSITION_FROM_MISMATCH")
             ev = rec.get("evidence_sha256")
             new = replace(new, evidence=o.evidence + ((ev,) if ev else ()),
-                          last_send_at=rec["ts"] if rec.get("reason") == "SEND_ATTEMPT" else new.last_send_at)
+                          last_send_at=rec["ts"] if rec.get("reason") == "SEND_ATTEMPT" else new.last_send_at,
+                          unconfirmed_since=(rec["ts"] if new.state == EXPIRED_UNCONFIRMED and
+                                             o.state != EXPIRED_UNCONFIRMED else new.unconfirmed_since))
             self._orders[o.client_order_id] = new
             if new.state == SETTLED:
                 self._settlements.append((int(rec["ts"]), int(new.realized_pnl)))
@@ -387,7 +599,7 @@ class OrderLedger:
             raise OrderStateError("UNFILLED_STATE_WITH_FILL")
         if to == o.state and f == o.filled:
             raise OrderStateError("NO_OP_TRANSITION")
-        return replace(o, state=to, filled=f)
+        return replace(o, state=to, filled=f, signature_released=o.signature_released or to == SIGNED)
 
     # ---- reads ----
     def get(self, client_order_id: str) -> Order | None:
@@ -413,16 +625,21 @@ class OrderLedger:
 
     def exposure(self) -> ExposureView:
         with self._lock:
+            now = int(self._clock())
             by_market: dict[str, int] = {}
             by_event: dict[str, int] = {}
+            total = reserved = matched = open_orders = 0
             for o in self._orders.values():
-                if o.exposure:
-                    by_market[o.market_hash] = by_market.get(o.market_hash, 0) + o.exposure
-                    by_event[o.event_id] = by_event.get(o.event_id, 0) + o.exposure
-            os_ = self._orders.values()
-            return ExposureView(total=sum(o.exposure for o in os_), reserved_unmatched=sum(o.reserved for o in os_),
-                                matched=sum(o.matched for o in os_), by_market=by_market, by_event=by_event,
-                                open_orders=sum(1 for o in os_ if o.state in OPEN_ORDER_STATES),
+                r, m = o.reserved_at(now), o.matched
+                if r + m:
+                    by_market[o.market_hash] = by_market.get(o.market_hash, 0) + r + m
+                    by_event[o.event_id] = by_event.get(o.event_id, 0) + r + m
+                total += r + m
+                reserved += r
+                matched += m
+                open_orders += 1 if o.is_open_at(now) else 0
+            return ExposureView(total=total, reserved_unmatched=reserved, matched=matched, by_market=by_market,
+                                by_event=by_event, open_orders=open_orders,
                                 realized_pnl_since=self.realized_pnl_since)
 
     # ---- writes ----
@@ -437,6 +654,7 @@ class OrderLedger:
                 and type(expiry) is int):
             raise OrderStateError("AUTHORIZE_FIELDS_INVALID")
         with self._lock:
+            self._writable()
             if approval_nonce in self._nonces:
                 raise OrderStateError("APPROVAL_NONCE_REPLAYED")
             if client_order_id in self._orders:
@@ -448,7 +666,7 @@ class OrderLedger:
             rec = {"kind": "AUTHORIZE", "client_order_id": client_order_id, "intent_hash": intent_hash,
                    "order_id": order_id, "market_hash": market_hash, "event_id": event_id, "stake": str(stake),
                    "expiry": expiry, "approval_nonce": approval_nonce}
-            self._apply(self._append(rec))
+            self._commit(rec)
             return self._orders[client_order_id]
 
     def transition(self, client_order_id: str, to: str, *, reason: str, filled: int | None = None,
@@ -456,6 +674,7 @@ class OrderLedger:
         if not _REASON.fullmatch(reason or ""):
             raise OrderStateError("REASON_INVALID")
         with self._lock:
+            self._writable()
             o = self._orders.get(client_order_id)
             if o is None:
                 raise OrderStateError("ORDER_NOT_FOUND")
@@ -466,7 +685,7 @@ class OrderLedger:
                 rec["realized_pnl"] = realized_pnl
             if evidence_sha256 is not None:
                 rec["evidence_sha256"] = evidence_sha256
-            self._apply(self._append(rec))
+            self._commit(rec)
             return self._orders[client_order_id]
 
     def apply_evidence(self, client_order_id: str, evidence: Evidence) -> Order:

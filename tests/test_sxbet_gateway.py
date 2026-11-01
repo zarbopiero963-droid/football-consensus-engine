@@ -82,14 +82,15 @@ def enabled_flag(tmp_path, owner, **kw):
                                      signer_id=SIGNER_ID, network="mainnet", now=NOW)
 
 
-def setup(tmp_path, throwaway, owner, clock=None, key="order-key-G001"):
+def setup(tmp_path, throwaway, owner, clock=None, key="order-key-G001", flag_kw=None):
     clock = clock or Clock()
     s = make_signer(tmp_path, throwaway, owner, clock=clock)
     i = make_intent(throwaway[0].address, idempotency_key=key)
     signed = s.sign_order(i, approve(owner, i), context(i))
     t = FakeTransport()
     t.expected_id = signed["order_id"]
-    g = gw.SubmissionGateway(enabled_flag(tmp_path, owner), transport=t, ledger=s._ledger,
+    g = gw.SubmissionGateway(enabled_flag(tmp_path, owner, **(flag_kw or {})), owner_public_key=owner.public_key(),
+                             transport=t, ledger=s._ledger,
                              audit=AuditLog(str(tmp_path / "gw-audit.jsonl")), odds_ladder_step_size=125,
                              network="mainnet", clock=clock)
     return s, i, signed, t, g, clock
@@ -109,8 +110,9 @@ def row(oid, status, remaining, reason=None, total=5_000_000):
 # ---------------------------------------------------------------- disabled by default
 def test_default_construction_refuses(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
-    kw = dict(transport=FakeTransport(), ledger=s._ledger, audit=AuditLog(str(tmp_path / "a")),
-              odds_ladder_step_size=125, network="mainnet")
+    kw = dict(owner_public_key=owner.public_key(), transport=FakeTransport(), ledger=s._ledger,
+              audit=AuditLog(str(tmp_path / "a")), odds_ladder_step_size=125, network="mainnet",
+              clock=lambda: NOW)
     with pytest.raises(gw.GatewayDisabled):
         gw.SubmissionGateway(gw.DISABLED, **kw)
     with pytest.raises(gw.GatewayDisabled):
@@ -252,7 +254,9 @@ def test_reply_classification_fails_closed(tmp_path, throwaway, owner, reply, st
     assert out["state"] == state
     o = s._ledger.get(i["idempotency_key"])
     assert o.state == state
-    assert s.committed_exposure_base_units == (0 if state == od.REJECTED else 5_000_000)
+    # M3 (intentional change): a REJECTED reply after the signature was released keeps the stake
+    # reserved until the order's expiry has passed; see test_m3_http_400_after_signature_...
+    assert s.committed_exposure_base_units == 5_000_000
 
 
 def test_failed_row_is_rejected(tmp_path, throwaway, owner):
@@ -342,3 +346,69 @@ def test_gateway_audit_is_allowlisted_and_has_no_signature(tmp_path, throwaway, 
     assert signed["order"]["orderSignature"][2:30] not in text
     assert throwaway[1].removeprefix("0x") not in text.lower()
     assert [json.loads(l)["decision"] for l in text.splitlines()] == [od.SUBMITTED]
+
+
+# ================================================================ review fixes (M3, M4)
+def test_m3_http_400_after_signature_keeps_stake_reserved_until_expiry(tmp_path, throwaway, owner):
+    s, i, signed, t, g, clock = setup(tmp_path, throwaway, owner)
+    t.replies = [{"http_status": 400, "body": {"message": "PROXY_NOT_DEPLOYED"}}]
+    assert g.submit(signed, i)["state"] == od.REJECTED
+    # The signed order is still postable by whoever holds it until it expires.
+    assert s.committed_exposure_base_units == 5_000_000
+    clock.t = i["expiry"] + od.EXPIRY_GRACE_SECONDS + 1
+    assert s.committed_exposure_base_units == 0
+
+
+def test_m4_flag_cannot_be_constructed_directly():
+    with pytest.raises(gw.GatewayDisabled):
+        gw.LiveTradingFlag(True, "OWNER_SIGNED", SIGNER_ID, "mainnet", NOW + 3600)
+
+
+def test_m4_expired_flag_refuses_submit(tmp_path, throwaway, owner):
+    s, i, signed, t, g, clock = setup(tmp_path, throwaway, owner, flag_kw={"expires": NOW + 600})
+    clock.t = NOW + 600
+    with pytest.raises(gw.GatewayRefused) as e:
+        g.submit(signed, i)
+    assert e.value.code == "LIVE_TRADING_FLAG_EXPIRED"
+    assert t.sent == [] and s._ledger.get(i["idempotency_key"]).state == od.SIGNED
+    # Reconciliation is read-only and keeps working after the flag expired.
+    assert g.reconcile(i["idempotency_key"])["state"] == od.SIGNED
+
+
+def test_m4_gateway_reverifies_owner_signature_and_ignores_attributes(tmp_path, throwaway, owner):
+    s, i, signed, t, g, clock = setup(tmp_path, throwaway, owner, flag_kw={"expires": NOW + 600})
+    flag = g._flag
+    # Constructed with another owner key: the flag's signature does not verify.
+    kw = dict(transport=t, ledger=s._ledger, audit=AuditLog(str(tmp_path / "a2")), odds_ladder_step_size=125,
+              network="mainnet", clock=clock)
+    with pytest.raises(gw.GatewayDisabled, match="LIVE_TRADING_FLAG_SIGNATURE_INVALID"):
+        gw.SubmissionGateway(flag, owner_public_key=Ed25519PrivateKey.generate().public_key(), **kw)
+    with pytest.raises(gw.GatewayDisabled, match="LIVE_TRADING_OWNER_KEY_INVALID"):
+        gw.SubmissionGateway(flag, owner_public_key=b"\x00" * 32, **kw)
+    with pytest.raises(AttributeError):
+        flag.enabled = True
+    # Bytes edited in place (bypassing the immutability guard) to extend the expiry: refused on submit.
+    body = json.loads(flag._message)
+    body["expires_at"] = NOW + 3000
+    object.__setattr__(flag, "_message", json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    clock.t = NOW + 700
+    with pytest.raises(gw.GatewayRefused) as e:
+        g.submit(signed, i)
+    assert e.value.code == "LIVE_TRADING_FLAG_SIGNATURE_INVALID" and t.sent == []
+
+
+def test_m4_expired_flag_refuses_construction(tmp_path, throwaway, owner):
+    s = make_signer(tmp_path, throwaway, owner)
+    flag = enabled_flag(tmp_path, owner, expires=NOW + 60)
+    with pytest.raises(gw.GatewayDisabled, match="LIVE_TRADING_FLAG_EXPIRED"):
+        gw.SubmissionGateway(flag, owner_public_key=owner.public_key(), transport=FakeTransport(), ledger=s._ledger,
+                             audit=AuditLog(str(tmp_path / "a")), odds_ladder_step_size=125, network="mainnet",
+                             clock=lambda: NOW + 60)
+
+
+def test_l3_poisoned_ledger_refuses_send_before_anything_is_sent(tmp_path, throwaway, owner):
+    s, i, signed, t, g, clock = setup(tmp_path, throwaway, owner)
+    s._ledger._poisoned = True
+    with pytest.raises(gw.GatewayRefused) as e:
+        g.submit(signed, i)
+    assert e.value.code == "LEDGER_POISONED" and t.sent == []

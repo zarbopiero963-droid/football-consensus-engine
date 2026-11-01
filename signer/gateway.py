@@ -6,9 +6,21 @@ holds a key; it only forwards an already signed order after checking it is
 exactly the approved one, and it reconciles state from exchange reads.
 
 Activation: `SubmissionGateway(...)` refuses to construct unless it receives a
-`LiveTradingFlag` with enabled=True, and such a flag can only come from
-`load_live_trading_flag`, i.e. from an owner-signed (Ed25519) config bound to
-this signer_id and network, with a short expiry. Default: disabled.
+`LiveTradingFlag` produced by `load_live_trading_flag` from an owner-signed
+(Ed25519) config bound to this signer_id and network, with a short expiry.
+Default: disabled. What actually protects activation, stated precisely:
+- the flag carries the exact signed bytes and the owner's signature, and the
+  gateway RE-VERIFIES that signature with the owner public key it is given at
+  construction (from its own config, never from the flag), at construction and
+  on EVERY submit; enabled / signer_id / network / expires_at are read only
+  from those verified bytes, never from attributes a caller could change;
+- expiry is re-checked on every submit: once `now >= expires_at` every submit
+  is refused with LIVE_TRADING_FLAG_EXPIRED (read-only `reconcile` still works);
+- `LiveTradingFlag(...)` called directly raises GatewayDisabled: only this
+  module (via a private sentinel) builds one. This blocks accidental or naive
+  forging; it is NOT a security boundary against code running in the signer
+  process (Python has no private members). The boundary is the owner's Ed25519
+  private key, which never exists on the signer host.
 Governance §2.6 still applies on top: the owner alone sets the flag, and no
 MCP tool argument reaches this module (bridge/ never imports signer/).
 
@@ -28,6 +40,8 @@ string (Python sample) and the owner must confirm the format on testnet.
 Reply classification (fail closed):
 - 200, status "success", exactly one row, orderId == our order id, status SUBMITTED -> SUBMITTED
 - 200, one row for our order id with status FAILED, or HTTP 400 with an error `message` -> REJECTED
+  (the signature was released, so the ledger keeps the whole stake reserved until
+  the order's expiry + grace has passed: see signer/orders.py)
 - timeout, transport error, 401/403/5xx, malformed body, other order id -> UNKNOWN
   (UNKNOWN never means "not placed": capital stays reserved until reconciled).
 Write-ahead: SIGNED -> UNKNOWN(SEND_ATTEMPT) is persisted BEFORE the transport
@@ -43,7 +57,6 @@ import json
 import re
 import threading
 import time
-from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
 from cryptography.exceptions import InvalidSignature
@@ -53,7 +66,7 @@ from eth_account import Account
 from . import eip712
 from .audit import AuditLog
 from .intent import IntentInvalid, intent_hash, validate
-from .orders import (REJECTED, SIGNED, SUBMITTED, UNKNOWN, OrderLedger, OrderStateError,
+from .orders import (REJECTED, SIGNED, SUBMITTED, UNKNOWN, LedgerError, OrderLedger, OrderStateError,
                      evidence_from_exchange)
 
 LIVE_FLAG_DOMAIN = "sxbet.live_trading_flag.v1"
@@ -64,6 +77,8 @@ PAYLOAD_ORDER_KEYS = frozenset({"marketHash", "maker", "totalBetSize", "percenta
                                 "baseToken", "isMakerBettingOutcomeOne", "timeInForce", "orderSignature",
                                 "clientOrderId"})
 _HEX_SIG = re.compile(r"^[0-9a-f]{128}$")
+_FLAG_BODY_KEYS = frozenset({"live_trading", "signer_id", "network", "issued_at", "expires_at"})
+_SEAL = object()  # module-private: only this module constructs LiveTradingFlag (see module docstring)
 
 
 class GatewayDisabled(RuntimeError):
@@ -96,21 +111,91 @@ class SubmissionTransport(Protocol):
         """GET /fills-v3?orderId=: {"kind": "OK", "fills": [FillV3], "complete": bool} | {"kind": "ERROR"}."""
 
 
-@dataclass(frozen=True)
 class LiveTradingFlag:
-    enabled: bool
-    source: str
-    signer_id: str | None = None
-    network: str | None = None
-    expires_at: int | None = None
+    """Result of `load_live_trading_flag`. Not constructible directly (GatewayDisabled).
+
+    When enabled it carries the owner-signed bytes and signature; the gateway re-verifies them and
+    trusts nothing else in this object."""
+
+    __slots__ = ("enabled", "source", "_message", "_signature")
+
+    def __init__(self, *args: Any, _seal: object = None, _message: bytes = b"", _signature: bytes = b"",
+                 **kwargs: Any):
+        if _seal is not _SEAL or len(args) != 2 or kwargs:
+            raise GatewayDisabled("LIVE_TRADING_FLAG_NOT_FROM_OWNER_CONFIG")
+        enabled, source = args
+        object.__setattr__(self, "enabled", enabled is True)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "_message", bytes(_message))
+        object.__setattr__(self, "_signature", bytes(_signature))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("LiveTradingFlag is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("LiveTradingFlag is immutable")
+
+    def __reduce__(self):
+        raise TypeError("LiveTradingFlag cannot be serialised")
+
+    def _body(self) -> dict[str, Any]:
+        try:
+            body = json.loads(self._message.decode("ascii")) if self._message else {}
+        except ValueError:
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    @property
+    def signer_id(self) -> Any:
+        return self._body().get("signer_id")
+
+    @property
+    def network(self) -> Any:
+        return self._body().get("network")
+
+    @property
+    def expires_at(self) -> Any:
+        return self._body().get("expires_at")
+
+    def __repr__(self) -> str:
+        return f"LiveTradingFlag(enabled={self.enabled}, source={self.source!r}, expires_at={self.expires_at!r})"
 
 
-DISABLED = LiveTradingFlag(False, "DEFAULT_DISABLED")
+def _flag(enabled: bool, source: str, message: bytes = b"", signature: bytes = b"") -> LiveTradingFlag:
+    return LiveTradingFlag(enabled, source, _seal=_SEAL, _message=message, _signature=signature)
+
+
+DISABLED = _flag(False, "DEFAULT_DISABLED")
 
 
 def live_flag_message(body: Mapping[str, Any]) -> bytes:
     return json.dumps({"domain": LIVE_FLAG_DOMAIN, **dict(body)}, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True).encode("ascii")
+
+
+def _verified_flag_body(flag: Any, owner_public_key: Any, *, signer_id: str, network: str, now: int) -> str:
+    """'' if the flag's owner signature, binding and validity window all verify at `now`, else a fixed code."""
+    if not isinstance(flag, LiveTradingFlag) or flag.enabled is not True or flag.source != "OWNER_SIGNED":
+        return "LIVE_TRADING_DISABLED"
+    if not isinstance(owner_public_key, Ed25519PublicKey):
+        return "LIVE_TRADING_OWNER_KEY_INVALID"
+    try:
+        owner_public_key.verify(flag._signature, flag._message)
+    except (InvalidSignature, TypeError, ValueError):
+        return "LIVE_TRADING_FLAG_SIGNATURE_INVALID"
+    body = flag._body()
+    if body.get("domain") != LIVE_FLAG_DOMAIN or set(body) - {"domain"} != _FLAG_BODY_KEYS \
+            or live_flag_message({k: body[k] for k in _FLAG_BODY_KEYS}) != flag._message:
+        return "LIVE_TRADING_FLAG_SIGNATURE_INVALID"
+    if body["live_trading"] != "ENABLED" or body["signer_id"] != signer_id or body["network"] != network:
+        return "LIVE_TRADING_FLAG_NOT_FOR_THIS_SIGNER"
+    issued, expires = body["issued_at"], body["expires_at"]
+    if type(issued) is not int or type(expires) is not int or expires - issued > MAX_FLAG_TTL_SECONDS \
+            or issued >= expires or issued > now:
+        return "LIVE_TRADING_FLAG_TTL_INVALID"
+    if now >= expires:
+        return "LIVE_TRADING_FLAG_EXPIRED"
+    return ""
 
 
 def load_live_trading_flag(path: str | None, owner_public_key: Ed25519PublicKey, *, signer_id: str, network: str,
@@ -123,23 +208,25 @@ def load_live_trading_flag(path: str | None, owner_public_key: Ed25519PublicKey,
         with open(path, encoding="ascii") as fh:
             doc = json.load(fh)
     except (OSError, ValueError):
-        return LiveTradingFlag(False, "FLAG_UNREADABLE")
-    keys = {"live_trading", "signer_id", "network", "issued_at", "expires_at", "signature"}
+        return _flag(False, "FLAG_UNREADABLE")
+    keys = _FLAG_BODY_KEYS | {"signature"}
     if not isinstance(doc, dict) or set(doc) != keys or not isinstance(doc["signature"], str) \
             or not _HEX_SIG.fullmatch(doc["signature"]):
-        return LiveTradingFlag(False, "FLAG_MALFORMED")
-    body = {k: doc[k] for k in keys - {"signature"}}
+        return _flag(False, "FLAG_MALFORMED")
+    body = {k: doc[k] for k in _FLAG_BODY_KEYS}
     try:
-        owner_public_key.verify(bytes.fromhex(doc["signature"]), live_flag_message(body))
-    except InvalidSignature:
-        return LiveTradingFlag(False, "FLAG_SIGNATURE_INVALID")
+        message = live_flag_message(body)
+        signature = bytes.fromhex(doc["signature"])
+        owner_public_key.verify(signature, message)
+    except (InvalidSignature, TypeError, ValueError):
+        return _flag(False, "FLAG_SIGNATURE_INVALID")
     if doc["live_trading"] != "ENABLED" or doc["signer_id"] != signer_id or doc["network"] != network:
-        return LiveTradingFlag(False, "FLAG_NOT_FOR_THIS_SIGNER")
+        return _flag(False, "FLAG_NOT_FOR_THIS_SIGNER")
     if type(doc["issued_at"]) is not int or type(doc["expires_at"]) is not int \
             or not doc["issued_at"] <= now < doc["expires_at"] \
             or doc["expires_at"] - doc["issued_at"] > MAX_FLAG_TTL_SECONDS:
-        return LiveTradingFlag(False, "FLAG_EXPIRED_OR_TTL_INVALID")
-    return LiveTradingFlag(True, "OWNER_SIGNED", signer_id, network, doc["expires_at"])
+        return _flag(False, "FLAG_EXPIRED_OR_TTL_INVALID")
+    return _flag(True, "OWNER_SIGNED", message, signature)
 
 
 def classify_reply(reply: Any, order_id: str) -> tuple[str, str]:
@@ -166,13 +253,17 @@ def classify_reply(reply: Any, order_id: str) -> tuple[str, str]:
 
 
 class SubmissionGateway:
-    def __init__(self, flag: LiveTradingFlag, *, transport: SubmissionTransport, ledger: OrderLedger,
-                 audit: AuditLog, odds_ladder_step_size: int, network: str, clock: Callable[[], float] = time.time):
-        if not isinstance(flag, LiveTradingFlag) or flag.enabled is not True or flag.source != "OWNER_SIGNED":
+    def __init__(self, flag: LiveTradingFlag, *, owner_public_key: Ed25519PublicKey, transport: SubmissionTransport,
+                 ledger: OrderLedger, audit: AuditLog, odds_ladder_step_size: int, network: str,
+                 clock: Callable[[], float] = time.time):
+        if not isinstance(ledger, OrderLedger):
             raise GatewayDisabled("LIVE_TRADING_DISABLED")
-        if flag.signer_id != ledger.signer_id or flag.network != network:
-            raise GatewayDisabled("LIVE_TRADING_FLAG_NOT_FOR_THIS_SIGNER")
+        code = _verified_flag_body(flag, owner_public_key, signer_id=ledger.signer_id, network=network,
+                                   now=int(clock()))
+        if code:
+            raise GatewayDisabled(code)
         self._flag = flag
+        self._owner_key = owner_public_key
         self._transport = transport
         self._ledger = ledger
         self._audit = audit
@@ -221,6 +312,11 @@ class SubmissionGateway:
 
     def submit(self, signed: Mapping[str, Any], intent: Mapping[str, Any]) -> dict[str, Any]:
         with self._lock:
+            # Re-verified on every submit: owner signature over the flag bytes, binding, expiry.
+            code = _verified_flag_body(self._flag, self._owner_key, signer_id=self._ledger.signer_id,
+                                       network=self._network, now=int(self._clock()))
+            if code:
+                raise GatewayRefused(code)
             payload, o = self._verify(signed, intent)
             if o.state == UNKNOWN:
                 raise GatewayRefused("STATE_UNKNOWN_RECONCILE_FIRST")
@@ -233,7 +329,10 @@ class SubmissionGateway:
             if o.expiry < now + SEND_EXPIRY_MARGIN_SECONDS:
                 raise GatewayRefused("ORDER_EXPIRED_OR_TOO_SOON_NOT_SENT")
             # Write-ahead: a crash from here on leaves UNKNOWN, never "not placed".
-            o = self._ledger.transition(o.client_order_id, UNKNOWN, reason="SEND_ATTEMPT")
+            try:
+                o = self._ledger.transition(o.client_order_id, UNKNOWN, reason="SEND_ATTEMPT")
+            except LedgerError as exc:
+                raise GatewayRefused(exc.code) from None  # nothing was sent
             try:
                 reply = self._transport.submit_orders(payload)
             except TransportTimeout:
@@ -243,7 +342,12 @@ class SubmissionGateway:
             else:
                 state, reason = classify_reply(reply, o.order_id)
             if state != UNKNOWN:
-                o = self._ledger.transition(o.client_order_id, state, reason=reason)
+                try:
+                    o = self._ledger.transition(o.client_order_id, state, reason=reason)
+                except LedgerError as exc:
+                    # The ledger keeps UNKNOWN (write-ahead) and is poisoned: reconcile after restart.
+                    self._log(UNKNOWN, exc.code, o)
+                    raise GatewayRefused(exc.code) from None
             self._log(state, reason, o)
             return {"client_order_id": o.client_order_id, "order_id": o.order_id, "state": o.state,
                     "reason": reason, "sent": True}
@@ -260,6 +364,9 @@ class SubmissionGateway:
             ev = evidence_from_exchange(o, lookup=lookup, client_lookup=client, fills=fills, now=int(self._clock()))
             try:
                 new = self._ledger.apply_evidence(client_order_id, ev)
+            except LedgerError as exc:
+                self._log("EVIDENCE_NOT_RECORDED", exc.code, o)
+                raise GatewayRefused(exc.code) from None
             except OrderStateError as exc:
                 self._log("EVIDENCE_CONFLICT", exc.code, o)
                 return {"client_order_id": client_order_id, "state": o.state, "reason": exc.code, "changed": False}

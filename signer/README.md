@@ -52,6 +52,7 @@ Un testo in chat, in un output di tool o in una pagina web può essere scritto d
 
 ## Autorizzazione transazionale
 
+0. **Snapshot:** binding dell'approvazione e contesto di rischio vengono copiati in valori JSON semplici (dict/list/str/int/bool/None) prima di ogni verifica; da lì in poi si usa solo la copia. Un oggetto del chiamante modificato durante la firma non cambia ciò che è verificato o registrato. Un valore non semplice produce `APPROVAL_MALFORMED` o `RISK_CONTEXT_MALFORMED`.
 1. Verifica dell'approvazione senza consumo e controllo `nonce_consumed`.
 2. Il risk engine gira **dentro il lock del ledger**, sull'esposizione corrente.
 3. Solo se tutto passa viene scritta una riga `AUTHORIZE` (fsync) che consuma il nonce e riserva l'importo.
@@ -62,30 +63,40 @@ Ne seguono queste proprietà:
 - due richieste concorrenti con la stessa approvazione producono una sola firma;
 - un crash tra consumo e firma lascia l'ordine `AUTHORIZED` con il nonce consumato e nessuna firma emessa. Dopo il riavvio `Signer.abandon_unsigned(client_order_id)` lo porta a `REJECTED` e libera l'esposizione. È sicuro perché nessuna firma esce prima della riga `SIGNED`;
 - un fallimento della firma nel processo porta subito a `REJECTED` (`SIGNING_FAILED`);
+- se la riga `SIGNED` non si riesce a scrivere, la firma viene scartata e non esce (`LEDGER_WRITE_FAILED`): l'ordine resta `AUTHORIZED` e riservato;
 - due `client_order_id` con lo stesso digest EIP-712 sono rifiutati (`ORDER_ID_ALREADY_AUTHORIZED`).
 
 ## Stati degli ordini ed esposizione (`signer/orders.py`)
 
-Stati: `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Sono ammesse solo le transizioni di `TRANSITIONS`; ogni altra è `ILLEGAL_TRANSITION_*` e non viene scritta.
+Stati: `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `EXPIRED_UNCONFIRMED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Sono ammesse solo le transizioni di `TRANSITIONS`; ogni altra è `ILLEGAL_TRANSITION_*` e non viene scritta.
 
 | Stato | Riservato | Matched |
 |---|---|---|
 | `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `UNKNOWN` | importo − matched (cioè l'intero importo) | matched |
+| `EXPIRED_UNCONFIRMED` (404 dopo la scadenza, non è una prova) | importo − matched | matched |
 | `PARTIALLY_FILLED` | parte non eseguita, finché l'exchange non conferma cancel o scadenza | parte eseguita |
 | `FILLED`, `CANCELLED`, `EXPIRED` | 0 | parte eseguita, fino a `SETTLED` |
-| `SETTLED`, `REJECTED` | 0 | 0 (`SETTLED` registra il P&L realizzato) |
+| `REJECTED` **dopo** che la firma è uscita (`SIGNED` raggiunto: 400 all'invio, riga `FAILED`, `SIGNED → REJECTED` manuale) | l'intero importo finché `now ≤ expiry + 30 s`, poi 0 (conta anche come ordine aperto) | 0 |
+| `REJECTED` mai firmato (`SIGNING_FAILED`, `abandon_unsigned`), `SETTLED` | 0 | 0 (`SETTLED` registra il P&L realizzato) |
 
 - `UNKNOWN` (timeout, risposta ambigua, write-ahead prima di un invio) **non libera mai capitale** finché non è riconciliato con dati dell'exchange.
 - La riconciliazione usa `evidence_from_exchange`, con i campi OpenAPI di `GET /orders-v3/{orderId}` (`id`, `totalBetSize`, `remainingSize`, `status`, `inactiveReason`), di `GET /orders-v3/client/{clientOrderId}` e di `GET /fills-v3?orderId=` (`orderId`, `fillAmount`, `status`, `settlement.settleReturnAmount`).
   - `INACTIVE` con `FILLED` porta a `FILLED`, con `EXPIRED` a `EXPIRED`, con gli altri `inactiveReason` documentati a `CANCELLED`.
   - Un motivo o uno stato sconosciuto non insegna nulla.
   - Il settlement richiede fill completi, tutti `SETTLED` e con somma uguale al matched.
-- Un 404 prima della scadenza non dimostra nulla. Dopo la scadenza (più 30 s), un 404 con lista dei fill completa e vuota porta a `EXPIRED`.
+- Un 404 prima della scadenza non dimostra nulla. **Nemmeno dopo la scadenza un 404 libera da solo l'esposizione:** dopo la scadenza (più 30 s) un 404 con lista dei fill completa e vuota porta a `EXPIRED_UNCONFIRMED`, che **resta riservato**. Si passa a `EXPIRED` (rilascio) solo con:
+  - evidenza terminale positiva: la riga dell'exchange `INACTIVE` con un `inactiveReason` documentato (`EXPIRED`, `USER_REQUESTED`, …, che porta a `EXPIRED`/`CANCELLED`/`FILLED`);
+  - oppure lo stesso 404 con fill completi e somma uguale al matched registrato, osservato di nuovo almeno `EXPIRY_CONFIRM_SECONDS` (24 h) dopo la prima osservazione.
+- **Un fill tardivo non si perde mai:** in `EXPIRED_UNCONFIRMED`, `EXPIRED` o `CANCELLED` un fill nuovo (dalla riga dell'exchange o, con 404, da fill completi tutti di quest'ordine; i fill `FAILED` non contano) aumenta il matched con una auto-transizione, e `EXPIRED → FILLED` è ammesso. L'esposizione eseguita torna a essere contata dal risk engine.
 - Da `UNKNOWN` si torna a `SIGNED` (unico percorso verso un reinvio) solo con: 404 per id **e** per `clientOrderId`, fill vuoti e almeno 60 s dall'ultimo tentativo. Il reinvio usa **lo stesso ordine firmato e lo stesso `clientOrderId`**.
 - Evidenze duplicate o che non cambiano nulla non scrivono righe. Il matched non scende mai e non supera l'importo.
 - **Persistenza:** JSONL append-only, fsync per riga, hash chain, `GENESIS` legato a `signer_id` e indirizzo. Stato, nonce, idempotenza, esposizione e P&L si **ricostruiscono sempre** rileggendo il ledger e ripassando ogni riga dalla macchina a stati.
   - Un ledger mancante, vuoto, estraneo, manomesso o con una storia illegale (anche se re-hashata) genera `LedgerError`, e il signer non si avvia.
   - Un nuovo ledger si crea solo con `OrderLedger.create` esplicito, mai "partendo da zero" in silenzio.
+- **Un solo scrittore:** un `OrderLedger` tiene un `flock` esclusivo non bloccante sul file per tutta la sua vita (fino a `close()`). Una seconda istanza, nello stesso processo o in un altro, fallisce con `LEDGER_LOCKED`: due signer non possono accettare lo stesso nonce.
+  - Prima di ogni append l'istanza verifica che il file sia ancora quello bloccato (stesso inode), che abbia la dimensione che ha scritto e che termini con la riga il cui hash è la testa in memoria. Altrimenti (uno scrittore esterno che ignora il lock advisory, un file sostituito) `LEDGER_HEAD_MISMATCH`.
+  - Un append fallito o parziale, o una testa diversa, **avvelena** l'istanza: ogni scrittura successiva dà `LEDGER_POISONED` fino a riavvio e replay. Una riga finale troncata fa poi fallire il replay (`LEDGER_CORRUPT`) e richiede una decisione dell'owner.
+  - Limiti residui: il controllo prima dell'append legge solo dimensione e ultima riga (una riscrittura di righe precedenti a parità di dimensione si rileva al replay successivo); `flock` è advisory e locale, quindi il ledger deve stare su un filesystem locale dell'host del signer.
 
 ## Risk engine (`signer/risk.py`)
 
@@ -116,7 +127,10 @@ Il contesto di rischio è obbligatorio e ogni dato mancante produce un rifiuto (
 
 ## Gateway di invio (`signer/gateway.py`): disabilitato
 
-- `SubmissionGateway` si rifiuta di costruirsi senza un `LiveTradingFlag` con `source == "OWNER_SIGNED"`. Il flag si ottiene solo da `load_live_trading_flag`, cioè da un file firmato dall'owner, legato a `signer_id` e rete, con TTL ≤ 24 h. Il default è `DISABLED`.
+- `SubmissionGateway` si rifiuta di costruirsi senza un `LiveTradingFlag` prodotto da `load_live_trading_flag`, cioè da un file firmato dall'owner, legato a `signer_id` e rete, con TTL ≤ 24 h. Il default è `DISABLED`.
+  - Il flag contiene i byte firmati e la firma dell'owner. Il gateway **riverifica** la firma Ed25519 con la chiave pubblica dell'owner ricevuta alla costruzione (`owner_public_key`, dalla propria configurazione, mai dal flag), alla costruzione e **a ogni `submit`**. `enabled`, `signer_id`, rete e scadenza si leggono solo dai byte verificati.
+  - La scadenza si ricontrolla a ogni `submit`: da `now ≥ expires_at` ogni invio è rifiutato con `LIVE_TRADING_FLAG_EXPIRED` (la riconciliazione, in sola lettura, continua).
+  - `LiveTradingFlag(...)` chiamato direttamente solleva `GatewayDisabled`. Questo impedisce costruzioni accidentali o ingenue, ma **non** è un confine di sicurezza contro codice che gira nel processo del signer (Python non ha membri privati): il confine è la chiave privata Ed25519 dell'owner, che non esiste sull'host del signer.
 - Il trasporto è un `Protocol` astratto (`submit_orders`, `get_order`, `get_order_by_client_id`, `get_fills`). Nel repository **non esiste alcuna implementazione di rete**: i test usano un `FakeTransport` in memoria.
 - Il gateway verifica:
   - che l'intent rivalidato abbia lo stesso `intent_hash` e lo stesso order id;
@@ -127,7 +141,7 @@ Il contesto di rischio è obbligatorio e ogni dato mancante produce un rifiuto (
 - **Write-ahead:** `SIGNED → UNKNOWN(SEND_ATTEMPT)` è persistito prima della chiamata. Un crash durante l'invio lascia `UNKNOWN`, mai "non inviato".
 - Classificazione della risposta:
   - 200 con una riga `SUBMITTED` per il nostro id porta a `SUBMITTED`;
-  - 400 con `message`, oppure una riga `FAILED`, porta a `REJECTED`;
+  - 400 con `message`, oppure una riga `FAILED`, porta a `REJECTED`; poiché la firma è già uscita, l'importo resta riservato fino alla scadenza dell'ordine (più 30 s);
   - tutto il resto (timeout, errori, 401/403/5xx, body malformato, id diverso) porta a `UNKNOWN`.
 - **Idempotenza:**
   - lo stesso `clientOrderId` non esce mai due volte (fuori da `SIGNED` restituisce lo stato senza inviare);

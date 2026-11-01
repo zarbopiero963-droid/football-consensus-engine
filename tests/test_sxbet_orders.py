@@ -145,7 +145,8 @@ def test_expiry_from_exchange(led, clock):
     assert o.state == od.EXPIRED and led.exposure().total == 0
 
 
-def test_not_found_after_expiry_with_no_fills_releases(led, clock):
+def test_not_found_after_expiry_with_no_fills_does_not_release(led, clock):
+    """Intentional change (review M2): a 404 after expiry no longer releases the stake by itself."""
     authorize(led, expiry=NOW + 100)
     submitted(led)
     o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
@@ -153,7 +154,7 @@ def test_not_found_after_expiry_with_no_fills_releases(led, clock):
     clock.t = NOW + 100 + od.EXPIRY_GRACE_SECONDS + 1
     assert reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills(complete=False)).state == od.SUBMITTED
     o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
-    assert o.state == od.EXPIRED and led.exposure().total == 0
+    assert o.state == od.EXPIRED_UNCONFIRMED and led.exposure().total == STAKE
 
 
 @pytest.mark.parametrize("inactive_reason", ["NO_LIQUIDITY", "INSUFFICIENT_BALANCE", "EVENT_LIFECYCLE",
@@ -291,6 +292,7 @@ def test_restart_rebuilds_state_exposure_nonces_and_pnl(tmp_path, led, clock):
     led.transition("order-key-0002", od.UNKNOWN, reason="SEND_ATTEMPT")
     before = (led.exposure().total, led.exposure().matched, [(o.client_order_id, o.state, o.filled)
                                                              for o in led.orders()])
+    led.close()  # the previous process is gone (it held the exclusive file lock)
     r = reopen(tmp_path, clock)
     after = (r.exposure().total, r.exposure().matched, [(o.client_order_id, o.state, o.filled) for o in r.orders()])
     assert before == after and after[0] == 2 * STAKE
@@ -307,6 +309,7 @@ def test_tampered_ledger_refused(tmp_path, led, clock, tamper):
     authorize(led)
     submitted(led)
     reconcile(led, "order-key-0001", clock, row("INACTIVE", STAKE, "USER_REQUESTED"))
+    led.close()
     p = tmp_path / "ledger.jsonl"
     lines = p.read_text().splitlines()
     if tamper == "edit":
@@ -327,6 +330,7 @@ def test_tampered_ledger_refused(tmp_path, led, clock, tamper):
 def test_rechained_illegal_history_still_refused(tmp_path, led, clock):
     """Even a correctly re-hashed ledger is replayed through the state machine."""
     authorize(led)
+    led.close()
     p = tmp_path / "ledger.jsonl"
     rows = [json.loads(l) for l in p.read_text().splitlines()]
     rows.append({"kind": "TRANSITION", "client_order_id": "order-key-0001", "from": "AUTHORIZED", "to": "SETTLED",
@@ -345,7 +349,273 @@ def test_rechained_illegal_history_still_refused(tmp_path, led, clock):
 def test_states_and_transition_table_are_closed():
     assert set(od.TRANSITIONS) == od.STATES == {
         "PREPARED", "AUTHORIZED", "SIGNED", "SUBMITTED", "OPEN", "PARTIALLY_FILLED", "FILLED", "CANCELLED",
-        "EXPIRED", "SETTLED", "REJECTED", "UNKNOWN"}
+        "EXPIRED", "EXPIRED_UNCONFIRMED", "SETTLED", "REJECTED", "UNKNOWN"}
     assert all(t <= od.STATES for t in od.TRANSITIONS.values())
     assert od.TRANSITIONS[od.SETTLED] == od.TRANSITIONS[od.REJECTED] == frozenset()
     assert od.UNKNOWN in od.RESERVING  # UNKNOWN never releases capital
+    assert od.EXPIRED_UNCONFIRMED in od.RESERVING  # a 404 after expiry never releases capital by itself
+
+
+# ================================================================ review fixes (M1, M2, M3, L3)
+NONCE_X = "nonce-shared-000000X1"
+
+
+def _ledger_path(tmp_path):
+    return str(tmp_path / "ledger.jsonl")
+
+
+# ---------------------------------------------------------------- M1: one writer per ledger file
+def test_m1_second_instance_on_same_file_is_refused(tmp_path, led, clock):
+    with pytest.raises(LedgerError) as e:
+        reopen(tmp_path, clock)
+    assert e.value.code == "LEDGER_LOCKED"
+
+
+def test_m1_two_instances_never_both_accept_the_same_nonce(tmp_path, led, clock):
+    accepted = 0
+    try:
+        other = reopen(tmp_path, clock)
+    except LedgerError as e:
+        assert e.code == "LEDGER_LOCKED"
+        other = None
+    authorize(led, nonce=NONCE_X)
+    accepted += 1
+    if other is not None:
+        try:
+            authorize(other, key="order-key-0002", oid="0x" + "78" * 32, nonce=NONCE_X)
+            accepted += 1
+        except (LedgerError, OrderStateError):
+            pass
+    assert accepted == 1
+    rows = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    assert sum(1 for r in rows if r.get("approval_nonce") == NONCE_X) == 1
+
+
+_CHILD = r"""
+import sys
+from signer.orders import LedgerError, OrderLedger
+mode, path, addr = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    led = OrderLedger.open(path, signer_id="signer-test-1", signer_address=addr, clock=lambda: 1800000000)
+except LedgerError as e:
+    print(e.code, flush=True)
+    sys.exit(0)
+print("OPENED", flush=True)
+if mode == "hold":
+    sys.stdin.readline()
+"""
+
+
+def _child(mode, path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = str(Path(__file__).resolve().parents[1])
+    env = {k: v for k, v in os.environ.items() if k not in ("RENDER", "DATABASE_URL")}
+    env.update(SXBET_SIGNER_PROCESS="1", PYTHONPATH=root)
+    return subprocess.Popen([sys.executable, "-c", _CHILD, mode, path, ADDR], cwd=root, env=env,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+
+def test_m1_other_process_cannot_open_a_held_ledger(tmp_path, led):
+    p = _child("probe", _ledger_path(tmp_path))
+    out, _ = p.communicate(timeout=60)
+    assert out.strip() == "LEDGER_LOCKED"
+
+
+def test_m1_ledger_held_by_other_process_refused_here(tmp_path, led, clock):
+    led.close()
+    p = _child("hold", _ledger_path(tmp_path))
+    try:
+        assert p.stdout.readline().strip() == "OPENED"
+        with pytest.raises(LedgerError) as e:
+            reopen(tmp_path, clock)
+        assert e.value.code == "LEDGER_LOCKED"
+    finally:
+        p.communicate("\n", timeout=60)
+    reopen(tmp_path, clock).close()  # released when the other process exits
+
+
+def test_m1_external_writer_detected_before_append(tmp_path, led, clock):
+    """A writer that ignores the lock appends a valid, chained AUTHORIZE: the next append fails closed."""
+    authorize(led)
+    p = tmp_path / "ledger.jsonl"
+    last = p.read_text().splitlines()[-1]
+    forged = {"kind": "AUTHORIZE", "client_order_id": "order-key-EXT1", "intent_hash": "sha256:" + "2" * 64,
+              "order_id": "0x" + "78" * 32, "market_hash": MKT, "event_id": "L1", "stake": "1",
+              "expiry": NOW + 3600, "approval_nonce": NONCE_X, "ts": NOW, "prev_sha256": od._line_hash(last)}
+    with open(p, "a", encoding="ascii") as fh:
+        fh.write(od._canon(forged) + "\n")
+    with pytest.raises(LedgerError) as e:
+        authorize(led, key="order-key-0002", oid="0x" + "79" * 32, nonce=NONCE_X)
+    assert e.value.code == "LEDGER_HEAD_MISMATCH"
+    rows = [json.loads(l) for l in p.read_text().splitlines()]
+    assert sum(1 for r in rows if r.get("approval_nonce") == NONCE_X) == 1
+    # Poisoned: refuses every further write until restart + replay.
+    with pytest.raises(LedgerError) as e:
+        led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    assert e.value.code == "LEDGER_POISONED"
+
+
+def test_m1_replaced_file_detected(tmp_path, led, clock):
+    authorize(led)
+    p = tmp_path / "ledger.jsonl"
+    text = p.read_text()
+    p.unlink()
+    p.write_text(text)  # same bytes, different inode: our lock no longer covers the path
+    with pytest.raises(LedgerError) as e:
+        led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    assert e.value.code == "LEDGER_HEAD_MISMATCH"
+
+
+def test_m1_closed_ledger_refuses_writes_and_releases_lock(tmp_path, led, clock):
+    led.close()
+    with pytest.raises(LedgerError) as e:
+        authorize(led)
+    assert e.value.code == "LEDGER_CLOSED"
+    reopen(tmp_path, clock).close()
+
+
+# ---------------------------------------------------------------- M2: 404 after expiry is not proof
+def test_m2_not_found_after_expiry_keeps_reservation(led, clock):
+    authorize(led, expiry=NOW + 100)
+    submitted(led)
+    clock.t = NOW + 100 + od.EXPIRY_GRACE_SECONDS + 1
+    o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
+    assert o.state == od.EXPIRED_UNCONFIRMED
+    assert led.exposure().total == STAKE and led.exposure().reserved_unmatched == STAKE
+
+
+def test_m2_late_fill_after_404_heuristic_is_recorded_and_counted(led, clock):
+    authorize(led, expiry=NOW + 100)
+    submitted(led)
+    clock.t = NOW + 100 + od.EXPIRY_GRACE_SECONDS + 1
+    reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
+    # The exchange later shows the order expired with 2_000_000 matched.
+    clock.t += 600
+    o = reconcile(led, "order-key-0001", clock, row("INACTIVE", STAKE - 2_000_000, "EXPIRED"))
+    assert o.state == od.EXPIRED and o.filled == 2_000_000
+    v = led.exposure()
+    assert (v.matched, v.reserved_unmatched, v.total) == (2_000_000, 0, 2_000_000)
+
+
+def test_m2_late_fill_seen_only_in_fills_while_order_404(led, clock):
+    authorize(led, expiry=NOW + 100)
+    submitted(led)
+    clock.t = NOW + 100 + od.EXPIRY_GRACE_SECONDS + 1
+    reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
+    clock.t += 60
+    o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills(fill(2_000_000, status="MATCHED")))
+    assert o.state == od.EXPIRED_UNCONFIRMED and o.filled == 2_000_000
+    v = led.exposure()
+    assert (v.matched, v.reserved_unmatched, v.total) == (2_000_000, 3_000_000, STAKE)
+    # Fills that disagree (fewer, foreign, unknown status, incomplete) learn nothing.
+    for bad in (fills(fill(1_000_000, status="MATCHED")), fills(fill(2_000_000, oid="0x" + "99" * 32)),
+                fills(fill(2_000_000, status="WEIRD")), fills(fill(3_000_000, status="MATCHED"), complete=False)):
+        assert reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, bad).filled == 2_000_000
+
+
+def test_m2_release_only_after_confirmation_window_and_late_fill_still_counted(led, clock):
+    authorize(led, expiry=NOW + 100)
+    submitted(led)
+    first = NOW + 100 + od.EXPIRY_GRACE_SECONDS + 1
+    clock.t = first
+    reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
+    clock.t = first + od.EXPIRY_CONFIRM_SECONDS - 1
+    assert reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills()).state == od.EXPIRED_UNCONFIRMED
+    assert led.exposure().total == STAKE
+    clock.t = first + od.EXPIRY_CONFIRM_SECONDS
+    assert reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills(complete=False)).state \
+        == od.EXPIRED_UNCONFIRMED
+    o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
+    assert o.state == od.EXPIRED and led.exposure().total == 0
+    # Even after the release, a later fill is recorded (not dropped as a conflict) and counted again.
+    o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills(fill(1_000_000, status="LOCKED")))
+    assert o.state == od.EXPIRED and o.filled == 1_000_000 and led.exposure().matched == 1_000_000
+    o = reconcile(led, "order-key-0001", clock, row("INACTIVE", STAKE - 1_500_000, "EXPIRED"))
+    assert o.filled == 1_500_000 and led.exposure().total == 1_500_000
+
+
+def test_m2_unconfirmed_state_survives_restart(tmp_path, led, clock):
+    authorize(led, expiry=NOW + 100)
+    submitted(led)
+    clock.t = NOW + 100 + od.EXPIRY_GRACE_SECONDS + 1
+    reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills())
+    led.close()
+    r = reopen(tmp_path, clock)
+    o = r.get("order-key-0001")
+    assert o.state == od.EXPIRED_UNCONFIRMED and o.unconfirmed_since == clock.t and r.exposure().total == STAKE
+
+
+# ---------------------------------------------------------------- M3: a released signature keeps its stake
+def test_m3_rejected_after_signed_keeps_reservation_until_expiry(led, clock):
+    authorize(led, expiry=NOW + 600)
+    led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    led.transition("order-key-0001", od.REJECTED, reason="MANUAL")
+    v = led.exposure()
+    assert v.total == STAKE and v.reserved_unmatched == STAKE and v.open_orders == 1
+    assert v.by_market == {MKT: STAKE}
+    clock.t = NOW + 600 + od.EXPIRY_GRACE_SECONDS
+    assert led.exposure().total == STAKE
+    clock.t += 1
+    assert led.exposure().total == 0 and led.exposure().open_orders == 0
+
+
+def test_m3_rejected_after_unknown_keeps_reservation(tmp_path, led, clock):
+    authorize(led, expiry=NOW + 600)
+    led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    led.transition("order-key-0001", od.UNKNOWN, reason="SEND_ATTEMPT")
+    led.transition("order-key-0001", od.REJECTED, reason="EXCHANGE_REJECTED_400")
+    assert led.exposure().total == STAKE
+    led.close()
+    assert reopen(tmp_path, clock).exposure().total == STAKE  # rebuilt from the ledger
+
+
+def test_m3_never_signed_rejection_releases_at_once(led):
+    authorize(led)
+    led.transition("order-key-0001", od.REJECTED, reason="SIGNING_FAILED")
+    assert led.exposure().total == 0
+
+
+# ---------------------------------------------------------------- L3: a failed append poisons the instance
+def test_l3_fsync_failure_poisons_until_restart(tmp_path, led, clock, monkeypatch):
+    authorize(led)
+
+    def broken(fd):
+        raise OSError("disk")
+
+    monkeypatch.setattr(od.os, "fsync", broken)
+    with pytest.raises(LedgerError, match="LEDGER_WRITE_FAILED"):
+        led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    monkeypatch.undo()
+    with pytest.raises(LedgerError) as e:
+        authorize(led, key="order-key-0002", oid="0x" + "78" * 32, nonce="nonce-0000000000000002")
+    assert e.value.code == "LEDGER_POISONED"
+    with pytest.raises(LedgerError):
+        led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    led.close()
+    r = reopen(tmp_path, clock)  # restart + replay: the fully written line is part of the history
+    assert r.get("order-key-0001").state == od.SIGNED
+    authorize(r, key="order-key-0002", oid="0x" + "78" * 32, nonce="nonce-0000000000000002")
+
+
+def test_l3_torn_write_poisons_and_restart_fails_closed(tmp_path, led, clock, monkeypatch):
+    authorize(led)
+    real = od.os.write
+
+    def torn(fd, data):
+        real(fd, data[: len(data) // 2])
+        raise OSError("disk full")
+
+    monkeypatch.setattr(od.os, "write", torn)
+    with pytest.raises(LedgerError, match="LEDGER_WRITE_FAILED"):
+        led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    monkeypatch.undo()
+    with pytest.raises(LedgerError) as e:
+        authorize(led, key="order-key-0002", oid="0x" + "78" * 32, nonce="nonce-0000000000000002")
+    assert e.value.code == "LEDGER_POISONED"
+    led.close()
+    with pytest.raises(LedgerError) as e:
+        reopen(tmp_path, clock)
+    assert e.value.code == "LEDGER_CORRUPT"
