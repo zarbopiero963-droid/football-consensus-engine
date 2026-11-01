@@ -152,7 +152,8 @@ def test_monitor_state_is_explicit_integrity_checked_and_bound(s, tmp_path):
         MonitorState.open(str(p), ledger_id=s.ledger.ledger_id)
     assert e.value.code == "MONITOR_STATE_CORRUPT"
     with pytest.raises(MonitorError) as e:
-        Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "x.json"), ledger_id="other:0x" + "00" * 20))
+        Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "x.json"), ledger_id="other:0x" + "00" * 20),
+                lock=s.gw._lock)
     assert e.value.code == "MONITOR_STATE_FOREIGN"
 
 
@@ -166,7 +167,7 @@ def test_monitor_restart_recovers_from_ledger_and_state(s, tmp_path):
     s.sim.fill_maker_order(sg["order_id"], 2 * USDC)        # happens while the monitor is down
     s.restart()
     m2 = Monitor(s.ledger, s.adapter, MonitorState.open(str(tmp_path / "monitor.json"), ledger_id=s.ledger.ledger_id),
-                 clock=s.clock)
+                 clock=s.clock, lock=s.gw._lock)
     assert m2._state.ticks == ticks and s.state("order-key-W006") == od.OPEN    # ledger replay: as before the fill
     m2.tick()
     assert s.state("order-key-W006") == od.PARTIALLY_FILLED and m2._state.peak(H) == 123
@@ -187,7 +188,7 @@ def test_monitor_proposal_claiming_executable_is_refused(s, tmp_path):
     assert e.value.code == "MONITOR_PROPOSAL_CLAIMS_EXECUTABLE"
     with pytest.raises(MonitorError):
         Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "y.json"), ledger_id=s.ledger.ledger_id),
-                rules={})
+                rules={}, lock=s.gw._lock)
 
 
 def test_monitor_reaches_only_the_three_reads():
@@ -200,3 +201,74 @@ def test_monitor_reaches_only_the_three_reads():
     assert not called & {"send", "submit", "submit_orders", "submit_batch", "build_create", "sign_order",
                          "cancel_orders", "cancel_market", "cancel_event", "cancel_all", "transition", "authorize",
                          "record_cancel_request", "abandon_unsigned"}
+
+
+# ---------------------------------------------------------------- review finding 2: monitor vs gateway race
+class _DifferingBytesReads:
+    """A transport whose answers differ byte-wise on every call (e.g. a server timestamp), so the evidence
+    dedupe cannot hide a stale snapshot. On the monitor's first fills read it lets the gateway act concurrently."""
+
+    def __init__(self, adapter, on_fills):
+        self.adapter, self.on_fills, self.n = adapter, on_fills, 0
+
+    def _tag(self, out):
+        self.n += 1
+        return {**out, "read_seq": self.n}
+
+    def get_order(self, oid):
+        return self._tag(self.adapter.get_order(oid))
+
+    def get_order_by_client_id(self, cid):
+        return self._tag(self.adapter.get_order_by_client_id(cid))
+
+    def get_fills(self, oid):
+        out = self._tag(self.adapter.get_fills(oid))
+        cb, self.on_fills = self.on_fills, None
+        if cb:
+            cb()
+        return out
+
+
+def test_monitor_stale_absent_snapshot_never_reopens_a_resent_order(s, tmp_path):
+    """Before the fix the monitor read outside the lock and applied a stale 'absent' snapshot after the gateway
+    had reconciled and re-sent the order: UNKNOWN -> SIGNED while the order was on the exchange (a further
+    submit would POST it again). Reads + apply now happen under the shared gateway lock."""
+    import threading
+    i = s.intent("order-key-W008")
+    sg = s.sign(i)
+    s.sim.inject("POST", "/orders-v3", "timeout_before")
+    assert s.gw.submit(sg, i)["state"] == od.UNKNOWN
+    s.sim.advance(od.ABSENT_SETTLE_SECONDS + 1)
+    s.sim.inject("POST", "/orders-v3", "timeout_after")              # the re-send is accepted, reply lost
+
+    def gateway_resend():
+        s.gw.reconcile("order-key-W008")                              # absent -> SIGNED
+        s.gw.submit(sg, i)                                            # SIGNED -> UNKNOWN, accepted on the exchange
+
+    def race():
+        t = threading.Thread(target=gateway_resend)
+        t.start()
+        t.join(1.0)
+        race.t = t
+
+    reads = _DifferingBytesReads(s.adapter, race)
+    m = Monitor(s.ledger, reads, MonitorState.create(str(tmp_path / "race.json"), ledger_id=s.ledger.ledger_id),
+                clock=s.clock, lock=s.gw._lock)
+    m.tick()
+    race.t.join(5)
+    assert s.sim.accepted_count("order-key-W008") == 1
+    assert s.state("order-key-W008") != od.SIGNED                     # never "absent" while it is on the exchange
+    try:
+        s.gw.submit(sg, i)
+    except Exception:
+        pass
+    assert len([r for r in s.sim.writes() if r.method == "POST"]) == 2
+
+
+def test_monitor_requires_the_shared_lock(s, tmp_path):
+    st = MonitorState.create(str(tmp_path / "lk.json"), ledger_id=s.ledger.ledger_id)
+    with pytest.raises(TypeError):
+        Monitor(s.ledger, s.adapter, st, clock=s.clock)               # no silent private lock any more
+    with pytest.raises(MonitorError) as e:
+        Monitor(s.ledger, s.adapter, st, clock=s.clock, lock=None)
+    assert e.value.code == "MONITOR_LOCK_REQUIRED"

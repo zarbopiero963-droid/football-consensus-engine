@@ -26,7 +26,7 @@ INACTIVE with a documented inactiveReason, or the same 404 + complete fills
 whose sum equals the recorded fill observed again at least
 EXPIRY_CONFIRM_SECONDS after the first observation. A late fill is never
 dropped: fills seen while the order is EXPIRED_UNCONFIRMED / EXPIRED /
-CANCELLED raise `filled` (self-transition), and EXPIRED -> FILLED is allowed,
+CANCELLED / FILLED raise `filled` (self-transition), and EXPIRED -> FILLED is allowed,
 so the matched exposure is recorded and counted again.
 
 Exposure accounting (base units, per order; `filled` = matched stake):
@@ -130,7 +130,9 @@ TRANSITIONS: dict[str, frozenset[str]] = {
                         REJECTED}),
     EXPIRED_UNCONFIRMED: frozenset({EXPIRED_UNCONFIRMED, SUBMITTED, OPEN, PARTIALLY_FILLED, FILLED, CANCELLED,
                                     EXPIRED}),
-    FILLED: frozenset({SETTLED}),
+    # FILLED -> FILLED only to record a late fill (strictly increasing, <= stake; _next refuses anything else).
+    # Regression: tests/test_sxbet_orders_filled_late_fill.py.
+    FILLED: frozenset({FILLED, SETTLED}),
     CANCELLED: frozenset({CANCELLED, SETTLED}),   # CANCELLED -> CANCELLED only to record a late fill
     EXPIRED: frozenset({EXPIRED, FILLED, SETTLED}),  # EXPIRED -> EXPIRED / FILLED only to record a late fill
     SETTLED: frozenset(),

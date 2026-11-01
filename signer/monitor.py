@@ -5,7 +5,8 @@ What one `Monitor.tick()` does:
    EXPIRED_UNCONFIRMED, SIGNED past expiry, REJECTED with a live hold, FILLED / CANCELLED / EXPIRED holding a
    matched amount until settlement) is re-read through the INJECTED read functions (`get_order`,
    `get_order_by_client_id`, `get_fills`, the shapes of signer.gateway.SubmissionTransport) and the evidence is
-   applied with the same `evidence_from_exchange` / `OrderLedger.apply_evidence` the gateway uses. Only the
+   applied with the same `evidence_from_exchange` / `OrderLedger.apply_evidence` the gateway uses, re-reading
+   the order, reading the exchange and applying all under the MANDATORY shared gateway lock. Only the
    three read methods are reachable from here (`_ReadOnly`): a sender, an adapter's `send`, `submit_*` or a
    cancel are never called;
 2. expiry handling: alerts for orders past expiry that are still reserved, EXPIRED_UNCONFIRMED orders and the
@@ -32,7 +33,6 @@ import copy
 import hashlib
 import json
 import os
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
@@ -229,7 +229,7 @@ class Monitor:
                  heartbeat_policy: HeartbeatPolicy | None = None, rules: Mapping[str, Any] | None = None,
                  evaluate_rules: Callable[..., Mapping[str, Any]] | None = None,
                  market_snapshot: Callable[[str], Mapping[str, Any] | None] | None = None,
-                 lock: Any = None, settlement_poll_seconds: int = 300):
+                 lock: Any, settlement_poll_seconds: int = 300):
         if not isinstance(ledger, OrderLedger):
             raise MonitorError("MONITOR_LEDGER_INVALID")
         if not isinstance(state, MonitorState) or state.ledger_id != ledger.ledger_id:
@@ -244,7 +244,11 @@ class Monitor:
         self._rules = copy.deepcopy(dict(rules)) if rules is not None else None
         self._evaluate = evaluate_rules
         self._snapshot = market_snapshot
-        self._lock = lock if lock is not None else threading.Lock()  # pass the gateway's lock in the signer process
+        # Mandatory: the SAME lock as the gateway / cancellation service (gateway._lock) in the signer process.
+        # A private lock would let a stale read race a gateway re-send (review finding 2).
+        if lock is None or not callable(getattr(lock, "__enter__", None)):
+            raise MonitorError("MONITOR_LOCK_REQUIRED")
+        self._lock = lock
         self._poll = settlement_poll_seconds
         self._last_poll: dict[str, int] = {}
 
@@ -261,13 +265,16 @@ class Monitor:
         return False
 
     def _reconcile(self, now: int, report: dict) -> None:
-        for o in self._ledger.orders():
-            if not self._due(o, now):
-                continue
-            self._last_poll[o.client_order_id] = now
-            lookup, client, fills = self._reads.lookups(o)
-            ev = evidence_from_exchange(o, lookup=lookup, client_lookup=client, fills=fills, now=now)
+        for key in [x.client_order_id for x in self._ledger.orders()]:
+            # Like gateway._reconcile_locked: the current order is re-read, the exchange is read and the evidence
+            # is applied all under the shared lock, so no gateway send / reconcile can interleave with a snapshot.
             with self._lock:
+                o = self._ledger.get(key)
+                if o is None or not self._due(o, now):
+                    continue
+                self._last_poll[o.client_order_id] = now
+                lookup, client, fills = self._reads.lookups(o)
+                ev = evidence_from_exchange(o, lookup=lookup, client_lookup=client, fills=fills, now=now)
                 try:
                     new = self._ledger.apply_evidence(o.client_order_id, ev)
                 except OrderStateError as exc:
