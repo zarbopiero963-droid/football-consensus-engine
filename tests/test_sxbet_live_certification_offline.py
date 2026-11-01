@@ -88,3 +88,12 @@ def test_local_rate_limit_is_respected_by_waiting_not_by_raising_the_limit():
     assert '"SXBET_MAX_RPM": "30"' in src            # the audit keeps the conservative local limit
     assert 'err.get("code") == "SXBET_LOCAL_RATE_LIMITED"' in src and "time.sleep(wait)" in src
     assert "min(int(err.get(\"retry_after_seconds\") or 61), 61)" in src
+
+
+def test_sxbet_secret_is_only_used_by_the_environment_scoped_audit_job():
+    """No other workflow may read SXBET_API_KEY; the audit job must stay in the main-only environment."""
+    users = [p.name for p in (ROOT / ".github/workflows").glob("*.y*ml")
+             if "secrets.SXBET_API_KEY" in p.read_text(encoding="utf-8")]
+    assert users == [WORKFLOW.name]
+    job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["certify"]
+    assert job["environment"] == "sxbet-live-readonly" and job["if"] == "github.ref == 'refs/heads/main'"
