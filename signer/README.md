@@ -1,61 +1,169 @@
 # Signer isolato SX Bet
 
-Componente separato dal server MCP (governance §2.6). **`LIVE_TRADING` resta `UNAVAILABLE`**: questo package firma, ma non invia nulla. Non contiene codice HTTP né un percorso di invio, e nessun flag lo abilita.
+Componente separato dal server MCP (governance §2.6). **`LIVE_TRADING` resta `UNAVAILABLE`**: il package firma e contiene un gateway di invio, ma il gateway è **disabilitato** e nel repository **non esiste alcun trasporto di rete**. Nessun file di `signer/` importa librerie di rete.
+
+**Il signer è un servizio separato e non gira mai nel processo MCP.** `import signer` (e quindi qualunque `signer.*`) solleva `ImportError` se:
+- `SXBET_SIGNER_PROCESS` non vale esattamente `"1"`, oppure
+- la variabile `RENDER` è presente (Render la imposta su ogni servizio, incluso il bridge MCP).
+
+Lo verificano `tests/test_sxbet_render_isolation.py`, che controlla anche che `bridge.server` avviato con `RENDER=true` non carichi mai `signer.*` né `eth_account`, che nessun tool MCP accetti chiavi, approvazioni o firme, che `requirements.txt` non contenga librerie di firma e che nessun modulo di `bridge/` importi `signer`.
 
 Contratto ufficiale (verificato il 01-11-2026):
 - https://docs.sx.bet/api-reference/eip712-order-signing
+- https://docs.sx.bet/api-reference/post-orders-v3
 - https://docs.sx.bet/developers/posting-orders
+- https://docs.sx.bet/developers/order-lifecycle
+- https://docs.sx.bet/developers/client-order-id
 - https://docs.sx.bet/developers/odds-rounding
+- https://docs.sx.bet/openapi.json (`OrderV3`, `FillV3`, `TradeV3`, `/user/fees-v3`)
 
 ## Architettura
 
 ```
-modello / client MCP ──► bridge (sxbet_simulate_order) ──► intent canonico + intent_hash
-                                                             │   (nessuna chiave, nessuna firma)
-                                                             ▼
-                            dispositivo di approvazione dell'owner (chiave privata Ed25519)
-                                                             │   firma (intent_hash, nonce, issued_at, expires_at, signer_id)
-                                                             ▼
-                                  signer/ (processo separato)
-                                  • chiave EIP-712 solo in memoria (env SXBET_SIGNER_PRIVATE_KEY del suo processo)
-                                  • chiave PUBBLICA Ed25519 dell'owner
-                                  • rivalida l'intent, ricalcola l'hash, verifica l'approvazione,
-                                    consuma il nonce, applica i limiti, firma
-                                  • audit JSONL append-only con hash chain
-                                                             │
-                                                             ▼
-                                  firma + order id restituiti al chiamante (NESSUN invio)
+client MCP ─► bridge: sxbet_simulate_order ─► intent canonico + intent_hash   (nessuna chiave, nessuna firma)
+                                                   │
+                                                   ▼
+              dispositivo dell'owner: mostra il binding v2 e firma con Ed25519 (chiave privata solo lì)
+                                                   │  Approval(binding, nonce, issued_at, expires_at, signer_id)
+                                                   ▼
+signer/ (processo separato, SXBET_SIGNER_PROCESS=1, mai su Render MCP)
+  core.py    1. rivalida l'intent e ricalcola l'hash
+             2. verifica l'approvazione SENZA consumarla (firma, TTL ≤ 120 s, signer_id, binding)
+             3. risk.py: limiti dell'owner + dati di mercato freschi (contesto di rischio)
+             4. orders.py: una riga fsync = nonce consumato + AUTHORIZED + esposizione riservata (lock unico)
+             5. firma EIP-712; la riga SIGNED è persistita prima di restituire la firma
+  gateway.py DISABILITATO salvo flag firmato dall'owner; trasporto astratto, nessuna implementazione di rete
+             verifica firma ↔ intent approvato, idempotenza, write-ahead UNKNOWN, riconciliazione
+  audit.py   audit JSONL append-only con hash chain (allowlist di campi, mai chiave né firma)
 ```
 
-- **Il modello e il bridge non vedono mai la chiave.** `bridge/` non importa `signer` e non ha `eth-account` tra le dipendenze di runtime. Lo verificano `tests/test_sxbet_simulation.py::test_bridge_never_imports_signer` e `::test_signer_deps_not_in_runtime_requirements`. Il signer non importa `bridge`, `httpx`, `requests`, `urllib`, `http` né `socket` (`::test_signer_never_imports_bridge_or_network_libraries`).
-- **Custodia della chiave.** Il signer la legge una sola volta, all'avvio, dalla propria variabile d'ambiente. Non la restituisce, non la scrive nei log né nell'audit, e `repr()` la nasconde. L'oggetto non è serializzabile. Una chiave mancante o malformata produce un errore con codice fisso, senza riportarne il valore.
-- **Intent canonico.** Contiene tutti gli 8 campi firmati (`marketHash`, `baseToken`, `totalBetSize`, `percentageOdds`, `salt`, `expiry`, `maker`, `isMakerBettingOutcomeOne`) più il dominio EIP-712, `timeInForce` (inviato ma non firmato), la quota richiesta grezza e la chiave di idempotenza. `intent_hash` = `sha256` del JSON canonico (chiavi ordinate, separatori compatti, ASCII). Bridge e signer calcolano lo stesso hash con codice indipendente, e un test lo verifica.
-- **"What you saw is what gets signed".** Il signer firma `eip712.message(intent)` ricavato dall'intent rivalidato, cioè dai parametri esatti coperti dall'hash approvato. Se cambia prezzo, importo, mercato o lato, cambia l'hash: `APPROVAL_INTENT_MISMATCH`.
-- **Order id.** È il digest EIP-712 in minuscolo, `keccak(0x19 ‖ version ‖ domainSeparator ‖ structHash)`, come da documentazione. Si conosce prima dell'invio, quindi la riconciliazione per id è possibile.
+## Binding dell'approvazione (v2)
+
+L'owner firma `approval_message(binding=…, approval_nonce, issued_at, expires_at, signer_id)` con dominio `sxbet.order_approval.v2`. Il `binding` (`signer/approval.py::BINDING_KEYS`) contiene: `account_id` (identità API), `maker`, `network`, `chain_id`, `verifying_contract`, `base_token`, `event_id`, `market_hash`, `selection` (`outcome` 1|2 ed etichetta leggibile), `is_maker_betting_outcome_one` (lato), `time_in_force`, `stake_base_units`, `percentage_odds_limit`, `quoted_percentage_odds` (la quota vista dall'owner), `expected_fees` (snapshot di `GET /user/fees-v3`), `max_exposure_base_units`, `order_expiry`, `client_order_id` e `intent_hash`.
+
+- Cambiare un campo dopo la firma rompe la firma (`APPROVAL_SIGNATURE_INVALID`).
+- Il signer ricava di nuovo ogni campo da intent, configurazione e contesto di rischio. Un binding firmato ma incoerente viene rifiutato (`APPROVAL_BINDING_MISMATCH_<CAMPO>`, `FEES_CHANGED_SINCE_APPROVAL`, `ORDER_EXPOSURE_ABOVE_APPROVED_MAX`).
+- **Modifica non retrocompatibile, intenzionale:** le approvazioni v1 (solo `intent_hash`) sono rifiutate (`APPROVAL_MALFORMED`). I test sono stati aggiornati di conseguenza.
+- Monouso, TTL ≤ 120 s, tolleranza di clock di 5 s. Il nonce si consuma solo nella riga `AUTHORIZE` del ledger, quindi resta consumato anche dopo un riavvio.
 
 ## Perché un testo in chat non è una conferma
 
-Un testo in chat, in un output di tool o in una pagina web può essere scritto da chiunque: dal modello stesso, da una prompt injection, da un terzo. Il signer accetta solo un oggetto `Approval` con una **firma Ed25519** valida della chiave di approvazione dell'owner, che il signer non possiede (conserva solo la chiave pubblica). Il modello non può produrre quella firma, per quanto sia convincente il testo. Inoltre l'approvazione:
-- è legata a un singolo `intent_hash` e a un `signer_id`;
-- è **monouso**: il nonce viene consumato e, con un percorso su file, resta consumato anche dopo un riavvio;
-- ha una **scadenza breve**: `expires_at − issued_at ≤ 120 s`, con una tolleranza di clock di 5 s su `issued_at`.
+Un testo in chat, in un output di tool o in una pagina web può essere scritto da chiunque: dal modello stesso, da una prompt injection, da un terzo. Il signer accetta solo un oggetto `Approval` con una **firma Ed25519** valida della chiave dell'owner, che il signer non possiede (conserva solo la chiave pubblica).
 
-## Altre garanzie
+## Autorizzazione transazionale
 
-- **Limiti di esposizione** in `SignerConfig`, fissati dall'owner. Il default `0` rifiuta tutto (`EXPOSURE_LIMIT_ZERO`). L'esposizione impegnata è la somma degli importi firmati, ricostruita dall'audit al riavvio. È una stima conservativa: non scende quando un ordine viene cancellato.
-- **Idempotenza.** Una chiave corrisponde a un solo intent. Stessa chiave con lo stesso hash: restituisce il risultato in cache e non produce una seconda firma. Stessa chiave con un hash diverso: rifiuto. Dopo un riavvio, una chiave già firmata è rifiutata (`..._RECONCILE_FIRST`) finché lo stato non è riconciliato. Più richieste concorrenti producono esattamente una firma (lock unico, verificato con 16 thread).
-- **Configurazione di dominio.** Il signer accetta solo la rete, il `chainId`, il `verifyingContract` e il `baseToken` configurati dall'owner, e solo `maker` uguale al proprio indirizzo.
-- **Audit.** JSONL append-only con `fsync` per ogni riga. Ogni riga contiene lo `sha256` della precedente, quindi una riga riscritta rompe la catena e il signer rifiuta di avviarsi. Campi ammessi (allowlist): decisione, motivo, chiave di idempotenza, `intent_hash`, `order_id`, importo, rete, prefisso di 6 caratteri del nonce. Non contiene mai la chiave né i byte della firma.
+0. **Snapshot:** binding dell'approvazione e contesto di rischio vengono copiati in valori JSON semplici (dict/list/str/int/bool/None) prima di ogni verifica; da lì in poi si usa solo la copia. Un oggetto del chiamante modificato durante la firma non cambia ciò che è verificato o registrato. Un valore non semplice produce `APPROVAL_MALFORMED` o `RISK_CONTEXT_MALFORMED`.
+1. Verifica dell'approvazione senza consumo e controllo `nonce_consumed`.
+2. Il risk engine gira **dentro il lock del ledger**, sull'esposizione corrente.
+3. Solo se tutto passa viene scritta una riga `AUTHORIZE` (fsync) che consuma il nonce e riserva l'importo.
+4. Firma; poi la riga `SIGNED`; solo allora la firma esce dalla funzione.
+
+Ne seguono queste proprietà:
+- un rifiuto (limiti, saldo, dati scaduti…) **non** consuma l'approvazione, che si può riusare quando i limiti lo permettono;
+- due richieste concorrenti con la stessa approvazione producono una sola firma;
+- un crash tra consumo e firma lascia l'ordine `AUTHORIZED` con il nonce consumato e nessuna firma emessa. Dopo il riavvio `Signer.abandon_unsigned(client_order_id)` lo porta a `REJECTED` e libera l'esposizione. È sicuro perché nessuna firma esce prima della riga `SIGNED`;
+- un fallimento della firma nel processo porta subito a `REJECTED` (`SIGNING_FAILED`);
+- se la riga `SIGNED` non si riesce a scrivere, la firma viene scartata e non esce (`LEDGER_WRITE_FAILED`): l'ordine resta `AUTHORIZED` e riservato;
+- due `client_order_id` con lo stesso digest EIP-712 sono rifiutati (`ORDER_ID_ALREADY_AUTHORIZED`).
+
+## Stati degli ordini ed esposizione (`signer/orders.py`)
+
+Stati: `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `EXPIRED_UNCONFIRMED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Sono ammesse solo le transizioni di `TRANSITIONS`; ogni altra è `ILLEGAL_TRANSITION_*` e non viene scritta.
+
+| Stato | Riservato | Matched |
+|---|---|---|
+| `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `UNKNOWN` | importo − matched (cioè l'intero importo) | matched |
+| `EXPIRED_UNCONFIRMED` (404 dopo la scadenza, non è una prova) | importo − matched | matched |
+| `PARTIALLY_FILLED` | parte non eseguita, finché l'exchange non conferma cancel o scadenza | parte eseguita |
+| `FILLED`, `CANCELLED`, `EXPIRED` | 0 | parte eseguita, fino a `SETTLED` |
+| `REJECTED` **dopo** che la firma è uscita (`SIGNED` raggiunto: 400 all'invio, riga `FAILED`, `SIGNED → REJECTED` manuale) | l'intero importo finché `now ≤ expiry + 30 s`, poi 0 (conta anche come ordine aperto) | 0 |
+| `REJECTED` mai firmato (`SIGNING_FAILED`, `abandon_unsigned`), `SETTLED` | 0 | 0 (`SETTLED` registra il P&L realizzato) |
+
+- `UNKNOWN` (timeout, risposta ambigua, write-ahead prima di un invio) **non libera mai capitale** finché non è riconciliato con dati dell'exchange.
+- La riconciliazione usa `evidence_from_exchange`, con i campi OpenAPI di `GET /orders-v3/{orderId}` (`id`, `totalBetSize`, `remainingSize`, `status`, `inactiveReason`), di `GET /orders-v3/client/{clientOrderId}` e di `GET /fills-v3?orderId=` (`orderId`, `fillAmount`, `status`, `settlement.settleReturnAmount`).
+  - `INACTIVE` con `FILLED` porta a `FILLED`, con `EXPIRED` a `EXPIRED`, con gli altri `inactiveReason` documentati a `CANCELLED`.
+  - Un motivo o uno stato sconosciuto non insegna nulla.
+  - Il settlement richiede fill completi, tutti `SETTLED` e con somma uguale al matched.
+- Un 404 prima della scadenza non dimostra nulla. **Nemmeno dopo la scadenza un 404 libera da solo l'esposizione:** dopo la scadenza (più 30 s) un 404 con lista dei fill completa e vuota porta a `EXPIRED_UNCONFIRMED`, che **resta riservato**. Si passa a `EXPIRED` (rilascio) solo con:
+  - evidenza terminale positiva: la riga dell'exchange `INACTIVE` con un `inactiveReason` documentato (`EXPIRED`, `USER_REQUESTED`, …, che porta a `EXPIRED`/`CANCELLED`/`FILLED`);
+  - oppure lo stesso 404 con fill completi e somma uguale al matched registrato, osservato di nuovo almeno `EXPIRY_CONFIRM_SECONDS` (24 h) dopo la prima osservazione.
+- **Un fill tardivo non si perde mai:** in `EXPIRED_UNCONFIRMED`, `EXPIRED` o `CANCELLED` un fill nuovo (dalla riga dell'exchange o, con 404, da fill completi tutti di quest'ordine; i fill `FAILED` non contano) aumenta il matched con una auto-transizione, e `EXPIRED → FILLED` è ammesso. L'esposizione eseguita torna a essere contata dal risk engine.
+- Da `UNKNOWN` si torna a `SIGNED` (unico percorso verso un reinvio) solo con: 404 per id **e** per `clientOrderId`, fill vuoti e almeno 60 s dall'ultimo tentativo. Il reinvio usa **lo stesso ordine firmato e lo stesso `clientOrderId`**.
+- Evidenze duplicate o che non cambiano nulla non scrivono righe. Il matched non scende mai e non supera l'importo.
+- **Persistenza:** JSONL append-only, fsync per riga, hash chain, `GENESIS` legato a `signer_id` e indirizzo. Stato, nonce, idempotenza, esposizione e P&L si **ricostruiscono sempre** rileggendo il ledger e ripassando ogni riga dalla macchina a stati.
+  - Un ledger mancante, vuoto, estraneo, manomesso o con una storia illegale (anche se re-hashata) genera `LedgerError`, e il signer non si avvia.
+  - Un nuovo ledger si crea solo con `OrderLedger.create` esplicito, mai "partendo da zero" in silenzio.
+- **Un solo scrittore:** un `OrderLedger` tiene un `flock` esclusivo non bloccante sul file per tutta la sua vita (fino a `close()`). Una seconda istanza, nello stesso processo o in un altro, fallisce con `LEDGER_LOCKED`: due signer non possono accettare lo stesso nonce.
+  - Prima di ogni append l'istanza verifica che il file sia ancora quello bloccato (stesso inode), che abbia la dimensione che ha scritto e che termini con la riga il cui hash è la testa in memoria. Altrimenti (uno scrittore esterno che ignora il lock advisory, un file sostituito) `LEDGER_HEAD_MISMATCH`.
+  - Un append fallito o parziale, o una testa diversa, **avvelena** l'istanza: ogni scrittura successiva dà `LEDGER_POISONED` fino a riavvio e replay. Una riga finale troncata fa poi fallire il replay (`LEDGER_CORRUPT`) e richiede una decisione dell'owner.
+  - Limiti residui: il controllo prima dell'append legge solo dimensione e ultima riga (una riscrittura di righe precedenti a parità di dimensione si rileva al replay successivo); `flock` è advisory e locale, quindi il ledger deve stare su un filesystem locale dell'host del signer.
+
+## Risk engine (`signer/risk.py`)
+
+I limiti si leggono **solo** da un file JSON il cui percorso è in `SXBET_SIGNER_RISK_CONFIG`, firmato Ed25519 dalla chiave dell'owner (dominio `sxbet.risk_config.v1`).
+- Un file mancante, non firmato, malformato o con firma non valida produce i limiti tutti a zero, cioè il rifiuto di ogni ordine (`EXPOSURE_LIMIT_ZERO`).
+- `RiskLimits` è immutabile e si carica una volta all'avvio. Nessun campo di intent, approvazione o contesto può cambiarlo.
+
+| Limite | Codice di rifiuto |
+|---|---|
+| `max_stake_per_order_base_units` | `STAKE_ABOVE_LIMIT` |
+| `max_exposure_per_market_base_units` | `MARKET_EXPOSURE_ABOVE_LIMIT` |
+| `max_exposure_per_event_base_units` | `EVENT_EXPOSURE_ABOVE_LIMIT` |
+| `max_total_exposure_base_units` | `EXPOSURE_ABOVE_LIMIT` |
+| `session_loss_limit_base_units` (perdita realizzata nella sessione + importo dell'ordine) | `SESSION_LOSS_LIMIT` |
+| `daily_loss_limit_base_units` (giorno UTC, sopravvive al riavvio) | `DAILY_LOSS_LIMIT` |
+| `max_open_orders` | `OPEN_ORDERS_ABOVE_LIMIT` |
+| `slippage_tolerance_bps` (movimento avverso rispetto a `quoted_percentage_odds`; 0 = nessuna tolleranza) | `ODDS_MOVED_BEYOND_SLIPPAGE` |
+| `min_percentage_odds` / `max_percentage_odds` | `ODDS_OUTSIDE_OWNER_BAND` |
+| `max_quote_age_seconds` (mercato, quota, saldo) | `*_STALE`, `*_FROM_FUTURE` |
+
+Tutti i limiti tranne lo slippage devono essere > 0, altrimenti `EXPOSURE_LIMIT_ZERO`.
+
+Il contesto di rischio è obbligatorio e ogni dato mancante produce un rifiuto (`RISK_CONTEXT_MISSING`, `MARKET_DATA_MISSING`, `QUOTE_MISSING`, `LIQUIDITY_MISSING`, `BALANCE_MISSING`, `FEES_MISSING_OR_MALFORMED`). Contiene:
+- la riga del mercato (`status` deve essere `ACTIVE`, altrimenti `MARKET_NOT_ACTIVE`);
+- la quota taker per il lato dell'ordine, con la liquidità (per IOC/FOK deve coprire l'importo, altrimenti `INSUFFICIENT_LIQUIDITY`);
+- il saldo disponibile, che deve coprire tutte le riserve non eseguite più l'ordine (`INSUFFICIENT_BALANCE`);
+- le commissioni.
+
+## Gateway di invio (`signer/gateway.py`): disabilitato
+
+- `SubmissionGateway` si rifiuta di costruirsi senza un `LiveTradingFlag` prodotto da `load_live_trading_flag`, cioè da un file firmato dall'owner, legato a `signer_id` e rete, con TTL ≤ 24 h. Il default è `DISABLED`.
+  - Il flag contiene i byte firmati e la firma dell'owner. Il gateway **riverifica** la firma Ed25519 con la chiave pubblica dell'owner ricevuta alla costruzione (`owner_public_key`, dalla propria configurazione, mai dal flag), alla costruzione e **a ogni `submit`**. `enabled`, `signer_id`, rete e scadenza si leggono solo dai byte verificati.
+  - La scadenza si ricontrolla a ogni `submit`: da `now ≥ expires_at` ogni invio è rifiutato con `LIVE_TRADING_FLAG_EXPIRED` (la riconciliazione, in sola lettura, continua).
+  - `LiveTradingFlag(...)` chiamato direttamente solleva `GatewayDisabled`. Questo impedisce costruzioni accidentali o ingenue, ma **non** è un confine di sicurezza contro codice che gira nel processo del signer (Python non ha membri privati): il confine è la chiave privata Ed25519 dell'owner, che non esiste sull'host del signer.
+- Il trasporto è un `Protocol` astratto (`submit_orders`, `get_order`, `get_order_by_client_id`, `get_fills`). Nel repository **non esiste alcuna implementazione di rete**: i test usano un `FakeTransport` in memoria.
+- Il gateway verifica:
+  - che l'intent rivalidato abbia lo stesso `intent_hash` e lo stesso order id;
+  - che il payload sia esattamente `eip712.order_payload(intent, firma)`;
+  - che la firma recuperi l'indirizzo del maker e del ledger;
+  - che l'ordine sia nel ledger con lo stesso hash.
+- Payload `{"orders": [ {marketHash, maker, totalBetSize, percentageOdds, salt, expiry, baseToken, isMakerBettingOutcomeOne, timeInForce, orderSignature, clientOrderId} ]}`. `waitForOutcome` non viene inviato.
+- **Write-ahead:** `SIGNED → UNKNOWN(SEND_ATTEMPT)` è persistito prima della chiamata. Un crash durante l'invio lascia `UNKNOWN`, mai "non inviato".
+- Classificazione della risposta:
+  - 200 con una riga `SUBMITTED` per il nostro id porta a `SUBMITTED`;
+  - 400 con `message`, oppure una riga `FAILED`, porta a `REJECTED`; poiché la firma è già uscita, l'importo resta riservato fino alla scadenza dell'ordine (più 30 s);
+  - tutto il resto (timeout, errori, 401/403/5xx, body malformato, id diverso) porta a `UNKNOWN`.
+- **Idempotenza:**
+  - lo stesso `clientOrderId` non esce mai due volte (fuori da `SIGNED` restituisce lo stato senza inviare);
+  - in `UNKNOWN` risponde `STATE_UNKNOWN_RECONCILE_FIRST`;
+  - un payload diverso con lo stesso id viene rifiutato;
+  - gli invii concorrenti passano da un lock unico.
+
+## Custodia della chiave
+
+Il signer legge la chiave una sola volta, all'avvio, dalla propria variabile d'ambiente `SXBET_SIGNER_PRIVATE_KEY`. Non la restituisce, non la scrive in log, audit o ledger, e `repr()` la nasconde. L'oggetto non è serializzabile. Una chiave mancante o malformata produce un errore con codice fisso, senza riportarne il valore.
 
 ## Dipendenze
 
-`signer/requirements.txt` (`eth-account` 0.14.x, `cryptography`). **Non** sono in `requirements.txt`: il runtime Render del bridge non riceve librerie di firma. La CI (`multi-market-tests.yml`, job `pytest`) le installa solo per eseguire i test.
+`signer/requirements.txt` (`eth-account` 0.14.x, `cryptography`). **Non** sono in `requirements.txt`: il runtime Render del bridge non riceve librerie di firma. La CI (`multi-market-tests.yml`, job `pytest`) le installa solo per eseguire i test. `tests/conftest.py` imposta `SXBET_SIGNER_PROCESS=1` per il processo di test.
+
+## DOCS_UNVERIFIED
+
+- Formato di `salt` in `POST /orders-v3`: lo schema dice "32-byte hex string", l'esempio Python ufficiale invia la stringa decimale dello stesso uint256. Qui resta la stringa decimale (esempio Python); va confermato su testnet.
+- Comportamento dell'exchange al reinvio dello stesso ordine o dello stesso `clientOrderId` dopo un timeout. La documentazione dice solo che `clientOrderId` è unico per indirizzo "across every order you currently have in the system".
+- Se un 404 su id e `clientOrderId`, 60 s dopo l'invio, dimostra che l'ordine non è mai stato accettato. Per questo il verdetto "assente" riapre solo il reinvio dello stesso ordine, senza liberare esposizione.
+- Se per un ordine maker `sum(fillAmount)` dei fill è uguale a `totalBetSize − remainingSize`. Il settlement si registra solo quando i due valori coincidono.
 
 ## Cosa manca prima di `LIVE_TRADING` (decisioni owner)
 
-1. **Dispositivo o app di approvazione dell'owner** che mostri i parametri leggibili dell'intent (evento, mercato, lato, importo, quota, esposizione massima) e firmi con Ed25519 il messaggio canonico (`signer/approval.py::approval_message`). La chiave privata di approvazione resta solo su quel dispositivo.
-2. **Deploy del signer come servizio separato**, con il proprio segreto, fuori da Render MCP e fuori da GitHub secrets, e con un canale autenticato verso il chiamante. Il nonce store e l'audit vanno su storage durevole.
-3. **Percorso di invio** (`POST /orders-v3`) e di riconciliazione (`GET /orders-v3/{orderId}`, `GET /fills-v3?orderId=`) in una PR separata, **revisionata e mergiata dall'owner**, che usi la macchina a stati di `bridge/sxbet/simulation.py::SubmissionTracker`: `UNKNOWN_AFTER_TIMEOUT` e `AMBIGUOUS_RESPONSE` si riconciliano prima di ogni retry, e un retry usa la stessa chiave di idempotenza. Va deciso anche se usare `waitForOutcome`.
-4. **Proxy wallet**: `POST /user/deploy-proxy` e il funding (`/user/transfer-to-proxy`, permit EIP-2612) sono operazioni finanziarie del §2.6, con conferma propria. Senza proxy, ogni ordine è rifiutato con `400 PROXY_NOT_DEPLOYED`.
-5. **Limiti di esposizione** reali e scope della chiave API (`Orders: create`), scelti dall'owner. Va anche verificata l'idoneità del servizio nella giurisdizione applicabile.
-6. Elementi **DOCS_UNVERIFIED**: il comportamento dell'exchange quando si reinvia un ordine con lo stesso id o lo stesso `clientOrderId` dopo un timeout. La documentazione dice solo che `clientOrderId` deve essere unico per indirizzo.
+Vedi la checklist in [`docs/sxbet/wallet_and_signing.md`](../docs/sxbet/wallet_and_signing.md#checklist-di-attivazione-tutte-decisioni-dellowner).
