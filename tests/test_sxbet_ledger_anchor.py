@@ -12,6 +12,7 @@ pytest.importorskip("cryptography")
 from signer import anchor as an  # noqa: E402
 from signer import orders as od  # noqa: E402
 from signer.orders import LedgerError, OrderLedger  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 from sxbet_exchange_kit import MemoryAnchorStore  # noqa: E402
 
 SIGNER_ID = "signer-test-1"
@@ -37,6 +38,11 @@ def store():
 @pytest.fixture
 def clock():
     return Clock()
+
+
+@pytest.fixture
+def owner():
+    return Ed25519PrivateKey.generate()
 
 
 def path(tmp_path):
@@ -123,7 +129,18 @@ def test_rewritten_history_same_length_detected(tmp_path, store, clock):
     assert refused(lambda: reopen(tmp_path, store, clock)) == "LEDGER_ANCHOR_HASH_MISMATCH"
 
 
-def test_local_ahead_refused_unless_owner_acks_the_exact_head(tmp_path, store, clock):
+def ack(owner, *, anchored, local_seq, local_head, ledger_id=LID, issued=NOW, ttl=60):
+    """What the owner's device signs after reviewing the local lines beyond the anchored head."""
+    a_seq, a_hash = (None, None) if anchored is None else (anchored.seq, anchored.head_hash)
+    msg = an.ledger_head_ack_message(ledger_id=ledger_id, anchored_seq=a_seq, anchored_head_hash=a_hash,
+                                     local_seq=local_seq, local_head_hash=local_head, issued_at=issued,
+                                     expires_at=issued + ttl)
+    return an.LedgerHeadAck(ledger_id=ledger_id, anchored_seq=a_seq, anchored_head_hash=a_hash, local_seq=local_seq,
+                            local_head_hash=local_head, issued_at=issued, expires_at=issued + ttl,
+                            signature=owner.sign(msg))
+
+
+def _local_ahead_by_one(tmp_path, store, clock):
     led = create(tmp_path, store, clock)
     authorize(led, 1)
     store.unreachable = True
@@ -133,19 +150,83 @@ def test_local_ahead_refused_unless_owner_acks_the_exact_head(tmp_path, store, c
     assert refused(lambda: authorize(led, 2)) == "LEDGER_POISONED"
     led.close()
     store.unreachable = False
-    assert refused(lambda: reopen(tmp_path, store, clock)) == "LEDGER_LOCAL_AHEAD_OF_ANCHOR"
-    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack_head="sha256:" + "0" * 64)) == \
-        "LEDGER_LOCAL_AHEAD_OF_ANCHOR"
+
+
+def test_local_ahead_refused_unless_owner_signs_the_exact_head(tmp_path, store, clock, owner):
+    _local_ahead_by_one(tmp_path, store, clock)
+    anchored = store.head(LID)
     local_head = od._line_hash(lines(tmp_path)[-1])
-    r = reopen(tmp_path, store, clock, owner_ack_head=local_head)
+    assert refused(lambda: reopen(tmp_path, store, clock)) == "LEDGER_LOCAL_AHEAD_OF_ANCHOR"
+    good = ack(owner, anchored=anchored, local_seq=3, local_head=local_head)
+    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack=good)) == "LEDGER_HEAD_ACK_KEY_MISSING"
+    r = reopen(tmp_path, store, clock, owner_ack=good, owner_public_key=owner.public_key())
     assert store.head(LID).seq == 3 and store.head(LID).head_hash == local_head
     assert r.get("order-key-0001").state == od.SIGNED
+    r.close()
+    # Once applied the anchor equals the file: an ack is consulted only when the file is ahead, and an old one
+    # (signed for anchored seq 2) can never describe a later situation.
+    reopen(tmp_path, store, clock, owner_ack=good, owner_public_key=owner.public_key()).close()
 
 
-def test_local_ahead_on_a_fork_is_never_acknowledged(tmp_path, store, clock):
+def test_plain_string_ack_is_refused(tmp_path, store, clock, owner):
+    """Finding A: an unauthenticated head hash (anyone with write access to file + args) is not an owner ack."""
+    _local_ahead_by_one(tmp_path, store, clock)
+    local_head = od._line_hash(lines(tmp_path)[-1])
+    for bogus in (local_head, "sha256:" + "0" * 64, {"local_head_hash": local_head}):
+        assert refused(lambda: reopen(tmp_path, store, clock, owner_ack=bogus,
+                                      owner_public_key=owner.public_key())) == "LEDGER_HEAD_ACK_MALFORMED"
+    with pytest.raises(TypeError):
+        reopen(tmp_path, store, clock, owner_ack_head=local_head)  # the old unauthenticated knob is gone
+    assert store.head(LID).seq == 2
+
+
+def test_forged_validly_chained_lines_cannot_be_self_acked(tmp_path, store, clock, owner):
+    """Finding A: forged lines appended with a valid chain + an ack signed by anyone but the owner."""
     led = create(tmp_path, store, clock)
     authorize(led, 1)
     led.close()
+    anchored = store.head(LID)
+    rows = lines(tmp_path)
+    forged = {"kind": "TRANSITION", "client_order_id": "order-key-0001", "from": "AUTHORIZED", "to": "REJECTED",
+              "filled": 0, "reason": "X", "ts": NOW, "prev_sha256": od._line_hash(rows[-1])}
+    rows.append(od._canon(forged))  # chain valid: replay accepts it, exposure would be released
+    (tmp_path / "ledger.jsonl").write_text("\n".join(rows) + "\n")
+    local_head = od._line_hash(rows[-1])
+    attacker = Ed25519PrivateKey.generate()
+    assert refused(lambda: reopen(tmp_path, store, clock, owner_public_key=owner.public_key(),
+                                  owner_ack=ack(attacker, anchored=anchored, local_seq=3, local_head=local_head))) \
+        == "LEDGER_HEAD_ACK_SIGNATURE_INVALID"
+    good = ack(owner, anchored=anchored, local_seq=3, local_head=local_head)
+    tampered = an.LedgerHeadAck(**{**good.__dict__, "signature": bytes(64)})
+    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack=tampered,
+                                  owner_public_key=owner.public_key())) == "LEDGER_HEAD_ACK_SIGNATURE_INVALID"
+    assert store.head(LID) == anchored
+
+
+@pytest.mark.parametrize("kw,expected", [
+    ({"local_head": "sha256:" + "0" * 64}, "LEDGER_HEAD_ACK_MISMATCH"),     # ack for a different head
+    ({"local_seq": 4}, "LEDGER_HEAD_ACK_MISMATCH"),
+    ({"anchored": None}, "LEDGER_HEAD_ACK_MISMATCH"),                       # signed for "never anchored"
+    ({"ledger_id": "signer-test-2:" + ADDR}, "LEDGER_HEAD_ACK_MISMATCH"),   # another signer's ledger
+    ({"issued": NOW - 120}, "LEDGER_HEAD_ACK_EXPIRED"),
+    ({"issued": NOW + 60}, "LEDGER_HEAD_ACK_NOT_YET_VALID"),
+    ({"ttl": 301}, "LEDGER_HEAD_ACK_TTL_TOO_LONG"),
+    ({"ttl": 0}, "LEDGER_HEAD_ACK_TTL_TOO_LONG"),
+])
+def test_ack_mismatched_or_stale_refused(tmp_path, store, clock, owner, kw, expected):
+    _local_ahead_by_one(tmp_path, store, clock)
+    base = {"anchored": store.head(LID), "local_seq": 3, "local_head": od._line_hash(lines(tmp_path)[-1])}
+    a = ack(owner, **{**base, **kw})
+    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack=a, owner_public_key=owner.public_key())) == \
+        expected
+    assert store.head(LID).seq == 2
+
+
+def test_local_ahead_on_a_fork_is_never_acknowledged(tmp_path, store, clock, owner):
+    led = create(tmp_path, store, clock)
+    authorize(led, 1)
+    led.close()
+    anchored = store.head(LID)
     rows = lines(tmp_path)
     forged = json.loads(rows[-1])
     forged["stake"] = "1"
@@ -154,16 +235,21 @@ def test_local_ahead_on_a_fork_is_never_acknowledged(tmp_path, store, clock):
              "filled": 0, "reason": "X", "ts": NOW, "prev_sha256": od._line_hash(rows[-1])}
     rows.append(od._canon(extra))
     (tmp_path / "ledger.jsonl").write_text("\n".join(rows) + "\n")
-    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack_head=od._line_hash(rows[-1]))) == \
+    a = ack(owner, anchored=anchored, local_seq=3, local_head=od._line_hash(rows[-1]))
+    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack=a, owner_public_key=owner.public_key())) == \
         "LEDGER_ANCHOR_HASH_MISMATCH"
 
 
-def test_existing_ledger_without_anchor_row_needs_owner_bootstrap(tmp_path, store, clock):
+def test_existing_ledger_without_anchor_row_needs_owner_bootstrap(tmp_path, store, clock, owner):
     led = OrderLedger.create(path(tmp_path), signer_id=SIGNER_ID, signer_address=ADDR, clock=clock)
     authorize(led, 1)
     led.close()
+    local_head = od._line_hash(lines(tmp_path)[-1])
     assert refused(lambda: reopen(tmp_path, store, clock)) == "LEDGER_ANCHOR_MISSING"
-    r = reopen(tmp_path, store, clock, owner_ack_head=od._line_hash(lines(tmp_path)[-1]))
+    assert refused(lambda: reopen(tmp_path, store, clock, owner_ack=local_head,
+                                  owner_public_key=owner.public_key())) == "LEDGER_HEAD_ACK_MALFORMED"
+    r = reopen(tmp_path, store, clock, owner_ack=ack(owner, anchored=None, local_seq=2, local_head=local_head),
+               owner_public_key=owner.public_key())
     assert store.head(LID).seq == 2
     r.close()
 
@@ -178,16 +264,30 @@ def test_anchor_unreachable_at_start_fails_closed(tmp_path, store, clock):
     assert not (tmp_path / "other.jsonl").exists()
 
 
-def test_second_writer_refused_by_the_lease_not_by_flock(tmp_path, store, clock, monkeypatch):
+def test_second_writer_refused_by_the_lease_before_any_file_access(tmp_path, store, clock, monkeypatch):
+    # Intentional change (finding C): anchored mode now ALSO takes the local flock (defence in depth); the
+    # store's lease is still checked first, so a second writer is refused before it opens the file.
     led = create(tmp_path, store, clock)
-
-    def no_flock(*a):
-        raise AssertionError("flock must not be used when an anchor store is configured")
-
-    monkeypatch.setattr(od.fcntl, "flock", no_flock)
+    opened = []
+    real_open = od.os.open
+    monkeypatch.setattr(od.os, "open", lambda *a, **k: opened.append(a) or real_open(*a, **k))
     assert refused(lambda: reopen(tmp_path, store, clock)) == "LEDGER_LOCKED"
-    led.close()  # releases the lease
+    assert opened == []
+    monkeypatch.undo()
+    led.close()  # releases the lease and the flock
     reopen(tmp_path, store, clock).close()
+
+
+def test_flock_kept_in_anchored_mode(tmp_path, store, clock):
+    """Finding C: a second instance on the same file is refused even if its store hands it a lease
+    (misconfigured / split store, a store that lost the lease row): LEDGER_LOCKED from the local flock."""
+    led = create(tmp_path, store, clock)
+    other = MemoryAnchorStore()
+    other.heads[LID] = list(store.heads[LID])
+    assert refused(lambda: reopen(tmp_path, other, clock)) == "LEDGER_LOCKED"
+    assert LID not in other.holders  # the lease taken from the other store was released on refusal
+    led.close()
+    reopen(tmp_path, other, clock).close()
 
 
 def test_stale_writer_is_fenced(tmp_path, store, clock):

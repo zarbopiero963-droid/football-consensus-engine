@@ -107,6 +107,35 @@ def test_anchor_is_monotonic_and_append_only(tmp_path, signer_id):
     led.close()
 
 
+def test_lease_fencing_token_cannot_be_lowered_or_reset(tmp_path, signer_id):
+    """Review finding E: the database refuses to lower, reset or re-key the fencing token."""
+    import psycopg
+    led = _ledger(tmp_path, signer_id, _store(), create=True)
+    token = led.fencing_token
+    for sql, msg in (
+            ("UPDATE signer_ledger_writer_leases SET fencing_token = fencing_token - 1 WHERE ledger_id = %s",
+             "SIGNER_LEDGER_LEASE_TOKEN_NOT_INCREASING"),
+            ("UPDATE signer_ledger_writer_leases SET fencing_token = fencing_token WHERE ledger_id = %s",
+             "SIGNER_LEDGER_LEASE_TOKEN_NOT_INCREASING"),
+            ("UPDATE signer_ledger_writer_leases SET ledger_id = ledger_id || 'x', fencing_token = fencing_token + 1"
+             " WHERE ledger_id = %s", "SIGNER_LEDGER_LEASE_ID_IMMUTABLE"),
+            ("DELETE FROM signer_ledger_writer_leases WHERE ledger_id = %s", "SIGNER_LEDGER_LEASE_NO_DELETE")):
+        with pytest.raises(psycopg.Error, match=msg):
+            with _connect() as conn, conn.cursor() as cur:
+                cur.execute(sql, (led.ledger_id,))
+    with pytest.raises(psycopg.Error, match="SIGNER_LEDGER_LEASE_NO_DELETE"):
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("TRUNCATE signer_ledger_writer_leases")
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT fencing_token FROM signer_ledger_writer_leases WHERE ledger_id = %s", (led.ledger_id,))
+        assert cur.fetchone()[0] == token
+    _authorize(led, 1)  # the writer is unaffected
+    led.close()
+    again = _ledger(tmp_path, signer_id, _store())  # a legitimate acquisition still increments it
+    assert again.fencing_token == token + 1
+    again.close()
+
+
 def test_truncation_and_rollback_detected(tmp_path, signer_id):
     store = _store()
     led = _ledger(tmp_path, signer_id, store, create=True)
@@ -135,7 +164,11 @@ def test_two_writers_second_refused_and_stale_writer_fenced(tmp_path, signer_id)
         cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = %s",
                     ("fce-signer-lease:" + first.ledger_id[:40],))
         assert cur.fetchone()[0] is True
-    second = _ledger(tmp_path, signer_id, _store())
+    # The second writer runs on another host (its own copy of the file): the first still holds its local flock.
+    host2 = tmp_path / "host2"
+    host2.mkdir()
+    (host2 / "ledger.jsonl").write_bytes((tmp_path / "ledger.jsonl").read_bytes())
+    second = _ledger(host2, signer_id, _store())
     assert second.fencing_token > first.fencing_token
     # The stale writer still believes it is the writer: its next anchored append is fenced, and poisons it.
     with pytest.raises(LedgerError) as e:

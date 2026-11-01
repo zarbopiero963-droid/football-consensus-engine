@@ -61,8 +61,9 @@ process restarts and replays the file (a torn last line then fails closed as
 LEDGER_CORRUPT and needs an owner decision).
 
 External anchor (optional, signer/anchor.py): with an `AnchorStore` the
-ledger (a) takes a writer LEASE from the store instead of flock (LEDGER_LOCKED
-for a second writer, on any host), (b) after EVERY fsync'd append advances the
+ledger (a) takes a writer LEASE from the store (LEDGER_LOCKED for a second
+writer, on any host) BEFORE opening the file, and still takes the local flock
+too (defence in depth on one host), (b) after EVERY fsync'd append advances the
 anchored head (seq = number of lines, head hash, fencing token) -- write-ahead
 order: local line first, anchor second, so a crash in between leaves the local
 file exactly one step AHEAD of the anchor, never behind -- and (c) refuses to
@@ -70,8 +71,10 @@ start when the local tail is behind the anchor (truncation / rollback:
 LEDGER_ANCHOR_AHEAD_OF_LOCAL), different at the anchored seq (fork / rewrite:
 LEDGER_ANCHOR_HASH_MISMATCH), ahead of it (LEDGER_LOCAL_AHEAD_OF_ANCHOR), or
 not anchored at all (LEDGER_ANCHOR_MISSING). Local-ahead and missing are
-accepted only with `owner_ack_head` equal to the exact local head hash, i.e. an
-explicit owner decision after reviewing the extra lines. An unreachable store
+accepted only with an owner-SIGNED `anchor.LedgerHeadAck` (Ed25519, domain
+sxbet.ledger_head_ack.v1, over ledger_id + anchored head + local head, short
+TTL), i.e. an explicit owner decision after reviewing the extra lines; a bare
+hash string is refused (LEDGER_HEAD_ACK_*). An unreachable store
 fails closed (LEDGER_ANCHOR_UNREACHABLE at start; LEDGER_ANCHOR_WRITE_FAILED +
 poison on append); a stale writer whose lease was taken over is LEDGER_FENCED.
 
@@ -415,7 +418,8 @@ def _settlement_pnl(order: Order, rows: list, filled: int) -> int | None:
 # ---------------------------------------------------------------- ledger
 class OrderLedger:
     def __init__(self, path: str, *, signer_id: str, signer_address: str, clock: Callable[[], float],
-                 _create: bool = False, anchor: "an.AnchorStore | None" = None, owner_ack_head: str | None = None):
+                 _create: bool = False, anchor: "an.AnchorStore | None" = None,
+                 owner_ack: "an.LedgerHeadAck | None" = None, owner_public_key: Any = None):
         if not isinstance(signer_address, str) or not _ADDRESS.fullmatch(signer_address.lower()):
             raise LedgerError("LEDGER_SIGNER_ADDRESS_INVALID")
         self._path = path
@@ -449,15 +453,17 @@ class OrderLedger:
         try:
             if anchor is not None and _create and self._anchor_head() is not None:
                 raise LedgerError("LEDGER_ANCHOR_EXISTS")  # a fresh file never replaces an anchored history
-            self._fd = self._open_locked(path, create=_create, lock=anchor is None)
-            self._flocked = anchor is None
+            # The local flock is kept in anchored mode too (defence in depth: a misconfigured or split store
+            # cannot let two instances on one host write the same file); the lease guards across hosts.
+            self._fd = self._open_locked(path, create=_create)
+            self._flocked = True
             if _create:
                 self._append({"kind": "GENESIS", "schema": LEDGER_SCHEMA, "signer_id": signer_id,
                               "signer_address": self.signer_address})
             else:
                 hashes = self._replay()
                 if anchor is not None:
-                    self._verify_anchor(hashes, owner_ack_head)
+                    self._verify_anchor(hashes, owner_ack, owner_public_key)
         except BaseException:
             self.close()
             raise
@@ -472,11 +478,13 @@ class OrderLedger:
     @classmethod
     def open(cls, path: str, *, signer_id: str, signer_address: str,
              clock: Callable[[], float] = time.time, anchor: "an.AnchorStore | None" = None,
-             owner_ack_head: str | None = None) -> "OrderLedger":
-        """`owner_ack_head`: only for an owner who reviewed the local lines beyond the anchored head (or a
-        ledger never anchored before): the exact local head hash to anchor. Anything else is refused."""
+             owner_ack: "an.LedgerHeadAck | None" = None, owner_public_key: Any = None) -> "OrderLedger":
+        """`owner_ack`: only for an owner who reviewed the local lines beyond the anchored head (or a ledger
+        never anchored before): an `anchor.LedgerHeadAck` signed with the owner's Ed25519 key over exactly
+        (ledger_id, anchored head, local head), short TTL, verified with `owner_public_key` (the signer's own
+        configuration, never the ack). A bare hash string or anything else is refused."""
         return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock, anchor=anchor,
-                   owner_ack_head=owner_ack_head)
+                   owner_ack=owner_ack, owner_public_key=owner_public_key)
 
     # ---- external anchor ----
     @property
@@ -512,13 +520,22 @@ class OrderLedger:
         except Exception:
             raise LedgerError("LEDGER_ANCHOR_WRITE_FAILED") from None
 
-    def _verify_anchor(self, hashes: list[str], owner_ack_head: str | None) -> None:
+    def _owner_acked(self, ack: Any, key: Any, head: "an.AnchorHead | None", local_seq: int,
+                     local_head: str, missing_code: str) -> None:
+        """Only an owner-signed LedgerHeadAck for exactly this (anchored head -> local head) unlocks start."""
+        if ack is None:
+            raise LedgerError(missing_code)
+        try:
+            an.verify_head_ack(ack, key, ledger_id=self.ledger_id, anchored=head, local_seq=local_seq,
+                               local_head_hash=local_head, now=int(self._clock()))
+        except an.HeadAckInvalid as exc:
+            raise LedgerError(exc.code) from None
+
+    def _verify_anchor(self, hashes: list[str], owner_ack: Any, owner_public_key: Any) -> None:
         head = self._anchor_head()
         local_seq, local_head = len(hashes), self._prev
-        acked = isinstance(owner_ack_head, str) and owner_ack_head == local_head
         if head is None:
-            if not acked:
-                raise LedgerError("LEDGER_ANCHOR_MISSING")
+            self._owner_acked(owner_ack, owner_public_key, None, local_seq, local_head, "LEDGER_ANCHOR_MISSING")
             self._anchor_advance(0, local_seq, local_head)
             return
         if head.seq > local_seq:
@@ -526,12 +543,12 @@ class OrderLedger:
         if hashes[head.seq - 1] != head.head_hash:
             raise LedgerError("LEDGER_ANCHOR_HASH_MISMATCH")   # rewritten history / fork
         if head.seq < local_seq:
-            if not acked:
-                raise LedgerError("LEDGER_LOCAL_AHEAD_OF_ANCHOR")
+            self._owner_acked(owner_ack, owner_public_key, head, local_seq, local_head,
+                              "LEDGER_LOCAL_AHEAD_OF_ANCHOR")
             self._anchor_advance(head.seq, local_seq, local_head)
 
     @staticmethod
-    def _open_locked(path: str, *, create: bool, lock: bool = True) -> int:
+    def _open_locked(path: str, *, create: bool) -> int:
         flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
         try:
             fd = os.open(path, flags | (os.O_CREAT | os.O_EXCL if create else 0), 0o600)
@@ -541,8 +558,6 @@ class OrderLedger:
             raise LedgerError("LEDGER_MISSING") from None
         except OSError:
             raise LedgerError("LEDGER_UNREADABLE") from None
-        if not lock:
-            return fd  # anchored mode: the store's writer lease replaces the local flock
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:

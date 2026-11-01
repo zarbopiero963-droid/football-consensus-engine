@@ -42,11 +42,11 @@ lowercase hex digits, zero-padded); SALT_DECIMAL is an explicit config choice. E
 the same uint256 that was signed. DOCS_UNVERIFIED until a testnet POST confirms the accepted format(s).
 
 Reply policy (fail closed; the parser never releases exposure by itself):
-- SUBMITTED row -> SUBMITTED. With waitForOutcome: RESTED -> OPEN; PARTIAL_FILL_RESTED ->
-  PARTIALLY_FILLED; FULLY_FILLED -> FILLED (matched exposure is kept until settlement anyway);
-  PARTIAL_FILL_DONE -> PARTIALLY_FILLED (the fill is recorded; the discarded remainder stays reserved
-  until a read shows the order INACTIVE); CANCELLED -> SUBMITTED (stays reserved until a read confirms;
-  a fillAmount on it is still recorded as PARTIALLY_FILLED); TIMEOUT -> SUBMITTED. Any outcome whose
+- SUBMITTED row -> SUBMITTED. With waitForOutcome: RESTED -> OPEN; every other outcome -> SUBMITTED
+  with the whole stake reserved: FULLY_FILLED, PARTIAL_FILL_RESTED, PARTIAL_FILL_DONE and CANCELLED with a
+  fillAmount (reason *_RECONCILE_FOR_FILL), CANCELLED without fill (stays reserved until a read confirms),
+  TIMEOUT. A reply NEVER sets the matched amount: only reads (GET /orders-v3, /fills-v3) do, because
+  outcome.fillAmount units are DOCS_UNVERIFIED and `filled` can never go down again. Any outcome whose
   amounts are inconsistent with the order is ignored (SUBMITTED, OUTCOME_MALFORMED_IGNORED).
   DOCS_UNVERIFIED: that outcome.fillAmount is in the same base units as totalBetSize/remainingSize.
 - FAILED row -> REJECTED (the ledger keeps the stake reserved until expiry: the signature was released).
@@ -272,28 +272,27 @@ def _outcome(row: Mapping[str, Any], exp: ExpectedOrder, base: dict[str, Any]) -
         if fill:
             return malformed
         return CreateResult(**res, state=OPEN, filled=0, reason="OUTCOME_RESTED")
+    # outcome.fillAmount units are DOCS_UNVERIFIED: a reply never sets `filled` (an overstated value would
+    # make every later read fail as FILLED_AMOUNT_INVALID, since filled never decreases). An outcome with a
+    # fill keeps the order SUBMITTED, i.e. the whole stake reserved; only exchange READS record the fill.
     if st == "FULLY_FILLED":
         if fill != exp.stake:
             return malformed
-        return CreateResult(**res, state=FILLED, filled=fill, reason="OUTCOME_FULLY_FILLED")
+        return CreateResult(**res, state=SUBMITTED, reason="OUTCOME_FULLY_FILLED_RECONCILE_FOR_FILL")
     if st == "PARTIAL_FILL_RESTED":
         if not 0 < fill < exp.stake:
             return malformed
-        return CreateResult(**res, state=PARTIALLY_FILLED, filled=fill, reason="OUTCOME_PARTIAL_FILL_RESTED")
+        return CreateResult(**res, state=SUBMITTED, reason="OUTCOME_PARTIAL_FILL_RESTED_RECONCILE_FOR_FILL")
     if st == "PARTIAL_FILL_DONE":
         if not 0 < fill < exp.stake:
             return malformed
-        return CreateResult(**res, state=PARTIALLY_FILLED, filled=fill,
-                            reason="OUTCOME_PARTIAL_FILL_DONE_RECONCILE_TO_RELEASE")
-    # CANCELLED: off the book per the engine, but only a read releases the reservation.
+        return CreateResult(**res, state=SUBMITTED, reason="OUTCOME_PARTIAL_FILL_DONE_RECONCILE_FOR_FILL")
+    # CANCELLED: off the book per the engine, but only a read releases the reservation (or records a fill).
     cr = out.get("cancelReason")
     res["cancel_reason"] = cr if cr in CANCEL_REASONS else None
-    reason = "OUTCOME_CANCELLED_RECONCILE_TO_RELEASE"
-    if fill == exp.stake:
-        return CreateResult(**res, state=FILLED, filled=fill, reason=reason)
     if fill:
-        return CreateResult(**res, state=PARTIALLY_FILLED, filled=fill, reason=reason)
-    return CreateResult(**res, state=SUBMITTED, reason=reason)
+        return CreateResult(**res, state=SUBMITTED, reason="OUTCOME_CANCELLED_RECONCILE_FOR_FILL")
+    return CreateResult(**res, state=SUBMITTED, reason="OUTCOME_CANCELLED_RECONCILE_TO_RELEASE")
 
 
 def parse_create_orders(response: Any, expected: Sequence[ExpectedOrder], *,

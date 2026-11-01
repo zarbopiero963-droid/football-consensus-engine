@@ -94,3 +94,14 @@ def test_signer_ledger_anchor_migration_is_additive_and_append_only():
     assert 'CREATE OR REPLACE TRIGGER' in sql and 'BEFORE UPDATE OR DELETE' in sql and 'BEFORE TRUNCATE' in sql
     for word in ('DROP ','ALTER TABLE','DELETE FROM','TRUNCATE TABLE','UPDATE SIGNER','INSERT INTO'):
         assert word not in sql, word
+
+
+def test_signer_ledger_writer_lease_token_only_increases_in_the_database():
+    # Review finding E: the fencing token must not be lowered (UPDATE) or reset (DELETE + re-insert, TRUNCATE).
+    sql=migrations.load_migrations()[7].sql.upper()
+    assert 'CREATE OR REPLACE FUNCTION SIGNER_LEDGER_WRITER_LEASES_GUARD_UPDATE()' in sql
+    assert 'NEW.FENCING_TOKEN <= OLD.FENCING_TOKEN' in sql and 'NEW.LEDGER_ID <> OLD.LEDGER_ID' in sql
+    assert 'CREATE OR REPLACE TRIGGER SIGNER_LEDGER_WRITER_LEASES_UPDATE_GUARD' in sql
+    assert 'BEFORE UPDATE ON SIGNER_LEDGER_WRITER_LEASES' in sql
+    assert 'BEFORE DELETE ON SIGNER_LEDGER_WRITER_LEASES' in sql
+    assert 'BEFORE TRUNCATE ON SIGNER_LEDGER_WRITER_LEASES' in sql

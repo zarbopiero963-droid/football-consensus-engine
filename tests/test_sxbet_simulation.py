@@ -460,10 +460,42 @@ def test_bridge_never_imports_signer():
 def test_signer_never_imports_bridge_or_network_libraries():
     files = list((ROOT / "signer").rglob("*.py"))
     assert files
-    banned = ("bridge", "httpx", "requests", "urllib", "http", "socket", "aiohttp", "websockets")
+    # ssl / importlib / subprocess (review finding F): no TLS, no dynamic import, no child process.
+    banned = ("bridge", "httpx", "requests", "urllib", "http", "socket", "aiohttp", "websockets",
+              "ssl", "importlib", "subprocess")
     for p in files:
         for m in _imports(p):
             assert m.split(".")[0] not in banned, (p, m)
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        assert not any(isinstance(n, ast.Name) and n.id == "__import__" for n in ast.walk(tree)), p
+
+
+# The only `send` methods allowed in signer/: the abstract RestSender Protocol and the adapter that
+# delegates to an injected RestSender. No concrete sender (I/O) exists in the repository.
+_SEND_ALLOWED = {("rest_adapter.py", "RestSender"), ("rest_adapter.py", "OfficialRestAdapter")}
+
+
+def test_no_concrete_sender_class_in_signer():
+    found = set()
+    for p in (ROOT / "signer").rglob("*.py"):
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                assert node.name != "send", (p, "module-level send")
+        for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+            if any(isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == "send" for f in cls.body):
+                found.add((p.name, cls.name))
+    assert found <= _SEND_ALLOWED, found - _SEND_ALLOWED
+    tree = ast.parse((ROOT / "signer" / "rest_adapter.py").read_text(encoding="utf-8"))
+    classes = {c.name: c for c in ast.walk(tree) if isinstance(c, ast.ClassDef)}
+    assert [b.id for b in classes["RestSender"].bases] == ["Protocol"]
+    (proto_send,) = [f for f in classes["RestSender"].body if isinstance(f, ast.FunctionDef) and f.name == "send"]
+    assert [type(x) for x in proto_send.body] == [ast.Expr]  # `...`: abstract
+    (adapter_send,) = [f for f in classes["OfficialRestAdapter"].body
+                       if isinstance(f, ast.FunctionDef) and f.name == "send"]
+    calls = [ast.unparse(c.func) for c in ast.walk(adapter_send) if isinstance(c, ast.Call)]
+    assert "self._sender.send" in calls and all(
+        c in ("self._sender.send", "isinstance", "type", "RestResponse") for c in calls), calls
 
 
 def test_no_submission_code_in_signer_or_sxbet_module():

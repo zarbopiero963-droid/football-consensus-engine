@@ -25,9 +25,11 @@ Flow (CancellationService, all under the gateway lock):
    exchange already shows terminal (filled, cancelled, expired) are not sent (by id: reported
    ALREADY_TERMINAL; if nothing is left, nothing is sent and the approval is NOT consumed). A subset of
    the approved ids may be sent, never more;
-5. one fsync'd CANCEL_REQUEST ledger line consumes the nonce (single use, survives restarts) BEFORE the
-   request goes out; it changes no order state and no exposure;
-6. the request is sent; the reply is parsed (per id: CANCELLED / NOT_CANCELLED(reason) / UNCONFIRMED /
+5. the live flag and the approval expiry are checked AGAIN (the reads of step 4 take time): refused =>
+   nonce not consumed, nothing sent; then one fsync'd CANCEL_REQUEST ledger line consumes the nonce
+   (single use, survives restarts) BEFORE the request goes out; it changes no order state and no exposure;
+6. flag and expiry once more right before the send (refused => CANCEL_NOT_SENT, nonce stays spent); the
+   request is sent; the reply is parsed (per id: CANCELLED / NOT_CANCELLED(reason) / UNCONFIRMED /
    UNKNOWN; scopes: command accepted or not);
 7. every targeted order is reconciled again from exchange reads. ONLY that evidence changes the ledger:
    INACTIVE + USER_REQUESTED -> CANCELLED (remaining reservation released, matched part kept), fills
@@ -277,8 +279,16 @@ class CancellationService:
         if self._ledger.nonce_consumed(approval.approval_nonce):
             raise CancelRefused("CANCEL_APPROVAL_NONCE_REPLAYED")
 
+    def _still_valid(self, approval: CancelApproval) -> None:
+        """The pre-check reads can take a while (up to 3 per order): flag and approval expiry are checked
+        again at the last moment, with the same rules as the first check (no skew on expiry)."""
+        self._gw._check_flag()
+        if self._now() >= approval.expires_at:
+            raise CancelRefused("CANCEL_APPROVAL_EXPIRED")
+
     def _consume(self, approval: CancelApproval, binding: Mapping[str, Any], scope: str, order_ids: list[str],
                  market_hash: str | None = None, event_id: str | None = None) -> None:
+        self._still_valid(approval)  # refused here => nonce NOT consumed, nothing sent
         try:
             self._ledger.record_cancel_request(approval_nonce=approval.approval_nonce, scope=scope,
                                                binding_sha256=binding_sha256(binding), order_ids=order_ids,
@@ -288,6 +298,15 @@ class CancellationService:
                                 else exc.code) from None
         except LedgerError as exc:
             raise CancelRefused(exc.code) from None  # nothing was sent
+
+    def _before_send(self, approval: CancelApproval, scope: str) -> None:
+        """Last check right before the request leaves. The nonce is already consumed (fail closed: a refusal
+        here sends nothing and a retry needs a new approval)."""
+        try:
+            self._still_valid(approval)
+        except (CancelRefused, GatewayRefused) as exc:
+            self._log("CANCEL_NOT_SENT", scope, reason=exc.code, nonce=approval.approval_nonce)
+            raise
 
     def _reconcile(self, client_order_id: str) -> str:
         """Exchange reads -> evidence -> ledger (the ONLY way a cancel changes exposure)."""
@@ -336,6 +355,7 @@ class CancellationService:
             request = build_cancel_by_ids(to_send, limits=self._adapter.limits)
             self._consume(approval, binding, SCOPE_ORDER_IDS, to_send)
             self._log("CANCEL_REQUESTED", SCOPE_ORDER_IDS, nonce=approval.approval_nonce)
+            self._before_send(approval, SCOPE_ORDER_IDS)
             parsed = parse_cancel_by_ids(self._adapter.send(request), to_send)
             for oid in to_send:
                 r = parsed[oid]
@@ -373,6 +393,7 @@ class CancellationService:
                     targets.append(o.order_id)
             self._consume(approval, binding, scope, sorted(targets), market_hash=market_hash, event_id=event_id)
             self._log("CANCEL_REQUESTED", scope, nonce=approval.approval_nonce)
+            self._before_send(approval, scope)
             outcome = parse_cancel_scope(self._adapter.send(request))
             submitted = {oid for oid, _ in outcome.submitted}
             for oid in targets:

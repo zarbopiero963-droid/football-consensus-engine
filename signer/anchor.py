@@ -23,13 +23,32 @@ PostgresAnchorStore (tables from sql/migrations/0008_signer_ledger_anchor.sql):
   DELETE, TRUNCATE, a non-increasing seq and a token other than the lease's (triggers in 0008).
 The connection factory is injected (`connect`): this module imports no database driver and no network
 library; the signer process passes e.g. `psycopg.connect` bound to its own DSN.
+
+Owner head acknowledgement (`LedgerHeadAck`): when the local file is AHEAD of the anchor (a crash between
+the local fsync and the anchor write, a stale writer's last line) or the ledger was never anchored, the
+signer refuses to start unless the OWNER signs, with the same Ed25519 key used for approvals, risk config
+and the live-trading flag, the exact transition they reviewed: domain `sxbet.ledger_head_ack.v1` over
+{ledger_id (= "<signer_id>:<address>"), anchored seq + head hash (null if never anchored), local seq +
+head hash, issued_at, expires_at (TTL <= HEAD_ACK_MAX_TTL_SECONDS)}. A bare hash string is NOT an ack:
+anyone with write access to the ledger file and the start-up arguments could append validly chained
+lines and "acknowledge" them. The signer holds only the public key. An ack is consulted only when the
+file is ahead, and it names the anchored head it moves from, so it cannot be replayed after the anchor
+advanced.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+HEAD_ACK_DOMAIN = "sxbet.ledger_head_ack.v1"
+HEAD_ACK_MAX_TTL_SECONDS = 300
+HEAD_ACK_CLOCK_SKEW_SECONDS = 5
 
 _LEDGER_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -76,6 +95,71 @@ class AnchorStore(Protocol):
     def head(self, ledger_id: str) -> AnchorHead | None: ...
 
     def advance(self, ledger_id: str, *, token: int, expected_seq: int, seq: int, head_hash: str) -> None: ...
+
+
+class HeadAckInvalid(AnchorError):
+    """The owner's head acknowledgement is missing a key, malformed, mis-signed, stale or for another head."""
+
+
+@dataclass(frozen=True)
+class LedgerHeadAck:
+    ledger_id: str
+    anchored_seq: int | None          # None: the ledger was never anchored
+    anchored_head_hash: str | None
+    local_seq: int
+    local_head_hash: str
+    issued_at: int
+    expires_at: int
+    signature: bytes                  # 64-byte Ed25519 signature over ledger_head_ack_message(...)
+
+    def __repr__(self) -> str:
+        return (f"LedgerHeadAck(ledger_id={self.ledger_id!r}, anchored_seq={self.anchored_seq!r}, "
+                f"local_seq={self.local_seq!r}, expires_at={self.expires_at!r})")
+
+
+def ledger_head_ack_message(*, ledger_id: str, anchored_seq: int | None, anchored_head_hash: str | None,
+                            local_seq: int, local_head_hash: str, issued_at: int, expires_at: int) -> bytes:
+    anchored = None if anchored_seq is None else {"seq": anchored_seq, "head_hash": anchored_head_hash}
+    return json.dumps({"domain": HEAD_ACK_DOMAIN, "ledger_id": ledger_id, "anchored": anchored,
+                       "local": {"seq": local_seq, "head_hash": local_head_hash}, "issued_at": issued_at,
+                       "expires_at": expires_at},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+
+
+def verify_head_ack(ack: Any, public_key: Any, *, ledger_id: str, anchored: "AnchorHead | None", local_seq: int,
+                    local_head_hash: str, now: int) -> None:
+    """Raise HeadAckInvalid(code) unless `ack` is the owner's fresh signature over exactly this transition."""
+    if not isinstance(public_key, Ed25519PublicKey):
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_KEY_MISSING")
+    if not isinstance(ack, LedgerHeadAck):
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_MALFORMED")
+    if not (isinstance(ack.ledger_id, str) and _LEDGER_ID.fullmatch(ack.ledger_id)
+            and type(ack.local_seq) is int and ack.local_seq > 0
+            and isinstance(ack.local_head_hash, str) and _HASH.fullmatch(ack.local_head_hash)
+            and ((ack.anchored_seq is None and ack.anchored_head_hash is None)
+                 or (type(ack.anchored_seq) is int and ack.anchored_seq > 0
+                     and isinstance(ack.anchored_head_hash, str) and _HASH.fullmatch(ack.anchored_head_hash)))
+            and type(ack.issued_at) is int and type(ack.expires_at) is int
+            and isinstance(ack.signature, (bytes, bytearray)) and len(ack.signature) == 64):
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_MALFORMED")
+    if ack.expires_at - ack.issued_at > HEAD_ACK_MAX_TTL_SECONDS or ack.expires_at <= ack.issued_at:
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_TTL_TOO_LONG")
+    if ack.issued_at > now + HEAD_ACK_CLOCK_SKEW_SECONDS:
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_NOT_YET_VALID")
+    if now >= ack.expires_at:
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_EXPIRED")
+    msg = ledger_head_ack_message(ledger_id=ack.ledger_id, anchored_seq=ack.anchored_seq,
+                                  anchored_head_hash=ack.anchored_head_hash, local_seq=ack.local_seq,
+                                  local_head_hash=ack.local_head_hash, issued_at=ack.issued_at,
+                                  expires_at=ack.expires_at)
+    try:
+        public_key.verify(bytes(ack.signature), msg)
+    except (InvalidSignature, TypeError, ValueError):
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_SIGNATURE_INVALID") from None
+    expected = (ledger_id, None if anchored is None else anchored.seq,
+                None if anchored is None else anchored.head_hash, local_seq, local_head_hash)
+    if (ack.ledger_id, ack.anchored_seq, ack.anchored_head_hash, ack.local_seq, ack.local_head_hash) != expected:
+        raise HeadAckInvalid("LEDGER_HEAD_ACK_MISMATCH")
 
 
 def lock_key(ledger_id: str) -> int:

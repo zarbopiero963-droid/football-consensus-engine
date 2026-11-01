@@ -4,7 +4,9 @@
 -- ledger, each row carrying the fencing token of the writer lease that wrote it. The database refuses
 -- UPDATE, DELETE and TRUNCATE on it, a non-increasing seq, and a token other than the current lease's.
 -- signer_ledger_writer_leases holds one row per ledger: the current fencing token (incremented on every
--- lease acquisition, under a session advisory lock held by the writer).
+-- lease acquisition, under a session advisory lock held by the writer). The database refuses an UPDATE
+-- that does not strictly increase the token or that changes ledger_id, and refuses DELETE and TRUNCATE
+-- (a deleted row re-inserted at token 1 would also lower it): a stale writer can never be un-fenced.
 CREATE TABLE IF NOT EXISTS signer_ledger_writer_leases (
     ledger_id TEXT PRIMARY KEY CHECK (ledger_id ~ '^[A-Za-z0-9_.:-]{1,200}$'),
     fencing_token BIGINT NOT NULL CHECK (fencing_token > 0),
@@ -49,3 +51,28 @@ CREATE OR REPLACE TRIGGER signer_ledger_anchors_no_truncate
 CREATE OR REPLACE TRIGGER signer_ledger_anchors_insert_guard
     BEFORE INSERT ON signer_ledger_anchors
     FOR EACH ROW EXECUTE FUNCTION signer_ledger_anchors_guard_insert();
+CREATE OR REPLACE FUNCTION signer_ledger_writer_leases_guard_update() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.ledger_id <> OLD.ledger_id THEN
+        RAISE EXCEPTION 'SIGNER_LEDGER_LEASE_ID_IMMUTABLE';
+    END IF;
+    IF NEW.fencing_token <= OLD.fencing_token THEN
+        RAISE EXCEPTION 'SIGNER_LEDGER_LEASE_TOKEN_NOT_INCREASING';
+    END IF;
+    RETURN NEW;
+END;
+$fn$;
+CREATE OR REPLACE FUNCTION signer_ledger_writer_leases_no_delete() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    RAISE EXCEPTION 'SIGNER_LEDGER_LEASE_NO_DELETE';
+END;
+$fn$;
+CREATE OR REPLACE TRIGGER signer_ledger_writer_leases_update_guard
+    BEFORE UPDATE ON signer_ledger_writer_leases
+    FOR EACH ROW EXECUTE FUNCTION signer_ledger_writer_leases_guard_update();
+CREATE OR REPLACE TRIGGER signer_ledger_writer_leases_no_delete
+    BEFORE DELETE ON signer_ledger_writer_leases
+    FOR EACH ROW EXECUTE FUNCTION signer_ledger_writer_leases_no_delete();
+CREATE OR REPLACE TRIGGER signer_ledger_writer_leases_no_truncate
+    BEFORE TRUNCATE ON signer_ledger_writer_leases
+    FOR EACH STATEMENT EXECUTE FUNCTION signer_ledger_writer_leases_no_delete();

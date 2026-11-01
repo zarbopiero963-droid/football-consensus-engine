@@ -208,15 +208,19 @@ def test_non_atomic_batch_each_order_independently():
     assert [r.state for r in parse(ok(rows[:2]), exp=exp)] == [od.UNKNOWN] * 3
 
 
+# Intentional change (finding D): outcome.fillAmount units are DOCS_UNVERIFIED, so a reply never sets
+# `filled`. An outcome with a fill keeps the order SUBMITTED (whole stake reserved); only exchange READS
+# (GET /orders-v3, /fills-v3) record the matched amount. Previously FULLY_FILLED -> FILLED and
+# PARTIAL_FILL_* -> PARTIALLY_FILLED with the reply's fillAmount, which an overstated value made sticky.
 @pytest.mark.parametrize("outcome,state,filled,reason", [
     ({"state": "RESTED", "remainingAmount": "5000000"}, od.OPEN, 0, "OUTCOME_RESTED"),
-    ({"state": "FULLY_FILLED", "remainingAmount": "0", "fillAmount": "5000000", "blendedOdds": "1"}, od.FILLED,
-     5_000_000, "OUTCOME_FULLY_FILLED"),
-    ({"state": "PARTIAL_FILL_RESTED", "remainingAmount": "3000000", "fillAmount": "2000000"}, od.PARTIALLY_FILLED,
-     2_000_000, "OUTCOME_PARTIAL_FILL_RESTED"),
+    ({"state": "FULLY_FILLED", "remainingAmount": "0", "fillAmount": "5000000", "blendedOdds": "1"}, od.SUBMITTED,
+     None, "OUTCOME_FULLY_FILLED_RECONCILE_FOR_FILL"),
+    ({"state": "PARTIAL_FILL_RESTED", "remainingAmount": "3000000", "fillAmount": "2000000"}, od.SUBMITTED,
+     None, "OUTCOME_PARTIAL_FILL_RESTED_RECONCILE_FOR_FILL"),
     # Remainder discarded per the docs, but only a read (INACTIVE) releases it: stays reserved.
-    ({"state": "PARTIAL_FILL_DONE", "remainingAmount": "0", "fillAmount": "2000000"}, od.PARTIALLY_FILLED,
-     2_000_000, "OUTCOME_PARTIAL_FILL_DONE_RECONCILE_TO_RELEASE"),
+    ({"state": "PARTIAL_FILL_DONE", "remainingAmount": "0", "fillAmount": "2000000"}, od.SUBMITTED,
+     None, "OUTCOME_PARTIAL_FILL_DONE_RECONCILE_FOR_FILL"),
     ({"state": "CANCELLED", "cancelReason": "NO_LIQUIDITY"}, od.SUBMITTED, None,
      "OUTCOME_CANCELLED_RECONCILE_TO_RELEASE"),
     ({"state": "TIMEOUT"}, od.SUBMITTED, None, "OUTCOME_TIMEOUT"),
@@ -241,7 +245,8 @@ def test_cancel_reason_documented_values_only():
                  wait=True)
     assert r.cancel_reason is None and r.reason == "OUTCOME_CANCELLED_RECONCILE_TO_RELEASE"
     (r,) = parse(ok([submitted_row(OID, outcome={"state": "CANCELLED", "fillAmount": "1000000"})]), wait=True)
-    assert (r.state, r.filled) == (od.PARTIALLY_FILLED, 1_000_000)  # a fill is never dropped
+    # Finding D: reserved in full until reads record the fill (a fill is never dropped, never taken from a reply).
+    assert (r.state, r.filled, r.reason) == (od.SUBMITTED, None, "OUTCOME_CANCELLED_RECONCILE_FOR_FILL")
 
 
 def test_outcome_without_wait_for_outcome_is_ignored():
@@ -380,9 +385,28 @@ def test_gateway_wait_for_outcome_fully_filled(tmp_path, throwaway, owner):
     sender.script = [ok([submitted_row(sg["order_id"], outcome={"state": "FULLY_FILLED", "remainingAmount": "0",
                                                                 "fillAmount": "2000000"})])]
     out = g.submit(sg, i)
-    assert out["state"] == od.FILLED and sender.requests[0].body["maxWaitTime"] == 8000
+    # Finding D (intentional change): the reply's fillAmount is not recorded; SUBMITTED, stake reserved in full.
+    assert out["state"] == od.SUBMITTED and sender.requests[0].body["maxWaitTime"] == 8000
+    o = s._ledger.get(i["idempotency_key"])
+    assert o.filled == 0 and s.committed_exposure_base_units == 2_000_000
+    sender.orders[sg["order_id"]] = order_row(sg["order_id"], "INACTIVE", 0, "FILLED", total=2_000_000)
+    assert g.reconcile(i["idempotency_key"])["state"] == od.FILLED
     o = s._ledger.get(i["idempotency_key"])
     assert o.filled == 2_000_000 and s.committed_exposure_base_units == 2_000_000  # matched, held till settled
+
+
+def test_overstated_reply_fill_amount_does_not_poison_later_reads(tmp_path, throwaway, owner):
+    """Finding D: the reply says FULLY_FILLED (units DOCS_UNVERIFIED) but the exchange row shows a partial fill.
+    Before: filled was raised from the reply and the read failed forever with FILLED_AMOUNT_INVALID."""
+    s, [(sg, i)], sender, g, _ = setup(tmp_path, throwaway, owner, options=ra.SubmitOptions(wait_for_outcome=True))
+    sender.script = [ok([submitted_row(sg["order_id"], outcome={"state": "FULLY_FILLED", "remainingAmount": "0",
+                                                                "fillAmount": "2000000"})])]
+    g.submit(sg, i)
+    sender.orders[sg["order_id"]] = order_row(sg["order_id"], "ACTIVE", 500_000, total=2_000_000)
+    out = g.reconcile(i["idempotency_key"])
+    assert out["state"] == od.PARTIALLY_FILLED and out["reason"] != "FILLED_AMOUNT_INVALID"
+    o = s._ledger.get(i["idempotency_key"])
+    assert o.filled == 1_500_000 and s.committed_exposure_base_units == 2_000_000
 
 
 def test_gateway_wait_for_outcome_cancelled_stays_reserved_until_read(tmp_path, throwaway, owner):
@@ -402,7 +426,7 @@ def test_taker_ioc_partial_fill_done_releases_only_after_read(tmp_path, throwawa
                                        tifs={"order-key-R001": "IOC"})
     sender.script = [ok([submitted_row(sg["order_id"], outcome={"state": "PARTIAL_FILL_DONE",
                                                                 "fillAmount": "500000", "remainingAmount": "0"})])]
-    assert g.submit(sg, i)["state"] == od.PARTIALLY_FILLED
+    assert g.submit(sg, i)["state"] == od.SUBMITTED  # finding D: the fill comes from the read below
     assert s.committed_exposure_base_units == 2_000_000
     sender.orders[sg["order_id"]] = order_row(sg["order_id"], "INACTIVE", 1_500_000, "NO_LIQUIDITY", total=2_000_000)
     assert g.reconcile(i["idempotency_key"])["state"] == od.CANCELLED

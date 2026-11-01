@@ -372,3 +372,76 @@ def test_cancel_audit_is_allowlisted(tmp_path, throwaway, owner):
     e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     decisions = [json.loads(l)["decision"] for l in (tmp_path / "gw-audit.jsonl").read_text().splitlines()]
     assert "CANCEL_REQUESTED" in decisions and "CANCEL_RESULT_CANCELLED" in decisions
+
+
+# ---------------------------------------------------------------- finding B: TTL / flag re-checked after the reads
+def _slow_reads(e, seconds):
+    """Every exchange read takes `seconds` (the pre-check does up to 3 reads per order)."""
+    real = e.sender._get
+
+    def slow(req):
+        e.clock.t += seconds
+        return real(req)
+
+    e.sender._get = slow
+
+
+@pytest.mark.parametrize("scope", [cx.SCOPE_ORDER_IDS, cx.SCOPE_MARKET, cx.SCOPE_ALL])
+def test_approval_expiring_during_precheck_reads_is_refused_and_not_consumed(tmp_path, throwaway, owner, scope):
+    e = setup(tmp_path, throwaway, owner)
+    oid, key = e.orders[0]
+    appr = {cx.SCOPE_ORDER_IDS: lambda: cancel_approval(e, scope, order_ids=[oid], ttl=60),
+            cx.SCOPE_MARKET: lambda: cancel_approval(e, scope, market_hash=H, ttl=60),
+            cx.SCOPE_ALL: lambda: cancel_approval(e, scope, ttl=60)}[scope]()
+    run = {cx.SCOPE_ORDER_IDS: lambda: e.svc.cancel_orders([oid], appr),
+           cx.SCOPE_MARKET: lambda: e.svc.cancel_market(H, appr),
+           cx.SCOPE_ALL: lambda: e.svc.cancel_all(appr)}[scope]
+    _slow_reads(e, 25)  # 3 reads -> now = NOW + 75 >= expires_at = NOW + 60
+    assert code(run) == "CANCEL_APPROVAL_EXPIRED"
+    assert deletes(e) == [] and not e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert e.signer.committed_exposure_base_units == STAKE
+
+
+@pytest.mark.parametrize("scope", [cx.SCOPE_ORDER_IDS, cx.SCOPE_EVENT])
+def test_live_flag_expiring_during_precheck_reads_is_refused_and_not_consumed(tmp_path, throwaway, owner, scope):
+    e = setup(tmp_path, throwaway, owner, flag_expires=NOW + 50)
+    oid, key = e.orders[0]
+    if scope == cx.SCOPE_ORDER_IDS:
+        appr = cancel_approval(e, scope, order_ids=[oid], ttl=120)
+        run = lambda: e.svc.cancel_orders([oid], appr)  # noqa: E731
+    else:
+        appr = cancel_approval(e, scope, event_id=EVENT_ID, ttl=120)
+        run = lambda: e.svc.cancel_event(EVENT_ID, appr)  # noqa: E731
+    _slow_reads(e, 20)  # now = NOW + 60: flag expired (NOW + 50), approval still valid (NOW + 120)
+    assert code(run, gw.GatewayRefused) == "LIVE_TRADING_FLAG_EXPIRED"
+    assert deletes(e) == [] and not e.signer._ledger.nonce_consumed(appr.approval_nonce)
+
+
+def test_approval_still_valid_after_reads_is_sent(tmp_path, throwaway, owner):
+    e = setup(tmp_path, throwaway, owner)
+    oid, key = e.orders[0]
+    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], ttl=60)
+    _slow_reads(e, 10)  # now = NOW + 30 < NOW + 60
+    e.sender.script = [cancelled_reply(oid)]
+    assert e.svc.cancel_orders([oid], appr)["sent"] is True
+    assert len(deletes(e)) == 1 and e.signer._ledger.nonce_consumed(appr.approval_nonce)
+
+
+def test_expiry_between_consume_and_send_sends_nothing(tmp_path, throwaway, owner):
+    """Last check right before the request leaves: the nonce is spent (fail closed) but nothing is sent."""
+    e = setup(tmp_path, throwaway, owner)
+    oid, key = e.orders[0]
+    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], ttl=60)
+    real_log = e.svc._log
+
+    def slow_log(decision, *a, **k):
+        real_log(decision, *a, **k)
+        if decision == "CANCEL_REQUESTED":
+            e.clock.t = appr.expires_at  # e.g. a slow fsync of the audit line
+
+    e.svc._log = slow_log
+    assert code(lambda: e.svc.cancel_orders([oid], appr)) == "CANCEL_APPROVAL_EXPIRED"
+    assert deletes(e) == [] and e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert e.signer.committed_exposure_base_units == STAKE
+    decisions = [json.loads(l)["decision"] for l in (tmp_path / "gw-audit.jsonl").read_text().splitlines()]
+    assert decisions[-1] == "CANCEL_NOT_SENT"
