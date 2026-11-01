@@ -12,6 +12,7 @@ Il trading reale resta **disabilitato** e **non attivabile senza decisioni e azi
 | L'utente dichiara di trovarsi in un paese dove le scommesse sul servizio sono lecite: "It is your responsibility to ensure that your use of the service is legal." | idem |
 | Paesi esclusi: elenco nominativo (Italia non citata) più "**any other country which may prohibit the offering of online gambling to its residents**" | idem |
 | Vietati "scrape our odds" e "any robot, spider, crawler, scraper, or other automated means or interface not provided by us"; licenza "for your personal non-commercial purposes only" | idem |
+| Clausole **senza** l'eccezione "not provided by us": "retrieve or index any information from the Service using any robot, spider or other automated mechanism" e "You are not allowed to use any kind of robots and programmed devices to participate in game play which purpose would be to disrupt the Service or to commit fraud" (integrazione del 01-11-2026, vedi `magic_wallet_existing_account_audit.md` §1) | idem |
 | SX Bet / Nextgen Blockchain Technologies **non compare** nell'elenco ADM dei concessionari autorizzati al gioco a distanza | adm.gov.it, elenco concessionari gioco a distanza |
 | ADM inibisce i siti "sprovvisto delle autorizzazioni necessarie per operare la raccolta di giochi in Italia" (art. 102 D.L. 104/2020) | adm.gov.it, inibizione siti non autorizzati |
 | `sx.bet` **non è** nella lista dei siti inibiti aggiornata al 13-10-2026 (13.078 voci; sha256 verificato sul file di controllo ADM) | adm.gov.it, siti web inibiti |
