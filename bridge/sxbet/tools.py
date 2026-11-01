@@ -18,7 +18,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import simulation as sim
-from .client import SXBetError, SXBetReadClient, Settings
+from .client import NO_NETWORK_CODES, SXBetError, SXBetReadClient, Settings
+from .ratelimit import DOCS as RATE_LIMIT_DOCS
 
 DOCS = "https://docs.sx.bet/openapi.json"
 SIMULATION_DOCS = ("https://docs.sx.bet/developers/posting-orders", "https://docs.sx.bet/developers/odds-rounding",
@@ -142,7 +143,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             reply = await client.get(path, params, auth=auth)
         except SXBetError as exc:
             out = {**base, "status": "PROVIDER_ERROR", "parameters": params,
-                   "network_calls_made": 0 if exc.code in ("SXBET_LOCAL_RATE_LIMITED", "SXBET_KEY_NOT_CONFIGURED") else 1,
+                   "network_calls_made": 0 if exc.code in NO_NETWORK_CODES else 1,
                    "http_status": exc.http_status, "error": {"code": exc.code}}
             if exc.retry_after is not None:
                 out["error"]["retry_after_seconds"] = exc.retry_after
@@ -169,6 +170,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "live_trading": "UNAVAILABLE: no isolated signer with signer-verified per-order confirmation (governance 2.6)",
                 "write_tools": [], "simulation_tools": ["sxbet_simulate_order"],
                 "local_rate_limit_per_minute": settings.max_rpm,
+                "rate_coordinator": getattr(getattr(client, "_limiter", None), "kind", "CUSTOM"),
+                "rate_limit_contract": RATE_LIMIT_DOCS,
                 "source_contract": DOCS, "network_calls_made": 0}
 
     # ---- public routes ----
@@ -422,7 +425,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             try:
                 reply = await client.get(path, params, auth=auth)
             except SXBetError as exc:
-                if exc.code not in ("SXBET_LOCAL_RATE_LIMITED", "SXBET_KEY_NOT_CONFIGURED"):
+                if exc.code not in NO_NETWORK_CODES:
                     out["network_calls_made"] += 1
                 return None, {"endpoint": path, "code": exc.code, "http_status": exc.http_status}
             out["network_calls_made"] += 1
