@@ -330,3 +330,75 @@ def test_derived_modules_have_no_network_or_signing_code():
                        "client.get"):
             assert needle not in src, (mod.__name__, needle)
     assert "write_tools" in inspect.getsource(sx_tools)
+
+
+# ---------------------------------------------------------------- review findings (regressions)
+_EXCLUDED = {
+    "parlay": dict(BET, tradeId="0x" + "a2" * 32, isParlay=True),
+    "quarter_line": dict(BET, tradeId="0x" + "a2" * 32, quarterlineMarketHash="0x" + "cd" * 32),
+    "malformed": {k: v for k, v in dict(BET, tradeId="0x" + "a2" * 32).items() if k != "totalReturn"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(_EXCLUDED))
+def test_excluded_bet_rows_make_hedge_uncertain_and_block_proposals(name):
+    row = _EXCLUDED[name]
+    # Excluded-only market: the fallback position must not read as a balanced, hedge-free 0/0.
+    t, _ = tools(router(trades_rows=[row]))
+    out = run(t["sxbet_hedge_simulation"](market_hash=H))
+    assert out["status"] == "HEDGE_UNCERTAIN", out["hedge"].get("reason")
+    assert out["position"]["data_conflict"] is True and out["completeness"]["complete"] is False
+    assert out["completeness"]["excluded_rows"]["market_hashes"] == [H]
+    out = run(t["sxbet_close_position_preview"](market_hash=H))
+    assert out["status"] == "HEDGE_UNCERTAIN"
+    # Mixed with a modelled bet: rules may trigger but can never propose on uncertain data.
+    t, _ = tools(router(trades_rows=[BET, row]))
+    out = run(t["sxbet_hedge_simulation"](market_hash=H))
+    assert out["status"] == "HEDGE_UNCERTAIN" and "CONFLICTING_POSITION_DATA" in out["hedge"]["uncertain_reasons"]
+    out = run(t["sxbet_rules_evaluate"](market_hash=H, rules={"take_profit": {"enabled": True,
+                                                                              "min_profit_base_units": 500_000}}))
+    assert out["status"] != "ORDER_PROPOSAL" and out["rules"]["proposal"] is None
+    out = run(t["sxbet_positions_summary"]())
+    assert out["status"] == "PARTIAL" and out["position_manager"]["data_conflict"] is True
+
+
+def test_positions_summary_realized_pnl_null_because_settled_rows_not_read():
+    t, _ = tools()
+    out = run(t["sxbet_positions_summary"]())
+    totals = out["position_manager"]["totals"]
+    assert totals["realized_pnl_base_units"] is None and totals["realized_pnl_reason"] == "SETTLED_ROWS_NOT_READ"
+    m = out["position_manager"]["markets"][0]
+    assert m["realized_pnl_base_units"] is None and m["realized_pnl_reason"] == "SETTLED_ROWS_NOT_READ"
+
+
+def _own_on_book(remaining):
+    own = dict(ORDER, isBettingOutcomeOne=True, percentageOdds=str(60 * P), totalBetSize="30000000",
+               remainingSize=str(remaining))
+    return {"/orders-v3": lambda request: httpx.Response(200, json={"status": "success", "data": {"orders": [own]}})}
+
+
+def test_rules_mark_to_market_excludes_own_resting_orders_from_top_of_book():
+    # The whole top level on outcome one is our own order: nobody else to hedge against.
+    t, _ = tools(router(overrides=_own_on_book(30_000_000)))
+    out = run(t["sxbet_rules_evaluate"](market_hash=H))
+    assert out["mark_to_market"]["reason"] == "NO_LIQUIDITY_ON_HEDGE_SIDE"
+    assert out["taker_percentage_odds"]["outcome_two"] is None
+    assert out["hedge_status"] == "HEDGE_UNAVAILABLE"
+    # Partly ours: only the foreign 20 USDC count (taker capacity 20 * 0.4 / 0.6).
+    t, _ = tools(router(overrides=_own_on_book(10_000_000)))
+    out = run(t["sxbet_rules_evaluate"](market_hash=H))
+    assert out["mark_to_market"]["top_level_taker_capacity_base_units"] == str(20_000_000 * 40 // 60)
+    assert out["taker_percentage_odds"]["outcome_two"] == str(40 * P)
+
+
+def test_payload_too_large_hint_names_only_the_tools_own_parameters():
+    big = [dict(BET, tradeId="0x" + f"{i:064x}", status="LOCKED", marketHash="0x" + f"{i + 1:064x}") for i in range(900)]
+    t, _ = tools(router(trades_rows=big))
+    hint = run(t["sxbet_positions_summary"]())["error"]["hint"]
+    assert "event_id" in hint and "market_hash" not in hint
+    fills = [dict(FILL, id=f"0x{i:064x}:{OID}:{H}", matchId=f"0x{i:064x}") for i in range(420)]
+    t, _ = tools(router(overrides={"/fills-v3": lambda request: httpx.Response(
+        200, json={"status": "success", "data": {"fills": fills}})}))
+    out = run(t["sxbet_order_status"](order_id=OID))
+    assert out["status"] == "PAYLOAD_TOO_LARGE"
+    assert "market_hash" not in out["error"]["hint"] and "event_id" not in out["error"]["hint"]

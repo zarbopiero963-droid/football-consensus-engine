@@ -652,6 +652,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             return {**out, "status": "KEY_NOT_CONFIGURED", "error": {"code": "SXBET_KEY_NOT_CONFIGURED"}}
         return None
 
+    narrow_hint = {
+        "sxbet_positions_summary": "Narrow with event_id.",
+        "sxbet_exposure_pnl": "Narrow with event_id.",
+        "sxbet_resting_orders_scope": "Narrow with fewer order_ids, or market_hash instead of event_id.",
+        "sxbet_reconciliation_diagnostics": "Narrow with market_hash or fewer ws_messages.",
+    }
+
     def dcap(out: dict[str, Any]) -> dict[str, Any]:
         """Never truncate: over the MCP cap the whole derived body is replaced by PAYLOAD_TOO_LARGE."""
         if len(json.dumps(out, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")) <= _MAX_MCP_BYTES:
@@ -660,7 +667,10 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "signed", "submitted", "write_capability", "live_trading")
         return {k: out[k] for k in keep if k in out} | {
             "status": "PAYLOAD_TOO_LARGE", "error": {"code": "SXBET_RESPONSE_EXCEEDS_MCP_SIZE_LIMIT",
-                                                     "hint": "Narrow with market_hash or event_id."}}
+                                                     "hint": narrow_hint.get(out.get("tool"),
+                                                                             "This tool has no narrowing parameter; read "
+                                                                             "the underlying rows with the paginated "
+                                                                             "read tools (per_page / next_key).")}}
 
     def _slippage(v):
         if not isinstance(v, str) or not re.fullmatch(r"[0-9]{1,21}", v):
@@ -715,7 +725,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         meta = bundle["metadata"] or {}
         roll = pos_mod.build_positions(trades=bundle["trades"], open_orders=bundle["orders"], fees=bundle["fees"],
                                        markets=markets if isinstance(markets, list) else None,
-                                       base_token=meta.get("base_token"), escrow=meta.get("verifying_contract"))
+                                       base_token=meta.get("base_token"), escrow=meta.get("verifying_contract"),
+                                       settled_rows_read=False)
         bundle["roll_up"] = roll
         position = next((m for m in roll["markets"] if m["market_hash"] == mh), None)
         if position is None:  # no open bet and no resting order on this market
@@ -723,7 +734,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                         "pnl_base_units": {"if_outcome_one": 0, "if_outcome_two": 0, "if_void": 0},
                         "projected_payout_fee_base_units": {"if_outcome_one": "0", "if_outcome_two": "0"},
                         "matched_stake_base_units": {"total": 0}, "worst_case_liability_base_units": 0}
-        if not roll["completeness"]["complete"] or roll["data_conflict"]:
+        # Rows left out of the roll-up (parlay, quarter line, malformed) make the position unknown, never 0/0.
+        if (not roll["completeness"]["complete"] or roll["data_conflict"]
+                or mh in roll["completeness"]["excluded_rows"]["market_hashes"]):
             position = {**position, "data_conflict": True}
         bundle["market_position"] = position
         bundle["orders_rows"] = _rows_of(bundle["orders"], "orders")
@@ -870,7 +883,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             best_note = "MORE_THAN_30_MARKETS_BEST_ODDS_NOT_READ_MARK_TO_MARKET_NULL"
         roll = pos_mod.build_positions(positions=positions, trades={"trades": trades, "nextKey": "MORE_PAGES" if more else None},
                                        open_orders=orders, balance=balance, fees=fees, best_odds=best,
-                                       base_token=meta.get("base_token"), escrow=meta.get("verifying_contract"))
+                                       base_token=meta.get("base_token"), escrow=meta.get("verifying_contract"),
+                                       settled_rows_read=False)
         return dcap({**out, "status": "DERIVED_FROM_REAL_API" if roll["completeness"]["complete"] else "PARTIAL",
                      "event_id": event_id, "best_odds_note": best_note, "position_manager": roll,
                      "warnings": [_UNITS, "DERIVED from the provider rows echoed in position_manager; mark_to_market is "
@@ -904,7 +918,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             note = "MORE_THAN_30_MARKETS_BEST_ODDS_NOT_READ_MARK_TO_MARKET_NULL"
         o = pos_mod.build_positions(positions=open_pos, best_odds=best)
         s = pos_mod.build_positions(positions=settled)
-        compact = [{k: m.get(k) for k in ("market_hash", "event_id", "pnl_base_units", "worst_case_liability_base_units",
+        compact = [{k: m.get(k) for k in ("market_hash", "event_id", "pnl_base_units", "pnl_reason",
+                                          "worst_case_liability_base_units",
                                           "provider_net_max_win_base_units", "mark_to_market", "market", "data_conflict")}
                    for m in o["markets"]]
         realized = [{"market_hash": m["market_hash"], "realized_pnl_base_units": m.get("realized_pnl_base_units"),
@@ -1039,9 +1054,26 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         if err:
             return dfail(out, err)
         book = bundle["book"] if isinstance(bundle["book"], dict) else {}
+        # Own resting orders are not liquidity we could hedge against (same removal as hedging._levels).
+        own: dict[tuple[bool, int], int] = {}
+        for o in bundle["orders_rows"] or []:
+            if not isinstance(o, dict) or o.get("status") not in ("ACTIVE", "PENDING") \
+                    or pos_mod._lower(o.get("marketHash")) not in (None, market_hash.lower()):
+                continue
+            rem, p, one = pos_mod.units(o.get("remainingSize")), pos_mod.odds(o.get("percentageOdds")), o.get("isBettingOutcomeOne")
+            if rem is not None and p is not None and isinstance(one, bool):
+                own[(one, p)] = own.get((one, p), 0) + rem
 
         def top(side):
-            levels = [x for x in (book.get(side) or []) if isinstance(x, dict) and pos_mod.odds(x.get("percentageOdds"))]
+            levels = []
+            for x in book.get(side) or []:
+                p = pos_mod.odds(x.get("percentageOdds")) if isinstance(x, dict) else None
+                size = pos_mod.units(x.get("size")) if p else None
+                if p is None or size is None:
+                    continue
+                foreign = size - own.get((side == "outcomeOne", p), 0)
+                if foreign > 0:
+                    levels.append(x if foreign == size else {**x, "size": str(foreign)})
             return max(levels, key=lambda x: pos_mod.odds(x["percentageOdds"])) if levels else None
         best = {"outcomeOne": top("outcomeOne"), "outcomeTwo": top("outcomeTwo")}
         position = dict(bundle["market_position"])
@@ -1110,7 +1142,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             fills = [f for f in fills if isinstance(f, dict) and str(f.get("marketHash", "")).lower() == market_hash.lower()]
         roll = pos_mod.build_positions(trades={"trades": trades, "nextKey": "MORE" if more["trades"] else None},
                                        fills={"fills": fills, "nextKey": "MORE" if more["fills"] else None},
-                                       open_orders=orders, ws_messages=ws_messages)
+                                       open_orders=orders, ws_messages=ws_messages, settled_rows_read=False)
         return dcap({**out, "status": "DERIVED_FROM_REAL_API" if roll["completeness"]["complete"] else "PARTIAL",
                      "ws_messages_label": "CALLER_SUPPLIED" if ws_messages is not None else None,
                      "inputs": roll["inputs"], "completeness": roll["completeness"],

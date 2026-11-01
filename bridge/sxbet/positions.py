@@ -128,9 +128,13 @@ def parse_fees(fees: Any) -> dict[str, Any]:
         return {"status": "FEES_NOT_SUPPLIED", "raw": None, "derived_rates": None}
     if not isinstance(fees, dict):
         return {"status": "FEES_MALFORMED", "raw": None, "derived_rates": None}
+    missing = [k for k in FEE_FIELDS if k not in fees]
+    if missing:  # an absent key is not a provider null: no derived 0 for it
+        return {"status": "FEES_MALFORMED", "reason": "FEE_FIELD_MISSING", "missing_fields": missing,
+                "raw": {k: fees[k] for k in FEE_FIELDS if k in fees}, "derived_rates": None}
     derived, notes = {}, {}
     for k in FEE_FIELDS:
-        v = fees.get(k)
+        v = fees[k]
         if v is None:
             derived[k] = "0"
             notes[k] = "PROVIDER_NULL_UNSET_NOTHING_CHARGED"
@@ -342,15 +346,21 @@ def _market_from_position_row(p: Mapping[str, Any]) -> dict[str, Any]:
     """Only the provider's aggregated row: per-outcome P&L is documented, the stake split and fees are not."""
     win, loss, one_best = signed_units(p.get("maxWin")), signed_units(p.get("maxLoss")), p.get("isOutcomeOneMaxWin")
     total = units(p.get("totalStake"))
+    pnl_reason = None
     if win is None or loss is None or not isinstance(one_best, bool):
         pnl = {"if_outcome_one": None, "if_outcome_two": None, "if_void": None}
+        pnl_reason = "POSITION_ROW_FIELDS_MISSING"
+    elif loss > 0 or loss > win:
+        # Only a negative (or zero) maxLoss not above maxWin is documented; anything else is not guessed.
+        pnl = {"if_outcome_one": None, "if_outcome_two": None, "if_void": None}
+        pnl_reason = "MAXLOSS_SIGN_UNVERIFIED"
     else:
         pnl = {"if_outcome_one": win if one_best else loss, "if_outcome_two": loss if one_best else win, "if_void": 0}
     known = None not in (pnl["if_outcome_one"], pnl["if_outcome_two"])
     return {
         "matched_stake_base_units": {"outcome_one": None, "outcome_two": None, "total": total,
                                      "reason": "STAKE_SPLIT_NEEDS_BET_GRAIN"},
-        "pnl_base_units": pnl,
+        "pnl_base_units": pnl, "pnl_reason": pnl_reason,
         "worst_case_liability_base_units": max(0, -min(pnl["if_outcome_one"], pnl["if_outcome_two"])) if known else None,
         "projected_payout_fee_base_units": {"if_outcome_one": None, "if_outcome_two": None,
                                             "reason": "FEE_PROJECTION_NEEDS_BET_GRAIN (maker/taker per bet)"},
@@ -428,10 +438,13 @@ def capital(balance: Any, *, base_token: str | None = None, escrow: str | None =
 # ---------------------------------------------------------------- entry point
 def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = None, open_orders: Any = None,
                     balance: Any = None, fees: Any = None, ws_messages: Any = None, best_odds: Any = None,
-                    markets: Any = None, base_token: str | None = None, escrow: str | None = None) -> dict[str, Any]:
+                    markets: Any = None, base_token: str | None = None, escrow: str | None = None,
+                    settled_rows_read: bool = True) -> dict[str, Any]:
     """Roll up account payloads per selection / market / event / total. Pure and deterministic.
 
     Every argument is the provider `data` object (or its row list) exactly as read; None = not read.
+    settled_rows_read=False: the caller read only open (MATCHED/LOCKED) rows, so realised P&L is
+    missing (None, SETTLED_ROWS_NOT_READ), never 0.
     """
     pos_rows, pos_more = _rows(positions, "positions")
     trade_rows, trade_more = _rows(trades, "trades")
@@ -472,16 +485,21 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
     bets: dict[str, dict[str, list]] = {}
     unsupported: list[dict] = []
     conflict_markets = set()
+    excluded_markets = set()  # markets with a bet/order row left out of the computation: never complete
     for kind, rec in (("trade", rec_t), ("fill", rec_f)):
         for key, item in rec["records"].items():
             b = _bet(kind, key, item["row"])
             if b is None or b["market_hash"] is None:
                 malformed.append({"source": ",".join(item["sources"]), "reason": f"{kind.upper()}_ROW_INCOMPLETE",
                                   "raw": item["row"]})
+                h = _lower(item["row"].get("marketHash"))
+                if h:
+                    excluded_markets.add(h)
                 continue
             if b["parlay"] or b["quarterline"]:
                 unsupported.append({"grain": kind, "id": key, "market_hash": b["market_hash"],
                                     "reason": "PARLAY_OR_QUARTER_LINE_NOT_MODELLED"})
+                excluded_markets.add(b["market_hash"])
                 continue
             b["sources"] = item["sources"]
             bets.setdefault(b["market_hash"], {"trade": [], "fill": []})[kind].append(b)
@@ -504,6 +522,8 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
         side, total, rem, p = o.get("isBettingOutcomeOne"), units(o.get("totalBetSize")), units(o.get("remainingSize")), odds(o.get("percentageOdds"))
         if h is None or not isinstance(side, bool) or total is None or rem is None or p is None or rem > total:
             malformed.append({"source": ",".join(item["sources"]), "reason": "ORDER_ROW_INCOMPLETE", "raw": o})
+            if h:
+                excluded_markets.add(h)
             continue
         resting.setdefault(h, []).append({"id": key, "outcome_one": side, "total": total, "remaining": rem, "odds": p,
                                           "status": o["status"], "event_id": o.get("eventId"), "raw": o})
@@ -514,6 +534,7 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
         if isinstance(r, dict) and _lower(r.get("marketHash")):
             best_by_market[_lower(r["marketHash"])] = r
 
+    conflict_markets |= excluded_markets
     cap = capital(balance, base_token=base_token, escrow=escrow)
     available = cap.get("available_conservative_base_units")
     market_hashes = sorted(set(pos_by_market) | set(bets) | set(resting))
@@ -522,22 +543,32 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
         grain_bets = bets.get(h, {"trade": [], "fill": []})
         trade_ids = {b["id"] for b in grain_bets["trade"]}
         fill_trade_ids = {b["trade_id"] for b in grain_bets["fill"]}
+        cross: list[dict] = []
         if grain_bets["fill"] and trade_ids <= fill_trade_ids:
             grain, used = "FILLS", grain_bets["fill"]
+            # Every trade must have exactly its documented fillCount of fills present, else the fill grain
+            # under-counts: fall back to the trade grain and flag the market.
+            for t in grain_bets["trade"]:
+                count = rec_t["records"][t["id"]]["row"].get("fillCount")
+                n = sum(1 for f in grain_bets["fill"] if f["trade_id"] == t["id"])
+                if type(count) is not int or count != n:
+                    cross.append({"check": "TRADE_FILL_COUNT_EQUALS_FILLS_PRESENT", "trade_id": t["id"],
+                                  "result": "FILL_COUNT_MISSING" if type(count) is not int else "MISMATCH",
+                                  "provider_fill_count": count, "fills_present": n})
+                    conflict_markets.add(h)
+            if cross:
+                grain, used = "TRADES", grain_bets["trade"]
         elif grain_bets["trade"]:
             grain, used = "TRADES", grain_bets["trade"]
         else:
             grain, used = ("POSITION_ROW" if h in pos_by_market else "NONE"), []
-        cross: list[dict] = []
         if used:
             summary = _market_from_bets(used, rates)
-            if grain == "TRADES" and grain_bets["fill"]:
+            if grain == "TRADES" and grain_bets["fill"] and not cross:
                 cross.append({"check": "FILLS_DO_NOT_COVER_EVERY_TRADE", "result": "USED_TRADE_GRAIN"})
             for t in grain_bets["trade"] if grain == "FILLS" else []:
                 fsum = sum(f["stake"] for f in grain_bets["fill"] if f["trade_id"] == t["id"])
-                count = rec_t["records"][t["id"]]["row"].get("fillCount")
-                n = sum(1 for f in grain_bets["fill"] if f["trade_id"] == t["id"])
-                if count == n and fsum != t["stake"]:
+                if fsum != t["stake"]:  # fillCount == fills present is guaranteed above
                     cross.append({"check": "TRADE_STAKE_EQUALS_SUM_OF_FILLS", "trade_id": t["id"], "result": "MISMATCH"})
                     conflict_markets.add(h)
             p = pos_by_market.get(h)
@@ -555,6 +586,8 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
                        "worst_case_liability_base_units": 0, "matched_stake_base_units": {"total": 0},
                        "projected_payout_fee_base_units": {"if_outcome_one": "0", "if_outcome_two": "0", "if_void": "0",
                                                            "reason": "NO_BET_ON_MARKET"}}
+        if not settled_rows_read and grain != "POSITION_ROW":
+            summary = {**summary, "realized_pnl_base_units": None, "realized_pnl_reason": "SETTLED_ROWS_NOT_READ"}
         rest = resting.get(h, [])
         rest_side = {True: sum(r["remaining"] for r in rest if r["outcome_one"]),
                      False: sum(r["remaining"] for r in rest if not r["outcome_one"])}
@@ -628,7 +661,9 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
                    "balance_supplied": balance is not None, "fees_supplied": fees is not None,
                    "best_odds_rows": len(best_by_market)},
         "completeness": {"pages_not_read": incomplete, "malformed_inputs": malformed_inputs,
-                         "complete": not incomplete and not malformed_inputs,
+                         "excluded_rows": {"malformed": len(malformed), "unsupported": len(unsupported),
+                                           "market_hashes": sorted(excluded_markets)},
+                         "complete": not incomplete and not malformed_inputs and not malformed and not unsupported,
                          "note": "A source with more pages is reported, never silently treated as complete."},
         "reconciliation": {"conflicts": conflicts, "malformed_rows": malformed, "ws_rejected": ws_bad,
                            "exact_duplicates_dropped": rec_t["exact_duplicates_dropped"] + rec_f["exact_duplicates_dropped"]
@@ -646,7 +681,9 @@ def build_positions(*, positions: Any = None, trades: Any = None, fills: Any = N
             "worst_case_note": "Sum of per-market worst cases (markets treated as independent: conservative).",
             "resting_remaining_base_units": sum(e["resting_orders"]["remaining_base_units"]["outcome_one"]
                                                 + e["resting_orders"]["remaining_base_units"]["outcome_two"] for e in markets_out),
-            "realized_pnl_base_units": total(lambda e: e.get("realized_pnl_base_units") if e["grain_used"] != "NONE" else 0),
+            "realized_pnl_base_units": None if not settled_rows_read else
+            total(lambda e: e.get("realized_pnl_base_units") if e["grain_used"] != "NONE" else 0),
+            "realized_pnl_reason": None if settled_rows_read else "SETTLED_ROWS_NOT_READ",
             "mark_to_market_base_units": None if None in mtm_vals else sum(mtm_vals),
             "mark_to_market_label": "HYBRID_MARKET_AWARE",
             "available_conservative_base_units": available,

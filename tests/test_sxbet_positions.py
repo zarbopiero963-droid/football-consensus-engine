@@ -231,6 +231,7 @@ def test_parlay_and_quarter_line_are_not_modelled():
 def test_more_pages_and_malformed_inputs_mark_incomplete():
     out = pm.build_positions(trades={"trades": [], "nextKey": "abc"}, fills={"oops": 1})
     assert out["completeness"] == {"pages_not_read": ["trades"], "malformed_inputs": ["fills"], "complete": False,
+                                   "excluded_rows": {"malformed": 0, "unsupported": 0, "market_hashes": []},
                                    "note": out["completeness"]["note"]}
     bad = trade(T1, stake=100, ret=250, one=True, maker=False)
     bad["totalStake"] = "-5"
@@ -294,3 +295,90 @@ def test_resting_only_market_has_zero_exposure_and_zero_fee_with_reason():
     assert m["grain_used"] == "NONE" and m["worst_case_liability_base_units"] == 0
     assert m["projected_payout_fee_base_units"]["reason"] == "NO_BET_ON_MARKET"
     assert m["mark_to_market"]["reason"] == "NO_OPEN_POSITION"
+
+
+# ---------------------------------------------------------------- review findings (regressions)
+def _excluded_cases():
+    good = trade(T1, stake=100, ret=250, one=True, maker=False)
+    parlay = trade(T2, stake=100, ret=200, one=True, maker=False, isParlay=True)
+    quarter = trade(T2, stake=100, ret=200, one=True, maker=False, quarterlineMarketHash=M2)
+    malformed = {k: v for k, v in trade(T2, stake=100, ret=200, one=True, maker=False).items() if k != "totalReturn"}
+    return good, (("parlay", parlay, "unsupported"), ("quarter_line", quarter, "unsupported"),
+                  ("malformed", malformed, "malformed"))
+
+
+def test_excluded_bet_rows_mark_market_conflicted_and_rollup_incomplete():
+    good, cases = _excluded_cases()
+    for name, row, bucket in cases:
+        out = pm.build_positions(trades=[good, row], fees=FEES)
+        assert out["completeness"]["complete"] is False, name
+        ex = out["completeness"]["excluded_rows"]
+        assert ex[bucket] == 1 and ex["market_hashes"] == [M], name
+        assert out["data_conflict"] is True and M in out["reconciliation"]["conflicting_markets"], name
+        assert market_of(out)["data_conflict"] is True, name
+        # Excluded-only market: still incomplete and conflicted, never a silent zero position.
+        out = pm.build_positions(trades=[row], fees=FEES)
+        assert out["completeness"]["complete"] is False and out["data_conflict"] is True, name
+        assert out["completeness"]["excluded_rows"]["market_hashes"] == [M], name
+
+
+def test_no_excluded_rows_keeps_rollup_complete():
+    out = pm.build_positions(trades=[trade(T1, stake=100, ret=250, one=True, maker=False)], fees=FEES)
+    assert out["completeness"]["complete"] is True and out["data_conflict"] is False
+    assert out["completeness"]["excluded_rows"] == {"malformed": 0, "unsupported": 0, "market_hashes": []}
+
+
+def test_fill_count_disagreeing_with_fills_present_is_conflict_and_falls_back_to_trades():
+    t = trade(T1, stake=1_000_000, ret=2_500_000, one=False, maker=False, fillCount=2)
+    f1 = fill("e1", tid=T1, stake=333_334, ret=833_335, one=False, maker=False)
+    m = market_of(pm.build_positions(trades=[t], fills=[f1]))
+    assert m["data_conflict"] is True
+    assert m["grain_used"] == "TRADES" and m["matched_stake_base_units"]["total"] == 1_000_000
+    assert {"check": "TRADE_FILL_COUNT_EQUALS_FILLS_PRESENT", "trade_id": T1, "result": "MISMATCH",
+            "provider_fill_count": 2, "fills_present": 1} in m["cross_checks"]
+    missing = {k: v for k, v in t.items() if k != "fillCount"}
+    f2 = fill("e2", tid=T1, stake=666_666, ret=1_666_665, one=False, maker=False)
+    m = market_of(pm.build_positions(trades=[missing], fills=[f1, f2]))
+    assert m["data_conflict"] is True and m["grain_used"] == "TRADES"
+    assert any(c["check"] == "TRADE_FILL_COUNT_EQUALS_FILLS_PRESENT" and c["result"] == "FILL_COUNT_MISSING"
+               for c in m["cross_checks"])
+
+
+def test_realized_pnl_null_when_settled_rows_not_read():
+    t = [trade(T1, stake=100, ret=250, one=True, maker=False)]
+    out = pm.build_positions(trades=t, settled_rows_read=False)
+    m = market_of(out)
+    assert m["realized_pnl_base_units"] is None and m["realized_pnl_reason"] == "SETTLED_ROWS_NOT_READ"
+    assert out["totals"]["realized_pnl_base_units"] is None
+    assert out["totals"]["realized_pnl_reason"] == "SETTLED_ROWS_NOT_READ"
+    # Resting-only market: still not 0 when settled rows were not read.
+    out = pm.build_positions(open_orders=[order(O1, total=10, remaining=10)], settled_rows_read=False)
+    assert out["totals"]["realized_pnl_base_units"] is None
+    # Default (settled rows part of the input): unchanged documented formula.
+    assert market_of(pm.build_positions(trades=t))["realized_pnl_base_units"] == 0
+
+
+def test_fee_key_absent_is_malformed_but_explicit_null_is_unset():
+    absent = {k: v for k, v in FEES.items() if k != "takerPayoutFee"}
+    info = pm.parse_fees(absent)
+    assert info["status"] == "FEES_MALFORMED" and info["reason"] == "FEE_FIELD_MISSING"
+    assert info["missing_fields"] == ["takerPayoutFee"] and info["derived_rates"] is None
+    out = pm.build_positions(trades=[trade(T2, stake=100, ret=200, one=False, maker=False)], fees=absent)
+    assert market_of(out)["projected_payout_fee_base_units"]["if_outcome_two"] is None
+    explicit = dict(FEES, takerPayoutFee=None)
+    info = pm.parse_fees(explicit)
+    assert info["status"] == "FEES_OK" and info["derived_rates"]["takerPayoutFee"] == "0"
+    assert info["null_rate_notes"]["takerPayoutFee"] == "PROVIDER_NULL_UNSET_NOTHING_CHARGED"
+
+
+def test_position_row_with_positive_or_inconsistent_maxloss_is_unverified():
+    base = {"marketHash": M, "totalStake": "300000000", "maxWin": "200000000", "isOutcomeOneMaxWin": True,
+            "netMaxWin": "198400000", "pnl": None}
+    for loss in ("100000000", "300000000"):
+        m = market_of(pm.build_positions(positions=[dict(base, maxLoss=loss)]))
+        assert m["pnl_base_units"]["if_outcome_one"] is None and m["pnl_base_units"]["if_outcome_two"] is None
+        assert m["pnl_reason"] == "MAXLOSS_SIGN_UNVERIFIED"
+        assert m["worst_case_liability_base_units"] is None
+        assert m["mark_to_market"]["reason"] == "POSITION_PNL_MISSING"
+    m = market_of(pm.build_positions(positions=[dict(base, maxLoss="-100000000")]))
+    assert m["pnl_base_units"]["if_outcome_two"] == -100_000_000 and m["pnl_reason"] is None
