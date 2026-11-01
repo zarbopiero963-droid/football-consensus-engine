@@ -30,19 +30,59 @@ Stato: **progettazione verificata sulla documentazione ufficiale** (01-11-2026).
      - ogni ordine richiede un gesto dell'owner fuori dalla chat, cioè la conferma fuori banda del §2.6;
      - "what you see is what gets signed": il wallet mostra i campi EIP-712.
    - Per un account Magic: la via documentata è importare la chiave Magic in MetaMask (`export-wallet-metamask`). L'operazione la fa l'owner sul proprio dispositivo; l'agente non la chiede e non la vede mai.
-2. **Signer isolato con private key** (branch `feat/sxbet-simulation-isolated-signer`, `signer/`).
-   - La chiave sta solo nel processo del signer, che accetta un intent strutturato e lo firma solo con un'approvazione Ed25519 dell'owner legata all'hash esatto dei parametri.
-   - Altre garanzie: approvazione monouso con scadenza ≤120 s, limiti di esposizione impostati dall'owner (default zero), idempotenza e audit append-only.
+2. **Signer isolato con private key** (`signer/`, servizio separato: non si importa nel processo MCP né su Render).
+   - La chiave sta solo nel processo del signer, che accetta un intent strutturato e lo firma solo con un'approvazione Ed25519 dell'owner legata al binding v2 dell'ordine (account, maker, evento, mercato, selezione, lato, importo, quota limite, commissioni attese, esposizione massima, scadenza, `clientOrderId`, rete/chainId/contratto).
+   - Altre garanzie: approvazione monouso con scadenza ≤120 s che un rifiuto non consuma, risk engine con limiti firmati dall'owner (default zero), macchina a stati degli ordini con ledger append-only, idempotenza e audit append-only.
    - Il rischio residuo è custodire la chiave in un servizio sempre acceso. Richiede un dispositivo o un'app di approvazione dell'owner, ancora da realizzare.
 3. **Chiave nel server MCP, in env Render o GitHub: vietato.** Il modello o la CI potrebbero arrivare a firmare (§2.2, §2.6).
 
-## Cosa manca prima del `LIVE_TRADING` (decisioni dell'owner)
+## Architettura del percorso (stato attuale)
 
-1. Scelta del metodo di firma: opzione 1, browser e wallet, oppure opzione 2, signer isolato con dispositivo di approvazione.
-2. Proxy wallet: oggi il proxy è deployato? Si verifica con `sxbet_proxy_wallet` → `deployed`. Serve anche USDC sul proxy. Deploy e depositi sono operazioni finanziarie e richiedono conferme specifiche.
-3. API key: oggi ha gli scope di lettura, verificati con 200 nel workflow live. Un percorso di ordini richiederebbe `Orders: create` e `Orders: cancel`, che vanno concessi solo con la decisione di attivare il trading.
-4. Limiti di esposizione: importo massimo per ordine, giornaliero e perdita massima, fissati dall'owner. Il default è zero.
-5. Percorso di invio e riconciliazione (`POST /orders-v3`, poi `GET /orders-v3/{orderId}` e `GET /fills-v3`): codice di trading, merge riservato all'owner.
-6. Verifica di idoneità del servizio nella giurisdizione applicabile.
+```
+MCP preview (sxbet_simulate_order, bridge, nessuna chiave)
+   → risk check (signer/risk.py, limiti firmati dall'owner, dati freschi)
+   → approvazione dell'owner (Ed25519, binding v2, monouso, ≤120 s, fuori banda)
+   → firma del wallet (signer/core.py, EIP-712; ledger AUTHORIZED → SIGNED)
+   → gateway (signer/gateway.py, DISABILITATO; nessun trasporto di rete nel repository)
+   → riconciliazione (GET /orders-v3/{orderId}, /orders-v3/client/{clientOrderId}, /fills-v3)
+```
 
-Il MCP oggi espone **solo letture** (36 tool) e, sul branch del signer, la **simulazione**. Nessun tool può firmare o inviare.
+- **Stati dell'ordine:** `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `EXPIRED`, `SETTLED`, `REJECTED`, `UNKNOWN`. Le transizioni ammesse e l'esposizione per stato sono in [`signer/README.md`](../../signer/README.md#stati-degli-ordini-ed-esposizione-signerorderspy).
+- **L'esposizione scende solo con evidenza dell'exchange:** un cancel o una scadenza confermati, oppure un settlement con fill completi. `UNKNOWN` (timeout, risposta ambigua, crash durante l'invio) resta riservato all'intero importo finché non è riconciliato.
+- **Limiti** (tutti a zero per default, quindi rifiuto):
+  - importo massimo per ordine;
+  - esposizione per mercato, per evento e totale;
+  - perdita massima per sessione e per giorno UTC;
+  - numero massimo di ordini aperti;
+  - slippage in bps;
+  - quota minima e massima;
+  - età massima dei dati di mercato, quota e saldo.
+- **Rifiuto in assenza di dati:** se saldo, liquidità, stato del mercato, commissioni o freschezza dei dati mancano o non sono verificabili, il signer rifiuta.
+
+## Checklist di attivazione (tutte decisioni dell'owner)
+
+Finché un solo punto è aperto, `LIVE_TRADING` resta non attivabile (§2.6).
+
+1. [ ] Scelta del metodo di firma: opzione 1 (browser + wallet) oppure opzione 2 (signer isolato + dispositivo di approvazione).
+2. [ ] **Dispositivo o app di approvazione dell'owner:**
+   - mostra il binding v2 leggibile e firma `approval_message`;
+   - la chiave Ed25519 resta solo lì.
+3. [ ] **Deploy del signer come servizio separato:**
+   - fuori dal servizio Render MCP: `RENDER` non deve essere impostata e `SXBET_SIGNER_PROCESS=1` sì;
+   - con il proprio segreto, fuori da GitHub secrets;
+   - con un canale autenticato verso il chiamante;
+   - ledger e audit su storage durevole, con ancoraggio esterno dell'hash di testa (la troncatura della coda non è rilevabile dalla sola hash chain).
+4. [ ] **Config di rischio** (`SXBET_SIGNER_RISK_CONFIG`): valori reali scelti e firmati dall'owner.
+5. [ ] **Provenienza dei dati di rischio:** oggi il contesto (mercato, quota, saldo, commissioni) è fornito dal chiamante, e il signer ne verifica solo freschezza e coerenza. Serve una fonte autenticata, per esempio letture del signer stesso o snapshot firmati.
+6. [ ] **Trasporto reale del gateway** (`POST /orders-v3`, letture di riconciliazione):
+   - PR separata, revisionata e mergiata dall'owner, con rate limit e timeout;
+   - test su testnet, incluso il formato di `salt` (`DOCS_UNVERIFIED`);
+   - verifica del comportamento sul reinvio dopo un timeout (`DOCS_UNVERIFIED`);
+   - decisione su `waitForOutcome`.
+7. [ ] **Flag `LIVE_TRADING` firmato dall'owner** (`load_live_trading_flag`): con scadenza breve e legato a `signer_id` e rete. L'agente non lo crea mai.
+8. [ ] **Cancellazione** (`DELETE /orders-v3*`, scope `Orders: cancel`): oggi non esiste un percorso di cancel. Va progettato con la stessa riconciliazione: un cancel conta solo se l'exchange lo conferma.
+9. [ ] **Proxy wallet e fondi:** verificare che il proxy sia deployato (`sxbet_proxy_wallet` → `deployed`) e che ci sia USDC sul proxy. Deploy e depositi sono operazioni finanziarie con conferme proprie.
+10. [ ] **API key con `Orders: create`/`Orders: cancel`:** si concede solo con la decisione di attivare il trading.
+11. [ ] Verifica di idoneità del servizio nella giurisdizione applicabile.
+
+Il MCP oggi espone **solo letture** (36 tool) e la **simulazione** (1 tool, 37 `sxbet_*` in totale). Nessun tool può firmare o inviare, e nessun tool nuovo è stato aggiunto con il signer, il risk engine o il gateway.

@@ -100,7 +100,14 @@ Sempre in `simulation.py`, e senza tool MCP:
 
 ## Signer isolato
 
-Vedi [`signer/README.md`](../../signer/README.md): firma EIP-712 dell'`Order` a 8 campi solo con l'approvazione Ed25519 dell'owner, monouso, TTL ≤ 120 s e legata all'`intent_hash`. Limiti di default zero, idempotenza, audit append-only. Nessun codice di invio.
+Vedi [`signer/README.md`](../../signer/README.md) e [`wallet_and_signing.md`](wallet_and_signing.md). Il signer è un **servizio separato**: non gira mai nel processo MCP, e `import signer` fallisce se manca `SXBET_SIGNER_PROCESS=1` o se è presente `RENDER` (test `tests/test_sxbet_render_isolation.py`).
+- Firma EIP-712 dell'`Order` a 8 campi solo con un'approvazione Ed25519 dell'owner, monouso, TTL ≤ 120 s, legata a un *binding* v2 (account, maker, rete/chainId/contratto, evento, mercato, selezione con etichetta, lato, importo, quota limite, quota vista, commissioni attese, esposizione massima, scadenza, `clientOrderId`, `intent_hash`).
+- Autorizzazione transazionale: un rifiuto non consuma l'approvazione; nonce consumato, `AUTHORIZED` ed esposizione riservata sono una sola riga fsync del ledger.
+- Macchina a stati degli ordini e ledger append-only con hash chain (`signer/orders.py`): l'esposizione scende solo con evidenza dell'exchange (cancel, scadenza, settlement); `UNKNOWN` non libera mai capitale. Un ledger mancante, estraneo o manomesso blocca la firma.
+- Risk engine autoritativo (`signer/risk.py`) con limiti solo da un file JSON firmato dall'owner (`SXBET_SIGNER_RISK_CONFIG`); default tutto a zero, quindi rifiuto.
+- Gateway di invio (`signer/gateway.py`) **disabilitato**: si costruisce solo con un flag firmato dall'owner, e nel repository non esiste alcun trasporto di rete (solo un fake in-memory nei test).
+
+Il catalogo MCP non cambia: nessun tool nuovo, 37 tool `sxbet_*`.
 
 **Unità:** `percentageOdds` è la probabilità implicita × 10^20 (per esempio `52500000000000000000` = 52,5%). Gli importi USDC sono in unità base con 6 decimali (`1000000` = 1 USDC). I dati sono restituiti così come arrivano dal provider.
 
@@ -135,10 +142,10 @@ Se il server riporta il conteggio atteso di `sxbet` e il client ne mostra 0, il 
 ## Prossimi passi (decisioni owner)
 1. **Lettura attiva** su Render dal 01-11-2026 09:25:52 UTC. Resta da verificare dal client MCP, dopo l'aggiornamento del connettore.
 2. **SIMULATION:** implementata (`sxbet_simulate_order`). Dopo il deploy va verificata dal client MCP con la chiave.
-3. **LIVE_TRADING: resta non disponibile.** Il signer isolato esiste ed è testato offline con chiavi usa e getta, ma mancano ancora:
+3. **LIVE_TRADING: resta non disponibile.** Signer, risk engine, ledger degli ordini e gateway (disabilitato) esistono e sono testati offline con chiavi usa e getta, ma mancano ancora:
    - il dispositivo di approvazione dell'owner;
    - il deploy del signer come servizio separato;
-   - un percorso di invio e riconciliazione revisionato e mergiato dall'owner;
+   - un trasporto reale per il gateway (`POST /orders-v3` e letture di riconciliazione), revisionato e mergiato dall'owner;
    - le decisioni sul proxy wallet (`/user/deploy-proxy`, `/user/transfer-to-proxy`, operazioni finanziarie del §2.6);
    - i limiti reali e lo scope della chiave.
 
