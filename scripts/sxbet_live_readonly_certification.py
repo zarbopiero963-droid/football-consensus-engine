@@ -162,8 +162,10 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         payload = _tool_once(name, **args)
         err = payload.get("error") or {}
         if err.get("code") == "SXBET_LOCAL_RATE_LIMITED":
-            # Respect the bridge's own limiter: wait the window it reports, then retry once (no limit raised).
-            wait = min(int(err.get("retry_after_seconds") or 61), 61)
+            # Respect the bridge's own limiter, then retry once (no limit raised). The limiter is a 60 s
+            # sliding window and retry_after is only the time until ONE slot frees; composite tools need up
+            # to 8 GETs, so wait the whole window (61 s) so the retry starts with an empty window.
+            wait = 61
             calls["paced_seconds"] = calls.get("paced_seconds", 0) + wait
             time.sleep(wait)
             payload = _tool_once(name, **args)
