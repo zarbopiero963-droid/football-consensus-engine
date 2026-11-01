@@ -18,6 +18,10 @@ jobs:
   certify:
     # Trusted code only: the protected default branch.
     if: github.ref == 'refs/heads/main'
+    # Owner action: restrict this environment to the `main` branch and move the
+    # SXBET_API_KEY secret into it (Settings -> Environments). The `if:` above is
+    # only a second layer: a workflow file can be edited on another branch.
+    environment: sxbet-live-readonly
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

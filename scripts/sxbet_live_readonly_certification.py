@@ -60,7 +60,19 @@ def shape(value: Any) -> dict[str, Any]:
 
 
 def leak_free(text: str, secrets: list[str]) -> bool:
-    return not any(s and len(s) >= 6 and s in text for s in secrets)
+    """Case-insensitive, so a checksummed or lower-cased address spelling is caught too."""
+    low = text.lower()
+    return not any(s and len(s) >= 6 and (s in text or s.lower() in low) for s in secrets)
+
+
+def is_empty_payload(data: Any) -> bool:
+    """[] / {} or a page whose item lists are all empty (e.g. {"markets": [], "nextKey": None})."""
+    if isinstance(data, (list, dict)) and not data:
+        return True
+    if isinstance(data, dict):
+        lists = [v for v in data.values() if isinstance(v, list)]
+        return bool(lists) and all(not v for v in lists)
+    return False
 
 
 def jwt_sub(token: str) -> str | None:
@@ -152,8 +164,12 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         payload["_mcp_is_error"] = bool(result.get("isError"))
         return payload
 
-    def row(name: str, out: dict[str, Any], *, account: bool = False, expect: str = "REAL_API_RESPONSE",
+    exercised: set[str] = set()
+
+    def row(name: str, out: dict[str, Any], *, expect: str = "REAL_API_RESPONSE",
             extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        if isinstance(out.get("tool"), str):
+            exercised.add(out["tool"])
         status = out.get("status")
         info = {"mcp_http": out.get("_mcp_http"), "status": status, "http_status": out.get("http_status"),
                 "error_code": (out.get("error") or {}).get("code"), "network_calls_made": out.get("network_calls_made")}
@@ -161,7 +177,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         if status == "REAL_API_RESPONSE":
             info["data_shape"] = shape(data)
         outcome = "PASS" if status == expect else ("FAIL" if status in ("PROVIDER_ERROR", "UNPARSEABLE", "INVALID_INPUT") else "PARTIAL")
-        if status == "REAL_API_RESPONSE" and isinstance(data, (list, dict)) and not data:
+        if status == "REAL_API_RESPONSE" and is_empty_payload(data):
             outcome = "EMPTY_VALID"
         rec.add(name, "REAL_API_VIA_MCP" if out.get("network_calls_made") else "MCP_NO_NETWORK", outcome,
                 **info, **(extra or {}))
@@ -178,6 +194,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         ctx["sx_tool_names"] = sorted(t["name"] for t in sx)
 
         health = tool("sxbet_health")
+        exercised.add("sxbet_health")
         rec.add("sxbet_health", "MCP_NO_NETWORK",
                 "PASS" if health.get("mode") == "READ_ONLY" and health.get("write_tools") == []
                 and health.get("api_key_present") is bool(api_key) else "FAIL",
@@ -213,13 +230,23 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         ctx["probe_market_hash"] = hashes[0] if hashes else None
         ctx["probe_event_id"] = events[0] if events else None
 
+        def skipped(name: str, reason: str) -> None:
+            rec.add(name, "REAL_API_VIA_MCP", "NOT_TESTED", reason=reason)
+
         if hashes:
             row("sxbet_markets_find", tool("sxbet_markets_find", market_hashes=hashes))
+        else:
+            skipped("sxbet_markets_find", "NO_ACTIVE_MARKET_AT_RUN_TIME")
         if league_id is not None:
             row("sxbet_fixtures_active", tool("sxbet_fixtures_active", league_id=league_id))
+        else:
+            skipped("sxbet_fixtures_active", "NO_LEAGUE_ID_AT_RUN_TIME")
         if events:
             row("sxbet_fixture_status", tool("sxbet_fixture_status", sportx_event_ids=events))
             row("sxbet_live_scores", tool("sxbet_live_scores", sportx_event_ids=events))
+        else:
+            skipped("sxbet_fixture_status", "NO_EVENT_AT_RUN_TIME")
+            skipped("sxbet_live_scores", "NO_EVENT_AT_RUN_TIME")
         row("sxbet_metadata", tool("sxbet_metadata"))
         row("sxbet_markets_popular", tool("sxbet_markets_popular"))
         row("sxbet_search", tool("sxbet_search", query="Inter"))
@@ -238,21 +265,31 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
             if hashes:
                 row("sxbet_orderbook_market_prematch", tool("sxbet_orderbook_market", market_hash=hashes[0]))
                 row("sxbet_best_odds_prematch", tool("sxbet_best_odds", market_hashes=hashes))
+            else:
+                skipped("sxbet_orderbook_market_prematch", "NO_ACTIVE_MARKET_AT_RUN_TIME")
+                skipped("sxbet_best_odds_prematch", "NO_ACTIVE_MARKET_AT_RUN_TIME")
             if live_hashes:
                 row("sxbet_orderbook_market_live", tool("sxbet_orderbook_market", market_hash=live_hashes[0]))
                 row("sxbet_best_odds_live", tool("sxbet_best_odds", market_hashes=live_hashes))
             else:
-                rec.add("sxbet_best_odds_live", "REAL_API_VIA_MCP", "NOT_TESTED", reason="NO_LIVE_SOCCER_MARKET_AT_RUN_TIME")
+                skipped("sxbet_orderbook_market_live", "NO_LIVE_SOCCER_MARKET_AT_RUN_TIME")
+                skipped("sxbet_best_odds_live", "NO_LIVE_SOCCER_MARKET_AT_RUN_TIME")
             if events:
                 row("sxbet_orderbook_event", tool("sxbet_orderbook_event", event_id=events[0]))
-            row("sxbet_balance", tool("sxbet_balance"), account=True)
-            row("sxbet_fees", tool("sxbet_fees"), account=True)
-            row("sxbet_positions_open", tool("sxbet_positions", status=["MATCHED", "LOCKED"], per_page=5), account=True)
-            row("sxbet_open_orders", tool("sxbet_open_orders", per_page=5), account=True)
+            else:
+                skipped("sxbet_orderbook_event", "NO_EVENT_AT_RUN_TIME")
+            row("sxbet_balance", tool("sxbet_balance"))
+            row("sxbet_fees", tool("sxbet_fees"))
+            row("sxbet_positions_open", tool("sxbet_positions", status=["MATCHED", "LOCKED"], per_page=5))
+            row("sxbet_open_orders", tool("sxbet_open_orders", per_page=5))
             start = (datetime.now(timezone.utc) - timedelta(days=30)).replace(microsecond=0).isoformat()
-            row("sxbet_trades", tool("sxbet_trades", start_date=start, per_page=5), account=True)
-            row("sxbet_fills", tool("sxbet_fills", start_date=start, per_page=5), account=True)
-            row("sxbet_ledger", tool("sxbet_ledger", per_page=5), account=True)
+            row("sxbet_trades", tool("sxbet_trades", start_date=start, per_page=5))
+            row("sxbet_fills", tool("sxbet_fills", start_date=start, per_page=5))
+            row("sxbet_ledger", tool("sxbet_ledger", per_page=5))
+        missing = sorted(set(ctx["sx_tool_names"]) - exercised)
+        rec.add("tool_coverage", "MCP_PROTOCOL",
+                "PASS" if not missing else ("PARTIAL" if api_key or exercised else "FAIL"),
+                exercised=len(exercised), published=len(ctx["sx_tool_names"]), not_exercised=missing)
     ctx["mcp_calls"] = calls["n"]
     return ctx
 
@@ -290,7 +327,8 @@ async def realtime_probe(rec: Recorder, api_key: str, market_hash: str | None, e
     if not api_key:
         rec.add("realtime_websocket", "REAL_WEBSOCKET", "NOT_TESTED", reason="SXBET_API_KEY_SECRET_ABSENT")
         return
-    status, token = await fetch_realtime_token(api_key)
+    async with asyncio.timeout(20):
+        status, token = await fetch_realtime_token(api_key)
     rec.add("realtime_token", "REAL_API_DIRECT", "PASS" if token else "FAIL", http_status=status)
     if not token:
         return
@@ -308,13 +346,16 @@ async def realtime_probe(rec: Recorder, api_key: str, market_hash: str | None, e
     account_channel = f"account:orders_v3_#{sub}" if sub else None
     if account_channel:
         channels.append(account_channel)
+    else:
+        rec.add("realtime_subscribe account:orders_v3_#<own address>", "REAL_WEBSOCKET", "NOT_TESTED",
+                reason="TOKEN_SUB_NOT_AN_ADDRESS")
     ids = {}
     results: dict[str, dict[str, Any]] = {}
     pushes: dict[str, int] = {}
     connect_ok = False
     pings = 0
     try:
-        async with asyncio.timeout(seconds + 20):
+        async with asyncio.timeout(seconds + 45):  # 15 s open + 15 s connect reply + listen + margin
             async with websockets.connect(WS_ENDPOINT, open_timeout=15, max_size=2 ** 20) as ws:
                 await ws.send(json.dumps({"id": 1, "connect": {"token": token, "name": "fce-readonly-cert"}}))
                 deadline = None
@@ -415,8 +456,9 @@ def main() -> int:
                            "results": [{"test": "leak_guard", "outcome": "FAIL", "reason": "SENSITIVE_VALUE_IN_REPORT_SUPPRESSED"}]})
     with open(args.output, "w", encoding="utf-8") as fh:
         fh.write(text)
-    print(json.dumps({"outcome_counts": json.loads(text).get("outcome_counts")}))
-    return 0
+    final_counts = json.loads(text).get("outcome_counts") or {}
+    print(json.dumps({"outcome_counts": final_counts}))
+    return 1 if final_counts.get("FAIL") else 0
 
 
 if __name__ == "__main__":

@@ -64,3 +64,20 @@ def test_workflow_is_manual_main_only_and_secret_scoped():
         if "secrets.SXBET_API_KEY" in json.dumps(step):
             assert step["env"]["SXBET_API_KEY"] == "${{ secrets.SXBET_API_KEY }}"
     assert job["steps"][0]["with"]["persist-credentials"] is False
+
+
+def test_empty_pages_and_case_insensitive_leak_guard():
+    assert cert.is_empty_payload({"markets": [], "nextKey": None})
+    assert cert.is_empty_payload([]) and cert.is_empty_payload({})
+    assert not cert.is_empty_payload({"markets": [{"a": 1}], "nextKey": None})
+    assert not cert.is_empty_payload({"balance": "0"})
+    addr = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01"
+    assert not cert.leak_free("seen " + addr.lower(), [addr])
+    assert not cert.leak_free("seen " + addr, [addr.lower()])
+
+
+def test_job_uses_environment_and_fails_on_fail_rows():
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert wf["jobs"]["certify"]["environment"] == "sxbet-live-readonly"
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert 'return 1 if final_counts.get("FAIL") else 0' in src
