@@ -1,12 +1,12 @@
 # SX Bet nel server MCP: modulo READ_ONLY + SIMULATION
 
-Fonte tecnica: OpenAPI ufficiale **https://docs.sx.bet/openapi.json** (SX Bet API, route V3) e documentazione https://docs.sx.bet. Ogni tool corrisponde a una route GET di quella specifica; nessun parametro è inventato.
+Fonte tecnica: OpenAPI ufficiale **https://docs.sx.bet/openapi.json** (SX Bet API, route V3) e documentazione https://docs.sx.bet. Ogni tool READ_ONLY corrisponde a una route GET di quella specifica; i tool SIMULATION e DERIVED compongono solo quelle GET. Nessun parametro è inventato.
 
 ## Stato
 | Modalità | Stato |
 |---|---|
 | `READ_ONLY` | **implementata**: 36 tool `sxbet_*` (tutte le 36 operazioni GET ufficiali) |
-| `SIMULATION` | **implementata**: 1 tool, `sxbet_simulate_order` (totale 37 tool `sxbet_*`). Non firma e non invia |
+| `SIMULATION` + `DERIVED` | **implementata**: `sxbet_simulate_order` e 9 tool DERIVED (position manager, esposizione e P&L, anteprime di cancel e di chiusura, hedge, regole, stato del rischio, riconciliazione). Totale **46** tool `sxbet_*`. Nessuno firma, invia o cancella |
 | `LIVE_TRADING` | **non disponibile**. Per la governance §2.6 non può essere attivata finché non esiste ed è testato un signer isolato con conferma fuori banda, verificata dal signer, per ogni singolo ordine |
 
 Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. In `bridge/` non esistono percorsi di codice per creare, eseguire o cancellare ordini, né per approval, transfer o firma. Lo verificano `tests/test_sxbet_read_only.py::test_no_write_capability_exists` e `tests/test_sxbet_simulation.py::test_no_submission_code_in_signer_or_sxbet_module`. La firma esiste solo nel package separato [`signer/`](../../signer/README.md), che `bridge/` non importa mai.
@@ -98,6 +98,85 @@ Sempre in `simulation.py`, e senza tool MCP:
 - `simulate_cancel`: cancel per id simulato, con il limite `maxCancelOrders`;
 - `SubmissionTracker`: macchina a stati per un futuro percorso di invio, con stati `SUBMITTED`, `UNKNOWN_AFTER_TIMEOUT`, `AMBIGUOUS_RESPONSE`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `REJECTED` e `NOT_ON_EXCHANGE`. Un timeout o una risposta ambigua bloccano il retry finché la riconciliazione per id non dimostra lo stato. Un 404 di `GET /orders-v3/{orderId}` vale come assenza solo entro 10 minuti (la documentazione indica 10–20) e con `GET /fills-v3?orderId=` vuoto. Il retry è ammesso solo con la stessa chiave di idempotenza.
 
+## DERIVED: position manager, hedging e regole (01-11-2026)
+
+Moduli puri e deterministici, senza rete e senza firma: `bridge/sxbet/positions.py`, `bridge/sxbet/hedging.py`, `bridge/sxbet/rules.py`. Ogni valore calcolato è etichettato `DERIVED` e sta accanto alle righe del provider, riportate invariate. Un dato mancante resta `null`, con un motivo, e niente viene ricostruito con complementi. I valori che usano quote di mercato sono etichettati `HYBRID_MARKET_AWARE`.
+
+### Modello di payout (fonti ufficiali)
+- I mercati sono **binari** (outcome one / outcome two). `percentageOdds` è la probabilità implicita × 10^20 di chi la riceve; un maker a `p` offre al taker `10^20 − p` (https://docs.sx.bet/developers/unit-conversions, https://docs.sx.bet/developers/order-book).
+- Ogni scommessa, maker o taker, è una puntata `s` su un esito. Se l'esito vince, il ritorno lordo (puntata inclusa) è `s × 10^20 / q`, dove `q` è la probabilità implicita del lato di chi scommette. Profitto = ritorno − puntata; se l'esito perde, si perde la puntata. Esempio ufficiale (`GET /fills-v3`): 333334 a 40% danno `returnAmount` 833335.
+- **Perché non si usano le formule back/lay di Betfair.** Su SX Bet "bancare" l'esito uno equivale a puntare sull'esito due: per scommettere su un esito si consumano gli ordini che riposano sull'altro (developers/order-book). Il maker che punta `S` a `p` e il taker con la capacità documentata `S × (10^20 − p) / p` al prezzo `10^20 − p` formano un unico piatto, `S + S(10^20 − p)/p = S × 10^20 / p`. Questo valore è sia il ritorno del maker (`S × 10^20 / p`) sia quello del taker (`[S(10^20 − p)/p] × 10^20 / (10^20 − p)`). Il modello è quindi lo stesso dai due lati e non serve una formula di liability separata: la liability di una riga è la sua puntata.
+
+### Position manager (`positions.build_positions`)
+Input: i payload `data` di `GET /positions-v3`, `/trades-v3`, `/fills-v3`, `/orders-v3`, `/user/balance-v3`, `/user/fees-v3`, `/orders-v3/odds/best` (frame maker) e `/markets/find`. Opzionalmente anche le pubblicazioni WebSocket `account:orders_v3_#`, `account:trades_v3_#` e `account:fills_v3_#`, con le forme di api-reference/channel-orders-v3, channel-trades-v3 e channel-fills-v3: un oggetto per messaggio, dentro `order`, `trade` o `fill`.
+
+Per ogni mercato, e poi per selezione, evento e totale, il position manager calcola:
+- la grana usata: i fill se coprono ogni bet, altrimenti i trade, altrimenti la riga aggregata di `positions-v3` (developers/which-grain);
+- la puntata abbinata per esito, il ritorno lordo potenziale per esito e il P&L se vince l'uno, se vince il due e se il mercato è void (`outcome` 0 = void, developers/bet-lifecycle);
+- `P1 = Σ ritorni sull'esito uno − Σ puntate aperte`, `P2` in modo simmetrico, e la liability `max(0, −min(P1, P2))`;
+- con la sola riga `positions-v3`: `P1 = maxWin` se `isOutcomeOneMaxWin`, altrimenti `maxLoss` (sono profitti, puntata esclusa, api-reference/get-positions-v3). La ripartizione della puntata e le commissioni restano `null`;
+- la parte `MATCHED` non ancora `LOCKED`, riportata a parte. I bet `FAILED` sono esclusi ("no funds moved");
+- gli ordini a riposo: residuo per esito, fill parziali (`totalBetSize − remainingSize`) e P&L se tutto il residuo venisse abbinato. Un ordine a riposo **non blocca capitale**, e ogni market:outcome deve stare nel saldo (developers/risk-limits);
+- il P&L realizzato: `settleReturnAmount + ceRefundAmount − totalStake` (developers/capital-efficiency). Per `positions-v3` si usa il `pnl` del provider, valorizzato solo con `status=SETTLED`;
+- le commissioni: la payout fee si applica al **profitto** del bet vincente, al tasso maker o taker della riga (developers/fees). Un tasso `null` significa "non impostato, nulla addebitato": il `null` grezzo resta in `fees.raw` e lo 0 compare solo in `fees.derived_rates`. Senza `/user/fees-v3` le commissioni proiettate sono `null`, non 0. Accanto c'è la commissione proiettata dal provider (`ritorno − netReturnAmount`);
+- il mark-to-market, solo con una quota best odds documentata. È il P&L, uguale sui due esiti, che si avrebbe coprendo subito il gap al prezzo taker del top of book: `max(P1, P2) − |P1 − P2| × q / 10^20`. Non verifica la profondità, esclude le commissioni ed è `HYBRID_MARKET_AWARE`. Senza quota è `null`, con il motivo;
+- il capitale: la riga esatta (token, escrow) di `balance-v3`, il disponibile conservativo `min(availableAmount, availableAmount + pendingAvailableAmount)` e l'escrow impegnato `escrowedAmount`.
+
+**Riconciliazione REST/WebSocket.** Le righe si deduplicano per id documentato: `id` dell'ordine, `tradeId`, `id` del fill (`matchId:orderId:marketHash`). I duplicati identici sono scartati e contati, e vale la versione più recente per `updatedAt`. Una chiave diventa **conflitto** quando:
+- ha versioni senza `updatedAt`, oppure con lo stesso `updatedAt` ma contenuto diverso;
+- regredisce nel ciclo di vita (bet: MATCHED→LOCKED→SETTLED e MATCHED→FAILED; ordini: PENDING→ACTIVE→INACTIVE);
+- ha `remainingSize` in aumento o `fillAmount` cambiato.
+
+Sono conflitti anche un `totalStake` di un bet diverso dalla somma dei suoi fill (con `fillCount` completo) e un `totalStake` di `positions-v3` diverso dai bet aperti. Un conflitto viene riportato, escluso da ogni calcolo, e il mercato è marcato `data_conflict`. Una sorgente con altre pagine (`nextKey`) rende il risultato `PARTIAL`, mai completo in silenzio. Parlay e quarter-line non sono modellati: le loro righe sono elencate a parte.
+
+### Hedging (`hedging.simulate_hedge`)
+Con `P1 > P2` si punta sull'esito due con puntata `s` e ritorno `r = s × 10^20 / q`. Allora `P1' = P1 − s` e `P2' = P2 + (r − s)`, quindi il gap si riduce esattamente di `r`. La copertura totale richiede un ritorno `r = P1 − P2`, cioè `s = (P1 − P2) × q / 10^20` su un solo livello.
+
+I livelli vengono da `GET /orderbook-v3/snapshot/market` nel frame maker, quello che la documentazione indica come autorevole (`showTakerPerspective` è "for display only"). Il livello maker `(p, size)` sull'altro esito offre il prezzo taker `q = 10^20 − p` per una puntata fino a `size × (10^20 − p) / p`. I livelli si percorrono dal prezzo migliore (price-time priority). La propria quantità a riposo viene tolta, perché "the engine never matches you against your own resting orders" (developers/taking-liquidity).
+- Modalità: `FULL` pareggia gli esiti, `PARTIAL` copre una frazione del gap, `REDUCE` usa una puntata data, mai oltre la copertura totale.
+- Quota peggiore accettabile: miglior prezzo taker + slittamento massimo, arrotondata **per difetto** sulla scala (developers/odds-rounding). È il `percentageOdds` del taker, "the highest implied probability you're willing to pay".
+- Commissioni: l'hedge è un ordine taker, quindi `takerPayoutFee` si applica al suo profitto solo se vince. L'output riporta P&L per esito prima e dopo, commissioni, rischio residuo e liquidità.
+- Stati, esattamente quattro:
+  - `HEDGE_AVAILABLE`;
+  - `PARTIAL_HEDGE_ONLY`: la liquidità entro lo slittamento non basta;
+  - `HEDGE_UNAVAILABLE`: mercato non `ACTIVE` o sconosciuto, book mancante o malformato, nessuna liquidità, puntata sotto `orderSizeMinimumBaseUnits`, dati di posizione mancanti;
+  - `HEDGE_UNCERTAIN`: dati più vecchi di `max_data_age_seconds`, commissioni non verificabili, dati di posizione in conflitto o incompleti, dimensione minima non verificata.
+- **Non è mai un cashout garantito.** L'output contiene sempre l'avvertenza e `guaranteed_cashout: false`, e i parametri d'ordine proposti hanno `executable`, `signed` e `submitted` a `false`.
+
+### Regole (`rules.evaluate`)
+Regole disponibili: `stop_loss`, `take_profit`, `trailing_stop` (il picco lo passa il chiamante a ogni chiamata), `daily_loss_limit` (il realizzato del giorno lo passa il chiamante), `exposure_limit`, `close_on_odds_move`, `close_on_time_remaining`, `block_on_suspended_market` e `block_on_stale_data`.
+
+La configurazione arriva con ogni chiamata e non viene salvata. **Tutte le regole sono spente per default.** Gli unici output sono `NO_ACTION`, `ALERT` e `ORDER_PROPOSAL`:
+- una proposta descrive una chiusura tramite un hedge `FULL` simulato, con un `proposal_hash`. Non è mai eseguibile, firmata o inviata: servirebbe un'approvazione fuori banda dell'owner, verificata dal signer;
+- un mercato sospeso o dati vecchi bloccano le proposte, che diventano `ALERT`;
+- un dato mancante produce `ALERT`, mai una supposizione.
+
+Le soglie sono del chiamante. I limiti reali dell'owner stanno solo nella configurazione firmata del signer, e il server MCP non li conosce.
+
+### Nuovi tool MCP (solo GET + moduli puri)
+| Tool | Letture | Cosa restituisce |
+|---|---|---|
+| `sxbet_order_status(order_id)` | `/orders-v3/{orderId}`, `/fills-v3?orderId=` | ordine, fill, eseguito e residuo, fill parziale, coerenza tra ordine e fill. Un 404 non prova l'assenza fuori dalla finestra di 10–20 minuti |
+| `sxbet_positions_summary(event_id?)` | `positions-v3` (MATCHED,LOCKED), `trades-v3` (MATCHED e LOCKED), `orders-v3`, `balance-v3`, `fees-v3`, `metadata/obv3`, `orders-v3/odds/best` | il position manager completo |
+| `sxbet_exposure_pnl(event_id?)` | `positions-v3` aperte e `SETTLED`, best odds | P&L per esito, worst case, realizzato del provider, mark-to-market |
+| `sxbet_resting_orders_scope(order_ids \| market_hash \| event_id)` | `metadata/obv3`, `orders-v3` | **anteprima di cancel**: gli ordini che un cancel toccherebbe e il residuo per esito. Nessun cancel viene inviato, e una richiesta di cancel non è una conferma (`cancelled`/`notCancelled`/`unconfirmed`) |
+| `sxbet_hedge_simulation(market_hash, mode, fraction?, hedge_stake_base_units?, max_slippage_percentage_odds, max_data_age_seconds)` | `markets/find`, `metadata/obv3`, `trades-v3` ×2, `orders-v3`, `fees-v3`, order book (frame maker, per ultimo) | la simulazione di hedge con i quattro stati |
+| `sxbet_close_position_preview(market_hash, ...)` | come sopra | gli ordini a riposo da cancellare + un hedge `FULL`; nulla viene inviato |
+| `sxbet_rules_evaluate(market_hash, rules?, ...)` | come sopra | il verdetto delle regole, il mark-to-market e i prezzi taker correnti |
+| `sxbet_risk_status()` | nessuna | `LIVE_TRADING` `UNAVAILABLE`, signer non raggiungibile dal server MCP, nessun tool di scrittura, tipo di coordinatore di rate, limiti di esposizione sconosciuti al server MCP |
+| `sxbet_reconciliation_diagnostics(market_hash?, ws_messages?)` | `orders-v3`, `trades-v3` ×2, `fills-v3` ×2 | dedup, conflitti e cross-check REST/WS. I messaggi WS li fornisce il chiamante (`CALLER_SUPPLIED`, massimo 500) |
+
+Il tool di anteprima del cancel si chiama `sxbet_resting_orders_scope` e non `sxbet_cancel_preview`: i test di sicurezza (`test_no_write_capability_exists`, `test_bridge_on_render_never_loads_signer_and_exposes_no_signing_inputs`) vietano la parola "cancel" nei nomi dei tool `sxbet_*`, e quella protezione non è stata indebolita.
+
+Tutte le chiamate passano dal client GET e dal coordinatore di rate condiviso (§2.4): un `SXBET_LOCAL_RATE_LIMITED` interrompe le letture e restituisce `retry_after_seconds`. Un input non valido o una chiave mancante non producono chiamate. Oltre i 256 KiB la risposta è `PAYLOAD_TOO_LARGE`, senza troncature. `/healthz` riporta `sxbet_rate_coordinator` (`POSTGRES_SHARED`, `LOCAL_PROCESS`, oppure `null` se SX Bet è spento), letto dall'oggetto limiter senza chiamate di rete né al database.
+
+### `DOCS_UNVERIFIED` (non calcolati)
+- Arrotondamento delle commissioni in unità base: le commissioni proiettate sono decimali esatti. I ritorni dell'hedge sono arrotondati per difetto, una scelta conservativa perché la regola dell'exchange non è documentata.
+- Se `settleReturnAmount` sia lordo o netto della commissione: si usa la formula documentata così com'è, e `settleFeeAmount` è solo riportato.
+- `settlement.settleFeeAmount` `null` a livello di fill: il significato non è documentato, quindi resta `null`.
+- Saldo spendibile: developers/balances-and-ledger dice `available + pendingAvailable`, api-reference/get-user-balance-v3 dice `availableAmount`. Si usa il minore dei due.
+- Quarter-line e parlay non sono modellati: la `marketHash` di un fill quarter-line è il leg in REST e il parent nel canale WS.
+
 ## Signer isolato
 
 Vedi [`signer/README.md`](../../signer/README.md) e [`wallet_and_signing.md`](wallet_and_signing.md). Il signer è un **servizio separato**: non gira mai nel processo MCP, e `import signer` fallisce se manca `SXBET_SIGNER_PROCESS=1` o se è presente `RENDER` (test `tests/test_sxbet_render_isolation.py`).
@@ -107,7 +186,7 @@ Vedi [`signer/README.md`](../../signer/README.md) e [`wallet_and_signing.md`](wa
 - Risk engine autoritativo (`signer/risk.py`) con limiti solo da un file JSON firmato dall'owner (`SXBET_SIGNER_RISK_CONFIG`); default tutto a zero, quindi rifiuto.
 - Gateway di invio (`signer/gateway.py`) **disabilitato**: si costruisce solo con un flag firmato dall'owner, e nel repository non esiste alcun trasporto di rete (solo un fake in-memory nei test).
 
-Il catalogo MCP non cambia: nessun tool nuovo, 37 tool `sxbet_*`.
+Il signer non aggiunge tool al catalogo MCP: i 9 tool DERIVED descritti sopra sono solo lettura e simulazione.
 
 **Unità:** `percentageOdds` è la probabilità implicita × 10^20 (per esempio `52500000000000000000` = 52,5%). Gli importi USDC sono in unità base con 6 decimali (`1000000` = 1 USDC). I dati sono restituiti così come arrivano dal provider.
 

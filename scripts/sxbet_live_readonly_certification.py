@@ -4,7 +4,7 @@ Runs ONLY when explicitly authorized (``--authorize-live-read``), normally from
 the ``SX Bet Live Read-Only Certification`` workflow_dispatch job.
 
 What it exercises, all against the REAL SX Bet mainnet API:
-  * the 23 ``sxbet_*`` tools through the real MCP stack (Starlette app ->
+  * the 46 ``sxbet_*`` tools (incl. the DERIVED position/hedge/rules tools) through the real MCP stack (Starlette app ->
     OAuth middleware -> MCP JSON-RPC -> tool -> host-pinned GET client). Only
     the OAuth token validator is stubbed, because a CI job has no user login;
   * one deliberately invalid key against an authenticated GET route (error
@@ -36,8 +36,13 @@ SOCCER_HINT = "soccer"
 REST_ENDPOINT = "https://api.sx.bet"
 WS_ENDPOINT = "wss://realtime.sx.bet/connection/websocket"
 TOKEN_PATH = "/user/realtime-token-v3/api-key"
-MAX_MCP_CALLS = 60
-EXPECTED_SXBET_TOOLS = 37
+# In-process MCP calls of one run (incl. one paced retry per locally rate-limited call); provider
+# admission is still decided by the bridge's rate coordinator, this only bounds the script.
+MAX_MCP_CALLS = 80
+EXPECTED_SXBET_TOOLS = 46
+DERIVED_TOOLS = ("sxbet_order_status", "sxbet_positions_summary", "sxbet_exposure_pnl", "sxbet_resting_orders_scope",
+                 "sxbet_hedge_simulation", "sxbet_close_position_preview", "sxbet_rules_evaluate",
+                 "sxbet_reconciliation_diagnostics")
 PUBLIC_SAMPLE_KEYS = ("marketHash", "sportXeventId", "leagueLabel", "teamOneName", "teamTwoName",
                       "outcomeOneName", "outcomeTwoName", "type", "line", "gameTime", "status", "liveEnabled")
 
@@ -204,6 +209,18 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
                 **info, **(extra or {}))
         return out
 
+    def derived_row(name: str, out: dict[str, Any]) -> None:
+        if isinstance(out.get("tool"), str):
+            exercised.add(out["tool"])
+        status = out.get("status")
+        bad = status in ("PROVIDER_ERROR", "UNPARSEABLE", "INVALID_INPUT", "PAYLOAD_TOO_LARGE")
+        safe = out.get("signed") is False and out.get("submitted") is False
+        hedge = out.get("hedge") if isinstance(out.get("hedge"), dict) else {}
+        rec.add(name, "REAL_API_VIA_MCP (reads) + DERIVED", "FAIL" if bad or not safe else "PASS",
+                status=status, signed=out.get("signed"), submitted=out.get("submitted"),
+                error_code=(out.get("error") or {}).get("code"), network_calls_made=out.get("network_calls_made"),
+                hedge_status=hedge.get("status"), hedge_reason=hedge.get("reason"))
+
     with client:
         listed = rpc("tools/list", {})
         tools = listed["body"]["result"]["tools"]
@@ -221,6 +238,12 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
                 and health.get("api_key_present") is bool(api_key) else "FAIL",
                 mode=health.get("mode"), write_tools=health.get("write_tools"),
                 api_key_present=health.get("api_key_present"), live_trading=str(health.get("live_trading", ""))[:11])
+        risk = tool("sxbet_risk_status")
+        exercised.add("sxbet_risk_status")
+        rec.add("sxbet_risk_status", "MCP_NO_NETWORK",
+                "PASS" if risk.get("live_trading") == "UNAVAILABLE" and risk.get("write_tools") == []
+                and risk.get("signer_reachable_from_mcp") is False and risk.get("network_calls_made") == 0 else "FAIL",
+                rate_coordinator=risk.get("rate_coordinator"), live_trading=risk.get("live_trading"))
         sports = tool("sxbet_sports")
         row("sxbet_sports", sports)
         soccer = next((s for s in (sports.get("data") or []) if SOCCER_HINT in str(s.get("label", "")).lower()), None)
@@ -285,7 +308,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
                          "sxbet_public_market_orders", "sxbet_public_user_orders", "sxbet_public_positions",
                          "sxbet_proxy_wallet", "sxbet_proxy_deploy_pending", "sxbet_proxy_funding_pending",
                          "sxbet_proxy_funding_status", "sxbet_proxy_address_check", "sxbet_safe_info",
-                         "sxbet_simulate_order"):
+                         "sxbet_simulate_order", *DERIVED_TOOLS):
                 rec.add(name, "REAL_API_VIA_MCP", "NOT_TESTED", reason="SXBET_API_KEY_SECRET_ABSENT")
         else:
             if hashes:
@@ -353,6 +376,20 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
                         network_calls_made=sim.get("network_calls_made"))
             else:
                 skipped("sxbet_simulate_order", "NO_ACTIVE_MARKET_AT_RUN_TIME")
+            # DERIVED read/simulation tools: once each, bounded; only statuses are reported (no amounts).
+            derived_row("sxbet_order_status_not_found", tool("sxbet_order_status", order_id=probe_hash))
+            derived_row("sxbet_positions_summary", tool("sxbet_positions_summary"))
+            derived_row("sxbet_exposure_pnl", tool("sxbet_exposure_pnl"))
+            derived_row("sxbet_reconciliation_diagnostics", tool("sxbet_reconciliation_diagnostics"))
+            if hashes:
+                derived_row("sxbet_resting_orders_scope", tool("sxbet_resting_orders_scope", market_hash=hashes[0]))
+                derived_row("sxbet_hedge_simulation", tool("sxbet_hedge_simulation", market_hash=hashes[0]))
+                derived_row("sxbet_close_position_preview", tool("sxbet_close_position_preview", market_hash=hashes[0]))
+                derived_row("sxbet_rules_evaluate", tool("sxbet_rules_evaluate", market_hash=hashes[0]))
+            else:
+                for name in ("sxbet_resting_orders_scope", "sxbet_hedge_simulation", "sxbet_close_position_preview",
+                             "sxbet_rules_evaluate"):
+                    skipped(name, "NO_ACTIVE_MARKET_AT_RUN_TIME")
             proxy_data = proxy.get("data") if isinstance(proxy.get("data"), dict) else {}
             def _addr(key):
                 v = proxy_data.get(key)
