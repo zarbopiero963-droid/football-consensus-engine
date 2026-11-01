@@ -225,6 +225,8 @@ L'audit (`signer/audit.py`) ammette in più i campi `command_id` (id del comando
 
 Il signer legge la chiave una sola volta, all'avvio, dalla propria variabile d'ambiente `SXBET_SIGNER_PRIVATE_KEY`. Non la restituisce, non la scrive in log, audit o ledger, e `repr()` la nasconde. L'oggetto non è serializzabile. Una chiave mancante o malformata produce un errore con codice fisso, senza riportarne il valore.
 
+Adattatore KMS (`signer/kms.py`, non collegato a `Signer`): converte una firma ECDSA secp256k1 DER prodotta da un KMS in modalità digest (AWS `MessageType=DIGEST`, campo `digest` di GCP) nella firma Ethereum da 65 byte (low-s, `v` per recovery contro l'indirizzo noto). Non contiene codice di rete né SDK cloud. Analisi e citazioni in [`docs/sxbet/kms_compatibility.md`](../docs/sxbet/kms_compatibility.md).
+
 ## Dipendenze
 
 `signer/requirements.txt` (`eth-account` 0.14.x, `cryptography`). **Non** sono in `requirements.txt`: il runtime Render del bridge non riceve librerie di firma. La CI (`multi-market-tests.yml`, job `pytest`) le installa solo per eseguire i test. `tests/conftest.py` imposta `SXBET_SIGNER_PROCESS=1` per il processo di test.
