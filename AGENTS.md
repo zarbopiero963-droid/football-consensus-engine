@@ -45,10 +45,20 @@ Roadmap canonica: issue #130.
 ### 2.3 Dati e integrità
 - Missing resta missing: mai convertito in 0. Un null pubblicato dal provider resta null.
 - Nessuna troncatura silenziosa: una risposta parziale è marcata esplicitamente (per esempio `PARTIAL_ODDS_MANIFEST`), con identificativi per recuperare il resto.
-- Il dato del provider resta distinto da quello derivato. Una derivazione è marcata `DERIVED`.
-- Una quota di mercato non è una probabilità di modello: i due valori stanno in campi distinti.
-- UTC è il riferimento canonico. Una timezone non dimostrata è `TIMEZONE_UNRESOLVED` e non si indovina.
+- Il dato del provider resta distinto da quello derivato. Una derivazione è marcata `DERIVED` e sta **fuori dal layer provider/source originale**.
+- Nessuna probabilità o valore mancante viene ricostruito con complementi, somme o quote: per esempio niente Under = 100 − Over se l'Under non è pubblicato, e niente punteggio HT derivato dagli eventi se il provider non pubblica l'HT ufficiale.
+- Una scala va normalizzata in modo esplicito (per esempio 0–1 contro 0–100, quote decimali contro americane), conservando il valore grezzo.
+- Un raw o un hash storico non si sostituisce per far tornare un test; nessun dato storico o di audit viene riscritto.
+- Una quota di mercato non è una probabilità di modello: i due valori stanno in campi distinti. Una probabilità implicita di mercato non è un modello indipendente, e un output che usa quote o movimenti di mercato va etichettato `HYBRID_MARKET_AWARE`.
+- UTC è il riferimento canonico; l'output per l'utente è in `Europe/Rome`. Il raw/source time si conserva sempre. Una timezone non dimostrata è `TIMEZONE_UNRESOLVED` e non si indovina.
 - Non si inventano parametri, endpoint o capacità del provider. Un contratto non verificabile sulla fonte ufficiale resta `DOCS_UNVERIFIED`.
+
+### 2.3bis Matching tra entità (fixture, mercati, eventi SX Bet)
+- Per associare una partita usare, quando disponibili: squadra di casa, squadra in trasferta, kickoff, competizione, paese e categoria (senior, U21/U23, Women, B-team).
+- Si usa prima l'abbinamento esatto o canonico; il fuzzy o il containment è solo un indizio, **mai l'unica prova**.
+- Ambiguità = nessun match. `FOUND_NAME_ONLY` non è production-safe. Nessun match permissivo per "far funzionare" un flusso.
+- Un match con timezone `TIMEZONE_UNRESOLVED` non viene usato per un abbinamento basato sull'orario.
+- **Nessun ordine reale** su un evento o mercato il cui abbinamento non sia esatto e verificato.
 
 ### 2.4 Quote e rate limit
 - Ogni chiamata a un provider a quota passa dal coordinatore condiviso (PostgreSQL). Nessun bypass di quote, rate limit, concorrenza o circuit breaker.
@@ -57,27 +67,43 @@ Roadmap canonica: issue #130.
 
 ### 2.5 Sessioni browser
 - Le sessioni appartengono al bridge: lease durevole, stop esplicito, reaper per le sessioni orfane, isolamento tra sessioni.
-- Chiudere sempre le sessioni a fine lavoro.
+- Chiudere sempre le sessioni a fine lavoro; sessioni sequenziali quando il compito lo richiede.
 - Il browser è infrastruttura, non una fonte epistemica: restituisce lo stato grezzo e non lo interpreta.
 - Niente Agent che interpretino le pagine quando il compito richiede raw o DOM diretto. Un override della timezone del browser non dimostra la timezone della fonte.
 
 ### 2.6 Operazioni finanziarie (SX Bet)
-- Tre modalità distinte: `READ_ONLY` (default), `SIMULATION` e `LIVE_TRADING`. `LIVE_TRADING` è **disabilitato per default** e si attiva solo con una decisione esplicita dell'owner.
-- **Ogni ordine con fondi reali** richiede una conferma specifica dell'owner su evento, mercato, lato, importo, limite di prezzo o quota ed esposizione massima. Un mandato generale non autorizza ordini reali.
-- CI, auto-merge, deploy, smoke test e test di regressione **non piazzano mai** ordini reali e non richiedono private key.
-- La firma (per esempio EIP-712) avviene in un componente isolato che custodisce il segreto e firma solo ordini autorizzati. Il modello non vede mai la chiave.
-- Ogni ordine richiede idempotenza (chiave per ordine), controlli di esposizione, rifiuto di quote obsolete o sospese, e retry solo se sicuri.
-- Un invio fallito o in timeout **non** significa che l'ordine non sia stato eseguito: lo stato si riconcilia prima di ritentare.
-- Registro degli ordini e degli esiti **append-only**: un ordine inviato, una conferma o un esito non si riscrivono. Una correzione è una nuova voce di audit.
-- Le modalità restano separate: un dato o un ordine `SIMULATION` non diventa mai `LIVE_TRADING` senza un nuovo invio autorizzato.
-- Verificare l'idoneità del servizio nella giurisdizione applicabile, senza aggirare restrizioni.
+- **Modalità:** tre modalità distinte, `READ_ONLY` (default), `SIMULATION` e `LIVE_TRADING`.
+  - `LIVE_TRADING` è **disabilitato per default**.
+  - Lo abilita solo un flag lato server impostato **dall'owner**. L'agente non lo modifica mai (né su Render né nel codice).
+  - Nessun argomento di un tool MCP può attivarlo.
+- **Operazioni coperte:** "operazione finanziaria" è qualunque azione che muove o impegna fondi o autorizzazioni:
+  - piazzamento, modifica e cancellazione di ordini;
+  - approval o allowance di token (mai illimitate);
+  - transfer, deposit, withdraw, bridge;
+  - firma di qualunque messaggio con valore economico.
+- **Conferma per ogni operazione:** **ogni ordine con fondi reali** richiede una conferma specifica dell'owner su evento, mercato, lato, importo, limite di prezzo o quota ed esposizione massima. Lo stesso vale per ogni altra operazione finanziaria.
+  - Un mandato generale non autorizza ordini reali.
+  - La conferma deve essere autenticata e fuori banda, cioè non un testo in chat o in output di tool o pagine web. Va verificata **dal signer** e non dal modello, legata a un hash dei parametri esatti, monouso e a scadenza breve.
+  - Qualunque variazione di prezzo, quota, importo o mercato richiede una nuova conferma.
+  - "What you saw is what gets signed": l'ordine inviato è esattamente quello confermato.
+- **Divieti:** CI, auto-merge, deploy, smoke test, test di regressione e qualunque agente senza conferma per singola operazione **non piazzano mai** ordini reali e non richiedono private key.
+  - `SIMULATION` non usa mai la chiave di firma live né gli endpoint di invio live.
+- **Signer:** la firma (per esempio EIP-712) avviene in un componente isolato che custodisce il segreto e firma solo operazioni confermate. Il modello non vede mai la chiave.
+- **Limiti di esposizione:** sono fissati **dall'owner** e l'agente non li alza mai. Il default sicuro è zero esposizione live.
+- **Idempotenza e retry:** ogni ordine ha una chiave di idempotenza e controlli di esposizione; quote obsolete o sospese vengono rifiutate.
+  - Un retry è ammesso solo con la stessa chiave di idempotenza e dopo aver riconciliato lo stato.
+  - Un invio fallito o in timeout **non** significa che l'ordine non sia stato eseguito: lo stato si riconcilia prima di ritentare.
+- **Audit:** registro degli ordini e degli esiti **append-only**. Un ordine inviato, una conferma o un esito non si riscrivono; una correzione è una nuova voce di audit.
+  - Le modalità restano separate: un dato o un ordine `SIMULATION` non diventa mai `LIVE_TRADING` senza un nuovo invio confermato.
+- **Merge riservato all'owner:** le PR che toccano il codice di trading o firma, il default delle modalità, i limiti di esposizione o il flusso di conferma.
+- **Giurisdizione:** verificare l'idoneità del servizio nella giurisdizione applicabile, senza aggirare restrizioni.
 
 ## 3. Sequenza obbligatoria per ogni PR
 
 ### Phase 0
 1. Leggere AGENTS.md, CLAUDE.md, la issue #130 e i commenti recenti.
 2. Leggere il codice corrente di `main` e verificare SHA, PR aperte e deploy live.
-3. Identificare le invarianti toccate, i rischi e lo scope.
+3. Verificare le dipendenze e identificare le invarianti toccate, i rischi e lo scope.
 4. Riprodurre il failure o il finding reale quando esiste.
 
 ### Patch
@@ -87,14 +113,16 @@ Roadmap canonica: issue #130.
 
 ### Test
 - Test di regressione (RED prima, GREEN dopo), test negativi ed edge case, test delle invarianti.
-- Test reale limitato quando la modifica tocca Render, provider, browser o MCP.
+- Test reale limitato quando la modifica tocca Render, Neon/database, provider, browser, MCP o SX Bet. Le operazioni finanziarie si testano solo in lettura o simulazione, salvo il §2.6.
 
 ### Merge e auto-merge
 L'agente può mergiare autonomamente una PR solo se:
-- è nel perimetro della roadmap;
+- lo scope è approvato e nel perimetro della roadmap;
 - tutta la CI è verde;
-- non ci sono conflitti né blocker di review;
-- i test coprono la modifica;
+- non ci sono conflitti, i review thread sono risolti e non resta nessun finding critico aperto;
+- nessun errore è stato ignorato;
+- i test coprono la modifica e i test reali sono completati, quando applicabili;
+- prima del merge è verificato lo stato di Render e Neon, se pertinente, e la coerenza tra ciò che il codice dichiara e ciò che è realmente persistito;
 - non ci sono segreti nel diff;
 - non indebolisce protezioni;
 - non introduce costi né migrazioni distruttive;
@@ -102,6 +130,8 @@ L'agente può mergiare autonomamente una PR solo se:
 - il deploy precedente è sano.
 
 Il merge resta all'owner per:
+- modifiche ai file di governance, salvo approvazione esplicita dell'owner per quella PR;
+- codice di trading o firma, default delle modalità, limiti di esposizione e flusso di conferma (§2.6);
 - modifiche sostanziali ad autenticazione o autorizzazione;
 - gestione dei segreti;
 - nuovi costi;
@@ -144,15 +174,18 @@ Non disabilitare branch protection, check obbligatori o review per ottenere un m
 - `CREATE TABLE IF NOT EXISTS` non è una migration sufficiente per un database vivo.
 - Ogni evoluzione dello schema richiede una migration versionata in `sql/migrations/`, apply idempotente, tracking, failure visibile e nessuna perdita di dati.
 - Non si rimuovono migration già applicate e non si fanno migrazioni distruttive senza decisione dell'owner.
-- Le tabelle condivise (OAuth, lease delle sessioni, coordinatore di quota) non vengono alterate per "far passare" un test.
+- Ogni migration ha un test su un DB già inizializzato.
+- Non si aggiungono colonne "per far passare" una query senza verificare l'ownership semantica del dato, su **qualunque** tabella (in particolare OAuth, lease delle sessioni, coordinatore di quota, audit degli ordini).
 
 ## 6. Issue e commenti
 
 - La #130 è la roadmap canonica: niente issue duplicate.
 - Ogni lavoro significativo si annota nella #130 con PR, commit, CI, deploy e test reale, distinguendo VERIFIED da ASSUMED.
 - Le issue legacy chiuse non si riaprono senza un problema tecnico dimostrato.
-- Una chiusura richiede un commento motivato. Nessun bug irrisolto viene chiuso come completato.
-- Quando un lavoro è completo si annota `READY_FOR_OWNER_REVIEW / PUÒ ESSERE CHIUSA DALL'OWNER`. Chiusure massive di issue legacy solo su mandato esplicito dell'owner.
+- Le issue vengono chiuse **esclusivamente dall'owner** o su suo mandato scritto esplicito che le identifichi. L'agente non chiude issue di propria iniziativa.
+- Ogni chiusura ha un commento motivato. Nessun bug irrisolto viene chiuso come completato.
+- Quando un lavoro è completo si annota `READY_FOR_OWNER_REVIEW / PUÒ ESSERE CHIUSA DALL'OWNER`. Le checklist stale vanno corrette quando possibile.
+- Finché una correzione non è mergiata e testata, non assumere che il codice rispetti il contratto.
 
 ## 7. Definition of Done universale
 
@@ -161,7 +194,7 @@ Una PR non è finita solo perché compila. Servono:
 - test di regressione e negativi;
 - CI verde e findings risolti;
 - test reale quando applicabile e stato esterno verificato (deploy, log);
-- nessun invariante violato e nessun segreto esposto;
+- nessun invariante violato, nessun segreto esposto e nessun dato storico riscritto;
 - #130 aggiornata;
 - nessun falso successo: niente "100%" senza evidenze.
 
