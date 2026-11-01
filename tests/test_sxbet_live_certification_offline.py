@@ -81,3 +81,10 @@ def test_job_uses_environment_and_fails_on_fail_rows():
     assert wf["jobs"]["certify"]["environment"] == "sxbet-live-readonly"
     src = SCRIPT.read_text(encoding="utf-8")
     assert 'return 1 if final_counts.get("FAIL") else 0' in src
+
+
+def test_local_rate_limit_is_respected_by_waiting_not_by_raising_the_limit():
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert '"SXBET_MAX_RPM": "30"' in src            # the audit keeps the conservative local limit
+    assert 'err.get("code") == "SXBET_LOCAL_RATE_LIMITED"' in src and "time.sleep(wait)" in src
+    assert "min(int(err.get(\"retry_after_seconds\") or 61), 61)" in src
