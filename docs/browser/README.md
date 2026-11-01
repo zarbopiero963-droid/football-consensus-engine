@@ -26,7 +26,7 @@ Tutti i browser sono **di proprietà del bridge**: il client riceve solo un `ses
 - Si naviga solo verso URL `http`/`https` **pubblici**: indirizzi interni o privati, come `127.0.0.1`, vengono rifiutati (verificato il 31-10-2026).
 - Nessun bypass di login, paywall, CAPTCHA o controlli di accesso. Una challenge risolta dal browser stesso viene registrata così com'è.
 - `browser_get_elements` omette i valori degli input.
-- ⚠️ `browser_create` restituisce oggi `live_url` di Browser Use, che contiene l'host CDP della sessione. La correzione è nella PR #133 e attende una decisione dell'owner.
+- `browser_create` restituisce `live_view_available: bool` e **non** il `liveUrl` di Browser Use, che contiene l'host CDP. Il link si ottiene solo con `BROWSER_USE_EXPOSE_LIVE_URL=true` (PR #133, verificato in produzione l'01-11-2026).
 
 ## Verifica reale (31-10-2026, connettore MCP Claude → produzione)
 

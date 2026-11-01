@@ -12,13 +12,14 @@ Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/fo
 
 ### Governance (sintesi, vincolante)
 [AGENTS.md](AGENTS.md) e [CLAUDE.md](CLAUDE.md) prevalgono su codice e documentazione in caso di conflitto. Invarianti sempre attivi:
-- missing resta missing, mai convertito in 0;
-- quote di mercato separate dalla probabilità di modello;
+- OAuth obbligatorio su `/mcp` e protezione SSRF sui browser;
+- nessun `cdpUrl` né `live_url` esposto per default;
+- segreti solo in env;
+- missing resta missing; nessuna troncatura silenziosa;
 - UTC canonico; una timezone non dimostrata è `TIMEZONE_UNRESOLVED`;
-- un match `FOUND_NAME_ONLY` non è production-safe;
-- nessun `production_eligible` senza promozione esplicita;
-- qualifica delle fonti con Pass 1 e "Pass 2 — Rigoroso e indipendente";
-- nessun secret o `cdpUrl` esposto;
+- un contratto non verificabile resta `DOCS_UNVERIFIED`;
+- nessun bypass di quote o rate limit;
+- SX Bet: `LIVE_TRADING` disabilitato per default; ogni ordine reale richiede una conferma specifica dell'owner, e CI e deploy non piazzano mai ordini;
 - le modifiche ai file di governance richiedono l'approvazione dell'owner.
 
 ## Architettura
@@ -51,7 +52,7 @@ Lo schema `tools/list` espone tutti i 109 parametri dei contratti API-FOOTBALL (
 | Variabile | Uso |
 |---|---|
 | `MCP_PUBLIC_HOST`, `MCP_OAUTH_PASSWORD`, `DATABASE_URL` | host pubblico, OAuth, PostgreSQL |
-| `BROWSER_USE_API_KEY`, `BROWSER_STOP_LOCK_TIMEOUT_SECONDS` | Browser Use |
+| `BROWSER_USE_API_KEY`, `BROWSER_STOP_LOCK_TIMEOUT_SECONDS`, `BROWSER_USE_EXPOSE_LIVE_URL` (default spento) | Browser Use |
 | `CLOAKBROWSER_ENABLED`, `CLOAKBROWSER_HEADLESS`, `CLOAKBROWSER_HUMANIZE`, `CLOAKBROWSER_MAX_LOCAL_SESSIONS`, `CLOAKBROWSER_PROXY_URL` | CloakBrowser |
 | `APIFOOTBALL_ENABLED`, `APIFOOTBALL_LIVE_AUTHORIZED`, `APIFOOTBALL_API_KEY` | API-FOOTBALL (entrambi i flag sono necessari per le chiamate reali) |
 | `APIFOOTBALL_MAX_RPM` (8), `APIFOOTBALL_MAX_DAILY_REQUESTS` (80), `APIFOOTBALL_MAX_CONCURRENCY` (2; in produzione 1) | limiti locali del coordinatore di quota, più restrittivi del piano del provider |
@@ -68,7 +69,7 @@ Lo schema `tools/list` espone tutti i 109 parametri dei contratti API-FOOTBALL (
   - alcune selezioni live sospese hanno `"odd":"0"`, da trattare come prezzo assente;
   - `/injuries` può restituire voci duplicate;
   - `periods` può essere null anche su partite concluse.
-- **Browser:** nessun bypass di login, paywall o CAPTCHA. Gli URL non pubblici (per esempio `127.0.0.1`) vengono rifiutati. Il campo `cdpUrl` non viene mai restituito. ⚠️ Finché la PR #133 non viene mergiata, però, `browser_create` restituisce `live_url` di Browser Use, che contiene l'host CDP della sessione.
+- **Browser:** nessun bypass di login, paywall o CAPTCHA. Gli URL non pubblici (per esempio `127.0.0.1`) vengono rifiutati. Il campo `cdpUrl` non viene mai restituito. Anche il `liveUrl` di Browser Use, che contiene l'host CDP, è nascosto per default (`live_view_available: bool`). Lo si abilita solo impostando `BROWSER_USE_EXPOSE_LIVE_URL=true` (PR #133).
 
 ## Stato di certificazione (31-10-2026)
 
