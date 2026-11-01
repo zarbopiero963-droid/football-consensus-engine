@@ -1,5 +1,27 @@
 # Contract registry changelog
 
+## 2026-11-01 (official parameter reconciliation, v3.9.3)
+- Source: the official documentation page https://www.api-football.com/documentation-v3 (v3.9.3), read in the bridge's Browser Use session. The browser passed the site's standard challenge by itself; nothing was bypassed. Direct HTTP and the OpenAPI file still return 403. Extracted matrix: `official_parameter_matrix_v3.9.3.json` (38 endpoints, 140 query parameters, required flags, documented constraints, pagination).
+- Before: 104/140 documented parameters exposed. After: 140/140 exposed, none invented (test-enforced in both directions).
+- Added parameters:
+  - `/leagues`: `name`, `code`, `type`, `current`, `last`;
+  - `/teams`: `name`, `country`;
+  - `/fixtures/headtohead`: `date`, `league`, `season`, `from`, `to`, `timezone`;
+  - `/fixtures/statistics`: `type`;
+  - `/fixtures/events` and `/fixtures/lineups`: `team`, `player`, `type`;
+  - `/injuries`: `player`, `date`, `timezone`;
+  - `/players`: `league`, `search`;
+  - `/players/seasons`: `player`;
+  - `/players/profiles`: `player`, `search`;
+  - `/trophies` and `/sidelined`: `players`, `coachs` (up to 20 ids).
+- Documented rules now enforced:
+  - minimum `search` length: 3 for leagues/teams/live bets, 4 for players/profiles;
+  - `/leagues`: `type` is `league` or `cup`, `last` ≤ 99, `code` 2–6 characters;
+  - `/players`: `season` needs `id`, `league` or `team`, and `search` needs `league` or `team`;
+  - `/injuries`: `season` is required with `league`/`team`/`player`. Behaviour change: `team` alone is now refused (`INJURY_FILTER_REQUIRED`);
+  - `/standings`: only `season` is documented as required. `league` is no longer mandatory, but `league` or `team` must bound the query (`STANDINGS_FILTER_REQUIRED`).
+- The 6 contracts that were `PENDING` (`/players`, `/players/profiles`, `/injuries`, `/odds/mapping`, `/odds/bookmakers`, `/odds/bets`) are now `DOCUMENTED_OFFICIAL`. `timezone` stays restricted to `UTC` (`TIMEZONE_NOT_CERTIFIED`) by policy.
+
 ## 2026-10-31 (live odds manifest)
 - `/odds/live` replies over the 256 KiB MCP cap now return `PARTIAL_ODDS_MANIFEST` with `phase: LIVE`: per fixture `update`, `elapsed`, counts, and every market's `bet_id`/name/selections/suspended (no prices). Prices: `apifootball_live_odds(fixture=<id>, bet=<bet_id>)`. Malformed lists fail closed; missing `suspended` is counted as unknown, not false.
 - `/odds/live` transport read cap aligned with `/odds` (2 MiB, bounded); all other routes stay at 512 KiB.
