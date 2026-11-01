@@ -5,7 +5,7 @@ Canonical string (UTF-8, '\\n'-joined):
 Headers: X-FCB-Key-Id, X-FCB-Timestamp (unix seconds), X-FCB-Nonce ([A-Za-z0-9_-]{16,64}),
 X-FCB-Signature (lowercase hex HMAC-SHA256 with the key's secret).
 
-Order of checks: key known -> timestamp within ±30 s -> constant-time signature compare -> nonce recorded
+Order of checks: timestamp within ±30 s -> key known (unknown = AUTH_SIGNATURE_INVALID) -> constant-time signature compare -> nonce recorded
 (INSERT, primary key) in SQLite. The nonce is written only for an authentic request, so unauthenticated
 traffic cannot fill the cache, and it survives restarts. Entries older than the skew window are pruned
 (a request that old is refused by the timestamp check anyway).
@@ -113,14 +113,15 @@ class HmacVerifier:
         if not _KEY_ID.fullmatch(key_id) or not _TS.fullmatch(ts) or not _NONCE.fullmatch(nonce) \
                 or not _SIG.fullmatch(sig):
             raise AuthError("AUTH_MALFORMED")
+        # Timestamp first, before the key lookup: a stale request gets the same answer whether or not the
+        # key id exists, so no response depends on which key ids are configured.
+        if abs(int(self._clock()) - int(ts)) > MAX_SKEW_SECONDS:
+            raise AuthError("AUTH_TIMESTAMP_SKEW")
         key = self._keys.get(key_id)
         if key is None:
-            # Compute anyway so an unknown key id costs the same as a known one.
             # Same work and the same code as a bad signature: no oracle on which key ids exist.
             hmac.compare_digest(sign(b"\x00" * MIN_SECRET_BYTES, method, path, body, ts, nonce, key_id), sig)
             raise AuthError("AUTH_SIGNATURE_INVALID")
-        if abs(int(self._clock()) - int(ts)) > MAX_SKEW_SECONDS:
-            raise AuthError("AUTH_TIMESTAMP_SKEW")
         if not hmac.compare_digest(sign(key.secret, method, path, body, ts, nonce, key_id), sig):
             raise AuthError("AUTH_SIGNATURE_INVALID")
         if scope not in key.scopes:

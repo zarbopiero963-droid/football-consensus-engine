@@ -54,7 +54,8 @@ from .market import MarketDataProvider, MarketDataUnavailable
 MAX_REQUEST_TTL_SECONDS = 120
 UNLOCK_CHALLENGE_TTL_SECONDS = 60
 SESSION_TTL_SECONDS = 60
-MAX_PENDING_UNLOCKS = 256
+MAX_PENDING_UNLOCKS = 256           # for ids that are not stored requests (oldest evicted, never a 429)
+MAX_PENDING_UNLOCKS_PER_REQUEST = 4  # for a real request id (oldest of that id evicted)
 UNLOCK_DOMAIN = b"sxbet.approval_unlock.v1"
 REFUSAL_AUDIT_PER_WINDOW = 10
 REFUSAL_AUDIT_WINDOW_SECONDS = 60
@@ -100,24 +101,46 @@ class ServiceConfig:
 
 class RefusalAuditLimiter:
     """At most N audit rows per event kind per window; the rest is counted and summarised once per window
-    (AUDIT_SUPPRESSED {suppressed_event, count}), so unauthenticated traffic cannot grow the audit freely."""
+    (AUDIT_SUPPRESSED {suppressed_event, count}), so unauthenticated traffic cannot grow the audit freely.
+
+    Thread-safe (one lock). Every call first flushes the summaries of ALL kinds whose window has ended,
+    and `flush()` (run by SignerService.close) writes the open ones, so no count is lost."""
 
     def __init__(self, store, clock):
         self._store, self._clock = store, clock
+        self._lock = threading.Lock()
         self._win: dict[str, list[int]] = {}  # event -> [window_start, written, suppressed]
 
+    def _write_summary(self, event: str, w: list[int]) -> None:
+        if w[2]:
+            self._store.audit("AUDIT_SUPPRESSED", detail={"suppressed_event": event, "count": w[2]})
+            w[2] = 0
+
+    def _flush_expired_locked(self, now: int) -> None:
+        for event, w in list(self._win.items()):
+            if now - w[0] >= REFUSAL_AUDIT_WINDOW_SECONDS:
+                self._write_summary(event, w)
+                del self._win[event]
+
+    def flush_expired(self) -> None:
+        with self._lock:
+            self._flush_expired_locked(int(self._clock()))
+
+    def flush(self) -> None:
+        with self._lock:
+            for event, w in self._win.items():
+                self._write_summary(event, w)
+
     def audit(self, event: str, **kw: Any) -> None:
-        now = int(self._clock())
-        w = self._win.get(event)
-        if w is None or now - w[0] >= REFUSAL_AUDIT_WINDOW_SECONDS:
-            if w is not None and w[2]:
-                self._store.audit("AUDIT_SUPPRESSED", detail={"suppressed_event": event, "count": w[2]})
-            w = self._win[event] = [now, 0, 0]
-        if w[1] < REFUSAL_AUDIT_PER_WINDOW:
-            w[1] += 1
-            self._store.audit(event, **kw)
-        else:
-            w[2] += 1
+        with self._lock:
+            now = int(self._clock())
+            self._flush_expired_locked(now)
+            w = self._win.setdefault(event, [now, 0, 0])
+            if w[1] < REFUSAL_AUDIT_PER_WINDOW:
+                w[1] += 1
+                self._store.audit(event, **kw)
+            else:
+                w[2] += 1
 
 
 def _canon_sha(obj: Any) -> str:
@@ -179,7 +202,7 @@ class SignerService:
         self.webauthn = wa.WebAuthnApprovalVerifier(self.policy, st.CredentialView(self.store))
         self._meta = meta
         self._reg_challenges: dict[str, tuple[bytes, str, int]] = {}
-        self._unlocks: dict[str, tuple[bytes, str, int]] = {}       # unlock_id -> (challenge, request_id, exp)
+        self._unlocks: dict[str, tuple[bytes, str, int, bool]] = {}  # unlock_id -> (challenge, rid, exp, real)
         self._sessions: dict[str, dict[str, Any]] = {}              # sha256(token) -> session
         self.refusals = RefusalAuditLimiter(self.store, clock)
 
@@ -203,6 +226,7 @@ class SignerService:
         self._recover()
 
     def close(self) -> None:
+        self.refusals.flush()  # never lose a suppressed-refusal count at shutdown
         self._ledger.close()
         self._nonces.close()
         self.store.close()
@@ -272,14 +296,23 @@ class SignerService:
         if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
             raise ServiceError("NOT_FOUND", 404)
         now = int(self._clock())
+        real = self.store.get(request_id) is not None  # internal only: the response is identical either way
         with self._lock:
             self._unlocks = {k: v for k, v in self._unlocks.items() if v[2] > now}
-            if len(self._unlocks) >= MAX_PENDING_UNLOCKS:
-                raise ServiceError("UNLOCK_BUSY", 429)
+            # Bounded without a global refusal: a flood of made-up ids only evicts other made-up ids, and a
+            # real id keeps at most 4 pending challenges (its oldest is evicted). Dicts keep insertion order.
+            if real:
+                same = [k for k, v in self._unlocks.items() if v[1] == request_id]
+                for k in same[:max(0, len(same) - MAX_PENDING_UNLOCKS_PER_REQUEST + 1)]:
+                    del self._unlocks[k]
+            else:
+                fake = [k for k, v in self._unlocks.items() if not v[3]]
+                for k in fake[:max(0, len(fake) - MAX_PENDING_UNLOCKS + 1)]:
+                    del self._unlocks[k]
             uid = secrets.token_hex(16)
             challenge = hashlib.sha256(UNLOCK_DOMAIN + b"\n" + request_id.encode("ascii") + b"\n"
                                        + secrets.token_bytes(32)).digest()
-            self._unlocks[uid] = (challenge, request_id, now + UNLOCK_CHALLENGE_TTL_SECONDS)
+            self._unlocks[uid] = (challenge, request_id, now + UNLOCK_CHALLENGE_TTL_SECONDS, real)
         # allowCredentials omitted on purpose: passkeys are discoverable (residentKey required), so no
         # credential id ever leaves the server before authentication.
         return {"request_id": request_id, "unlock_id": uid, "challenge": wa.b64url_encode(challenge),

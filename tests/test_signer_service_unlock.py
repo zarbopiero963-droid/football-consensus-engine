@@ -277,11 +277,12 @@ def test_unlock_refusal_audit_is_rate_limited_too(e):
 
 
 def test_unlock_option_table_is_bounded(e):
+    # Intentional change (re-review of 19f42bb): the table stays bounded by evicting the oldest entries
+    # instead of answering a renewable global 429 that would lock the owner out.
     for _ in range(300):
         r = e.client.post("/approve/req_" + "1" * 32 + "/unlock/options")
-    assert (r.status_code, r.json()) == (429, {"error": "UNLOCK_BUSY"})
-    e.clock.t += 61
-    assert e.client.post("/approve/req_" + "1" * 32 + "/unlock/options").status_code == 200
+        assert r.status_code == 200
+    assert len(e.svc._unlocks) == 256
 
 
 @pytest.mark.parametrize("label", ["Home‮FC", "A​B", "x⁦y", "﻿Z", "a b"])
@@ -314,3 +315,139 @@ def test_unknown_key_id_is_indistinguishable_from_bad_signature(e):
     h = auth.client_headers(stranger, "POST", "/v1/requests/order", raw, timestamp=e.clock.t, nonce="n" * 20)
     r = e.client.post("/v1/requests/order", content=raw, headers=h)
     assert (r.status_code, r.json()) == (401, {"error": "AUTH_SIGNATURE_INVALID"})
+
+
+# ---------------------------------------------------------------- re-review of 19f42bb
+STATIC = __import__("pathlib").Path(__file__).resolve().parents[1] / "signer_service" / "static"
+
+
+def _fields(src, var):
+    import re
+    return set(re.findall(r"(?<![\w.])" + re.escape(var) + r"\.(\w+)", src))
+
+
+def _fn_body(src, name):
+    start = src.index("function " + name)
+    depth, i = 0, src.index("{", start)
+    for j in range(i, len(src)):
+        depth += {"{": 1, "}": -1}.get(src[j], 0)
+        if depth == 0:
+            return src[i:j]
+    raise AssertionError(name)
+
+
+def test_pwa_scripts_only_read_fields_the_api_returns(e):
+    """Node-free static check: every `<response>.<field>` the JS reads exists in the real JSON response."""
+    pk = e.enroll()
+    rid = created(e)
+    cancel = e.signed("POST", "/v1/requests/cancel", {"client_request_id": "client-cancel-77", "network": "testnet",
+                                                      "scope": "ALL"}).json()["request_id"]
+    enroll_opt = e.client.post("/enroll/options", json={"enrollment_code": e.svc.issue_enrollment_code()}).json()
+    unlock_opt = e.client.post(f"/approve/{rid}/unlock/options").json()
+    unlocked = e.unlock(pk, rid).json()
+    view = e.client.get(f"/approve/{rid}/challenge").json()
+    cancel_view = e.view(cancel, pk)
+    decision = e.approve(pk, rid).json()
+    enroll_js = (STATIC / "enroll.js").read_text(encoding="utf-8")
+    approve_js = (STATIC / "approve.js").read_text(encoding="utf-8")
+    checks = [
+        (_fields(enroll_js, "opt"), set(enroll_opt)),
+        (_fields(enroll_js, "o.body"), set(enroll_opt)),
+        (_fields(enroll_js, "r.body"), {"enrolled", "credential_prefix"}),
+        (_fields(approve_js, "o.body"), set(unlock_opt)),
+        (_fields(approve_js, "u.body"), set(unlocked)),
+        (_fields(approve_js, "view"), set(view) | set(cancel_view)),
+        (_fields(approve_js, "r.body"), set(decision) | {"reason", "gateway"}),
+        (_fields(_fn_body(approve_js, "renderOrder"), "d"), set(view["display"])),
+        (_fields(_fn_body(approve_js, "renderCancel"), "d"), set(cancel_view["display"])),
+    ]
+    for used, returned in checks:
+        assert used, "regex found nothing: the check would be vacuous"
+        # `error` is the fixed error envelope ({"error": CODE}) every route may answer instead
+        assert used - {"error"} <= returned, sorted(used - {"error"} - returned)
+    # nested objects the scripts read
+    assert {"id", "name", "displayName"} <= set(enroll_opt["user"])
+    assert _fields(_fn_body(approve_js, "renderOrder"), "d.selection") <= set(view["display"]["selection"])
+
+
+def test_hmac_stale_timestamp_is_indistinguishable_for_known_and_unknown_key_ids(e):
+    from signer_service import auth
+    raw = b"{}"
+    stranger = auth.HmacKey("mcp-stranger", b"S" * 32)
+    for ts in (e.clock.t - 31, e.clock.t + 31):
+        known = auth.client_headers(KEY, "POST", "/v1/requests/order", raw, timestamp=ts, nonce="k" * 20)
+        unknown = auth.client_headers(stranger, "POST", "/v1/requests/order", raw, timestamp=ts, nonce="u" * 20)
+        a = e.client.post("/v1/requests/order", content=raw, headers=known)
+        b = e.client.post("/v1/requests/order", content=raw, headers=unknown)
+        assert (a.status_code, a.content) == (b.status_code, b.content)
+    fresh_bad = auth.client_headers(KEY, "POST", "/v1/requests/order", raw, timestamp=e.clock.t, nonce="f" * 20)
+    fresh_bad["X-FCB-Signature"] = "0" * 64
+    fresh_unknown = auth.client_headers(stranger, "POST", "/v1/requests/order", raw, timestamp=e.clock.t,
+                                        nonce="g" * 20)
+    a = e.client.post("/v1/requests/order", content=raw, headers=fresh_bad)
+    b = e.client.post("/v1/requests/order", content=raw, headers=fresh_unknown)
+    assert (a.status_code, a.content) == (b.status_code, b.content)
+
+
+def test_owner_unlock_survives_a_flood_of_fake_ids(e):
+    pk = e.enroll()
+    rid = created(e)
+    o = e.client.post(f"/approve/{rid}/unlock/options").json()  # owner asks first ...
+    for i in range(1000):                                          # ... then a local attacker floods
+        r = e.client.post(f"/approve/req_{i:032x}/unlock/options")
+        assert r.status_code == 200  # never a renewable global 429
+    body = {"unlock_id": o["unlock_id"], **to_wire(pk.assert_(b64url_decode(o["challenge"])))}
+    assert e.client.post(f"/approve/{rid}/unlock", json=body).status_code == 200
+    assert len(e.svc._unlocks) <= 256 + 4
+
+
+def test_unlock_challenges_are_capped_per_request_id_oldest_evicted(e):
+    pk = e.enroll()
+    rid = created(e)
+    opts = [e.client.post(f"/approve/{rid}/unlock/options").json() for _ in range(6)]
+    assert sum(1 for v in e.svc._unlocks.values() if v[1] == rid) == 4
+    oldest = {"unlock_id": opts[0]["unlock_id"], **to_wire(pk.assert_(b64url_decode(opts[0]["challenge"])))}
+    assert e.client.post(f"/approve/{rid}/unlock", json=oldest).json() == {"error": "UNLOCK_REFUSED"}
+    newest = {"unlock_id": opts[-1]["unlock_id"], **to_wire(pk.assert_(b64url_decode(opts[-1]["challenge"])))}
+    assert e.client.post(f"/approve/{rid}/unlock", json=newest).status_code == 200
+
+
+def _suppressed(store, event):
+    return sum(r["detail"]["count"] for r in store.audit_rows()
+               if r["event"] == "AUDIT_SUPPRESSED" and r["detail"]["suppressed_event"] == event)
+
+
+def test_suppressed_audit_summary_is_flushed_at_shutdown(tmp_path):
+    env = Env(tmp_path)
+    for _ in range(15):
+        env.client.post("/enroll/options", json={"enrollment_code": "guess"})
+    env.svc.close()
+    store = st.ServiceStore(env.cfg["state_dir"] + "/service.sqlite3", env.clock)
+    assert _suppressed(store, "ENROLLMENT_REFUSED") == 5
+    store.close()
+
+
+def test_suppressed_audit_summary_is_flushed_on_any_later_rollover_check(e):
+    for _ in range(15):
+        e.client.post("/enroll/options", json={"enrollment_code": "guess"})
+    e.clock.t += 61
+    e.svc.refusals.flush_expired()  # what every limiter call (any kind) and the shutdown path run
+    assert _suppressed(e.svc.store, "ENROLLMENT_REFUSED") == 5
+    e.clock.t += 61
+    e.svc.refusals.flush_expired()
+    assert _suppressed(e.svc.store, "ENROLLMENT_REFUSED") == 5  # written once, never twice
+
+
+def test_refusal_limiter_is_thread_safe_and_loses_no_count(e):
+    import threading
+    def burst():
+        for _ in range(25):
+            e.svc.refusals.audit("ENROLLMENT_REFUSED", reason="X")
+    threads = [threading.Thread(target=burst) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    e.svc.refusals.flush()
+    written = sum(r["event"] == "ENROLLMENT_REFUSED" for r in e.svc.store.audit_rows())
+    assert written == 10 and written + _suppressed(e.svc.store, "ENROLLMENT_REFUSED") == 200

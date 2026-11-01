@@ -11,8 +11,7 @@
         user: { id: fcb.b64urlToBytes(opt.user.id), name: opt.user.name, displayName: opt.user.displayName },
         pubKeyCredParams: opt.pubKeyCredParams, authenticatorSelection: opt.authenticatorSelection,
         attestation: opt.attestation, timeout: opt.timeout,
-        excludeCredentials: opt.excludeCredentials.map((c) => ({ type: "public-key", id: fcb.b64urlToBytes(c) })),
-      } });
+      } });  // no excludeCredentials: the server never lists credential ids
       const r = await fcb.postJSON("/enroll/finish", {
         challenge_id: opt.challenge_id,
         attestation_object: fcb.bytesToB64url(cred.response.attestationObject),
