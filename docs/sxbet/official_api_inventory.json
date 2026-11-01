@@ -109,7 +109,7 @@
    "method": "POST",
    "path": "/heartbeat",
    "summary": "Register heartbeat",
-   "auth": "x-sx-api-key",
+   "auth": "X-Api-Key (OpenAPI securityScheme ApiKeyAuth, legacy; distinct from x-sx-api-key)",
    "api_key_scope": "DOCS_UNVERIFIED (not listed on api-key-permissions)",
    "classification": "STATE_MUTATION",
    "parameters": [],
