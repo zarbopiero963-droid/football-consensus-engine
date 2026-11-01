@@ -412,3 +412,20 @@ def test_l3_poisoned_ledger_refuses_send_before_anything_is_sent(tmp_path, throw
     with pytest.raises(gw.GatewayRefused) as e:
         g.submit(signed, i)
     assert e.value.code == "LEDGER_POISONED" and t.sent == []
+
+
+# ================================================================ H3: REJECTED later found executed
+def test_h3_rejected_400_later_found_filled_is_recorded_audited_and_replayed(tmp_path, throwaway, owner):
+    s, i, signed, t, g, clock = setup(tmp_path, throwaway, owner)
+    t.replies = [{"http_status": 400, "body": {"message": "PROXY_NOT_DEPLOYED"}}]
+    assert g.submit(signed, i)["state"] == od.REJECTED
+    oid = signed["order_id"]
+    t.orders[oid] = row(oid, "INACTIVE", 0, "FILLED")
+    out = g.reconcile(i["idempotency_key"])
+    assert out["state"] == od.FILLED and out["changed"] is True
+    decisions = [json.loads(l)["decision"] for l in (tmp_path / "gw-audit.jsonl").read_text().splitlines()]
+    assert "EVIDENCE_REJECTED_ORDER_EXECUTED" in decisions
+    clock.t = i["expiry"] + 10_000  # long after the rejected hold would have ended
+    r = make_signer(tmp_path, throwaway, owner, clock=clock)  # restart: rebuilt by replay
+    o = r._ledger.get(i["idempotency_key"])
+    assert o.state == od.FILLED and o.filled == 5_000_000 and r.committed_exposure_base_units == 5_000_000

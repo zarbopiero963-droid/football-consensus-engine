@@ -351,7 +351,11 @@ def test_states_and_transition_table_are_closed():
         "PREPARED", "AUTHORIZED", "SIGNED", "SUBMITTED", "OPEN", "PARTIALLY_FILLED", "FILLED", "CANCELLED",
         "EXPIRED", "EXPIRED_UNCONFIRMED", "SETTLED", "REJECTED", "UNKNOWN"}
     assert all(t <= od.STATES for t in od.TRANSITIONS.values())
-    assert od.TRANSITIONS[od.SETTLED] == od.TRANSITIONS[od.REJECTED] == frozenset()
+    assert od.TRANSITIONS[od.SETTLED] == frozenset()
+    # H3 (intentional change): REJECTED is no longer a dead end. A rejection reported after the signature was
+    # released can be contradicted by exchange evidence of execution; only those evidence targets are allowed.
+    assert od.TRANSITIONS[od.REJECTED] == frozenset({od.SUBMITTED, od.OPEN, od.PARTIALLY_FILLED, od.FILLED,
+                                                     od.CANCELLED, od.EXPIRED})
     assert od.UNKNOWN in od.RESERVING  # UNKNOWN never releases capital
     assert od.EXPIRED_UNCONFIRMED in od.RESERVING  # a 404 after expiry never releases capital by itself
 
@@ -619,3 +623,83 @@ def test_l3_torn_write_poisons_and_restart_fails_closed(tmp_path, led, clock, mo
     with pytest.raises(LedgerError) as e:
         reopen(tmp_path, clock)
     assert e.value.code == "LEDGER_CORRUPT"
+
+
+# ================================================================ H3: REJECTED later found executed
+def rejected_after_signature(led, expiry=NOW + 600):
+    authorize(led, expiry=expiry)
+    led.transition("order-key-0001", od.SIGNED, reason="SIGNED")
+    led.transition("order-key-0001", od.UNKNOWN, reason="SEND_ATTEMPT")
+    return led.transition("order-key-0001", od.REJECTED, reason="EXCHANGE_REJECTED_400")
+
+
+def test_h3_rejected_then_exchange_shows_partial_fill(tmp_path, led, clock):
+    rejected_after_signature(led)
+    o = reconcile(led, "order-key-0001", clock, row("ACTIVE", 2_000_000))
+    assert o.state == od.PARTIALLY_FILLED and o.filled == 3_000_000
+    assert led.exposure().total == STAKE and led.exposure().matched == 3_000_000
+    rows = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    assert rows[-1]["from"] == od.REJECTED and rows[-1]["reason"] == "REJECTED_ORDER_FOUND_EXECUTED"
+    assert rows[-1]["evidence_sha256"].startswith("sha256:")
+
+
+def test_h3_rejected_then_filled_and_settled_survives_restart(tmp_path, led, clock):
+    rejected_after_signature(led)
+    o = reconcile(led, "order-key-0001", clock, row("INACTIVE", 0, "FILLED"),
+                  fills(fill(STAKE, ret=2 * STAKE)))
+    assert o.state == od.SETTLED and o.realized_pnl == STAKE
+    clock.t = NOW + 10_000  # long after expiry: the hold would have ended, the fill must not
+    led.close()
+    r = reopen(tmp_path, clock)
+    assert r.get("order-key-0001").state == od.SETTLED and r.realized_pnl_since(0) == STAKE
+
+
+def test_h3_rejected_fill_seen_only_in_fills_while_404(tmp_path, led, clock):
+    rejected_after_signature(led)
+    clock.t = NOW + 10_000  # rejected hold over: exposure 0 ...
+    assert led.exposure().total == 0
+    o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills(fill(1_000_000, status="MATCHED")))
+    assert o.state == od.PARTIALLY_FILLED and o.filled == 1_000_000
+    assert led.exposure().matched == 1_000_000  # ... but the late execution is recorded and counted again
+    o = reconcile(led, "order-key-0001", clock, {"kind": "NOT_FOUND"}, fills(fill(STAKE, status="MATCHED")))
+    assert o.state == od.FILLED and o.filled == STAKE
+    led.close()
+    assert reopen(tmp_path, clock).exposure().matched == STAKE
+
+
+def test_h3_rejected_found_resting_unfilled_is_reserved_again(led, clock):
+    rejected_after_signature(led)
+    o = reconcile(led, "order-key-0001", clock, row("ACTIVE", STAKE))
+    assert o.state == od.OPEN and led.exposure().reserved_unmatched == STAKE
+
+
+@pytest.mark.parametrize("lookup,f", [
+    (row("INACTIVE", STAKE, "USER_REQUESTED"), None),     # no execution: nothing to learn, hold continues
+    (row("INACTIVE", STAKE, "EXPIRED"), None),
+    ({"kind": "NOT_FOUND"}, fills()),
+    ({"kind": "NOT_FOUND"}, fills(fill(1, status="FAILED"))),
+    ({"kind": "ERROR"}, None),
+])
+def test_h3_rejected_without_execution_evidence_learns_nothing(led, clock, lookup, f):
+    rejected_after_signature(led)
+    o = reconcile(led, "order-key-0001", clock, lookup, f)
+    assert o.state == od.REJECTED and led.exposure().total == STAKE
+
+
+def test_h3_never_signed_rejection_stays_final(led, clock):
+    authorize(led)
+    led.transition("order-key-0001", od.REJECTED, reason="SIGNING_FAILED")
+    o = reconcile(led, "order-key-0001", clock, row("ACTIVE", 2_000_000))
+    assert o.state == od.REJECTED
+    with pytest.raises(OrderStateError) as e:
+        led.transition("order-key-0001", od.PARTIALLY_FILLED, reason="T", filled=1)
+    assert e.value.code == "REJECTED_NEVER_SIGNED_IS_FINAL"
+
+
+def test_h3_rejected_release_requires_execution(led):
+    rejected_after_signature(led)
+    with pytest.raises(OrderStateError) as e:
+        led.transition("order-key-0001", od.CANCELLED, reason="T", filled=0)
+    assert e.value.code == "REJECTED_RELEASE_REQUIRES_EXECUTION"
+    led.transition("order-key-0001", od.CANCELLED, reason="T", filled=1)
+    assert led.get("order-key-0001").state == od.CANCELLED
