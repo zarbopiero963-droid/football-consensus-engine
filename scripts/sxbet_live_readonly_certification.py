@@ -154,6 +154,17 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         return {"http": r.status_code, "body": body}
 
     def tool(name: str, **args: Any) -> dict[str, Any]:
+        payload = _tool_once(name, **args)
+        err = payload.get("error") or {}
+        if err.get("code") == "SXBET_LOCAL_RATE_LIMITED":
+            # Respect the bridge's own limiter: wait the window it reports, then retry once (no limit raised).
+            wait = min(int(err.get("retry_after_seconds") or 61), 61)
+            calls["paced_seconds"] = calls.get("paced_seconds", 0) + wait
+            time.sleep(wait)
+            payload = _tool_once(name, **args)
+        return payload
+
+    def _tool_once(name: str, **args: Any) -> dict[str, Any]:
         if calls["n"] >= MAX_MCP_CALLS:
             raise RuntimeError("MCP call budget exhausted")
         reply = rpc("tools/call", {"name": name, "arguments": args})
@@ -343,21 +354,31 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
             else:
                 skipped("sxbet_simulate_order", "NO_ACTIVE_MARKET_AT_RUN_TIME")
             proxy_data = proxy.get("data") if isinstance(proxy.get("data"), dict) else {}
-            proxy_address = next((v for k, v in proxy_data.items() if isinstance(v, str)
-                                  and k.lower().endswith("address") and len(v) == 42), None)
+            def _addr(key):
+                v = proxy_data.get(key)
+                return v if isinstance(v, str) and len(v) == 42 else None
+            # Documented fields of GET /user/proxy: obv3ProxyWalletAddress (the proxy) and
+            # multisigSafeAddress (the Safe attached to it, input of GET /user/multisig/{safeAddress}/info).
+            proxy_address, safe_address = _addr("obv3ProxyWalletAddress"), _addr("multisigSafeAddress")
+            for a in (proxy_address, safe_address):
+                if a:
+                    secrets_extra.append(a)
             if proxy_address:
-                secrets_extra.append(proxy_address)
                 row("sxbet_proxy_address_check", tool("sxbet_proxy_address_check", proxy_address=proxy_address),
                     scope_sensitive=True)
-                row("sxbet_safe_info", tool("sxbet_safe_info", safe_address=proxy_address), scope_sensitive=True)
             else:
-                skipped("sxbet_proxy_address_check", "NO_PROXY_ADDRESS_FIELD_IN_REPLY")
-                skipped("sxbet_safe_info", "NO_PROXY_ADDRESS_FIELD_IN_REPLY")
+                skipped("sxbet_proxy_address_check", "NO_obv3ProxyWalletAddress_IN_REPLY")
+            if safe_address:
+                row("sxbet_safe_info", tool("sxbet_safe_info", safe_address=safe_address), scope_sensitive=True,
+                    extra={"proxy_deployed": proxy_data.get("deployed")})
+            else:
+                skipped("sxbet_safe_info", "NO_multisigSafeAddress_IN_REPLY")
         missing = sorted(set(ctx["sx_tool_names"]) - exercised)
         rec.add("tool_coverage", "MCP_PROTOCOL",
                 "PASS" if not missing else ("PARTIAL" if api_key or exercised else "FAIL"),
                 exercised=len(exercised), published=len(ctx["sx_tool_names"]), not_exercised=missing)
     ctx["mcp_calls"] = calls["n"]
+    ctx["paced_seconds_for_local_rate_limit"] = calls.get("paced_seconds", 0)
     return ctx
 
 
