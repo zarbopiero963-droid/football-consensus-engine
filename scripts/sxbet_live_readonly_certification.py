@@ -339,16 +339,25 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
             row("sxbet_proxy_funding_pending", tool("sxbet_proxy_funding_pending"), scope_sensitive=True)
             skipped("sxbet_proxy_funding_status", "NO_DEPOSIT_SESSION_ID (no deposit was ever started by this suite)")
             proxy_data = proxy.get("data") if isinstance(proxy.get("data"), dict) else {}
-            proxy_address = next((v for k, v in proxy_data.items() if isinstance(v, str)
-                                  and k.lower().endswith("address") and len(v) == 42), None)
+            def _addr(key):
+                v = proxy_data.get(key)
+                return v if isinstance(v, str) and len(v) == 42 else None
+            # Documented fields of GET /user/proxy: obv3ProxyWalletAddress (the proxy) and
+            # multisigSafeAddress (the Safe attached to it, input of GET /user/multisig/{safeAddress}/info).
+            proxy_address, safe_address = _addr("obv3ProxyWalletAddress"), _addr("multisigSafeAddress")
+            for a in (proxy_address, safe_address):
+                if a:
+                    secrets_extra.append(a)
             if proxy_address:
-                secrets_extra.append(proxy_address)
                 row("sxbet_proxy_address_check", tool("sxbet_proxy_address_check", proxy_address=proxy_address),
                     scope_sensitive=True)
-                row("sxbet_safe_info", tool("sxbet_safe_info", safe_address=proxy_address), scope_sensitive=True)
             else:
-                skipped("sxbet_proxy_address_check", "NO_PROXY_ADDRESS_FIELD_IN_REPLY")
-                skipped("sxbet_safe_info", "NO_PROXY_ADDRESS_FIELD_IN_REPLY")
+                skipped("sxbet_proxy_address_check", "NO_obv3ProxyWalletAddress_IN_REPLY")
+            if safe_address:
+                row("sxbet_safe_info", tool("sxbet_safe_info", safe_address=safe_address), scope_sensitive=True,
+                    extra={"proxy_deployed": proxy_data.get("deployed")})
+            else:
+                skipped("sxbet_safe_info", "NO_multisigSafeAddress_IN_REPLY")
         missing = sorted(set(ctx["sx_tool_names"]) - exercised)
         rec.add("tool_coverage", "MCP_PROTOCOL",
                 "PASS" if not missing else ("PARTIAL" if api_key or exercised else "FAIL"),
