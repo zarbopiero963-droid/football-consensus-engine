@@ -127,7 +127,7 @@ Per ogni mercato, e poi per selezione, evento e totale, il position manager calc
 - regredisce nel ciclo di vita (bet: MATCHED→LOCKED→SETTLED e MATCHED→FAILED; ordini: PENDING→ACTIVE→INACTIVE);
 - ha `remainingSize` in aumento o `fillAmount` cambiato.
 
-Sono conflitti anche un `totalStake` di un bet diverso dalla somma dei suoi fill (con `fillCount` completo) e un `totalStake` di `positions-v3` diverso dai bet aperti. Un conflitto viene riportato, escluso da ogni calcolo, e il mercato è marcato `data_conflict`. Una sorgente con altre pagine (`nextKey`) rende il risultato `PARTIAL`, mai completo in silenzio. Parlay e quarter-line non sono modellati: le loro righe sono elencate a parte. Ogni riga esclusa (parlay, quarter-line, bet o ordine malformato) rende il risultato incompleto: `completeness.complete` è `false`, `completeness.excluded_rows` riporta i conteggi (`malformed`, `unsupported`) e i `market_hashes` toccati, e quei mercati sono `data_conflict`. I tool di hedge, chiusura e regole trattano quindi la posizione come `HEDGE_UNCERTAIN` e non propongono ordini, anche quando sul mercato restano solo righe escluse.
+Sono conflitti anche un `totalStake` di un bet diverso dalla somma dei suoi fill (con `fillCount` completo) e un `totalStake` di `positions-v3` diverso dai bet aperti. Un conflitto viene riportato, escluso da ogni calcolo, e il mercato è marcato `data_conflict`. Una sorgente con altre pagine (`nextKey`) rende il risultato `PARTIAL`, mai completo in silenzio. Parlay e quarter-line non sono modellati: le loro righe sono elencate a parte. Ogni riga esclusa (parlay, quarter-line, bet o ordine malformato) rende il risultato incompleto: `completeness.complete` è `false`, `completeness.excluded_rows` riporta i conteggi (`malformed`, `unsupported`) e i `market_hashes` toccati, e quei mercati sono `data_conflict`. I tool di hedge, chiusura e regole trattano quindi la posizione come **sconosciuta**: P&L per esito, liability e puntata totale sono `null` con `position_unknown_reason` `POSITION_UNKNOWN_EXCLUDED_ROWS` (o `POSITION_UNKNOWN_ROLL_UP_INCOMPLETE` se il mercato non compare in un roll-up incompleto), mai 0/0. L'hedge è `HEDGE_UNCERTAIN` e nessun ordine viene proposto, anche quando sul mercato restano solo righe escluse.
 
 ### Hedging (`hedging.simulate_hedge`)
 Con `P1 > P2` si punta sull'esito due con puntata `s` e ritorno `r = s × 10^20 / q`. Allora `P1' = P1 − s` e `P2' = P2 + (r − s)`, quindi il gap si riduce esattamente di `r`. La copertura totale richiede un ritorno `r = P1 − P2`, cioè `s = (P1 − P2) × q / 10^20` su un solo livello.
@@ -140,7 +140,7 @@ I livelli vengono da `GET /orderbook-v3/snapshot/market` nel frame maker, quello
   - `HEDGE_AVAILABLE`;
   - `PARTIAL_HEDGE_ONLY`: la liquidità entro lo slittamento non basta;
   - `HEDGE_UNAVAILABLE`: mercato non `ACTIVE` o sconosciuto, book mancante o malformato, nessuna liquidità, puntata sotto `orderSizeMinimumBaseUnits`, dati di posizione mancanti;
-  - `HEDGE_UNCERTAIN`: dati più vecchi di `max_data_age_seconds`, commissioni non verificabili, dati di posizione in conflitto o incompleti, dimensione minima non verificata.
+  - `HEDGE_UNCERTAIN`: dati più vecchi di `max_data_age_seconds`, commissioni non verificabili, dati di posizione in conflitto o incompleti (anche con P&L `null` per righe escluse), dimensione minima non verificata.
 - **Non è mai un cashout garantito.** L'output contiene sempre l'avvertenza e `guaranteed_cashout: false`, e i parametri d'ordine proposti hanno `executable`, `signed` e `submitted` a `false`.
 
 ### Regole (`rules.evaluate`)
@@ -149,7 +149,8 @@ Regole disponibili: `stop_loss`, `take_profit`, `trailing_stop` (il picco lo pas
 La configurazione arriva con ogni chiamata e non viene salvata. **Tutte le regole sono spente per default.** Gli unici output sono `NO_ACTION`, `ALERT` e `ORDER_PROPOSAL`:
 - una proposta descrive una chiusura tramite un hedge `FULL` simulato, con un `proposal_hash`. Non è mai eseguibile, firmata o inviata: servirebbe un'approvazione fuori banda dell'owner, verificata dal signer;
 - un mercato sospeso o dati vecchi bloccano le proposte, che diventano `ALERT`;
-- un dato mancante produce `ALERT`, mai una supposizione.
+- un dato mancante produce `ALERT`, mai una supposizione;
+- con una posizione `data_conflict` (conflitto, pagine non lette, righe escluse) ogni regola attiva diversa da `block_on_suspended_market` e `block_on_stale_data` diventa `ALERT` con motivo `POSITION_DATA_CONFLICT_CANNOT_EVALUATE`: la posizione non viene mai valutata come zero. `sxbet_rules_evaluate` riporta `data_conflict`, `position_unknown_reason` e `completeness`.
 
 Le soglie sono del chiamante. I limiti reali dell'owner stanno solo nella configurazione firmata del signer, e il server MCP non li conosce.
 

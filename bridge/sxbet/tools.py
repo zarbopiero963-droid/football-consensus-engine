@@ -729,7 +729,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                        settled_rows_read=False)
         bundle["roll_up"] = roll
         position = next((m for m in roll["markets"] if m["market_hash"] == mh), None)
-        if position is None:  # no open bet and no resting order on this market
+        fallback = position is None
+        if fallback:  # no open bet and no resting order on this market
             position = {"market_hash": mh, "grain_used": "NONE", "data_conflict": roll["data_conflict"],
                         "pnl_base_units": {"if_outcome_one": 0, "if_outcome_two": 0, "if_void": 0},
                         "projected_payout_fee_base_units": {"if_outcome_one": "0", "if_outcome_two": "0"},
@@ -738,6 +739,14 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         if (not roll["completeness"]["complete"] or roll["data_conflict"]
                 or mh in roll["completeness"]["excluded_rows"]["market_hashes"]):
             position = {**position, "data_conflict": True}
+        if mh in roll["completeness"]["excluded_rows"]["market_hashes"] or (
+                fallback and not roll["completeness"]["complete"]):
+            position = {**position, "pnl_base_units": {"if_outcome_one": None, "if_outcome_two": None, "if_void": None},
+                        "worst_case_liability_base_units": None,
+                        "matched_stake_base_units": {**(position.get("matched_stake_base_units") or {}), "total": None},
+                        "position_unknown_reason": "POSITION_UNKNOWN_EXCLUDED_ROWS"
+                        if mh in roll["completeness"]["excluded_rows"]["market_hashes"]
+                        else "POSITION_UNKNOWN_ROLL_UP_INCOMPLETE"}
         bundle["market_position"] = position
         bundle["orders_rows"] = _rows_of(bundle["orders"], "orders")
         bundle["data_age_seconds"] = round(time.monotonic() - started, 3)
@@ -1088,7 +1097,10 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                      taker_percentage_odds=prices, hedge=hedge)
         return dcap({**out, "status": verdict["decision"], "rules": verdict, "mark_to_market": position["mark_to_market"],
                      "taker_percentage_odds": {k: None if v is None else str(v) for k, v in prices.items()},
-                     "hedge_status": hedge["status"], "market": bundle["market_check"]})
+                     "hedge_status": hedge["status"], "market": bundle["market_check"],
+                     "data_conflict": bool(position.get("data_conflict")),
+                     "position_unknown_reason": position.get("position_unknown_reason"),
+                     "completeness": bundle["roll_up"]["completeness"]})
 
     @add
     async def sxbet_risk_status() -> dict[str, Any]:

@@ -146,6 +146,9 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
     pnl = market_position.get("pnl_base_units") or {}
     p1, p2 = pnl.get("if_outcome_one"), pnl.get("if_outcome_two")
     if type(p1) is not int or type(p2) is not int:
+        if market_position.get("data_conflict"):  # unknown because of conflicting / excluded rows
+            return {**out, "status": UNCERTAIN, "reason": "POSITION_PNL_MISSING",
+                    "uncertain_reasons": ["CONFLICTING_POSITION_DATA"]}
         return unavailable("POSITION_PNL_MISSING")
     h = pm._lower(market_position.get("market_hash"))
     if not isinstance(market, Mapping):

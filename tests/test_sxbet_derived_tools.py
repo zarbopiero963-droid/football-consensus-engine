@@ -402,3 +402,25 @@ def test_payload_too_large_hint_names_only_the_tools_own_parameters():
     out = run(t["sxbet_order_status"](order_id=OID))
     assert out["status"] == "PAYLOAD_TOO_LARGE"
     assert "market_hash" not in out["error"]["hint"] and "event_id" not in out["error"]["hint"]
+
+
+_QUARTER = dict(BET, tradeId="0x" + "a2" * 32, quarterlineMarketHash="0x" + "cd" * 32)
+_POSITION_RULES = {"stop_loss": {"enabled": True, "max_loss_base_units": 1},
+                   "exposure_limit": {"enabled": True, "max_worst_case_liability_base_units": 1},
+                   "close_on_time_remaining": {"enabled": True, "min_seconds_before_start": 1}}
+
+
+@pytest.mark.parametrize("rows", [[_QUARTER], [BET, _QUARTER]], ids=["quarter_line_only", "partially_excluded"])
+def test_unknown_position_is_never_evaluated_as_zero_by_rules(rows):
+    t, _ = tools(router(trades_rows=rows))
+    out = run(t["sxbet_rules_evaluate"](market_hash=H, rules=_POSITION_RULES))
+    assert out["status"] == "ALERT" and out["rules"]["proposal"] is None
+    by = {r["rule"]: r for r in out["rules"]["results"]}
+    for name in _POSITION_RULES:
+        assert by[name]["result"] == "ALERT" and by[name]["reason"] == "POSITION_DATA_CONFLICT_CANNOT_EVALUATE"
+    assert out["data_conflict"] is True and out["completeness"]["complete"] is False
+    assert out["mark_to_market"]["value_base_units"] is None
+    pos = run(t["sxbet_hedge_simulation"](market_hash=H))["position"]
+    assert pos["pnl_base_units"] == {"if_outcome_one": None, "if_outcome_two": None, "if_void": None}
+    assert pos["worst_case_liability_base_units"] is None and pos["matched_stake_base_units"]["total"] is None
+    assert pos["position_unknown_reason"] == "POSITION_UNKNOWN_EXCLUDED_ROWS"

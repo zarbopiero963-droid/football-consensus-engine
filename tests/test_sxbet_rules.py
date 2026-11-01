@@ -116,3 +116,21 @@ def test_invalid_config_is_rejected(config, code):
 def test_proposal_hash_is_deterministic():
     cfg = {"stop_loss": {"enabled": True, "max_loss_base_units": 1}}
     assert ev(cfg)["proposal"]["proposal_hash"] == ev(cfg)["proposal"]["proposal_hash"]
+
+
+def test_conflicting_position_data_is_never_evaluated_by_position_rules():
+    cfg = {"stop_loss": {"enabled": True, "max_loss_base_units": 1},
+           "exposure_limit": {"enabled": True, "max_worst_case_liability_base_units": 1},
+           "close_on_time_remaining": {"enabled": True, "min_seconds_before_start": 1},
+           "take_profit": {"enabled": True, "min_profit_base_units": 1},
+           "block_on_suspended_market": {"enabled": True}}
+    mp = {"market_hash": M, "mark_to_market": {"value_base_units": 0}, "worst_case_liability_base_units": 0,
+          "matched_stake_base_units": {"total": 0}, "data_conflict": True}
+    out = rl.evaluate(cfg, market_position=mp, market={"status": "ACTIVE", "gameTime": NOW + 3600}, now_unix=NOW,
+                      data_age_seconds=1.0, hedge=HEDGE_OK)
+    by = {r["rule"]: r for r in out["results"]}
+    for name in ("stop_loss", "exposure_limit", "close_on_time_remaining", "take_profit"):
+        assert by[name]["result"] == "ALERT" and by[name]["reason"] == "POSITION_DATA_CONFLICT_CANNOT_EVALUATE"
+    assert by["block_on_suspended_market"]["reason"] == "MARKET_ACTIVE"  # blockers still evaluated
+    assert by["trailing_stop"]["reason"] == "RULE_DISABLED"
+    assert out["decision"] == "ALERT" and out["proposal"] is None

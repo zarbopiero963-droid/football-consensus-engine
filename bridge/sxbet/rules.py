@@ -111,6 +111,10 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
         if not r["enabled"]:
             res(name, NO_ACTION, "RULE_DISABLED")
             continue
+        if mp.get("data_conflict") and name not in BLOCKERS:
+            # Conflicting or incomplete position data: no position rule is evaluated on it, never as zero.
+            res(name, ALERT, "POSITION_DATA_CONFLICT_CANNOT_EVALUATE")
+            continue
         if name == "stop_loss":
             if mtm is None:
                 res(name, ALERT, "MARK_TO_MARKET_UNAVAILABLE_CANNOT_EVALUATE")
