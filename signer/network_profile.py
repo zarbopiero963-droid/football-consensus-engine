@@ -45,6 +45,12 @@ class NetworkProfile:
             self.api_base_url, self.realtime_ws_url, self.rpc_url, self.explorer_api_url))
 
     @property
+    def host_schemes(self) -> Mapping[str, str]:
+        """The one scheme each host is addressed with: https for REST/RPC/explorer, wss for realtime."""
+        return {_host(u): u.split("://", 1)[0] for u in (
+            self.api_base_url, self.realtime_ws_url, self.rpc_url, self.explorer_api_url)}
+
+    @property
     def contracts(self) -> frozenset[str]:
         return frozenset({self.escrow, self.usdc, self.transfer_to_proxy_executor})
 
@@ -83,10 +89,17 @@ TORONTO_ENV = {
     "signer_data_dir": "SXBET_TORONTO_SIGNER_DATA_DIR",
     "database_url": "SXBET_TORONTO_DATABASE_URL",
     "allowed_hosts": "SXBET_TORONTO_ALLOWED_HOSTS",
+    # Path of the testnet signing key file, read only by a future testnet signer process (separate PR).
+    "signer_key_file": "SXBET_TORONTO_SIGNER_KEY_FILE",
+    # Public EOA address the owner pins for the testnet signer (see check_testnet_signer_address).
+    "signer_address": "SXBET_TORONTO_SIGNER_ADDRESS",
 }
 # Production names that must never be present in a Toronto environment: their presence means the
 # testnet process would share mainnet credentials, database or runtime.
-PRODUCTION_ONLY_ENV = frozenset({"SXBET_API_KEY", "DATABASE_URL", "RENDER", "SXBET_LIVE_TRADING_FLAG"})
+# The signer names are the ones signer/core.py (KEY_ENV), signer/risk.py (RISK_CONFIG_ENV) and
+# signer/gateway.py (LIVE_FLAG_ENV) read; SXBET_ENABLED switches the production bridge integration on.
+PRODUCTION_ONLY_ENV = frozenset({"SXBET_API_KEY", "DATABASE_URL", "RENDER", "SXBET_LIVE_TRADING_FLAG",
+                                 "SXBET_SIGNER_PRIVATE_KEY", "SXBET_SIGNER_RISK_CONFIG", "SXBET_ENABLED"})
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 # Strict URL form (no urllib: the signer package bans it): scheme, lowercase host, optional path/query.
@@ -212,6 +225,8 @@ def check_url(profile: Any, url: Any, *, allowed_hosts: frozenset[str] | None = 
         raise ProfileMismatch("PROFILE_HOST_OF_OTHER_NETWORK")
     if host not in p.hosts:
         raise ProfileMismatch("PROFILE_HOST_NOT_ALLOWED")
+    if p.host_schemes[host] != m.group(1):
+        raise ProfileMismatch("PROFILE_URL_SCHEME_NOT_ALLOWED")
     if allowed_hosts is not None and host not in allowed_hosts:
         raise ProfileMismatch("PROFILE_HOST_NOT_ALLOWED")
     return host
@@ -247,20 +262,52 @@ def check_toronto_env(env: Mapping[str, str]) -> dict[str, Any]:
     present = sorted(k for k in PRODUCTION_ONLY_ENV if k in env)
     if present:
         raise ProfileMismatch("PROFILE_ENV_HAS_PRODUCTION_VARIABLE")
-    if "SXBET_NETWORK" in env and env["SXBET_NETWORK"].strip().lower() != "testnet":
-        raise ProfileMismatch("PROFILE_NETWORK_OF_OTHER_NETWORK")
+    if "SXBET_NETWORK" in env:
+        network = env["SXBET_NETWORK"].strip().lower()
+        if network == MAINNET.network:
+            raise ProfileMismatch("PROFILE_NETWORK_OF_OTHER_NETWORK")
+        if network != TORONTO.network:
+            raise ProfileMismatch("PROFILE_NETWORK_UNEXPECTED")
     for k in env:
         if k.startswith("SXBET_MAINNET_"):
             raise ProfileMismatch("PROFILE_ENV_HAS_PRODUCTION_VARIABLE")
     hosts = parse_allowed_hosts(TORONTO, env.get(TORONTO_ENV["allowed_hosts"]))
     data_dir = env.get(TORONTO_ENV["signer_data_dir"], "").strip()
-    if data_dir and (not data_dir.startswith("/") or "mainnet" in data_dir.lower()
-                     or "/../" in data_dir + "/"):
+    if data_dir and not _safe_toronto_path(data_dir):
         raise ProfileMismatch("PROFILE_SIGNER_DATA_DIR_INVALID")
+    key_file = env.get(TORONTO_ENV["signer_key_file"], "").strip()
+    if key_file and not _safe_toronto_path(key_file):
+        raise ProfileMismatch("PROFILE_SIGNER_KEY_FILE_INVALID")
+    address = env.get(TORONTO_ENV["signer_address"], "").strip()
+    if address:
+        _signer_address(address)
     return {
         "profile": "toronto",
         "allowed_hosts": sorted(hosts),
         "api_key_present": bool(env.get(TORONTO_ENV["api_key"], "").strip()),
         "signer_data_dir_present": bool(data_dir),
         "database_url_present": bool(env.get(TORONTO_ENV["database_url"], "").strip()),
+        "signer_key_file_present": bool(key_file),
+        "signer_address_present": bool(address),
     }
+
+
+def _safe_toronto_path(path: str) -> bool:
+    return path.startswith("/") and "mainnet" not in path.lower() and "/../" not in path + "/"
+
+
+def _signer_address(value: Any) -> str:
+    a = _addr(value, "PROFILE_SIGNER_ADDRESS_INVALID")
+    if any(a in p.contracts for p in PROFILES.values()):
+        raise ProfileMismatch("PROFILE_SIGNER_ADDRESS_IS_CONTRACT")
+    return a
+
+
+def check_testnet_signer_address(derived_address: Any, pinned_address: Any) -> None:
+    """The address the testnet signer derived from its key equals the one the owner pinned.
+
+    Pure comparison: the caller derives the address inside the signer process; this module never sees a
+    key. Both must be 20-byte hex addresses (case-insensitive) and neither may be a known contract.
+    """
+    if _signer_address(derived_address) != _signer_address(pinned_address):
+        raise ProfileMismatch("PROFILE_SIGNER_ADDRESS_MISMATCH")

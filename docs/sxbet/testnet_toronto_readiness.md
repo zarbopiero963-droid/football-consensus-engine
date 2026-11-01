@@ -120,7 +120,8 @@ La pagina **non distingue testnet e mainnet**: i limiti di Toronto sono `DOCS_UN
   - solo nomi di variabili, segreti vuoti;
   - `SXBET_NETWORK_PROFILE=toronto` e `SXBET_NETWORK=testnet`;
   - nomi distinti `SXBET_TORONTO_API_KEY`, `SXBET_TORONTO_SIGNER_DATA_DIR` e `SXBET_TORONTO_DATABASE_URL`;
-  - allowlist esplicita `SXBET_TORONTO_ALLOWED_HOSTS=api.toronto.sx.bet,realtime.toronto.sx.bet`.
+  - allowlist esplicita `SXBET_TORONTO_ALLOWED_HOSTS=api.toronto.sx.bet,realtime.toronto.sx.bet`;
+  - `SXBET_TORONTO_SIGNER_KEY_FILE` (percorso del file della chiave testnet, mai la chiave) e `SXBET_TORONTO_SIGNER_ADDRESS` (indirizzo pubblico dell'EOA testnet, fissato dall'owner).
 
   Il repo non ha una directory `config/`: l'unica convenzione è `.env.example` alla radice, quindi il template sta in `docs/` e oggi nessun codice lo legge.
 - `signer/network_profile.py`: profili `mainnet` e `toronto` fissati, senza codice di rete. Le funzioni sono:
@@ -129,9 +130,24 @@ La pagina **non distingue testnet e mainnet**: i limiti di Toronto sono `DOCS_UN
   - `check_metadata` (sul `data` di `/metadata/obv3` letto altrove);
   - `check_url`;
   - `parse_allowed_hosts`;
-  - `check_toronto_env`.
+  - `check_toronto_env`;
+  - `check_testnet_signer_address`.
 
-  Un profilo Toronto rifiuta, con codici fissi `PROFILE_*_OF_OTHER_NETWORK`, chain id, escrow, USDC, proxy executor e host di mainnet, e viceversa. Valori sconosciuti a entrambe le reti danno `PROFILE_*_UNEXPECTED`. Un ambiente Toronto che contiene `SXBET_API_KEY`, `DATABASE_URL`, `RENDER`, `SXBET_LIVE_TRADING_FLAG` o una variabile `SXBET_MAINNET_*` viene rifiutato.
+  Un profilo Toronto rifiuta, con codici fissi `PROFILE_*_OF_OTHER_NETWORK`, chain id, escrow, USDC, proxy executor e host di mainnet, e viceversa. Valori sconosciuti a entrambe le reti danno `PROFILE_*_UNEXPECTED`. Ogni host accetta un solo schema: `https` per API, RPC ed explorer, `wss` per il realtime (`PROFILE_URL_SCHEME_NOT_ALLOWED`).
+
+Un ambiente Toronto viene rifiutato se contiene:
+- `SXBET_API_KEY`, `DATABASE_URL`, `RENDER` o `SXBET_ENABLED`;
+- `SXBET_LIVE_TRADING_FLAG`, `SXBET_SIGNER_PRIVATE_KEY` o `SXBET_SIGNER_RISK_CONFIG`, i nomi letti dal signer di produzione;
+- una variabile `SXBET_MAINNET_*`.
+
+`SXBET_NETWORK` diverso da `testnet` dà `PROFILE_NETWORK_OF_OTHER_NETWORK` se vale `mainnet` e `PROFILE_NETWORK_UNEXPECTED` per ogni altro valore.
+
+**Requisito per il futuro signer testnet:**
+- legge la chiave solo dal file `SXBET_TORONTO_SIGNER_KEY_FILE`, mai da `SXBET_SIGNER_PRIVATE_KEY`; il caricamento è una PR separata con merge dell'owner;
+- prima di firmare verifica con `check_testnet_signer_address(derivato, fissato)` che l'indirizzo derivato dalla chiave coincida con `SXBET_TORONTO_SIGNER_ADDRESS`, fissato dall'owner;
+- se gli indirizzi differiscono, o se uno dei due è un contratto noto, si ferma.
+
+`check_testnet_signer_address` resta una funzione pura: non vede chiavi e non fa rete.
 - Test: `tests/test_sxbet_network_profile.py`, offline.
 
 Nessun sender HTTP è stato aggiunto. `LIVE_TRADING` resta `UNAVAILABLE`.
@@ -144,7 +160,7 @@ Nessun sender HTTP è stato aggiunto. `LIVE_TRADING` resta `UNAVAILABLE`.
 | USDC testnet | BLOCKED_EXTERNAL | chiedere al supporto chat di sx.bet (nessun faucet documentato) |
 | API key Toronto | BLOCKED_EXTERNAL | generarla su toronto.sx.bet; consegnarla solo all'ambiente testnet (mai su Render di produzione né in GitHub) |
 | Proxy Toronto deployato e finanziato | BLOCKED_EXTERNAL | dalla UI di toronto.sx.bet |
-| Chiave di firma testnet nel signer testnet | BLOCKED_EXTERNAL | fornita fuori banda dall'owner al solo processo signer testnet |
+| Chiave di firma testnet nel signer testnet | BLOCKED_EXTERNAL | file fornito fuori banda dall'owner al solo host del signer testnet (`SXBET_TORONTO_SIGNER_KEY_FILE`), più l'indirizzo pubblico fissato (`SXBET_TORONTO_SIGNER_ADDRESS`) |
 | DB testnet separato | BLOCKED_EXTERNAL | progetto o branch Neon dedicato, se serve il ledger PostgreSQL |
 | Sender HTTP verso Toronto | BLOCKED (governance) | PR separata, review e merge dell'owner (§2.6) |
 | Autorizzazione al collaudo con ordini testnet | BLOCKED (owner) | autorizzazione esplicita, scritta, per ogni passo del §4 |

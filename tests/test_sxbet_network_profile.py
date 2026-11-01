@@ -256,7 +256,8 @@ def test_env_example_validates_and_never_echoes_credentials():
                 np.TORONTO_ENV["signer_data_dir"]: "/srv/sxbet-toronto-signer"})
     out = np.check_toronto_env(env)
     assert out == {"profile": "toronto", "allowed_hosts": ["api.toronto.sx.bet", "realtime.toronto.sx.bet"],
-                   "api_key_present": True, "signer_data_dir_present": True, "database_url_present": True}
+                   "api_key_present": True, "signer_data_dir_present": True, "database_url_present": True,
+                   "signer_key_file_present": False, "signer_address_present": False}
     assert "dummy" not in repr(out)
 
 
@@ -300,3 +301,58 @@ def test_network_profile_module_is_network_free():
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | \
             {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert not names & {"urlopen", "socket", "httpx", "requests", "open", "connect", "environ"}
+
+
+# ------------------------------------------------------------------ review fixes (20d5df7)
+@pytest.mark.parametrize("name", ["SXBET_SIGNER_PRIVATE_KEY", "SXBET_SIGNER_RISK_CONFIG", "SXBET_ENABLED"])
+def test_toronto_env_refuses_production_signer_and_bridge_variables(name):
+    env = _parse_env(ENV_EXAMPLE.read_text(encoding="utf-8"))
+    env[name] = ""
+    assert _code(np.check_toronto_env, env) == "PROFILE_ENV_HAS_PRODUCTION_VARIABLE"
+
+
+def test_production_signer_variable_names_are_the_ones_the_signer_reads():
+    from signer.core import KEY_ENV
+    from signer.gateway import LIVE_FLAG_ENV
+    from signer.risk import RISK_CONFIG_ENV
+    assert {KEY_ENV, RISK_CONFIG_ENV, LIVE_FLAG_ENV} <= np.PRODUCTION_ONLY_ENV
+
+
+def test_env_example_has_namespaced_empty_signer_key_file_and_address():
+    env = _parse_env(ENV_EXAMPLE.read_text(encoding="utf-8"))
+    for k in ("signer_key_file", "signer_address"):
+        assert np.TORONTO_ENV[k].startswith("SXBET_TORONTO_") and env[np.TORONTO_ENV[k]] == ""
+    out = np.check_toronto_env(dict(env, **{np.TORONTO_ENV["signer_key_file"]: "/srv/toronto/key"}))
+    assert out["signer_key_file_present"] is True and "/srv" not in repr(out)
+
+
+@pytest.mark.parametrize("path", ["relative/key", "/srv/mainnet/key", "/srv/toronto/../x"])
+def test_toronto_env_refuses_bad_signer_key_file(path):
+    env = _parse_env(ENV_EXAMPLE.read_text(encoding="utf-8"))
+    env[np.TORONTO_ENV["signer_key_file"]] = path
+    assert _code(np.check_toronto_env, env) == "PROFILE_SIGNER_KEY_FILE_INVALID"
+
+
+def test_check_testnet_signer_address():
+    a = "0x" + "ab" * 20
+    np.check_testnet_signer_address(a, "0x" + "AB" * 20)
+    assert _code(np.check_testnet_signer_address, a, "0x" + "cd" * 20) == "PROFILE_SIGNER_ADDRESS_MISMATCH"
+    for bad in ("", None, "0x123", "ab" * 20):
+        assert _code(np.check_testnet_signer_address, a, bad) == "PROFILE_SIGNER_ADDRESS_INVALID"
+        assert _code(np.check_testnet_signer_address, bad, a) == "PROFILE_SIGNER_ADDRESS_INVALID"
+    for contract in MAINNET.contracts | TORONTO.contracts:
+        assert _code(np.check_testnet_signer_address, contract, contract) == "PROFILE_SIGNER_ADDRESS_IS_CONTRACT"
+
+
+@pytest.mark.parametrize("url", ["wss://api.toronto.sx.bet", "https://realtime.toronto.sx.bet/connection/websocket",
+                                 "wss://rpc-rollup.toronto.sx.technology", "wss://explorerl2.toronto.sx.technology/api"])
+def test_scheme_is_bound_to_host(url):
+    assert _code(np.check_url, "toronto", url) == "PROFILE_URL_SCHEME_NOT_ALLOWED"
+
+
+def test_bogus_sxbet_network_is_unexpected_not_other_network():
+    env = _parse_env(ENV_EXAMPLE.read_text(encoding="utf-8"))
+    env["SXBET_NETWORK"] = "bogus"
+    assert _code(np.check_toronto_env, env) == "PROFILE_NETWORK_UNEXPECTED"
+    env["SXBET_NETWORK"] = "mainnet"
+    assert _code(np.check_toronto_env, env) == "PROFILE_NETWORK_OF_OTHER_NETWORK"
