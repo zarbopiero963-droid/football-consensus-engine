@@ -17,7 +17,7 @@ Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. 
 | `SXBET_ENABLED` | spento | registra i tool `sxbet_*` |
 | `SXBET_NETWORK` | `mainnet` | `mainnet` (`https://api.sx.bet`, chain 4162) oppure `testnet` (`https://api.toronto.sx.bet`) |
 | `SXBET_API_KEY` | vuoto | inviata solo come header `x-sx-api-key` alle route autenticate. Senza chiave quei tool restituiscono `KEY_NOT_CONFIGURED`, senza chiamate di rete |
-| `SXBET_MAX_RPM` | 60 | limite locale di richieste al minuto, più restrittivo dei limiti del provider |
+| `SXBET_MAX_RPM` | 60 | budget globale per chiave (1..600 richieste per 60 s), condiviso tra processi e istanze tramite PostgreSQL quando `DATABASE_URL` è impostata; si somma ai limiti documentati per route (vedi **Rate limit**) |
 
 ⚠️ Un **GitHub Actions secret non arriva al runtime Render**. Per i tool autenticati, `SXBET_API_KEY` va impostata nelle variabili d'ambiente del servizio Render.
 
@@ -111,9 +111,17 @@ Il catalogo MCP non cambia: nessun tool nuovo, 37 tool `sxbet_*`.
 
 **Unità:** `percentageOdds` è la probabilità implicita × 10^20 (per esempio `52500000000000000000` = 52,5%). Gli importi USDC sono in unità base con 6 decimali (`1000000` = 1 USDC). I dati sono restituiti così come arrivano dal provider.
 
-**Errori** (codici fissi, mai il body del provider né la chiave): `INVALID_INPUT`, `KEY_NOT_CONFIGURED`, `SXBET_RATE_LIMITED` (con `retry_after_seconds`), `SXBET_LOCAL_RATE_LIMITED`, `SXBET_UNAUTHORIZED`, `SXBET_HTTP_ERROR`, `SXBET_REDIRECT_REJECTED`, `SXBET_TIMEOUT` (scadenza complessiva di 30 s), `SXBET_NETWORK_ERROR`, `SXBET_INVALID_JSON`, `SXBET_PROVIDER_STATUS_NOT_SUCCESS`, `SXBET_RESPONSE_TOO_LARGE`, `PAYLOAD_TOO_LARGE`. Non ci sono retry automatici. Il cap di 256 KiB si misura sul JSON compatto della risposta; oltre il cap la risposta è `PAYLOAD_TOO_LARGE`, senza troncature.
+**Errori** (codici fissi, mai il body del provider né la chiave): `INVALID_INPUT`, `KEY_NOT_CONFIGURED`, `SXBET_RATE_LIMITED` (con `retry_after_seconds`), `SXBET_LOCAL_RATE_LIMITED` (con `retry_after_seconds`; anche durante il cooldown dopo un 429), `SXBET_RATE_COORDINATOR_UNAVAILABLE` (coordinatore non raggiungibile o oltre il budget di tempo: nessuna chiamata di rete), `SXBET_UNAUTHORIZED`, `SXBET_HTTP_ERROR`, `SXBET_REDIRECT_REJECTED`, `SXBET_TIMEOUT` (scadenza complessiva di 30 s), `SXBET_NETWORK_ERROR`, `SXBET_INVALID_JSON`, `SXBET_PROVIDER_STATUS_NOT_SUCCESS`, `SXBET_RESPONSE_TOO_LARGE`, `PAYLOAD_TOO_LARGE`. Non ci sono retry automatici. Il cap di 256 KiB si misura sul JSON compatto della risposta; oltre il cap la risposta è `PAYLOAD_TOO_LARGE`, senza troncature.
 
-**Rate limit:** il limiter `SXBET_MAX_RPM` vale **per processo**. Oggi il servizio Render gira con 1 istanza e `WEB_CONCURRENCY=1`. Se si scala a più worker o istanze, il ritmo effettivo si moltiplica: in quel caso va spostato sul coordinatore condiviso PostgreSQL (governance §2.4). Decisione dell'owner.
+**Rate limit** (governance §2.4, fonte: https://docs.sx.bet/developers/rate-limits): ogni richiesta SX Bet passa da un coordinatore **prima** di qualunque chiamata di rete. Una richiesta è ammessa solo se c'è capacità in **tutti** i suoi bucket, quindi il limite effettivo è min(`SXBET_MAX_RPM`, limite documentato) e non supera mai quello documentato:
+- bucket globale per chiave: `SXBET_MAX_RPM` per 60 s, su tutte le richieste;
+- bucket per route documentata: per chiave sulle route autenticate (per esempio `/user/balance-v3` 300/60 s, `/user/fees-v3` 120/60 s, `/orderbook-v3/snapshot/market` 27.500/300 s, `/user/multisig/*` 60/60 s), per IP sulle route pubbliche (per esempio `/metadata/obv3` 500/60 s, `/trades-v3/public` 200/60 s, e un unico budget di 500/60 s condiviso da `/markets/*`, `/fixture/*`, `/leagues*`, `/sports`, `/teams`, `/live-scores`, `/search`). Il bucket per IP è condiviso da tutte le istanze, per prudenza;
+- bucket edge per il traffico non autenticato: 35.000 per 10 min;
+- le route non documentate usano solo il bucket globale.
+
+Le finestre sono scorrevoli ed esatte, e ogni slot ammesso resta consumato anche se la chiamata poi fallisce. Un 429 del provider salva un cooldown condiviso sul bucket più specifico della route (`Retry-After`, 60 s se assente, massimo 3600 s): finché è attivo ogni processo risponde `SXBET_LOCAL_RATE_LIMITED` con `retry_after_seconds`, senza chiamare il provider. Non ci sono retry automatici.
+
+Con `DATABASE_URL` impostata (produzione) il coordinatore è PostgreSQL (`bridge/sxbet/ratelimit.py`, tabelle `sxbet_rate_attempts` e `sxbet_rate_cooldowns`, migration `sql/migrations/0007_sxbet_rate_limits.sql`, che è la fonte di verità dello schema; il runtime la ripete in modo idempotente al primo uso). Le prenotazioni sono serializzate da un advisory lock transazionale e usano solo l'orologio del database. Le chiavi dei bucket contengono uno SHA-256 della chiave API, mai la chiave. Budget di tempo: 10 s per la verifica una tantum dello schema e 3 s per ogni prenotazione; un errore o un timeout danno `SXBET_RATE_COORDINATOR_UNAVAILABLE`, senza fallback sul limiter locale. Senza `DATABASE_URL` (test, sviluppo locale) si usa un limiter in-process con la stessa semantica, valido solo per quel processo. `sxbet_health` riporta il coordinatore attivo in `rate_coordinator` (`POSTGRES_SHARED` oppure `LOCAL_PROCESS`).
 
 ## Verifica (01-11-2026, backend contro l'API pubblica reale, senza chiave)
 Registro storico, precedente a `sxbet_simulate_order`: i conteggi 23/99 si riferiscono a quel deploy. Con SIMULATION il catalogo SX Bet è di 24 tool (`tools/list` offline verificato: 100 = 34 browser + 42 API-FOOTBALL + 24 SX Bet).
