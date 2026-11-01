@@ -154,6 +154,17 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         return {"http": r.status_code, "body": body}
 
     def tool(name: str, **args: Any) -> dict[str, Any]:
+        payload = _tool_once(name, **args)
+        err = payload.get("error") or {}
+        if err.get("code") == "SXBET_LOCAL_RATE_LIMITED":
+            # Respect the bridge's own limiter: wait the window it reports, then retry once (no limit raised).
+            wait = min(int(err.get("retry_after_seconds") or 61), 61)
+            calls["paced_seconds"] = calls.get("paced_seconds", 0) + wait
+            time.sleep(wait)
+            payload = _tool_once(name, **args)
+        return payload
+
+    def _tool_once(name: str, **args: Any) -> dict[str, Any]:
         if calls["n"] >= MAX_MCP_CALLS:
             raise RuntimeError("MCP call budget exhausted")
         reply = rpc("tools/call", {"name": name, "arguments": args})
@@ -343,6 +354,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
                 "PASS" if not missing else ("PARTIAL" if api_key or exercised else "FAIL"),
                 exercised=len(exercised), published=len(ctx["sx_tool_names"]), not_exercised=missing)
     ctx["mcp_calls"] = calls["n"]
+    ctx["paced_seconds_for_local_rate_limit"] = calls.get("paced_seconds", 0)
     return ctx
 
 
