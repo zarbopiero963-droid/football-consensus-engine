@@ -22,6 +22,9 @@ _EVENT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _CURSOR = re.compile(r"^[\x21-\x7e]{1,512}$")
 _DATE = re.compile(r"^[0-9TtZz:+.\-]{1,40}$")
 _TRADE_STATUS = ("MATCHED", "LOCKED", "SETTLED", "FAILED")
+_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_CLIENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")      # OpenAPI: maxLength 64, ^[A-Za-z0-9_-]+$
+_PATH_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")   # opaque ids placed in a URL path: path-safe only
 _UNITS = ("Units: percentageOdds = implied probability x 10^20 (e.g. 52500000000000000000 = 52.5%); "
           "USDC amounts in base units with 6 decimals (1000000 = 1 USDC). Provider data returned as received.")
 
@@ -56,6 +59,12 @@ def _events(v, maximum=30):
 
 def _int(v, name, lo=1, hi=2_000_000_000):
     if type(v) is not int or not lo <= v <= hi:
+        raise InvalidInput(f"INVALID_{name.upper()}")
+    return v
+
+
+def _address(v, name):
+    if not isinstance(v, str) or not _ADDRESS.fullmatch(v):
         raise InvalidInput(f"INVALID_{name.upper()}")
     return v
 
@@ -366,6 +375,124 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 event_type, ("DEPOSIT", "WITHDRAWAL", "SETTLEMENT", "PAYOUT", "FEE", "REFUND", "ADJUSTMENT"), "event_type"),
             "perPage": None if per_page is None else _int(per_page, "per_page", 1, 100),
             "nextKey": None if next_key is None else _cursor(next_key)}, auth=True)
+
+    # ---- remaining official authenticated GET routes (OpenAPI 1.0.0) ----
+    async def path_call(tool: str, template: str, build_path, params, scope: str) -> dict[str, Any]:
+        try:
+            path = build_path()
+        except InvalidInput as exc:
+            return {"provider": "SX_BET", "tool": tool, "endpoint": template, "network": settings.network,
+                    "mode": "READ_ONLY", "source_contract": DOCS, "network_calls_made": 0, "data": None,
+                    "status": "INVALID_INPUT", "error": {"code": str(exc)}}
+        out = await call(tool, path, params, auth=True)
+        out["endpoint"] = template
+        out["api_key_scope"] = scope
+        return out
+
+    @add
+    async def sxbet_order(order_id: str) -> dict[str, Any]:
+        """One of your orders by signed order id, any status (GET /orders-v3/{orderId}); inactive orders stay ~10-20 min. Scope: Orders: read."""
+        return await path_call("sxbet_order", "/orders-v3/{orderId}",
+                               lambda: f"/orders-v3/{_hash(order_id, 'order_id')}", lambda: {}, "Orders: read")
+
+    @add
+    async def sxbet_order_by_client_id(client_order_id: str) -> dict[str, Any]:
+        """One of your orders by the clientOrderId set on submit (GET /orders-v3/client/{clientOrderId}). Scope: Orders: read."""
+        def build():
+            if not isinstance(client_order_id, str) or not _CLIENT_ID.fullmatch(client_order_id):
+                raise InvalidInput("INVALID_CLIENT_ORDER_ID")
+            return f"/orders-v3/client/{client_order_id}"
+        return await path_call("sxbet_order_by_client_id", "/orders-v3/client/{clientOrderId}", build,
+                               lambda: {}, "Orders: read")
+
+    @add
+    async def sxbet_trade(trade_id: str) -> dict[str, Any]:
+        """One of your bets by opaque tradeId (GET /trades-v3/{tradeId}); a missing or foreign id returns 404. Scope: Account: read."""
+        def build():
+            if not isinstance(trade_id, str) or not _PATH_TOKEN.fullmatch(trade_id):
+                raise InvalidInput("INVALID_TRADE_ID")
+            return f"/trades-v3/{trade_id}"
+        return await path_call("sxbet_trade", "/trades-v3/{tradeId}", build, lambda: {}, "Account: read")
+
+    @add
+    async def sxbet_public_market_orders(market_hash: str, per_page: int | None = None,
+                                         next_key: str | None = None) -> dict[str, Any]:
+        """De-anonymized resting orders on one market (GET /orders-v3/public); anonymized orders are omitted. Scope: Market data: read."""
+        return await call("sxbet_public_market_orders", "/orders-v3/public", lambda: {
+            "marketHash": _hash(market_hash),
+            "perPage": None if per_page is None else _int(per_page, "per_page", 1, 100),
+            "nextKey": None if next_key is None else _cursor(next_key)}, auth=True)
+
+    @add
+    async def sxbet_public_user_orders(user_address: str, per_page: int | None = None,
+                                       next_key: str | None = None) -> dict[str, Any]:
+        """One maker's de-anonymized resting orders across markets (GET /orders-v3/public/user). Scope: Market data: read."""
+        return await call("sxbet_public_user_orders", "/orders-v3/public/user", lambda: {
+            "userAddress": _address(user_address, "user_address"),
+            "perPage": None if per_page is None else _int(per_page, "per_page", 1, 100),
+            "nextKey": None if next_key is None else _cursor(next_key)}, auth=True)
+
+    @add
+    async def sxbet_public_positions(user_address: str, status: list[str], event_id: str | None = None,
+                                     sort_by: str | None = None, sort_asc: bool | None = None,
+                                     per_page: int | None = None, next_key: str | None = None) -> dict[str, Any]:
+        """A bettor's de-anonymized positions per market (GET /positions-v3/public); status subset of MATCHED, LOCKED, SETTLED, FAILED. Scope: Market data: read."""
+        def build():
+            if not isinstance(status, list) or not 1 <= len(status) <= 4 or len(set(status)) != len(status):
+                raise InvalidInput("INVALID_STATUS")
+            if event_id is not None and not (isinstance(event_id, str) and 2 <= len(event_id) <= 64):
+                raise InvalidInput("INVALID_EVENT_ID")
+            return {"userAddress": _address(user_address, "user_address"),
+                    "status": [_enum(x, _TRADE_STATUS, "status") for x in status],
+                    "eventId": None if event_id is None else _event(event_id),
+                    "sortBy": None if sort_by is None else _enum(sort_by, ("gameTime", "maxLoss"), "sort_by"),
+                    "sortAsc": None if sort_asc is None else _bool(sort_asc, "sort_asc"),
+                    "perPage": None if per_page is None else _int(per_page, "per_page", 1, 100),
+                    "nextKey": None if next_key is None else _cursor(next_key)}
+        return await call("sxbet_public_positions", "/positions-v3/public", build, auth=True)
+
+    @add
+    async def sxbet_privacy() -> dict[str, Any]:
+        """Whether your betting activity is anonymized (GET /user/privacy-v3); read-only, changing it is not exposed. Scope: Account: read."""
+        return await call("sxbet_privacy", "/user/privacy-v3", lambda: {}, auth=True)
+
+    @add
+    async def sxbet_proxy_wallet() -> dict[str, Any]:
+        """Your proxy wallet address and whether it is deployed (GET /user/proxy). Read-only. Scope: Wallet: read."""
+        return await call("sxbet_proxy_wallet", "/user/proxy", lambda: {}, auth=True)
+
+    @add
+    async def sxbet_proxy_deploy_pending() -> dict[str, Any]:
+        """Whether a proxy deployment is in flight (GET /user/pending-deploy-proxy); pending:false does NOT mean success — read sxbet_proxy_wallet.deployed. Scope: Wallet: read."""
+        return await call("sxbet_proxy_deploy_pending", "/user/pending-deploy-proxy", lambda: {}, auth=True)
+
+    @add
+    async def sxbet_proxy_funding_pending() -> dict[str, Any]:
+        """Unresolved deposits to your proxy, newest first (GET /user/transfer-to-proxy/pending); empty does NOT mean the last deposit succeeded. Scope: Wallet: read."""
+        return await call("sxbet_proxy_funding_pending", "/user/transfer-to-proxy/pending", lambda: {}, auth=True)
+
+    @add
+    async def sxbet_proxy_funding_status(session_id: str) -> dict[str, Any]:
+        """Outcome of one proxy deposit by sessionId (GET /user/transfer-to-proxy/status); poll until SUCCESS or FAILED. Scope: Wallet: read."""
+        def build():
+            if not isinstance(session_id, str) or not _PATH_TOKEN.fullmatch(session_id):
+                raise InvalidInput("INVALID_SESSION_ID")
+            return {"sessionId": session_id}
+        return await call("sxbet_proxy_funding_status", "/user/transfer-to-proxy/status", build, auth=True)
+
+    @add
+    async def sxbet_proxy_address_check(proxy_address: str) -> dict[str, Any]:
+        """Whether an address is a registered and deployed SX Bet proxy; does not reveal the owner (GET /user/multisig/proxy/{proxyAddress}). Scope: Wallet: read."""
+        return await path_call("sxbet_proxy_address_check", "/user/multisig/proxy/{proxyAddress}",
+                               lambda: f"/user/multisig/proxy/{_address(proxy_address, 'proxy_address')}",
+                               lambda: {}, "Wallet: read")
+
+    @add
+    async def sxbet_safe_info(safe_address: str) -> dict[str, Any]:
+        """Signers, threshold, nonce and the single pending transaction on your proxy's Safe (GET /user/multisig/{safeAddress}/info). Read-only. Scope: Wallet: read."""
+        return await path_call("sxbet_safe_info", "/user/multisig/{safeAddress}/info",
+                               lambda: f"/user/multisig/{_address(safe_address, 'safe_address')}/info",
+                               lambda: {}, "Wallet: read")
 
     return tuple(names)
 

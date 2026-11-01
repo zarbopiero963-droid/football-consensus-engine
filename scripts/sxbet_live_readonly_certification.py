@@ -36,7 +36,8 @@ SOCCER_HINT = "soccer"
 REST_ENDPOINT = "https://api.sx.bet"
 WS_ENDPOINT = "wss://realtime.sx.bet/connection/websocket"
 TOKEN_PATH = "/user/realtime-token-v3/api-key"
-MAX_MCP_CALLS = 40
+MAX_MCP_CALLS = 60
+EXPECTED_SXBET_TOOLS = 36
 PUBLIC_SAMPLE_KEYS = ("marketHash", "sportXeventId", "leagueLabel", "teamOneName", "teamTwoName",
                       "outcomeOneName", "outcomeTwoName", "type", "line", "gameTime", "status", "liveEnabled")
 
@@ -138,6 +139,9 @@ def _mcp_harness(api_key: str):
     return srv, TestClient(srv.app, base_url="https://" + host), headers
 
 
+secrets_extra: list[str] = []  # addresses seen at run time: never allowed in the report
+
+
 def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
     srv, client, headers = _mcp_harness(api_key)
     calls = {"n": 0}
@@ -167,7 +171,8 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
     exercised: set[str] = set()
 
     def row(name: str, out: dict[str, Any], *, expect: str = "REAL_API_RESPONSE",
-            extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            extra: dict[str, Any] | None = None, expect_not_found: bool = False,
+            scope_sensitive: bool = False) -> dict[str, Any]:
         if isinstance(out.get("tool"), str):
             exercised.add(out["tool"])
         status = out.get("status")
@@ -176,7 +181,12 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         data = out.get("data")
         if status == "REAL_API_RESPONSE":
             info["data_shape"] = shape(data)
+        code = (out.get("error") or {}).get("code")
         outcome = "PASS" if status == expect else ("FAIL" if status in ("PROVIDER_ERROR", "UNPARSEABLE", "INVALID_INPUT") else "PARTIAL")
+        if expect_not_found and status == "PROVIDER_ERROR" and out.get("http_status") == 404:
+            outcome = "PASS"  # documented: a missing or foreign id returns 404
+        elif status == "PROVIDER_ERROR" and code == "SXBET_UNAUTHORIZED" and scope_sensitive:
+            outcome = "BLOCKED_EXTERNAL"  # the key lacks the documented scope; owner decision, not a code failure
         if status == "REAL_API_RESPONSE" and is_empty_payload(data):
             outcome = "EMPTY_VALID"
         rec.add(name, "REAL_API_VIA_MCP" if out.get("network_calls_made") else "MCP_NO_NETWORK", outcome,
@@ -188,7 +198,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         tools = listed["body"]["result"]["tools"]
         sx = [t for t in tools if t["name"].startswith("sxbet_")]
         bad_schema = [t["name"] for t in sx if t.get("inputSchema", {}).get("type") != "object"]
-        rec.add("mcp_tools_list", "MCP_PROTOCOL", "PASS" if len(sx) == 23 and not bad_schema else "FAIL",
+        rec.add("mcp_tools_list", "MCP_PROTOCOL", "PASS" if len(sx) == EXPECTED_SXBET_TOOLS and not bad_schema else "FAIL",
                 total_tools=len(tools), sxbet_tools=len(sx), schema_errors=bad_schema,
                 has_next_cursor="nextCursor" in listed["body"]["result"])
         ctx["sx_tool_names"] = sorted(t["name"] for t in sx)
@@ -259,7 +269,11 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         # authenticated READ routes
         if not api_key:
             for name in ("sxbet_orderbook_market", "sxbet_orderbook_event", "sxbet_best_odds", "sxbet_balance",
-                         "sxbet_fees", "sxbet_positions", "sxbet_open_orders", "sxbet_trades", "sxbet_fills", "sxbet_ledger"):
+                         "sxbet_fees", "sxbet_positions", "sxbet_open_orders", "sxbet_trades", "sxbet_fills", "sxbet_ledger",
+                         "sxbet_order", "sxbet_order_by_client_id", "sxbet_trade", "sxbet_privacy",
+                         "sxbet_public_market_orders", "sxbet_public_user_orders", "sxbet_public_positions",
+                         "sxbet_proxy_wallet", "sxbet_proxy_deploy_pending", "sxbet_proxy_funding_pending",
+                         "sxbet_proxy_funding_status", "sxbet_proxy_address_check", "sxbet_safe_info"):
                 rec.add(name, "REAL_API_VIA_MCP", "NOT_TESTED", reason="SXBET_API_KEY_SECRET_ABSENT")
         else:
             if hashes:
@@ -286,6 +300,44 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
             row("sxbet_trades", tool("sxbet_trades", start_date=start, per_page=5))
             row("sxbet_fills", tool("sxbet_fills", start_date=start, per_page=5))
             row("sxbet_ledger", tool("sxbet_ledger", per_page=5))
+            # Remaining official GET routes. Ids are format-valid probes that cannot exist: 404 is the documented answer.
+            probe_hash = "0x" + "0" * 63 + "1"
+            row("sxbet_order_not_found", tool("sxbet_order", order_id=probe_hash), expect_not_found=True)
+            row("sxbet_order_by_client_id_not_found", tool("sxbet_order_by_client_id", client_order_id="fce-cert-nonexistent"),
+                expect_not_found=True)
+            row("sxbet_trade_not_found", tool("sxbet_trade", trade_id="fce-cert-nonexistent"), expect_not_found=True)
+            row("sxbet_privacy", tool("sxbet_privacy"), scope_sensitive=True)
+            pmo = tool("sxbet_public_market_orders", market_hash=hashes[0], per_page=5) if hashes else None
+            if pmo is not None:
+                row("sxbet_public_market_orders", pmo)
+            else:
+                skipped("sxbet_public_market_orders", "NO_ACTIVE_MARKET_AT_RUN_TIME")
+            orders = ((pmo or {}).get("data") or {}).get("orders") if isinstance((pmo or {}).get("data"), dict) else None
+            maker = next((o.get("userAddress") for o in (orders or []) if isinstance(o, dict)
+                          and isinstance(o.get("userAddress"), str)), None)
+            if maker:
+                secrets_extra.append(maker)
+                row("sxbet_public_user_orders", tool("sxbet_public_user_orders", user_address=maker, per_page=5))
+                row("sxbet_public_positions", tool("sxbet_public_positions", user_address=maker,
+                                                   status=["MATCHED", "LOCKED"], per_page=5))
+            else:
+                skipped("sxbet_public_user_orders", "NO_DEANONYMIZED_MAKER_ON_PROBE_MARKET")
+                skipped("sxbet_public_positions", "NO_DEANONYMIZED_MAKER_ON_PROBE_MARKET")
+            proxy = row("sxbet_proxy_wallet", tool("sxbet_proxy_wallet"), scope_sensitive=True)
+            row("sxbet_proxy_deploy_pending", tool("sxbet_proxy_deploy_pending"), scope_sensitive=True)
+            row("sxbet_proxy_funding_pending", tool("sxbet_proxy_funding_pending"), scope_sensitive=True)
+            skipped("sxbet_proxy_funding_status", "NO_DEPOSIT_SESSION_ID (no deposit was ever started by this suite)")
+            proxy_data = proxy.get("data") if isinstance(proxy.get("data"), dict) else {}
+            proxy_address = next((v for k, v in proxy_data.items() if isinstance(v, str)
+                                  and k.lower().endswith("address") and len(v) == 42), None)
+            if proxy_address:
+                secrets_extra.append(proxy_address)
+                row("sxbet_proxy_address_check", tool("sxbet_proxy_address_check", proxy_address=proxy_address),
+                    scope_sensitive=True)
+                row("sxbet_safe_info", tool("sxbet_safe_info", safe_address=proxy_address), scope_sensitive=True)
+            else:
+                skipped("sxbet_proxy_address_check", "NO_PROXY_ADDRESS_FIELD_IN_REPLY")
+                skipped("sxbet_safe_info", "NO_PROXY_ADDRESS_FIELD_IN_REPLY")
         missing = sorted(set(ctx["sx_tool_names"]) - exercised)
         rec.add("tool_coverage", "MCP_PROTOCOL",
                 "PASS" if not missing else ("PARTIAL" if api_key or exercised else "FAIL"),
@@ -428,6 +480,7 @@ def main() -> int:
     seconds = min(max(args.ws_seconds, 5.0), 60.0)
     api_key = os.environ.get("SXBET_API_KEY", "").strip()
     secrets = [api_key]
+    secrets_extra.clear()
     rec = Recorder()
     started = _now()
     ctx: dict[str, Any] = {}
@@ -450,6 +503,7 @@ def main() -> int:
     report = {"suite": "sxbet_live_readonly_certification", "network": "mainnet", "mode": "READ_ONLY",
               "started_at_utc": started, "finished_at_utc": _now(), "api_key_present": bool(api_key),
               "write_operations_attempted": 0, "outcome_counts": counts, "context": ctx, "results": rec.rows}
+    secrets.extend(secrets_extra)
     text = json.dumps(report, indent=1, ensure_ascii=False, default=str)
     if not leak_free(text, secrets):
         text = json.dumps({"suite": "sxbet_live_readonly_certification", "outcome_counts": {"FAIL": 1},

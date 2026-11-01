@@ -1,4 +1,4 @@
-name: SX Bet Live Read-Only Certification
+name: SX Bet Full API Read-Only Audit (Live Read-Only Certification)
 # Manual only. Never on push/pull_request: the SXBET_API_KEY secret must never
 # reach code from an untrusted PR. Read-only GET routes and read-only realtime
 # subscriptions; no order, cancel, heartbeat, approval, transfer or signature.
