@@ -23,6 +23,8 @@ Nessuna operazione su wallet o fondi è stata eseguita.
 
 **Conclusione:** la firma con il wallet Magic dell'owner è possibile solo dentro sx.bet, cioè con piazzamento manuale sul loro sito. Dal nostro MCP non lo è senza esportare la chiave, e l'owner ha escluso l'export.
 
+**Aggiornamento 01-11-2026 (mandato `FCB-SXBET-MAGIC-WALLET-FULL-AUDIT-01`):** l'owner ora valuta l'export della chiave Magic verso un signer backend protetto. SX Bet stessa lo indica per firmare gli ordini (`developers/quickstart`: "Fetch your private key from the assets page — you'll use it to sign orders"). Compatibilità, rischi (la chiave custodisce anche prelievi e trasferimenti della Safe) e procedura: [`magic_wallet_existing_account_audit.md`](magic_wallet_existing_account_audit.md), [`isolated_signer_architecture.md`](isolated_signer_architecture.md), [`mcp_chat_trading_workflow.md`](mcp_chat_trading_workflow.md). L'export resta un'azione dell'owner, sul proprio dispositivo, soggetta a un secondo mandato.
+
 ## 2. Percorsi ufficiali possibili
 
 1. **READ_ONLY + SIMULATION con la sola API key.** Già attivo: 37 tool.
@@ -35,7 +37,7 @@ Nessuna operazione su wallet o fondi è stata eseguita.
 4. **Account SX separato con un EOA che l'owner controlla in un wallet iniettabile** ("Connect a wallet").
    - Lo si finanzia dal proxy dell'account Magic tramite l'interfaccia di sx.bet: prelievo o trasferimento dalla Safe, firmato dentro sx.bet.
    - Poi si usa il percorso 3. La chiave Magic non viene esportata.
-5. **Signer isolato** (`signer/`) solo con una chiave dedicata che l'owner fornisce deliberatamente. **Mai la chiave Magic.**
+5. **Signer isolato** (`signer/`) con una chiave che l'owner fornisce deliberatamente: una chiave dedicata, oppure, **per decisione esplicita dell'owner e con un secondo mandato**, la chiave Magic esportata (vedi `magic_wallet_existing_account_audit.md`). L'agente non la chiede, non la legge e non la installa mai.
 
 **Non documentato (DOCS_UNVERIFIED):**
 - chiavi delegate o di sessione per firmare gli ordini SX Bet. Il campo `maker` deve essere l'EOA che firma, non il proxy;
