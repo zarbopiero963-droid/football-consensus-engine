@@ -5,7 +5,7 @@ Server **MCP** (Model Context Protocol) remoto, protetto da OAuth. Espone ai cli
 1. **API-FOOTBALL v3**: dati calcistici, statistiche, quote pre-match e live, cataloghi bookmaker e mercati. 42 tool `apifootball_*`.
 2. **Browser Use**: browser cloud controllato via CDP + Playwright. Tool `browser_*`.
 3. **CloakBrowser**: provider browser locale opzionale, integrato nello stesso bridge (`browser_create_cloak`). Non è un server MCP separato.
-4. **SX Bet**: modulo **READ_ONLY** opzionale (`SXBET_ENABLED`), con 36 tool `sxbet_*`: tutte le 36 operazioni GET dell'OpenAPI ufficiale V3 (inventario completo in `docs/sxbet/official_api_inventory.json`, 57 operazioni). Il trading reale **non è disponibile** (governance §2.6). Vedi [`docs/sxbet/README.md`](docs/sxbet/README.md).
+4. **SX Bet**: modulo opzionale (`SXBET_ENABLED`) **READ_ONLY + SIMULATION**, con 37 tool `sxbet_*`: le 36 operazioni GET dell'OpenAPI ufficiale V3 (inventario completo in `docs/sxbet/official_api_inventory.json`, 57 operazioni) più `sxbet_simulate_order`, che non firma e non invia. Il trading reale **non è disponibile** (governance §2.6). Il signer isolato è in [`signer/`](signer/README.md) e il bridge non lo importa. Vedi [`docs/sxbet/README.md`](docs/sxbet/README.md).
 
 Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/football-consensus-engine/issues/130).
 

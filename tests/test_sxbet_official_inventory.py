@@ -60,8 +60,9 @@ def test_every_official_get_is_exposed_and_no_write_is():
         else:
             assert o["mcp_tool"] is None and o["mcp"].startswith("NOT_EXPOSED"), o["path"]
     mapped = {o["mcp_tool"] for o in ops if o["mcp_tool"]}
-    assert set(tools) - mapped == {"sxbet_health"}  # the only tool with no provider route
-    assert len(tools) == 36
+    # no single provider route: health (no call) and the SIMULATION tool (several GETs, never a write)
+    assert set(tools) - mapped == {"sxbet_health", "sxbet_simulate_order"}
+    assert len(tools) == 37
 
 
 @pytest.mark.parametrize("tool,kwargs,path,params", [

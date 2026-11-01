@@ -1,21 +1,28 @@
-"""READ_ONLY SX Bet MCP tools (`sxbet_*`).
+"""READ_ONLY and SIMULATION SX Bet MCP tools (`sxbet_*`).
 
-Every tool maps 1:1 to a GET route of the official OpenAPI
+Every READ_ONLY tool maps 1:1 to a GET route of the official OpenAPI
 (https://docs.sx.bet/openapi.json). Parameter names, enums and bounds come from
-that spec; nothing is invented. There is no write tool: LIVE_TRADING cannot be
-enabled until an isolated signer with out-of-band, signer-verified per-order
-confirmation exists and is tested (governance §2.6).
+that spec; nothing is invented. `sxbet_simulate_order` (SIMULATION) only
+composes GET reads with the pure functions of `simulation.py`: it never signs,
+never holds a key and never submits. There is no write tool: LIVE_TRADING stays
+UNAVAILABLE; signing lives in the separate top-level `signer/` package, which
+nothing under `bridge/` imports (governance §2.6).
 """
 from __future__ import annotations
 
 import json
 import re
+import secrets
+import time
 from datetime import datetime, timezone
 from typing import Any
 
+from . import simulation as sim
 from .client import SXBetError, SXBetReadClient, Settings
 
 DOCS = "https://docs.sx.bet/openapi.json"
+SIMULATION_DOCS = ("https://docs.sx.bet/developers/posting-orders", "https://docs.sx.bet/developers/odds-rounding",
+                   "https://docs.sx.bet/developers/time-in-force", "https://docs.sx.bet/developers/taking-liquidity")
 _MAX_MCP_BYTES = 262_144
 _HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _EVENT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -155,11 +162,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
 
     @add
     async def sxbet_health() -> dict[str, Any]:
-        """SX Bet module status; no provider call. Live trading is unavailable (read-only module)."""
+        """SX Bet module status; no provider call. Live trading is unavailable (read-only + simulation module)."""
         return {"provider": "SX_BET", "enabled": True, "network": settings.network,
                 "api_key_present": bool(settings.api_key), "mode": "READ_ONLY",
+                "available_modes": {"READ_ONLY": "AVAILABLE", "SIMULATION": "AVAILABLE", "LIVE_TRADING": "UNAVAILABLE"},
                 "live_trading": "UNAVAILABLE: no isolated signer with signer-verified per-order confirmation (governance 2.6)",
-                "write_tools": [], "local_rate_limit_per_minute": settings.max_rpm,
+                "write_tools": [], "simulation_tools": ["sxbet_simulate_order"],
+                "local_rate_limit_per_minute": settings.max_rpm,
                 "source_contract": DOCS, "network_calls_made": 0}
 
     # ---- public routes ----
@@ -375,6 +384,102 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 event_type, ("DEPOSIT", "WITHDRAWAL", "SETTLEMENT", "PAYOUT", "FEE", "REFUND", "ADJUSTMENT"), "event_type"),
             "perPage": None if per_page is None else _int(per_page, "per_page", 1, 100),
             "nextKey": None if next_key is None else _cursor(next_key)}, auth=True)
+
+    # ---- SIMULATION (GET reads + pure simulation; never signs, never submits) ----
+    @add
+    async def sxbet_simulate_order(market_hash: str, betting_outcome_one: bool, stake_base_units: int,
+                                   percentage_odds: str, time_in_force: str, expiry: int,
+                                   idempotency_key: str, maker_address: str | None = None,
+                                   check_balance: bool = False) -> dict[str, Any]:
+        """SIMULATION only: validate an order intent and simulate its fill. Never signs, never submits.
+
+        percentage_odds: implied probability x 1e20 as a decimal string (the highest price you accept);
+        it is rounded DOWN onto the odds ladder and the raw value is kept. stake_base_units: USDC
+        base units (1000000 = 1 USDC). time_in_force: GTC, IOC or FOK. expiry: unix seconds.
+        idempotency_key: 8-64 chars [A-Za-z0-9_-]. maker_address: optional; with it the intent gets a
+        fresh salt and its intent_hash is the exact value an out-of-band owner approval must bind to.
+        Reads GET /metadata/obv3, /markets/find and (API key) /orderbook-v3/snapshot/market with
+        showTakerPerspective=true; check_balance=true also reads /user/balance-v3.
+        """
+        tool = "sxbet_simulate_order"
+        out: dict[str, Any] = {"provider": "SX_BET", "tool": tool, "network": settings.network, "mode": "SIMULATION",
+                               "source_contract": SIMULATION_DOCS, "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
+                               "network_calls_made": 0, "signed": False, "submitted": False,
+                               "live_trading": "UNAVAILABLE (governance 2.6)"}
+        # Type checks before any network call.
+        if not isinstance(percentage_odds, str) or not re.fullmatch(r"[0-9]{1,21}", percentage_odds):
+            return {**out, "status": "INVALID_INPUT", "error": {"code": "INVALID_PERCENTAGE_ODDS"}}
+        for ok, code in ((isinstance(market_hash, str) and _HASH.fullmatch(market_hash), "INVALID_MARKET_HASH"),
+                         (isinstance(betting_outcome_one, bool), "INVALID_SIDE"),
+                         (type(stake_base_units) is int and stake_base_units > 0, "INVALID_STAKE_BASE_UNITS"),
+                         (time_in_force in sim.TIME_IN_FORCE, "INVALID_TIME_IN_FORCE"),
+                         (type(expiry) is int, "INVALID_EXPIRY"),
+                         (isinstance(check_balance, bool), "INVALID_CHECK_BALANCE")):
+            if not ok:
+                return {**out, "status": "INVALID_INPUT", "error": {"code": code}}
+
+        async def fetch(path, params, *, auth):
+            try:
+                reply = await client.get(path, params, auth=auth)
+            except SXBetError as exc:
+                if exc.code not in ("SXBET_LOCAL_RATE_LIMITED", "SXBET_KEY_NOT_CONFIGURED"):
+                    out["network_calls_made"] += 1
+                return None, {"endpoint": path, "code": exc.code, "http_status": exc.http_status}
+            out["network_calls_made"] += 1
+            return reply["data"], None
+
+        meta_raw, err = await fetch("/metadata/obv3", {}, auth=False)
+        if err:
+            return {**out, "status": "PROVIDER_ERROR", "error": err}
+        try:
+            meta = sim.parse_metadata(meta_raw, settings.network)
+            intent = sim.build_intent(
+                network=settings.network, metadata=meta, market_hash=market_hash,
+                betting_outcome_one=betting_outcome_one, stake_base_units=stake_base_units,
+                requested_percentage_odds=int(percentage_odds), time_in_force=time_in_force, expiry=expiry,
+                idempotency_key=idempotency_key, now=int(time.time()), maker=maker_address,
+                salt=None if maker_address is None else secrets.randbits(256))
+        except sim.IntentError as exc:
+            status = "METADATA_INVALID" if str(exc).startswith("METADATA_") else "INVALID_INPUT"
+            return {**out, "status": status, "error": {"code": str(exc)}}
+        out.update({"intent": intent, "intent_hash": sim.intent_hash(intent),
+                    "signing_ready": sim.signing_ready(intent),
+                    "odds_rounding": {"requested": intent["requested_percentage_odds"],
+                                      "rounded_down": intent["percentage_odds"],
+                                      "changed": intent["requested_percentage_odds"] != intent["percentage_odds"]},
+                    "live_eligibility": sim.live_eligibility(intent, sim.ExposureLimits()),
+                    "warnings": [_UNITS, "Simulation output is DERIVED_SIMULATION, not provider data: fees, betting "
+                                 "delay, self-match prevention and book movement are not modelled."]})
+        markets, err = await fetch("/markets/find", {"marketHashes": [intent["market_hash"]]}, auth=False)
+        if err:
+            return {**out, "status": "PROVIDER_ERROR", "error": err}
+        market = sim.check_market(markets, intent["market_hash"])
+        out["market"] = market
+        if market["status"] != "MARKET_ACTIVE":
+            return {**out, "status": "REFUSED", "error": {"code": market["status"]},
+                    "fill": {"status": "NOT_SIMULATABLE", "reason": market["status"]}}
+        if not settings.api_key:
+            out["fill"] = {"status": "NOT_SIMULATABLE", "reason": "SXBET_KEY_NOT_CONFIGURED"}
+        else:
+            book, err = await fetch("/orderbook-v3/snapshot/market",
+                                    {"marketHash": intent["market_hash"], "showTakerPerspective": True}, auth=True)
+            out["fill"] = ({"status": "NOT_SIMULATABLE", "reason": err["code"]} if err else
+                           sim.simulate_fill(intent, book, min_resting_base_units=meta["min_resting_base_units"]))
+        if check_balance:
+            if not settings.api_key:
+                out["balance"] = {"status": "BALANCE_UNRESOLVED", "reason": "SXBET_KEY_NOT_CONFIGURED"}
+            else:
+                bal, err = await fetch("/user/balance-v3", {}, auth=True)
+                out["balance"] = ({"status": "BALANCE_UNRESOLVED", "reason": err["code"]} if err else
+                                  sim.check_balance(bal, base_token=intent["base_token"],
+                                                    escrow=intent["verifying_contract"],
+                                                    stake=int(intent["total_bet_size"])))
+        out["status"] = "SIMULATED"
+        if len(json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > _MAX_MCP_BYTES:
+            return {k: out[k] for k in ("provider", "tool", "network", "mode", "network_calls_made", "signed",
+                                         "submitted", "live_trading", "intent", "intent_hash")} | {
+                "status": "PAYLOAD_TOO_LARGE", "error": {"code": "SXBET_RESPONSE_EXCEEDS_MCP_SIZE_LIMIT"}}
+        return out
 
     # ---- remaining official authenticated GET routes (OpenAPI 1.0.0) ----
     async def path_call(tool: str, template: str, build_path, params, scope: str) -> dict[str, Any]:

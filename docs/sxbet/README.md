@@ -1,4 +1,4 @@
-# SX Bet nel server MCP: modulo READ_ONLY
+# SX Bet nel server MCP: modulo READ_ONLY + SIMULATION
 
 Fonte tecnica: OpenAPI ufficiale **https://docs.sx.bet/openapi.json** (SX Bet API, route V3) e documentazione https://docs.sx.bet. Ogni tool corrisponde a una route GET di quella specifica; nessun parametro è inventato.
 
@@ -6,10 +6,10 @@ Fonte tecnica: OpenAPI ufficiale **https://docs.sx.bet/openapi.json** (SX Bet AP
 | Modalità | Stato |
 |---|---|
 | `READ_ONLY` | **implementata**: 36 tool `sxbet_*` (tutte le 36 operazioni GET ufficiali) |
-| `SIMULATION` | non implementata |
+| `SIMULATION` | **implementata**: 1 tool, `sxbet_simulate_order` (totale 37 tool `sxbet_*`). Non firma e non invia |
 | `LIVE_TRADING` | **non disponibile**. Per la governance §2.6 non può essere attivata finché non esiste ed è testato un signer isolato con conferma fuori banda, verificata dal signer, per ogni singolo ordine |
 
-Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. Non esistono percorsi di codice per creare, eseguire o cancellare ordini, né per approval, transfer o firma. Un test (`tests/test_sxbet_read_only.py::test_no_write_capability_exists`) lo verifica.
+Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. In `bridge/` non esistono percorsi di codice per creare, eseguire o cancellare ordini, né per approval, transfer o firma. Lo verificano `tests/test_sxbet_read_only.py::test_no_write_capability_exists` e `tests/test_sxbet_simulation.py::test_no_submission_code_in_signer_or_sxbet_module`. La firma esiste solo nel package separato [`signer/`](../../signer/README.md), che `bridge/` non importa mai.
 
 ## Configurazione (Render, servizio MCP)
 | Variabile | Default | Uso |
@@ -78,6 +78,30 @@ Per i tool `Wallet: read` la chiave deve avere quello scope. Senza scope il tool
   - `sxbet_positions(status=[MATCHED|LOCKED|SETTLED|FAILED])`, `sxbet_open_orders`;
   - `sxbet_trades`, `sxbet_fills`, `sxbet_ledger`.
 
+## SIMULATION: `sxbet_simulate_order`
+
+Fonti: https://docs.sx.bet/developers/posting-orders, https://docs.sx.bet/api-reference/eip712-order-signing, https://docs.sx.bet/developers/odds-rounding, https://docs.sx.bet/developers/time-in-force, https://docs.sx.bet/developers/taking-liquidity, https://docs.sx.bet/developers/order-lifecycle.
+
+Parametri: `market_hash`, `betting_outcome_one`, `stake_base_units` (USDC, 6 decimali), `percentage_odds` (stringa decimale sulla scala 1e20: è il prezzo massimo accettato), `time_in_force` (`GTC`/`IOC`/`FOK`), `expiry` (unix, secondi), `idempotency_key` (8–64 caratteri `[A-Za-z0-9_-]`), `maker_address` (opzionale), `check_balance` (opzionale).
+
+Cosa fa, solo con GET attraverso il client esistente:
+1. `GET /metadata/obv3`: controlla la coerenza del dominio (`OBv3 Escrow` v1, `chainId` atteso per la rete, `verifyingContract` = `escrowAddress`, 6 decimali, step della scala, betting delay).
+2. Validazione dell'intent (`bridge/sxbet/simulation.py`): hash di mercato, lato, importo intero ≥ `orderSizeMinimumBaseUnits`, quota arrotondata **per difetto** sulla scala, con il valore grezzo conservato (`requested_percentage_odds`) ed eccezioni 0,1% e 99,9%. Scadenza ≥ ora + betting delay massimo + 2 s + margine di 10 s, e ≤ 24 h (politica locale). `timeInForce` dall'enum.
+3. `intent_hash` = sha256 del JSON canonico dei parametri esatti. Con `maker_address` l'intent riceve un `salt` nuovo ed è `signing_ready`: quell'hash è il valore a cui deve legarsi l'approvazione fuori banda dell'owner.
+4. `GET /markets/find`: abbinamento **esatto** per hash. Un mercato `INACTIVE`, mancante o ambiguo produce `REFUSED` e l'order book non viene letto.
+5. `GET /orderbook-v3/snapshot/market?showTakerPerspective=true` (richiede la chiave): simulazione del fill sul lato richiesto. Consuma i livelli a quota ≤ limite, dal più conveniente, e riporta `FULL`/`PARTIAL`/`NONE`, la quota effettiva (puntata / ritorno potenziale), la parte non eseguita e quella che resterebbe nel book (`GTC`, sopra `minRestingOrderSizeBaseUnits`) o verrebbe scartata (`IOC`, dust). `FOK` non esegue nulla se la profondità non basta. Senza book o con un book malformato: `NOT_SIMULATABLE`. La liquidità non viene mai inventata.
+6. `check_balance=true`: `GET /user/balance-v3` e confronto con `availableAmount` della riga esatta (token, escrow). Una riga mancante produce `BALANCE_UNRESOLVED`, mai saldo 0.
+
+L'output è `DERIVED_SIMULATION`, non dato del provider: non modella le commissioni, il betting delay, la prevenzione del self-match né il movimento del book. `signed` e `submitted` sono sempre `false`. `live_eligibility` usa i limiti dell'owner, che nel bridge sono zero, quindi è sempre `eligible: false` (`EXPOSURE_LIMIT_ZERO`). Nessun argomento del tool può cambiare i limiti o la modalità.
+
+Sempre in `simulation.py`, e senza tool MCP:
+- `simulate_cancel`: cancel per id simulato, con il limite `maxCancelOrders`;
+- `SubmissionTracker`: macchina a stati per un futuro percorso di invio, con stati `SUBMITTED`, `UNKNOWN_AFTER_TIMEOUT`, `AMBIGUOUS_RESPONSE`, `PARTIALLY_FILLED`, `FILLED`, `CANCELLED`, `REJECTED` e `NOT_ON_EXCHANGE`. Un timeout o una risposta ambigua bloccano il retry finché la riconciliazione per id non dimostra lo stato. Un 404 di `GET /orders-v3/{orderId}` vale come assenza solo entro 10 minuti (la documentazione indica 10–20) e con `GET /fills-v3?orderId=` vuoto. Il retry è ammesso solo con la stessa chiave di idempotenza.
+
+## Signer isolato
+
+Vedi [`signer/README.md`](../../signer/README.md): firma EIP-712 dell'`Order` a 8 campi solo con l'approvazione Ed25519 dell'owner, monouso, TTL ≤ 120 s e legata all'`intent_hash`. Limiti di default zero, idempotenza, audit append-only. Nessun codice di invio.
+
 **Unità:** `percentageOdds` è la probabilità implicita × 10^20 (per esempio `52500000000000000000` = 52,5%). Gli importi USDC sono in unità base con 6 decimali (`1000000` = 1 USDC). I dati sono restituiti così come arrivano dal provider.
 
 **Errori** (codici fissi, mai il body del provider né la chiave): `INVALID_INPUT`, `KEY_NOT_CONFIGURED`, `SXBET_RATE_LIMITED` (con `retry_after_seconds`), `SXBET_LOCAL_RATE_LIMITED`, `SXBET_UNAUTHORIZED`, `SXBET_HTTP_ERROR`, `SXBET_REDIRECT_REJECTED`, `SXBET_TIMEOUT` (scadenza complessiva di 30 s), `SXBET_NETWORK_ERROR`, `SXBET_INVALID_JSON`, `SXBET_PROVIDER_STATUS_NOT_SUCCESS`, `SXBET_RESPONSE_TOO_LARGE`, `PAYLOAD_TOO_LARGE`. Non ci sono retry automatici. Il cap di 256 KiB si misura sul JSON compatto della risposta; oltre il cap la risposta è `PAYLOAD_TOO_LARGE`, senza troncature.
@@ -85,6 +109,8 @@ Per i tool `Wallet: read` la chiave deve avere quello scope. Senza scope il tool
 **Rate limit:** il limiter `SXBET_MAX_RPM` vale **per processo**. Oggi il servizio Render gira con 1 istanza e `WEB_CONCURRENCY=1`. Se si scala a più worker o istanze, il ritmo effettivo si moltiplica: in quel caso va spostato sul coordinatore condiviso PostgreSQL (governance §2.4). Decisione dell'owner.
 
 ## Verifica (01-11-2026, backend contro l'API pubblica reale, senza chiave)
+Registro storico, precedente a `sxbet_simulate_order`: i conteggi 23/99 si riferiscono a quel deploy. Con SIMULATION il catalogo SX Bet è di 24 tool (`tools/list` offline verificato: 100 = 34 browser + 42 API-FOOTBALL + 24 SX Bet).
+
 | Prova | Esito |
 |---|---|
 | `sxbet_metadata` | PASS: dominio `OBv3 Escrow` v1, chain 4162, minimo d'ordine 1 USDC, `maxCreateOrders` 10, `maxCancelOrders` 100 |
@@ -108,5 +134,12 @@ Se il server riporta il conteggio atteso di `sxbet` e il client ne mostra 0, il 
 
 ## Prossimi passi (decisioni owner)
 1. **Lettura attiva** su Render dal 01-11-2026 09:25:52 UTC. Resta da verificare dal client MCP, dopo l'aggiornamento del connettore.
-2. **SIMULATION:** validazione degli ordini senza invio (mercato attivo, scala quote, minimi, liquidità dall'order book).
-3. **LIVE_TRADING:** progettare il signer isolato EIP-712, primary type `Order` con 8 campi e dominio da `/metadata/obv3`, con conferma fuori banda per ogni ordine. Va valutata anche la gestione del proxy wallet (`/user/deploy-proxy`, `/user/transfer-to-proxy`), che è a sua volta un'operazione finanziaria (§2.6). Ogni passo verso il trading reale si mergia solo dall'owner.
+2. **SIMULATION:** implementata (`sxbet_simulate_order`). Dopo il deploy va verificata dal client MCP con la chiave.
+3. **LIVE_TRADING: resta non disponibile.** Il signer isolato esiste ed è testato offline con chiavi usa e getta, ma mancano ancora:
+   - il dispositivo di approvazione dell'owner;
+   - il deploy del signer come servizio separato;
+   - un percorso di invio e riconciliazione revisionato e mergiato dall'owner;
+   - le decisioni sul proxy wallet (`/user/deploy-proxy`, `/user/transfer-to-proxy`, operazioni finanziarie del §2.6);
+   - i limiti reali e lo scope della chiave.
+
+   Dettagli in [`signer/README.md`](../../signer/README.md). Ogni passo verso il trading reale si mergia solo dall'owner.

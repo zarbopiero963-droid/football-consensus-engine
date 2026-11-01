@@ -37,7 +37,7 @@ REST_ENDPOINT = "https://api.sx.bet"
 WS_ENDPOINT = "wss://realtime.sx.bet/connection/websocket"
 TOKEN_PATH = "/user/realtime-token-v3/api-key"
 MAX_MCP_CALLS = 60
-EXPECTED_SXBET_TOOLS = 36
+EXPECTED_SXBET_TOOLS = 37
 PUBLIC_SAMPLE_KEYS = ("marketHash", "sportXeventId", "leagueLabel", "teamOneName", "teamTwoName",
                       "outcomeOneName", "outcomeTwoName", "type", "line", "gameTime", "status", "liveEnabled")
 
@@ -284,7 +284,8 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
                          "sxbet_order", "sxbet_order_by_client_id", "sxbet_trade", "sxbet_privacy",
                          "sxbet_public_market_orders", "sxbet_public_user_orders", "sxbet_public_positions",
                          "sxbet_proxy_wallet", "sxbet_proxy_deploy_pending", "sxbet_proxy_funding_pending",
-                         "sxbet_proxy_funding_status", "sxbet_proxy_address_check", "sxbet_safe_info"):
+                         "sxbet_proxy_funding_status", "sxbet_proxy_address_check", "sxbet_safe_info",
+                         "sxbet_simulate_order"):
                 rec.add(name, "REAL_API_VIA_MCP", "NOT_TESTED", reason="SXBET_API_KEY_SECRET_ABSENT")
         else:
             if hashes:
@@ -338,6 +339,20 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
             row("sxbet_proxy_deploy_pending", tool("sxbet_proxy_deploy_pending"), scope_sensitive=True)
             row("sxbet_proxy_funding_pending", tool("sxbet_proxy_funding_pending"), scope_sensitive=True)
             skipped("sxbet_proxy_funding_status", "NO_DEPOSIT_SESSION_ID (no deposit was ever started by this suite)")
+            if hashes:
+                sim = tool("sxbet_simulate_order", market_hash=hashes[0], betting_outcome_one=True,
+                           stake_base_units=1_000_000, percentage_odds="50000000000000000000",
+                           time_in_force="IOC", expiry=int(time.time()) + 3600,
+                           idempotency_key="fce-cert-simulation-01")
+                ok = sim.get("signed") is False and sim.get("submitted") is False and sim.get("mode") == "SIMULATION"
+                exercised.add("sxbet_simulate_order")
+                rec.add("sxbet_simulate_order", "REAL_API_VIA_MCP (reads) + SIMULATION",
+                        "PASS" if ok and sim.get("status") in ("SIMULATED", "REFUSED") else "FAIL",
+                        status=sim.get("status"), signed=sim.get("signed"), submitted=sim.get("submitted"),
+                        fill_status=(sim.get("fill") or {}).get("status"), error_code=(sim.get("error") or {}).get("code"),
+                        network_calls_made=sim.get("network_calls_made"))
+            else:
+                skipped("sxbet_simulate_order", "NO_ACTIVE_MARKET_AT_RUN_TIME")
             proxy_data = proxy.get("data") if isinstance(proxy.get("data"), dict) else {}
             def _addr(key):
                 v = proxy_data.get(key)
