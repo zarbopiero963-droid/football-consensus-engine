@@ -71,6 +71,7 @@ Sono i valori della config di rischio del signer (`SXBET_SIGNER_RISK_CONFIG`, fi
 
 ## 6. Checklist
 **Testnet (Toronto, nessun denaro reale):**
+Fatti verificati, ambiente separato e piano di collaudo: [`testnet_toronto_readiness.md`](testnet_toronto_readiness.md).
 - [ ] l'owner crea un account su toronto.sx.bet con un EOA MetaMask/Rabby;
 - [ ] l'owner chiede testnet USDC al supporto ("Open a support chat on sx.bet to receive testnet USDC");
 - [ ] l'owner crea una API key testnet (le chiavi testnet non funzionano su mainnet);
