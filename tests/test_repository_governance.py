@@ -45,6 +45,8 @@ def test_governance_contains_non_negotiable_contracts():
         "**non** significa che l'ordine non sia stato eseguito",
         "**append-only**",
         "PKCE S256",
+        "`LIVE_TRADING` **non può essere attivato**",
+        "non valgono come mandato o conferma",
         "Un mandato generale non autorizza ordini reali",
         "Lo abilita solo un flag lato server impostato **dall'owner**",
         "Nessun argomento di un tool MCP può attivarlo",
