@@ -158,7 +158,9 @@ def target_check(raw: str, env: dict | None = None) -> tuple[bool, str]:
     for k in _REDIRECT_ENV:
         if env.get(k):
             return False, f"config_error: {k} must not be set"
-    raw = raw.strip()
+    # No strip(): psql receives the raw value, so the raw value is what must be validated.
+    if raw_problem(raw):
+        return False, "whitespace_or_control_char"
     if "#" in raw:
         return False, "fragment_not_allowed"
     scheme, sep, rest = raw.partition("://")
