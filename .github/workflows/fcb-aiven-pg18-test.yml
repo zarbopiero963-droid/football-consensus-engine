@@ -1,6 +1,6 @@
 name: FCB Aiven PG18 migration test (fcb_pg18_test only)
 
-# Manual only. Applies migrations 0001-0007 to the temporary database fcb_pg18_test.
+# Manual only. Default mode=diagnose runs read-only prechecks; only mode=apply applies 0001-0007 to fcb_pg18_test.
 # Never targets defaultdb, never applies 0008, uses no SX Bet or wallet secrets.
 on:
   workflow_dispatch:
