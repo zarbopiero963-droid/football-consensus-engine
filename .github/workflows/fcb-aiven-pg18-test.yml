@@ -1,0 +1,163 @@
+name: FCB Aiven PG18 migration test (fcb_pg18_test only)
+
+# Manual only. Applies migrations 0001-0007 to the temporary database fcb_pg18_test.
+# Never targets defaultdb, never applies 0008, uses no SX Bet or wallet secrets.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fcb-aiven-pg18-test
+  cancel-in-progress: false
+
+jobs:
+  pg18-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXPECTED_DB: fcb_pg18_test
+      EXPECTED_SCRIPT_SHA256: b73ed5c206d9a89c150864dba7fa200faef85e1be617e775312148ce83821fde
+      SCRIPT: sql/aiven/aiven_migrations_0001_0007.sql
+      PGCONNECT_TIMEOUT: '15'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fail closed if the secret is missing
+        env:
+          FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_PG18_TEST_URL:-}" ]; then
+            echo "::error::secret FCB_PG18_TEST_URL is not set"; exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate script from repo migrations and verify pinned SHA-256
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'psycopg[binary]==3.3.6'
+          generated="$(python scripts/generate_aiven_migrations.py --check)"
+          actual="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
+          test "$generated" = "$EXPECTED_SCRIPT_SHA256"
+          test "$actual" = "$EXPECTED_SCRIPT_SHA256"
+          if grep -Eq '0008|signer_ledger' "$SCRIPT"; then echo "::error::0008 content found"; exit 1; fi
+          echo "script_sha256=$actual" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install postgresql-client-18 from PGDG (pinned key fingerprint)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/psql --version
+
+      - name: Mask connection details and enforce TLS
+        env:
+          FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
+        run: |
+          set -euo pipefail
+          # -I -S: isolated interpreter, no site-packages (.pth) while the secret is in env.
+          python -I -S - <<'PY'
+          import os, sys
+          from urllib.parse import urlsplit, parse_qs, unquote
+          raw = os.environ['FCB_PG18_TEST_URL']
+          try:
+              u = urlsplit(raw)
+              parts = (u.hostname, u.username, u.password, u.password and unquote(u.password), str(u.port or ''))
+              q = parse_qs(u.query, keep_blank_values=True)
+          except Exception:
+              sys.exit('::error::secret is not a parseable PostgreSQL URI')
+          for v in parts:
+              if v:
+                  print(f'::add-mask::{v}')
+          if u.scheme not in ('postgres', 'postgresql'):
+              sys.exit('::error::unexpected URL scheme')
+          if ',' in u.netloc or not u.hostname:
+              sys.exit('::error::multi-host or empty host URIs are not allowed')
+          if u.path.lstrip('/') != os.environ['EXPECTED_DB']:
+              sys.exit('::error::secret does not point to the expected database')
+          forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
+          if forbidden & {k.lower() for k in q}:
+              sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
+          mode = q.get('sslmode', ['require'])[0]
+          if mode not in ('require', 'verify-ca', 'verify-full'):
+              sys.exit('::error::sslmode must be require, verify-ca or verify-full')
+          PY
+
+      - name: Prechecks (database, PostgreSQL 18, TLS, empty schema)
+        env:
+          FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
+          PGSSLMODE: require
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          # stderr is discarded: libpq connection errors can print the server IP (not masked).
+          q() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null || { echo "::error::precheck query failed (details suppressed)"; return 1; }; }
+          db="$(q 'select current_database()')"
+          test "$db" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
+          ver="$(q "select current_setting('server_version_num')::int")"
+          [ "$ver" -ge 180000 ] && [ "$ver" -lt 190000 ] || { echo "::error::server is not PostgreSQL 18"; exit 1; }
+          ssl="$(q 'select ssl from pg_stat_ssl where pid = pg_backend_pid()')"
+          test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
+          tls="$(q 'select version || $$ $$ || cipher from pg_stat_ssl where pid = pg_backend_pid()')"
+          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
+          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema','_avnadmin_monitor')")"
+          # Aiven installs its own monitoring schema (_avnadmin_monitor, owned by postgres) in every
+          # database; it is excluded by exact name only. Any other non-system schema besides public
+          # makes the precheck fail.
+          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
+          if [ "$schemas" != "0" ]; then
+            echo "::error::unexpected non-system schemas present ($schemas); refusing to run"; exit 1
+          fi
+          if [ "$objects" != "0" ] || [ "$funcs" != "0" ]; then
+            echo "::error::database is not empty (relations=$objects functions=$funcs); refusing to run"; exit 1
+          fi
+          {
+            echo "## Prechecks: PASS"
+            echo "- current_database: $db"
+            echo "- server_version_num: $ver"
+            echo "- TLS: $tls"
+            echo "- pre-existing relations/functions: 0/0"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify
+        env:
+          FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
+          PGSSLMODE: require
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
+          # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
+          GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          run() { "$PSQL" "$FCB_PG18_TEST_URL" -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
+          verify() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
+          run;    first="$(verify)"
+          applied1="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          run;    second="$(verify)"
+          applied2="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          test "$first" = "$second" || { echo "::error::second run changed the schema evidence"; exit 1; }
+          test "$applied1" = "$applied2" || { echo "::error::second run re-applied migrations"; exit 1; }
+          expected="$(printf '%s\n' tables=29 functions=4 triggers=9 indexes=54 constraints_information_schema=307 constraints_pg_constraint=61 schema_migrations_rows=7)"
+          counts="$(printf '%s\n' "$second" | head -n 7)"
+          test "$counts" = "$expected" || { echo "::error::object counts differ from expected"; printf '%s\n' "$counts"; exit 1; }
+          files="$(for f in sql/migrations/000[1-7]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done)"
+          recorded="$(printf '%s\n' "$second" | tail -n +8)"
+          test "$recorded" = "$files" || { echo "::error::recorded migration checksums differ from repo files"; exit 1; }
+          {
+            echo "## Apply: PASS (run 1 applied, run 2 no-op)"
+            echo '```'
+            printf '%s\n' "$second"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
