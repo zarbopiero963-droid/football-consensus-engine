@@ -32,6 +32,7 @@ from .quota import PostgresQuota, QuotaConcurrencyBusy, QuotaExceeded, QuotaLimi
 COORDINATOR_REQUIRED = "COORDINATOR_DATABASE_REQUIRED"
 _LEASE_TIMEOUT_SECONDS = 15.0
 _ORPHAN_WAIT_SECONDS = 30.0
+_RELEASE_TIMEOUT_SECONDS = 10.0
 
 
 class CoordinatorRefused(RuntimeError):
@@ -111,22 +112,36 @@ class CoordinatedClient:
         """
         try:
             lease = await asyncio.wait_for(asyncio.shield(reservation), timeout=_ORPHAN_WAIT_SECONDS)
+        except asyncio.CancelledError:
+            # Never swallow a cancellation: hand the late lease to a best-effort callback
+            # (180 s PostgreSQL expiry if the loop ends first) and propagate.
+            reservation.add_done_callback(self._release_later)
+            raise
         except BaseException:
-            return
+            return  # still pending after the bound (or failed): 180 s expiry applies
         self.orphaned_units += 1
         try:
-            await asyncio.shield(self._quota.release(lease))
+            await asyncio.wait_for(asyncio.shield(self._quota.release(lease)), timeout=_RELEASE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            raise
         except BaseException:
-            pass
+            pass  # bounded by the 180 s expiry
+
+    def _release_later(self, reservation: asyncio.Future) -> None:
+        if reservation.cancelled() or reservation.exception() is not None:
+            return
+        self.orphaned_units += 1
+        task = asyncio.ensure_future(self._quota.release(reservation.result()))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # consume, never log text
 
     async def _release(self, lease) -> None:
         failed = False
         try:
-            await asyncio.shield(self._quota.release(lease))
+            await asyncio.wait_for(asyncio.shield(self._quota.release(lease)), timeout=_RELEASE_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception:
-            failed = True  # the lease expires server-side; the failure stays visible
+            failed = True  # incl. timeout: the lease expires server-side; the failure stays visible
         if failed:
             raise _refused("QUOTA_RELEASE_FAILED", sent=True)
 
@@ -169,7 +184,7 @@ class CoordinatedClient:
             yield outcome
         except asyncio.CancelledError:
             await self._breaker.abort()
-            outcome["settled"] = True
+            outcome["settled"] = outcome["cancelled"] = True
             raise
         except httpx.TransportError:
             # Headers may have arrived, but reading the body failed: a provider failure.
@@ -178,6 +193,10 @@ class CoordinatedClient:
         finally:
             try:
                 await self._release(lease)
+            except CoordinatorRefused:
+                # A release failure must not replace a propagating cancellation.
+                if not outcome.get("cancelled"):
+                    raise
             finally:
                 if not outcome["settled"]:
                     await self._settle(outcome["status"])

@@ -212,6 +212,7 @@ class _HangingCoordinator(FakeCoordinator):
 def test_coordinator_timeout_fails_closed(monkeypatch):
     from bridge.api_football import live_harness
     monkeypatch.setattr(live_harness, "_LEASE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(live_harness, "_ORPHAN_WAIT_SECONDS", 0.05)  # bounded wait for the late lease
     calls, transport = _counting()
     result = asyncio.run(run_live(ENV, transport=transport, coordinator=_HangingCoordinator()))
     assert calls == []
@@ -371,4 +372,55 @@ def test_body_read_failure_counts_against_the_breaker():
                         await response.aread()
             with pytest.raises(CoordinatorRefused, match="CIRCUIT_OPEN"):
                 await c.get("/status")
+    asyncio.run(go())
+
+
+class _SlowCoordinator(FakeCoordinator):
+    async def acquire(self, secret):
+        await asyncio.sleep(5)
+        return await super().acquire(secret)
+
+
+def test_cancellation_during_orphan_compensation_is_not_swallowed(monkeypatch):
+    from bridge.api_football import live_harness
+    monkeypatch.setattr(live_harness, "_LEASE_TIMEOUT_SECONDS", 0.05)
+    settings = Settings.from_env(ENV)
+
+    async def go():
+        async with coordinated_client(settings, ENV, transport=_counting()[1], quota=_SlowCoordinator()) as c:
+            task = asyncio.ensure_future(c.get("/status"))
+            await asyncio.sleep(0.3)  # inside the bounded orphan wait
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    asyncio.run(go())
+
+
+class _HangingRelease(FakeCoordinator):
+    async def release(self, lease):
+        await asyncio.sleep(3600)
+
+
+def test_release_is_time_bounded(monkeypatch):
+    from bridge.api_football import live_harness
+    monkeypatch.setattr(live_harness, "_RELEASE_TIMEOUT_SECONDS", 0.05)
+    calls, transport = _counting()
+    result = asyncio.run(asyncio.wait_for(run_live(ENV, transport=transport, coordinator=_HangingRelease()), 5))
+    assert result["results"][0]["code"] == "QUOTA_RELEASE_FAILED"
+    assert result["results"][0]["outcome"] == "SENT_ACCOUNTING_FAILED"
+
+
+def test_release_failure_does_not_mask_a_cancellation():
+    settings = Settings.from_env(ENV)
+
+    async def go():
+        async with coordinated_client(settings, ENV, transport=_counting()[1], quota=_ReleaseFails()) as c:
+            async def body():
+                async with c.stream("GET", "/status"):
+                    await asyncio.sleep(3600)
+            task = asyncio.ensure_future(body())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
     asyncio.run(go())
