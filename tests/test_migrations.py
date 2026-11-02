@@ -151,7 +151,8 @@ def test_bridge_and_signer_series_never_mix():
     assert migrations.BRIDGE.lock_id!=migrations.SIGNER.lock_id
     assert migrations.BRIDGE.directory!=migrations.SIGNER.directory
     bridge=' '.join(migrations.migration_statements())
-    assert 'signer_ledger' not in bridge and 'signer_schema_migrations' not in bridge
+    # Only the pre-split guard names the old signer file; no signer DDL or tracking in the bridge.
+    assert 'signer_ledger_anchors' not in bridge.lower() and 'signer_schema_migrations' not in bridge
     signer=' '.join(migrations.migration_statements(series=migrations.SIGNER))
     assert 'INSERT INTO signer_schema_migrations' in signer and 'INSERT INTO schema_migrations' not in signer
     assert not list(migrations.ROOT_MIGRATIONS.glob('*.sql'))  # no file left in the old flat layout
@@ -160,3 +161,16 @@ def test_bridge_and_signer_series_never_mix():
 def test_tracking_table_is_allowlisted():
     with pytest.raises(ValueError):
         migrations.tracking_sql('pg_catalog.pg_authid')
+
+
+def test_a_shipped_series_directory_cannot_be_applied_through_the_other_series():
+    with pytest.raises(ValueError, match='series=SIGNER'):
+        migrations.apply_migrations(lambda: pytest.fail('must not connect'), migrations.SIGNER.directory)
+    with pytest.raises(ValueError, match='series=BRIDGE'):
+        migrations.apply_migrations(lambda: pytest.fail('must not connect'), migrations.BRIDGE.directory,
+                                    series=migrations.SIGNER)
+
+
+def test_pre_split_guard_only_in_the_bridge_series():
+    assert 'PRE_SPLIT_SIGNER_0008' in ' '.join(migrations.migration_statements())
+    assert 'PRE_SPLIT_SIGNER_0008' not in ' '.join(migrations.migration_statements(series=migrations.SIGNER))

@@ -97,14 +97,37 @@ def migration_block(migration, table='schema_migrations'):
     return 'DO ' + Literal(block).as_string()
 
 
+PRE_SPLIT_SIGNER_NAME = '0008_signer_ledger_anchor.sql'
+
+
+def _directory_for(series, directory):
+    if directory is None:
+        return series.directory
+    resolved = Path(directory).resolve()
+    for other in SERIES:
+        # A shipped series directory may only be applied through its own series:
+        # never record signer DDL in schema_migrations (or bridge DDL in the signer table).
+        if other is not series and resolved == other.directory.resolve():
+            raise ValueError(f'{other.name} migrations must be applied with series={other.name.upper()}')
+    return directory
+
+
 def migration_statements(directory=None, series=BRIDGE):
-    migrations = load_migrations(series.directory if directory is None else directory)
+    migrations = load_migrations(_directory_for(series, directory))
     versions = ','.join(str(m.version) for m in migrations)
     table = series.tracking_table
+    pre_split = ''
+    if series is BRIDGE and any(m.version == 8 for m in migrations):
+        # Only a checkout that ships its own bridge v8 can collide with the pre-split one; the
+        # pinned Aiven 0001-0007 script therefore stays byte-identical.
+        pre_split = f'''
+        IF EXISTS (SELECT 1 FROM {table} WHERE version=8 AND name='{PRE_SPLIT_SIGNER_NAME}') THEN
+            RAISE EXCEPTION 'PRE_SPLIT_SIGNER_0008: schema_migrations v8 is the signer anchor from the pre-split layout; see docs/certification/FCB_PR_WORKPACKAGES.md (WP-004). Owner decision required.';
+        END IF;'''
     return [
-        f'SELECT pg_advisory_xact_lock({series.lock_id})',
+        f'SELECT pg_advisory_xact_lock({int(series.lock_id)})',
         tracking_sql(table),
-        f'''DO $guard$ BEGIN
+        f'''DO $guard$ BEGIN{pre_split}
         IF EXISTS (SELECT 1 FROM {table} WHERE version NOT IN ({versions})) THEN
             RAISE EXCEPTION 'Database has migrations absent from this checkout';
         END IF;

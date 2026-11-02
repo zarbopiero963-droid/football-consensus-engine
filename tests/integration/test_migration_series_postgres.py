@@ -230,7 +230,7 @@ def test_pre_split_database_with_signer_0008_is_refused_not_rewritten(schema, tm
     migrations.apply_migrations(connect, d)
     before = _rows(connect)
     assert (before[7]["name"], before[7]["sha256"]) == LEGACY_SIGNER_0008
-    with pytest.raises(psycopg.errors.RaiseException, match="Migration 8 checksum/name drift"):
+    with pytest.raises(psycopg.errors.RaiseException, match="PRE_SPLIT_SIGNER_0008"):
         migrations.apply_migrations(connect)
     assert _rows(connect) == before
     assert not _exists(connect, name, "api_football_quota_counters")
