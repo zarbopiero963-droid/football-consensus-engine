@@ -26,8 +26,9 @@ MAX_LINE = 300
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # IPv6 literals: at least two colons among hex groups (covers ::1, fe80::x, full form).
 _IPV6 = re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])")
-# Any dotted DNS name with 2+ dots (e.g. svc-project.x.aivencloud.com).
-_FQDN = re.compile(r"\b[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+){2,}\b")
+# Any dotted DNS-like name (one or more dots, underscores allowed), except libpq's own
+# "pg_hba.conf" so that message stays readable.
+_FQDN = re.compile(r"(?<![\w.-])(?!pg_hba\.conf\b)[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?(?:\.[A-Za-z0-9_-]+)+")
 _PORT = re.compile(r"\bport\s+\d+\b", re.IGNORECASE)
 
 
@@ -59,13 +60,19 @@ def _secret_values(raw: str) -> list[str]:
                 vals.append(dv)
     vals.append(raw.strip())
     # Longest first so a value containing another is replaced whole.
-    return sorted({v for v in vals if len(v) >= 2}, key=len, reverse=True)
+    return sorted(set(vals), key=len, reverse=True)
 
 
 def sanitize(text: str, raw: str) -> str:
     out = text
     for v in _secret_values(raw):
-        out = out.replace(v, "<redacted>")
+        if len(v) >= 2:
+            # Case-insensitive: urlsplit lowercases the host, libpq echoes it as typed.
+            out = re.sub(re.escape(v), "<redacted>", out, flags=re.IGNORECASE)
+        else:
+            # A 1-character value is redacted only where libpq quotes or delimits it.
+            out = re.sub(r'(["\']|:)' + re.escape(v) + r'(?=["\'\s,)]|$)', r"\1<redacted>", out,
+                         flags=re.IGNORECASE)
     out = _FQDN.sub("<host>", out)
     out = _IPV4.sub("<ip>", out)
     out = _IPV6.sub("<ip6>", out)

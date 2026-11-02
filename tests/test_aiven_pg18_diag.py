@@ -122,3 +122,21 @@ def test_workflow_wires_diagnostics_and_never_prints_raw_psql_stderr():
     assert "EXPECTED_DB: fcb_pg18_test" in wf
     assert "if dbpath != expected:" in wf
     assert "0008|signer_ledger" in wf
+
+
+def test_sanitize_is_case_insensitive_and_covers_single_dot_hosts():
+    raw = "postgres://u:pw@MyHost.com:5/fcb_pg18_test"
+    out = diag.sanitize('connection to server at "MyHost.com" (::1), port 5 failed', raw)
+    assert "myhost" not in out.lower() and "5 failed" not in out
+
+
+def test_sanitize_covers_underscore_hosts_and_short_values():
+    raw = "postgres://a:pw@svc_x.aivencloud.com:5/fcb_pg18_test"
+    out = diag.sanitize('at "SVC_X.aivencloud.com" [::1]:5 user "a" failed', raw)
+    assert "svc_x" not in out.lower() and 'user "a"' not in out and "]:5" not in out
+    assert "failed" in out
+
+
+def test_sanitize_keeps_pg_hba_conf_readable():
+    out = diag.sanitize('FATAL: no pg_hba.conf entry for host "1.2.3.4"', GOOD)
+    assert "pg_hba.conf" in out and "1.2.3.4" not in out
