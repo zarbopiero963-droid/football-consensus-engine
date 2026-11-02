@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from bridge import oauth, oauth_store
-from bridge.browser_use import BrowserUseBridge
+from bridge.browser_use import BrowserUseBridge, browser_tools_enabled
 
 bridge = BrowserUseBridge()
 mcp = MCPServer(
@@ -389,6 +389,9 @@ async def healthz(_request: Request):
             "mcp_tools_total": total,
             "mcp_tools_by_component": by_component,
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
+            # WP-002: the browser kill switch is observable in production (no secret involved).
+            "browser_tools_enabled": browser_tools_enabled(),
+            "cloak_enabled": BrowserUseBridge._cloak_enabled(),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
             "apifootball_enabled": os.environ.get("APIFOOTBALL_ENABLED", "false").strip().lower() in ("true", "1"),

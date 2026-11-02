@@ -17,7 +17,8 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 | # | ID | P | Title | Depends on | Owner gate |
 |---|---|---|---|---|---|
 | 1 | FCB-WP-001 | P0 | Browser SSRF class A: validated redirects, fail-closed, read tools re-validate — **DONE** (#165, `a642f3f`, deployed) | — | merge (Render deploy) |
-| 2 | FCB-WP-002 | P0 | Browser SSRF class B: every request validated (fetch/xhr/script/css/img/ws), no `network_responses` oracle, service workers blocked — **IN REVIEW** (PR for WP-002) | 001 | merge |
+| 2 | FCB-WP-002 | P0 | Browser SSRF class B: every request validated (fetch/xhr/script/css/img/ws), no `network_responses` oracle, service workers blocked — **PARTIAL** (#166, owner decision "OPTION 1": merged as a partial hardening, Browser kept disabled by `BROWSER_TOOLS_ENABLED=false`) | 001 | merge |
+| 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **OPEN** | 002 | merge; re-enabling Browser = owner |
 | 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker | — | live runs |
 | 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision | — | **owner decision on 0008**, merge |
 | 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production` (required reviewer: owner), diagnose then apply | 001, 002 (or stop-gap), 004 | **separate authorization**, Environment/secret by the owner |
@@ -86,7 +87,15 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
   - `test_ssrf_network_responses_no_internal_oracle`;
   - `test_navigation_guard_validates_all_requests`;
   - WebSocket to an internal address.
-- **DONE:** the harness reports NOT_REPRODUCED on 3b, 3c and 3d; review SAFE.
+- **DONE criteria (original):** the harness reports NOT_REPRODUCED on 3b, 3c and 3d; review SAFE.
+- **Status: PARTIAL.** Verified by real Chromium tests (CI job `browser-ssrf-chromium`): the 15 vectors `fetch`, `xhr`, `img`, `script`, `css`, `font`, `subresource_redirect`, `iframe`, `websocket`, `beacon`, `eventsource`, `<link rel=prefetch>`, `worker` script load, `service_worker`, `form_post` to internal hosts refused at the CDP Fetch request stage (browser-level auto-attach, popups included); page-level WebSocket refused via `route_web_socket` (close 1008); no rejected request in `network_responses`; service workers blocked; pre-existing internal pages quarantined; guard missing ⇒ fail closed; credentials/non-http schemes refused; fixed error messages.
+- **Not protected (moved to WP-002b):** WebSocket from inside a worker (the request-stage Fetch domain does not see it and `route_web_socket` only covers page contexts; pausing workers with `waitForDebuggerOnStart` froze them and was rejected — a frozen worker is not a protection), speculation-rules prefetch, WebRTC/WebTransport.
+
+### FCB-WP-002b — Browser SSRF residuals (P0)
+- **Scope:** worker WebSocket (P0), speculation-rules prefetch/prerender (P1), WebRTC ICE/WebTransport (P2), `fec0::/10` and the 10 s verdict cache window (P3).
+- **Must also evaluate:** Browser Use cloud limits (what CDP allows remotely), network/proxy/egress or provider-policy controls, and positive tests proving legitimate public features still work.
+- **Rule:** a capability that cannot be made safe on the cloud provider is documented as a limit and blocked fail-closed (e.g. disabled by launch flag/CDP or the provider refused); a frozen or hung component does not count as a protection.
+- **Until DONE:** `BROWSER_TOOLS_ENABLED=false` in production; re-enabling Browser requires the owner.
 
 ### FCB-WP-003 — API-FOOTBALL live scripts through the coordinator (P0, §2.4)
 - **Evidence:**
