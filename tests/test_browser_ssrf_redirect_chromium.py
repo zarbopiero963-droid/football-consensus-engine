@@ -238,9 +238,11 @@ def test_public_redirect_chains_still_work(servers):
     _run(scenario())
 
 
-@pytest.mark.parametrize("tool", ["html", "dom_text", "screenshot", "elements", "switch_page"])
-def test_read_tools_fail_closed_on_a_page_that_is_not_public(servers, tool):
-    """Defense in depth: even if internal content got loaded by any path, reads refuse it."""
+@pytest.mark.parametrize("tool", ["html", "dom_text", "screenshot", "elements", "list_pages"])
+def test_preexisting_internal_page_is_quarantined_at_guard_arming(servers, tool):
+    """A page that loaded an internal address BEFORE the guard was armed is navigated to
+    about:blank when _install_guards runs, so no read can ever return its content and
+    nothing internal remains in the context."""
     async def scenario():
         async with playwright_api.async_playwright() as p:
             browser = await _launch(p)
@@ -251,17 +253,11 @@ def test_read_tools_fail_closed_on_a_page_that_is_not_public(servers, tool):
                 session.context = await browser.new_context()
                 session.page = await session.context.new_page()
                 await session.page.goto(servers.internal_url())  # loaded BEFORE guards exist
-                await bridge._install_guards(session)
+                await bridge._install_guards(session)  # quarantines the internal page
                 bridge._sessions[session.id] = session
-                with pytest.raises(UnsafeURL) as err:
-                    if tool == "switch_page":
-                        await bridge.switch_page(session.id, 0)
-                    else:
-                        await getattr(bridge, tool)(session.id)
-                assert str(err.value) == CONTENT_BLOCKED
-                listing = await bridge.list_pages(session.id)
-                # the internal page was discarded; nothing internal remains anywhere
-                assert SECRET not in repr(listing)
+                assert all(pg.url == "about:blank" for pg in session.context.pages)
+                result = await getattr(bridge, tool)(session.id)
+                assert SECRET not in repr(result)
                 assert all(SECRET not in body for body in [await pg.content() for pg in session.context.pages])
             finally:
                 await browser.close()

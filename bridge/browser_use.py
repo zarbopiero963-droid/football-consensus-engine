@@ -346,6 +346,35 @@ class BrowserUseBridge:
             session.navigation_guard_installed = True
         await self._arm_redirect_guard(session)
         await self._arm_websocket_guard(session)
+        await self._quarantine_preexisting(session)
+
+    async def _quarantine_preexisting(self, session: Session) -> None:
+        """A document loaded before the guard was armed (e.g. a page that already existed
+        when the bridge connected over CDP, or one that kept running while the connection
+        was down) is not covered by the request guard. Navigate every such page to
+        about:blank so nothing loaded pre-guard stays active or readable; the guard then
+        covers all subsequent requests. Best-effort and bounded; a page that will not
+        settle is closed."""
+        if not session.redirect_guard_active or session.context is None:
+            return
+        for page in list(session.context.pages):
+            url = getattr(page, "url", "") or ""
+            if url.startswith(_LOCAL_FRAME_PREFIXES):
+                continue
+            try:
+                async with asyncio.timeout(6):
+                    await page.goto("about:blank")
+                    await page.wait_for_load_state("load")
+            except Exception:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                if session.page is page:
+                    session.page = None
+        if session.page is None or session.page not in list(session.context.pages):
+            pages = list(session.context.pages)
+            session.page = pages[0] if pages else await session.context.new_page()
 
     async def _arm_redirect_guard(self, session: Session) -> None:
         if session.redirect_guard_active or session.browser is None:
