@@ -20,7 +20,7 @@ from bridge.sxbet.tools import register_sxbet_tools
 KEY = "FAKE_SX_RATE_TEST_KEY_DO_NOT_STORE"
 H = "0x" + "ab" * 32
 ADDR = "0x" + "12" * 20
-MIGRATION = Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0007_sxbet_rate_limits.sql"
+MIGRATION = Path(__file__).resolve().parents[1] / "sql" / "migrations" / "bridge" / "0007_sxbet_rate_limits.sql"
 
 
 class _Registry:

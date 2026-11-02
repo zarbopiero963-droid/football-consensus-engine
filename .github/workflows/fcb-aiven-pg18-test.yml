@@ -249,7 +249,7 @@ jobs:
           expected="$(printf '%s\n' tables=29 functions=4 triggers=9 indexes=54 constraints_information_schema=307 constraints_pg_constraint=61 schema_migrations_rows=7)"
           counts="$(printf '%s\n' "$second" | head -n 7)"
           test "$counts" = "$expected" || { echo "::error::object counts differ from expected"; printf '%s\n' "$counts"; exit 1; }
-          files="$(for f in sql/migrations/000[1-7]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done)"
+          files="$(for f in sql/migrations/bridge/000[1-7]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done)"
           recorded="$(printf '%s\n' "$second" | tail -n +8)"
           test "$recorded" = "$files" || { echo "::error::recorded migration checksums differ from repo files"; exit 1; }
           {
