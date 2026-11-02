@@ -1,5 +1,7 @@
 import asyncio
 import httpx
+
+from tests.apifootball_fake_coordinator import FakeCoordinator
 import pytest
 
 from scripts.api_football_39_route_inventory import ROUTES, CAP, plan, inventory, discover
@@ -39,7 +41,7 @@ def test_empty_is_not_data_available():
         assert request.headers["x-apisports-key"] == ENV["APIFOOTBALL_API_KEY"]
         return httpx.Response(200, json={"errors": {}, "response": [], "results": 0},
                               headers={"x-ratelimit-requests-remaining": "200", "x-ratelimit-remaining": "10"})
-    report = asyncio.run(inventory(ENV, transport=httpx.MockTransport(handler), sleep=no_wait))
+    report = asyncio.run(inventory(ENV, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler), sleep=no_wait))
     assert len(report["records"]) == 39
     assert len(calls) <= 39
     assert len(calls) == report["requests_attempted"]
@@ -52,7 +54,7 @@ def test_429_stops_without_retry():
     def handler(request):
         calls.append(request.url.path)
         return httpx.Response(429, json={"errors": {"x": "NO"}}, headers={})
-    report = asyncio.run(inventory(ENV, transport=httpx.MockTransport(handler), sleep=no_wait))
+    report = asyncio.run(inventory(ENV, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler), sleep=no_wait))
     assert calls == ["/status"]
     assert report["requests_attempted"] == 1
     assert any(r["outcome"] == "BLOCKED_QUOTA_OR_PROVIDER" for r in report["records"])
@@ -63,6 +65,6 @@ def test_known_zero_quota_stops():
         calls.append(request.url.path)
         return httpx.Response(200, json={"errors": {}, "response": {"ok": True}},
                               headers={"x-ratelimit-requests-remaining": "0"})
-    report = asyncio.run(inventory(ENV, transport=httpx.MockTransport(handler), sleep=no_wait))
+    report = asyncio.run(inventory(ENV, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler), sleep=no_wait))
     assert calls == ["/status"]
     assert report["requests_attempted"] == 1

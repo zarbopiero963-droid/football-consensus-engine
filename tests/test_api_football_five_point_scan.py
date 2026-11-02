@@ -1,6 +1,8 @@
 """End-to-end offline acceptance of the owner five-point probe."""
 import asyncio
 import httpx
+
+from tests.apifootball_fake_coordinator import FakeCoordinator
 from scripts.api_football_capability_probe import run
 
 ENV = {
@@ -57,7 +59,7 @@ def test_full_12_page_bookmaker_scan_multiple_samples_and_live_delta():
                               headers={"x-ratelimit-requests-remaining": "7400",
                                        "x-ratelimit-remaining": "100"})
 
-    records = asyncio.run(run(ENV, transport=httpx.MockTransport(reply), sleep=no_sleep))
+    records = asyncio.run(run(ENV, coordinator=FakeCoordinator(), transport=httpx.MockTransport(reply), sleep=no_sleep))
     pages = [r["page"] for r in records if r.get("path") == "/odds/bookmakers"
              and r.get("status") == "OBSERVED"]
     assert pages == list(range(1, 13))
@@ -82,6 +84,6 @@ def test_live_blocked_with_no_observed_fixture():
                                               "paging": {"current": 1, "total": 1}})
         return httpx.Response(200, json={"response": [], "errors": {},
                                           "paging": {"current": 1, "total": 1}})
-    records = asyncio.run(run(ENV, transport=httpx.MockTransport(reply), sleep=no_sleep))
+    records = asyncio.run(run(ENV, coordinator=FakeCoordinator(), transport=httpx.MockTransport(reply), sleep=no_sleep))
     assert any(r.get("status") == "BLOCKED_NO_LIVE_FIXTURE" for r in records)
     assert not any(r.get("status") == "LIVE_DELTA_OBSERVED" for r in records)

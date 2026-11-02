@@ -16,6 +16,12 @@ jobs:
       APIFOOTBALL_ENABLED: 'true'
       APIFOOTBALL_LIVE_AUTHORIZED: 'true'
       APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+      # WP-003: shared PostgreSQL quota coordinator (CLAUDE.md §2.4). Configured by the owner
+      # in the api-football-live environment; without it the job fails closed before any call.
+      # APIFOOTBALL_MAX_* below are checked against the key's SHARED counters (runtime + every
+      # workflow, same UTC day/minute), not against this job alone: a job is refused once the
+      # key's shared day total reaches its APIFOOTBALL_MAX_DAILY_REQUESTS. Raising it = owner.
+      DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
       APIFOOTBALL_MAX_DAILY_REQUESTS: '60'
       APIFOOTBALL_MAX_RPM: '8'
     steps:
@@ -29,6 +35,13 @@ jobs:
         run: python -m pytest -q tests/test_api_football_capability_inventory.py tests/test_api_football_five_point_evidence.py tests/test_api_football_five_point_scan.py tests/test_api_football_team_statistics_shape.py tests/test_api_football_half_contract.py tests/test_api_football_full_contract_audit.py tests/test_api_football_39_route_live_reconciliation.py tests/test_api_football_fixture_statistic_values.py
       - name: Validate configured secret presence without output
         run: test -n "$APIFOOTBALL_API_KEY"
+      - name: Coordinator database preflight (fail closed, no value output)
+        shell: bash
+        run: |
+          if [ -z "${DATABASE_URL// /}" ]; then
+            echo 'COORDINATOR_DATABASE_REQUIRED: no live call without the shared quota coordinator'
+            exit 1
+          fi
       - name: Bounded live catalog inventory
         run: python scripts/api_football_capability_probe.py --out-dir /tmp/apifootball_capability_evidence
       - name: Publish recoverable evidence ZIP in downloadable job logs

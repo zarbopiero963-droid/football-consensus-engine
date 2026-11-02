@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 from bridge.api_football.config import Settings, OFFICIAL_BASE_URL
+from bridge.api_football.live_harness import CoordinatorRefused, coordinated_client
 from bridge.api_football.catalog import ALLOWED_PATHS, FOOTBALL_PATHS, ACCOUNT_PATHS
 
 ROUTES = ACCOUNT_PATHS + FOOTBALL_PATHS
@@ -101,7 +102,7 @@ def quota(headers, key):
     raw = headers.get(key)
     return int(raw) if raw and raw.isdecimal() and len(raw) <= 12 else None
 
-async def inventory(env, *, transport=None, sleep=asyncio.sleep):
+async def inventory(env, *, transport=None, sleep=asyncio.sleep, coordinator=None):
     config = Settings.from_env(env)
     if not config.real_requests_authorized:
         raise ValueError("LIVE_NOT_AUTHORIZED")
@@ -109,8 +110,8 @@ async def inventory(env, *, transport=None, sleep=asyncio.sleep):
         raise ValueError("UNSAFE_OR_INSUFFICIENT_BUDGET")
     ids, rows = {}, []
     stopped = False
-    async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, timeout=config.timeout_seconds,
-                                 follow_redirects=False, trust_env=False, transport=transport) as client:
+    # WP-003: every request holds a shared PostgreSQL coordinator lease (fail closed without it).
+    async with coordinated_client(config, env, transport=transport, quota=coordinator) as client:
         count = 0
         for path in ROUTES:
             if path not in ALLOWED_PATHS:
@@ -161,13 +162,19 @@ async def inventory(env, *, transport=None, sleep=asyncio.sleep):
                                 stopped = True
                     if row["quota_day"] == 0 or row["quota_minute"] == 0:
                         stopped = True
+            except CoordinatorRefused as refused:
+                row["outcome"] = "SENT_ACCOUNTING_FAILED" if refused.sent else "BLOCKED_COORDINATOR"
+                row["coordinator_code"] = refused.code
+                stopped = True
             except httpx.RequestError:
                 row["outcome"] = "NETWORK_ERROR"
                 stopped = True
             rows.append(row)
+        leases = client.attempts
     return {"schema": "api-football-route-evidence/v1",
             "at_utc": datetime.now(timezone.utc).isoformat(),
             "route_count": len(ROUTES), "requests_attempted": count,
+            "coordinator_leases": leases,
             "cap": CAP, "records": rows,
             "note": "One read per route at most; missing data or prerequisite is not certified availability."}
 

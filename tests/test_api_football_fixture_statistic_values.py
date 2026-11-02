@@ -6,6 +6,8 @@ from zero; labels are matched exactly; in-play values are never labelled final.
 import asyncio
 
 import httpx
+
+from tests.apifootball_fake_coordinator import FakeCoordinator
 import pytest
 
 from bridge.api_football.five_point_evidence import (
@@ -125,7 +127,7 @@ def _probe(stats_body):
             data = []
         return httpx.Response(200, json={"response": data, "errors": {}, "paging": {"current": 1, "total": 1}})
 
-    records = asyncio.run(run(ENV, transport=httpx.MockTransport(reply), sleep=_no_sleep))
+    records = asyncio.run(run(ENV, coordinator=FakeCoordinator(), transport=httpx.MockTransport(reply), sleep=_no_sleep))
     return records, calls
 
 
