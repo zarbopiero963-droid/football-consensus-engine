@@ -42,7 +42,7 @@ jobs:
       - name: Regenerate script from repo migrations and verify pinned SHA-256
         run: |
           set -euo pipefail
-          python -m pip install --quiet 'psycopg[binary]'
+          python -m pip install --quiet 'psycopg[binary]==3.3.6'
           generated="$(python scripts/generate_aiven_migrations.py --check)"
           actual="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
           test "$generated" = "$EXPECTED_SCRIPT_SHA256"
@@ -67,18 +67,30 @@ jobs:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
         run: |
           set -euo pipefail
-          python - <<'PY'
+          # -I -S: isolated interpreter, no site-packages (.pth) while the secret is in env.
+          python -I -S - <<'PY'
           import os, sys
           from urllib.parse import urlsplit, parse_qs, unquote
-          u = urlsplit(os.environ['FCB_PG18_TEST_URL'])
-          for v in (u.hostname, u.username, u.password and unquote(u.password), str(u.port or '')):
+          raw = os.environ['FCB_PG18_TEST_URL']
+          try:
+              u = urlsplit(raw)
+              parts = (u.hostname, u.username, u.password, u.password and unquote(u.password), str(u.port or ''))
+              q = parse_qs(u.query, keep_blank_values=True)
+          except Exception:
+              sys.exit('::error::secret is not a parseable PostgreSQL URI')
+          for v in parts:
               if v:
                   print(f'::add-mask::{v}')
           if u.scheme not in ('postgres', 'postgresql'):
               sys.exit('::error::unexpected URL scheme')
+          if ',' in u.netloc or not u.hostname:
+              sys.exit('::error::multi-host or empty host URIs are not allowed')
           if u.path.lstrip('/') != os.environ['EXPECTED_DB']:
               sys.exit('::error::secret does not point to the expected database')
-          mode = parse_qs(u.query).get('sslmode', ['require'])[0]
+          forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
+          if forbidden & {k.lower() for k in q}:
+              sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
+          mode = q.get('sslmode', ['require'])[0]
           if mode not in ('require', 'verify-ca', 'verify-full'):
               sys.exit('::error::sslmode must be require, verify-ca or verify-full')
           PY
@@ -90,7 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
-          q() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1"; }
+          # stderr is discarded: libpq connection errors can print the server IP (not masked).
+          q() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null || { echo "::error::precheck query failed (details suppressed)"; return 1; }; }
           db="$(q 'select current_database()')"
           test "$db" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
           ver="$(q "select current_setting('server_version_num')::int")"
@@ -98,12 +111,12 @@ jobs:
           ssl="$(q 'select ssl from pg_stat_ssl where pid = pg_backend_pid()')"
           test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
           tls="$(q 'select version || $$ $$ || cipher from pg_stat_ssl where pid = pg_backend_pid()')"
-          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast','_avnadmin_monitor','_aiven') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
-          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema','_avnadmin_monitor','_aiven')")"
+          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
+          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema','_avnadmin_monitor')")"
           # Aiven installs its own monitoring schema (_avnadmin_monitor, owned by postgres) in every
           # database; it is excluded by exact name only. Any other non-system schema besides public
           # makes the precheck fail.
-          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor','_aiven') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
+          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
           if [ "$schemas" != "0" ]; then
             echo "::error::unexpected non-system schemas present ($schemas); refusing to run"; exit 1
           fi
@@ -125,7 +138,10 @@ jobs:
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
-          run() { "$PSQL" "$FCB_PG18_TEST_URL" -X -q -v ON_ERROR_STOP=1 -1 -f "$SCRIPT" >/dev/null; }
+          # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
+          # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
+          GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          run() { "$PSQL" "$FCB_PG18_TEST_URL" -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
           verify() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
           run;    first="$(verify)"
           applied1="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
