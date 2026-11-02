@@ -85,8 +85,25 @@ jobs:
               sys.exit('::error::unexpected URL scheme')
           if ',' in u.netloc or not u.hostname:
               sys.exit('::error::multi-host or empty host URIs are not allowed')
-          if u.path.lstrip('/') != os.environ['EXPECTED_DB']:
-              sys.exit('::error::secret does not point to the expected database')
+          expected = os.environ['EXPECTED_DB']
+          dbpath = u.path.lstrip('/')
+          if dbpath != expected:
+              # Non-sensitive classification only: the path value itself is never printed.
+              if not dbpath:
+                  why = 'path_empty'
+              elif dbpath == 'defaultdb':
+                  why = 'path_is_defaultdb'
+              elif dbpath.rstrip('/') == expected:
+                  why = 'trailing_slash'
+              elif dbpath.strip() == expected or any(c.isspace() for c in dbpath):
+                  why = 'whitespace_in_path'
+              elif '%' in dbpath and unquote(dbpath) == expected:
+                  why = 'percent_encoded_name'
+              elif dbpath.lower() == expected:
+                  why = 'case_mismatch'
+              else:
+                  why = f'other_name_len_{len(dbpath)}'
+              sys.exit(f'::error::secret does not point to the expected database ({why})')
           forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
           if forbidden & {k.lower() for k in q}:
               sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
