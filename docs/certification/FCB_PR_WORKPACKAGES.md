@@ -19,7 +19,7 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 | 1 | FCB-WP-001 | P0 | Browser SSRF class A: validated redirects, fail-closed, read tools re-validate — **DONE** (#165, `a642f3f`, deployed) | — | merge (Render deploy) |
 | 2 | FCB-WP-002 | P0 | Browser SSRF class B: every request validated (fetch/xhr/script/css/img/ws), no `network_responses` oracle, service workers blocked — **PARTIAL** (#166, owner decision "OPTION 1": merged as a partial hardening, Browser kept disabled by `BROWSER_TOOLS_ENABLED=false`) | 001 | merge |
 | 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **OPEN** | 002 | merge; re-enabling Browser = owner |
-| 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker | — | live runs |
+| 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **IN REVIEW** (PR for WP-003); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
 | 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision | — | **owner decision on 0008**, merge |
 | 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production` (required reviewer: owner), diagnose then apply | 001, 002 (or stop-gap), 004 | **separate authorization**, Environment/secret by the owner |
 | 6 | FCB-WP-006 | P1 | `/healthz` and startup report schema readiness (`schema_migrations`, required tables) | 004 | merge |
@@ -107,6 +107,8 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
   - the workflows pass a coordinator database.
 - **RED:** a test that fails if a live script opens an `httpx` client toward the provider outside the client/coordinator.
 - **Until merged:** no live API-FOOTBALL run.
+- **Implementation:** `bridge/api_football/live_harness.py` (`coordinated_client`) is the only provider door for the scripts: one `PostgresQuota` lease per attempt (counted even on failure), circuit breaker (5xx/429/transport), provider zero written back with `mark_exhausted`, fixed refusal codes, `ValueError(COORDINATOR_DATABASE_REQUIRED)` without `DATABASE_URL`. The 3 workflows pass `DATABASE_URL` from `secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL` and fail closed before any live step when it is empty.
+- **Owner gate:** which database backs the coordinator (it must be the one Render uses, so that CI and runtime share the same budget) and the creation of that GitHub Environment secret (§2.2: a GitHub secret does not reach Render, and vice versa).
 
 ### FCB-WP-004 — Versioned migration for runtime tables (P1, blocks 005)
 - **Evidence:**

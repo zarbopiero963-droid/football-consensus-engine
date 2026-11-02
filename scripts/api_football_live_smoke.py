@@ -13,6 +13,7 @@ import httpx
 
 from bridge.api_football.config import OFFICIAL_BASE_URL, Settings
 from bridge.api_football.catalog import ALLOWED_PATHS
+from bridge.api_football.live_harness import CoordinatorRefused, coordinated_client
 
 SAMPLE = ("/status", "/countries", "/leagues/seasons", "/odds/bookmakers")
 MAX_CALLS = 4
@@ -36,16 +37,12 @@ def quota(headers, name):
     return int(value) if isinstance(value, str) and value.isdecimal() and len(value) <= 12 else None
 
 
-async def run_live(env, *, transport=None):
+async def run_live(env, *, transport=None, coordinator=None):
     settings = preflight(env)
     results = []
-    async with httpx.AsyncClient(
-        base_url=OFFICIAL_BASE_URL,
-        timeout=settings.timeout_seconds,
-        follow_redirects=False,
-        transport=transport,
-        trust_env=False,
-    ) as client:
+    # WP-003: every request holds a shared PostgreSQL coordinator lease (fail closed without it).
+    sent = 0
+    async with coordinated_client(settings, env, transport=transport, quota=coordinator) as client:
         for path in SAMPLE:
             # No retries: strict request cap and no uncontrolled fanout.
             try:
@@ -77,13 +74,19 @@ async def run_live(env, *, transport=None):
                 # Unknown quota is not assumed exhausted; known zero is a hard stop.
                 if entry["outcome"] != "PASS" or day == 0 or minute == 0:
                     break
+            except CoordinatorRefused as refused:
+                # Not sent: quota, concurrency, breaker or coordinator refused it.
+                results.append({"path": path, "outcome": "BLOCKED_COORDINATOR", "code": refused.code})
+                break
             except (httpx.RequestError, httpx.TimeoutException):
                 results.append({"path": path, "outcome": "TRANSPORT_ERROR"})
                 break
+        sent = client.attempts
     return {"schema": "api-football-live-smoke/v1",
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "origin": OFFICIAL_BASE_URL,
-            "requests_attempted": len(results),
+            # Requests that held a coordinator lease; a refused request was never sent.
+            "requests_attempted": sent,
             "request_cap": MAX_CALLS,
             "complete": len(results) == len(SAMPLE) and all(x["outcome"] == "PASS" for x in results),
             "results": results}

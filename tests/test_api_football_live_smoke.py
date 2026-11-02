@@ -1,5 +1,7 @@
 import asyncio
 import httpx
+
+from tests.apifootball_fake_coordinator import FakeCoordinator
 import pytest
 
 from scripts.api_football_live_smoke import MAX_CALLS, SAMPLE, preflight, run_live
@@ -31,7 +33,7 @@ def test_live_success_is_bounded_and_redacted():
                                            "parameters": []},
                               headers={"x-ratelimit-requests-remaining": "70",
                                        "x-ratelimit-remaining": "5"})
-    result = asyncio.run(run_live(BASE, transport=httpx.MockTransport(handler)))
+    result = asyncio.run(run_live(BASE, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler)))
     assert len(calls) == len(SAMPLE) == MAX_CALLS
     assert result["complete"]
     assert [c.url.path for c in calls] == list(SAMPLE)
@@ -46,7 +48,7 @@ def test_stops_on_error_or_zero_quota(code, headers):
     def handler(request):
         calls.append(request)
         return httpx.Response(code, json={"response": [], "errors": {}}, headers=headers)
-    result = asyncio.run(run_live(BASE, transport=httpx.MockTransport(handler)))
+    result = asyncio.run(run_live(BASE, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler)))
     assert not result["complete"]
     assert len(calls) == 1
     assert result["requests_attempted"] == 1
@@ -54,7 +56,7 @@ def test_stops_on_error_or_zero_quota(code, headers):
 def test_provider_errors_stop_without_body_leak():
     def handler(request):
         return httpx.Response(200, json={"errors": {"token": "SENSITIVE"}, "response": []})
-    result = asyncio.run(run_live(BASE, transport=httpx.MockTransport(handler)))
+    result = asyncio.run(run_live(BASE, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler)))
     assert not result["complete"]
     assert result["results"][0]["outcome"] == "PROVIDER_ERROR_OR_INVALID_CONTRACT"
     assert "SENSITIVE" not in str(result)
@@ -62,6 +64,6 @@ def test_provider_errors_stop_without_body_leak():
 def test_transport_failure_is_sanitized():
     def handler(request):
         raise httpx.ConnectError("SENSITIVE", request=request)
-    result = asyncio.run(run_live(BASE, transport=httpx.MockTransport(handler)))
+    result = asyncio.run(run_live(BASE, coordinator=FakeCoordinator(), transport=httpx.MockTransport(handler)))
     assert result["results"][0]["outcome"] == "TRANSPORT_ERROR"
     assert "SENSITIVE" not in str(result)

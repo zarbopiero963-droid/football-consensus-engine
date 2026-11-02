@@ -1,5 +1,7 @@
 import asyncio
 import httpx
+
+from tests.apifootball_fake_coordinator import FakeCoordinator
 import pytest
 from scripts.api_football_capability_probe import run
 
@@ -19,7 +21,7 @@ def test_live_catalog_separated_and_redacted():
         calls.append(request.url.path)
         assert request.url.host == "v3.football.api-sports.io"
         return httpx.Response(200,json={"errors":{},"response":[{"id":4,"name":"Pinnacle"}],"results":1})
-    data=asyncio.run(run(ENV,transport=httpx.MockTransport(fake), sleep=no_wait))
+    data=asyncio.run(run(ENV,coordinator=FakeCoordinator(),transport=httpx.MockTransport(fake), sleep=no_wait))
     assert calls[:3]==["/odds/bookmakers","/odds/bets","/odds/live/bets"]
     assert data[0]["phase"]=="PREMATCH"
     assert data[2]["phase"]=="LIVE"
@@ -31,7 +33,7 @@ def test_failure_stops_before_other_calls():
     def fake(request):
         calls.append(request.url.path)
         return httpx.Response(429,json={"errors":{"rate_limit":"EXCEEDED"}})
-    data=asyncio.run(run(ENV,transport=httpx.MockTransport(fake), sleep=no_wait))
+    data=asyncio.run(run(ENV,coordinator=FakeCoordinator(),transport=httpx.MockTransport(fake), sleep=no_wait))
     assert calls==["/odds/bookmakers"]
     assert data[0]["status"]=="HTTP_ERROR"
     assert "EXCEEDED" not in str(data)

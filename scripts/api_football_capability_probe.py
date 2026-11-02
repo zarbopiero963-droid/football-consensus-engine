@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 from bridge.api_football.config import Settings, OFFICIAL_BASE_URL
+from bridge.api_football.live_harness import CoordinatorRefused, coordinated_client
 from bridge.api_football.capability_inventory import inventory_payload
 from bridge.api_football.coverage_certification import pagination_verdict
 from bridge.api_football.five_point_evidence import extract_odds, extract_fixture_statistics, field_types, live_delta, summarize_fixture_statistics
@@ -25,7 +26,7 @@ CAP = 60
 MAX_FIXTURE_SAMPLES = 3
 MAX_RESPONSE_BYTES = 2_097_152  # bounded payload; oversized responses are explicitly BLOCKED
 
-async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
+async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None, coordinator=None):
     cfg = Settings.from_env(env)
     if not cfg.real_requests_authorized or cfg.base_url != OFFICIAL_BASE_URL or cfg.max_daily_requests < CAP:
         raise ValueError("LIVE_INVENTORY_NOT_AUTHORIZED")
@@ -52,8 +53,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
     statistics_samples = []
     fixture_status = {}
     statistic_values = []
-    async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, trust_env=False,
-                                 follow_redirects=False, timeout=cfg.timeout_seconds, transport=transport) as client:
+    # WP-003: every request holds a shared PostgreSQL coordinator lease (fail closed without it).
+    async with coordinated_client(cfg, env, transport=transport, quota=coordinator) as client:
         for idx, path in enumerate(PATHS):
             params = {}
             if path == "/fixtures":
@@ -187,6 +188,10 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                                 evidence.append({"path": path, "status": "PAGINATION_UNSUPPORTED_OR_NOT_VERIFIED", "page": page + 1})
                                 break
                             page += 1
+                    except CoordinatorRefused as refused:
+                        evidence.append({"path": path, "status": "BLOCKED_COORDINATOR", "code": refused.code, "page": page})
+                        stopped = True
+                        break
                     except (httpx.RequestError, ValueError, UnicodeDecodeError):
                         evidence.append({"path": path, "status": "NETWORK_OR_PAYLOAD_ERROR", "page": page})
                         stopped = True
@@ -202,23 +207,24 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                         await sleep(max(8, 60 / min(cfg.max_rpm, 8)))
                         calls += 1
                         try:
-                            async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, follow_redirects=False,
-                                                         trust_env=False, timeout=cfg.timeout_seconds, transport=transport) as second_client:
-                                response = await second_client.get("/odds/live", params={"fixture": fid},
-                                    headers={"x-apisports-key": cfg.api_key, "Accept": "application/json"})
-                                if response.status_code != 200 or len(response.content) > MAX_RESPONSE_BYTES:
-                                    evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_HTTP_ERROR"})
+                            # Same coordinated client: the second snapshot also holds a lease.
+                            response = await client.get("/odds/live", params={"fixture": fid},
+                                headers={"x-apisports-key": cfg.api_key, "Accept": "application/json"})
+                            if response.status_code != 200 or len(response.content) > MAX_RESPONSE_BYTES:
+                                evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_HTTP_ERROR"})
+                            else:
+                                payload = response.json()
+                                if not isinstance(payload, dict) or payload.get("errors") not in ({}, [], None):
+                                    evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_PROVIDER_ERROR"})
                                 else:
-                                    payload = response.json()
-                                    if not isinstance(payload, dict) or payload.get("errors") not in ({}, [], None):
-                                        evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_PROVIDER_ERROR"})
-                                    else:
-                                        observations = extract_odds(payload, "LIVE")
-                                        evidence.append({"path": "/odds/live", "fixture": fid,
-                                            "status": "LIVE_DELTA_OBSERVED",
-                                            "delta": live_delta(previous["odds_observations"], observations),
-                                            "previous_sha256": previous["response_sha256"],
-                                            "current_sha256": hashlib.sha256(response.content).hexdigest()})
+                                    observations = extract_odds(payload, "LIVE")
+                                    evidence.append({"path": "/odds/live", "fixture": fid,
+                                        "status": "LIVE_DELTA_OBSERVED",
+                                        "delta": live_delta(previous["odds_observations"], observations),
+                                        "previous_sha256": previous["response_sha256"],
+                                        "current_sha256": hashlib.sha256(response.content).hexdigest()})
+                        except CoordinatorRefused as refused:
+                            evidence.append({"path": "/odds/live", "fixture": fid, "status": "BLOCKED_COORDINATOR", "code": refused.code})
                         except (httpx.RequestError, ValueError):
                             evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_ERROR"})
                 elif not live_fixtures:
@@ -231,7 +237,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None):
                      "summary": summarize_fixture_statistics(valid_values)})
     evidence.append({"path": "_statistics_samples", "status": "OBSERVATION_SUMMARY",
                      "samples": statistics_samples, "distinct_fixtures": len(fixtures),
-                     "distinct_teams": len(teams), "requests_attempted": calls})
+                     "distinct_teams": len(teams), "requests_attempted": calls,
+                     "coordinator_leases": client.attempts})
     return evidence
 
 if __name__ == "__main__":
@@ -244,7 +251,10 @@ if __name__ == "__main__":
         previous = json.loads(args.resume_evidence.read_text(encoding="utf-8"))
         if not isinstance(previous, list):
             raise SystemExit("INVALID_CHECKPOINT")
-    output = asyncio.run(run(os.environ, previous=previous))
+    try:
+        output = asyncio.run(run(os.environ, previous=previous))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None  # fixed codes only (e.g. COORDINATOR_DATABASE_REQUIRED)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "capabilities.json").write_text(json.dumps(output, indent=2, ensure_ascii=False) + chr(10), encoding="utf-8")
     # Historical 39-route reachability is accepted only after ZIP SHA-256
