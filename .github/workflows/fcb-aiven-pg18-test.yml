@@ -27,6 +27,14 @@ jobs:
       EXPECTED_SCRIPT_SHA256: b73ed5c206d9a89c150864dba7fa200faef85e1be617e775312148ce83821fde
       SCRIPT: sql/aiven/aiven_migrations_0001_0007.sql
       PGCONNECT_TIMEOUT: '15'
+      # Pinned target, independent of the secret (public values of the Aiven service piero-1,
+      # from the Aiven API). The host is checked by hash only; the port is explicit config,
+      # pinned by its hash and handed to libpq as PGPORT, which libpq uses only when the URI
+      # port is empty or absent. An explicit different URI port is rejected by the target check.
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,14 +134,13 @@ jobs:
           # urlsplit silently drops spaces/newlines/tabs that libpq keeps (e.g. a final newline
           # after "sslmode=require" makes libpq fail before connecting): reject them explicitly.
           python -I -S scripts/aiven_pg18_diag.py check-raw
+          # Fail-closed target policy before any connection: pinned host, exact database,
+          # port from the pinned config (empty/absent URI port) or equal to it (explicit).
+          python -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Network probe (DNS families and TCP reachability; categories only)
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
-          # SHA-256 of the public host and port of the Aiven service piero-1 (from the Aiven API):
-          # the probe reports only whether the secret's host/port match, never the values.
-          EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
-          EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
         run: |
           set -euo pipefail
           python -I -S scripts/aiven_pg18_diag.py probe | tee -a "$GITHUB_STEP_SUMMARY"

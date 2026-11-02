@@ -19,7 +19,7 @@ import os
 import re
 import socket
 import sys
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 ENV = "FCB_PG18_TEST_URL"
 MAX_LINE = 300
@@ -121,9 +121,69 @@ def port_layout(raw: str, public_port: str = PUBLIC_PORT) -> str:
     return f"port_form={form} public_port_in={','.join(where) or 'none'}"
 
 
+# libpq variables that could redirect the connection away from the URI's host/database.
+_REDIRECT_ENV = ("PGHOST", "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE", "PGDATABASE", "PGOPTIONS",
+                 "PGTARGETSESSIONATTRS")
+
+
+def _sha(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def target_check(raw: str, env: dict | None = None) -> tuple[bool, str]:
+    """Fail-closed target policy. Returns (ok, non-sensitive message).
+
+    - host: SHA-256 must equal EXPECTED_HOST_SHA256 (the pinned Aiven service host);
+    - database: path must be exactly EXPECTED_DB;
+    - port: the expected public port comes from EXPECTED_PORT (job config), itself pinned by
+      EXPECTED_PORT_SHA256 and exported to libpq as PGPORT. A URI with an empty ("host:") or
+      absent port uses it; an explicit port must equal it, any other explicit port is rejected
+      (never rewritten).
+    - no libpq environment variable that could redirect the connection may be set.
+    """
+    env = os.environ if env is None else env
+    exp_port = env.get("EXPECTED_PORT", "")
+    if not exp_port or _sha(exp_port) != env.get("EXPECTED_PORT_SHA256", "").strip().lower():
+        return False, "config_error: EXPECTED_PORT missing or not matching EXPECTED_PORT_SHA256"
+    if env.get("PGPORT") != exp_port:
+        return False, "config_error: PGPORT must equal EXPECTED_PORT"
+    for k in _REDIRECT_ENV:
+        if env.get(k):
+            return False, f"config_error: {k} must not be set"
+    try:
+        u = urlsplit(raw.strip())
+        host = u.hostname or ""
+        port = u.port
+    except ValueError:
+        return False, "port_invalid"
+    if u.scheme not in ("postgres", "postgresql"):
+        return False, "scheme_not_postgres"
+    if "," in u.netloc or u.netloc.count("@") != 1 or not host:
+        return False, "netloc_not_single_user_at_host"
+    if _sha(host) != env.get("EXPECTED_HOST_SHA256", "").strip().lower():
+        return False, "host_not_expected_service"
+    if u.path != "/" + env.get("EXPECTED_DB", "\0"):
+        return False, "database_not_expected"
+    q = parse_qs(u.query, keep_blank_values=True)
+    if {k.lower() for k in q} & {"dbname", "host", "hostaddr", "port", "service", "servicefile",
+                                 "options", "target_session_attrs"}:
+        return False, "query_redirect_parameter"
+    if q.get("sslmode", ["require"])[0] not in ("require", "verify-ca", "verify-full"):
+        return False, "sslmode_too_weak"
+    form = port_layout(raw, exp_port).split()[0].split("=", 1)[1]
+    if form == "explicit":
+        if port is None or str(port) != exp_port:
+            return False, "port_mismatch_explicit (rejected, not rewritten)"
+        source = "uri"
+    else:
+        source = f"config({form})"
+    return True, f"host=expected_service database={env['EXPECTED_DB']} port={exp_port} port_source={source}"
+
+
 def probe(raw: str, timeout: float = 5.0) -> list[str]:
     u = urlsplit(raw.strip())
-    host, port = u.hostname, u.port or 5432
+    # Effective port as libpq resolves it: explicit URI port, else PGPORT, else 5432.
+    host, port = u.hostname, u.port or int(os.environ.get("PGPORT") or 5432)
     lines: list[str] = [
         f"host_matches_service={_match(host or '', 'EXPECTED_HOST_SHA256')} "
         f"port_matches_service={_match(str(port), 'EXPECTED_PORT_SHA256')}",
@@ -171,6 +231,13 @@ def main(argv: list[str]) -> int:
             print(f"::error::secret contains whitespace or control characters ({why}); "
                   "re-save it without spaces or a final newline", file=sys.stderr)
             return 1
+        return 0
+    if cmd == "target":
+        ok, msg = target_check(raw)
+        if not ok:
+            print(f"::error::target check failed: {msg}", file=sys.stderr)
+            return 1
+        print(f"target: {msg}")
         return 0
     if cmd == "probe":
         for line in probe(raw):
