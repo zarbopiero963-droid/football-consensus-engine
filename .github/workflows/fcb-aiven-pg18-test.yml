@@ -122,6 +122,10 @@ jobs:
       - name: Network probe (DNS families and TCP reachability; categories only)
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
+          # SHA-256 of the public host and port of the Aiven service piero-1 (from the Aiven API):
+          # the probe reports only whether the secret's host/port match, never the values.
+          EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+          EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
         run: |
           set -euo pipefail
           python -I -S scripts/aiven_pg18_diag.py probe | tee -a "$GITHUB_STEP_SUMMARY"

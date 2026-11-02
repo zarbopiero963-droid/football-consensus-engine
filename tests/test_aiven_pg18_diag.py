@@ -140,3 +140,24 @@ def test_sanitize_covers_underscore_hosts_and_short_values():
 def test_sanitize_keeps_pg_hba_conf_readable():
     out = diag.sanitize('FATAL: no pg_hba.conf entry for host "1.2.3.4"', GOOD)
     assert "pg_hba.conf" in out and "1.2.3.4" not in out
+
+
+def test_probe_reports_host_port_match_without_values(monkeypatch):
+    import hashlib
+    monkeypatch.setenv("EXPECTED_HOST_SHA256", hashlib.sha256(b"127.0.0.1").hexdigest())
+    monkeypatch.setenv("EXPECTED_PORT_SHA256", hashlib.sha256(b"2").hexdigest())
+    lines = diag.probe("postgres://u:p@127.0.0.1:1/fcb_pg18_test", timeout=1)
+    assert lines[0] == "host_matches_service=yes port_matches_service=no"
+    assert not any("127.0.0.1" in ln for ln in lines)
+
+
+def test_probe_match_unset_without_pins(monkeypatch):
+    monkeypatch.delenv("EXPECTED_HOST_SHA256", raising=False)
+    monkeypatch.delenv("EXPECTED_PORT_SHA256", raising=False)
+    lines = diag.probe("postgres://u:p@127.0.0.1:1/fcb_pg18_test", timeout=1)
+    assert lines[0] == "host_matches_service=unset port_matches_service=unset"
+
+
+def test_workflow_pins_service_host_and_port_hashes():
+    wf = WORKFLOW.read_text()
+    assert "EXPECTED_HOST_SHA256: " in wf and "EXPECTED_PORT_SHA256: " in wf
