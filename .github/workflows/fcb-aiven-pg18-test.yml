@@ -85,6 +85,10 @@ jobs:
               sys.exit('::error::unexpected URL scheme')
           if ',' in u.netloc or not u.hostname:
               sys.exit('::error::multi-host or empty host URIs are not allowed')
+          # libpq splits userinfo at the FIRST '@' (Python at the last): an unencoded '@' in the
+          # password would make libpq connect to a different host string. Require percent-encoding.
+          if u.netloc.count('@') > 1:
+              sys.exit('::error::password contains an unencoded @ (percent-encode it as %40)')
           expected = os.environ['EXPECTED_DB']
           dbpath = u.path.lstrip('/')
           if dbpath != expected:
@@ -120,7 +124,32 @@ jobs:
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
           # stderr is discarded: libpq connection errors can print the server IP (not masked).
-          q() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null || { echo "::error::precheck query failed (details suppressed)"; return 1; }; }
+          # libpq stderr can contain the server host/IP, so it is never printed. On failure only a
+          # fixed category is written to the job log (stderr, so command substitution cannot swallow it).
+          classify() {
+            local f="$1"
+            if grep -qiE 'password authentication failed' "$f"; then echo auth_failed
+            elif grep -qiE 'could not translate host name|Name or service not known|Temporary failure in name resolution|nodename nor servname' "$f"; then echo dns_resolution_failed
+            elif grep -qiE 'invalid URI|invalid connection option|invalid percent-encoded|invalid integer value|invalid port number|unexpected .* in URI|missing "=" after' "$f"; then echo libpq_rejected_uri
+            elif grep -qiE 'timeout expired|timed out' "$f"; then echo connect_timeout
+            elif grep -qiE 'Connection refused' "$f"; then echo connection_refused
+            elif grep -qiE 'no pg_hba.conf entry|not permitted to log in' "$f"; then echo access_rule_rejected
+            elif grep -qiE 'database .* does not exist' "$f"; then echo database_missing
+            elif grep -qiE 'too many connections|remaining connection slots' "$f"; then echo too_many_connections
+            elif grep -qiE 'SSL|certificate|TLS' "$f"; then echo tls_error
+            else echo other_error
+            fi
+          }
+          q() {
+            local err out
+            err="$(mktemp)"
+            if out="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>"$err")"; then
+              rm -f "$err"; printf '%s\n' "$out"
+            else
+              echo "::error::precheck query failed ($(classify "$err")); details suppressed" >&2
+              rm -f "$err"; return 1
+            fi
+          }
           db="$(q 'select current_database()')"
           test "$db" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
           ver="$(q "select current_setting('server_version_num')::int")"
