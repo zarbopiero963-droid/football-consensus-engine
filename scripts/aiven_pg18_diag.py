@@ -14,6 +14,7 @@ Subcommands (the URI is always read from $FCB_PG18_TEST_URL, never from argv):
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import socket
@@ -82,10 +83,21 @@ def sanitize(text: str, raw: str) -> str:
     return out[:MAX_LINE]
 
 
+def _match(value: str, env_key: str) -> str:
+    """yes/no/unset: SHA-256 of the value against a pinned hash (the value is never printed)."""
+    want = os.environ.get(env_key, "").strip().lower()
+    if not want:
+        return "unset"
+    return "yes" if hashlib.sha256(value.encode()).hexdigest() == want else "no"
+
+
 def probe(raw: str, timeout: float = 5.0) -> list[str]:
     u = urlsplit(raw.strip())
     host, port = u.hostname, u.port or 5432
-    lines: list[str] = []
+    lines: list[str] = [
+        f"host_matches_service={_match(host or '', 'EXPECTED_HOST_SHA256')} "
+        f"port_matches_service={_match(str(port), 'EXPECTED_PORT_SHA256')}"
+    ]
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
