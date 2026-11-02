@@ -1,0 +1,104 @@
+{
+  "mandate": "FCB-TOTAL-RECONCILIATION-CERTIFICATION-20261102",
+  "baseline_main_sha": "342fed64682d8e775bb097d202953618a2ac2d7b",
+  "generated": "2026-11-02",
+  "real_runs": [
+    {
+      "id": "aiven-pg18-run13",
+      "workflow": "fcb-aiven-pg18-test.yml",
+      "run_id": 41488198035,
+      "sha": "342fed64682d8e775bb097d202953618a2ac2d7b",
+      "mode": "diagnose",
+      "target": "fcb_pg18_test",
+      "outcome": "PASS",
+      "evidence": [
+        "job log: target/probe lines",
+        "Aiven logs 17:08:13-18Z: 7 sessions TLSv1.3 authenticated"
+      ],
+      "scope": "temporary DB only"
+    },
+    {
+      "id": "aiven-pg18-run14",
+      "workflow": "fcb-aiven-pg18-test.yml",
+      "run_id": 41489386186,
+      "sha": "342fed64682d8e775bb097d202953618a2ac2d7b",
+      "mode": "apply",
+      "target": "fcb_pg18_test",
+      "outcome": "PASS",
+      "evidence": [
+        "independent read-only Aiven query: tables 29, functions 4, triggers 9, indexes 54, constraints 61/307, schema_migrations 7, checksums equal to repo, single applied_at",
+        "defaultdb 0 user tables after run"
+      ],
+      "scope": "temporary DB only"
+    },
+    {
+      "id": "sxbet-readonly-audit-run11",
+      "workflow": "SX Bet Full API Read-Only Audit",
+      "run_id": 41320538088,
+      "sha": "d569e6e",
+      "date": "2026-11-01",
+      "runner": "GitHub Actions (not Render)",
+      "outcome": "46 PASS / 13 EMPTY_VALID / 3 NOT_TESTED / 1 PARTIAL / 0 FAIL, 0 writes",
+      "rate_coordinator": "LOCAL_PROCESS",
+      "evidence_in_repo": false,
+      "artifact_expires": "2026-12-01",
+      "note": "bridge/sxbet and signer unchanged d569e6e..342fed6"
+    },
+    {
+      "id": "apifootball-route-inventory",
+      "run_id": 40211464376,
+      "date": "2026-10-25",
+      "outcome": "route-level real calls",
+      "path": "direct httpx script (bypasses coordinator, see F-03)",
+      "evidence_in_repo": true
+    },
+    {
+      "id": "apifootball-capability-runs",
+      "run_ids": "4124xxxx (see areas/apifootball.md)",
+      "date": "2026-10-31",
+      "outcome": "/odds and /odds/live real",
+      "path": "direct httpx script"
+    }
+  ],
+  "offline_reproductions": [
+    {
+      "id": "browser-ssrf-proof",
+      "date": "2026-11-02",
+      "sha": "342fed6",
+      "tool": "local Chromium 153 + real bridge methods",
+      "outcome": "CONFIRMED: redirect->internal readable; fetch/script/css/img/ws to internal; NOT_REPRODUCED: meta-refresh, JS redirect, popup, iframe document, history",
+      "doc": "docs/certification/areas/browser_ssrf_proof.md"
+    }
+  ],
+  "offline_suites_this_pass": {
+    "apifootball": {
+      "passed": 372,
+      "failed": 0,
+      "skipped": 11
+    },
+    "browser": {
+      "passed": 70,
+      "failed": 0,
+      "skipped": 5
+    },
+    "sxbet_main": {
+      "passed": 728,
+      "failed": 0
+    },
+    "oauth_mcp_migrations": {
+      "passed": 220,
+      "failed": 0,
+      "skipped": 1
+    },
+    "full_suite_342fed6_lineage": {
+      "passed": 1369,
+      "skipped": 35
+    }
+  },
+  "not_verified": [
+    "real MCP client on current SHA (0/122)",
+    "production with DB (0/122)",
+    "API-FOOTBALL parameter-level live (0/142)",
+    "Browser real provider (0/34)"
+  ]
+}
