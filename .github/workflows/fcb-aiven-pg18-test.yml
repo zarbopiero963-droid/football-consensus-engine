@@ -115,6 +115,16 @@ jobs:
           if mode not in ('require', 'verify-ca', 'verify-full'):
               sys.exit('::error::sslmode must be require, verify-ca or verify-full')
           PY
+          # urlsplit silently drops spaces/newlines/tabs that libpq keeps (e.g. a final newline
+          # after "sslmode=require" makes libpq fail before connecting): reject them explicitly.
+          python -I -S scripts/aiven_pg18_diag.py check-raw
+
+      - name: Network probe (DNS families and TCP reachability; categories only)
+        env:
+          FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
+        run: |
+          set -euo pipefail
+          python -I -S scripts/aiven_pg18_diag.py probe | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Prechecks (database, PostgreSQL 18, TLS, empty schema)
         env:
@@ -123,16 +133,18 @@ jobs:
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
-          # stderr is discarded: libpq connection errors can print the server IP (not masked).
-          # libpq stderr can contain the server host/IP, so it is never printed. On failure only a
-          # fixed category is written to the job log (stderr, so command substitution cannot swallow it).
+          # libpq stderr can contain the server host/IP, so it is never printed raw. On failure a
+          # fixed category plus the message with host, IP, port, user, password and database name
+          # replaced by placeholders is written to stderr (command substitution cannot swallow it).
           classify() {
             local f="$1"
             if grep -qiE 'password authentication failed' "$f"; then echo auth_failed
             elif grep -qiE 'could not translate host name|Name or service not known|Temporary failure in name resolution|nodename nor servname' "$f"; then echo dns_resolution_failed
-            elif grep -qiE 'invalid URI|invalid connection option|invalid percent-encoded|invalid integer value|invalid port number|unexpected .* in URI|missing "=" after' "$f"; then echo libpq_rejected_uri
+            elif grep -qiE 'invalid URI|invalid connection option|invalid percent-encoded|invalid integer value|invalid port number|unexpected .* in URI|missing "=" after|invalid [a-z_]+ value' "$f"; then echo libpq_rejected_uri
             elif grep -qiE 'timeout expired|timed out' "$f"; then echo connect_timeout
             elif grep -qiE 'Connection refused' "$f"; then echo connection_refused
+            elif grep -qiE 'Network is unreachable|No route to host|Cannot assign requested address' "$f"; then echo network_unreachable
+            elif grep -qiE 'server closed the connection|Connection reset|could not receive data|could not send data' "$f"; then echo connection_closed
             elif grep -qiE 'no pg_hba.conf entry|not permitted to log in' "$f"; then echo access_rule_rejected
             elif grep -qiE 'database .* does not exist' "$f"; then echo database_missing
             elif grep -qiE 'too many connections|remaining connection slots' "$f"; then echo too_many_connections
@@ -146,7 +158,8 @@ jobs:
             if out="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>"$err")"; then
               rm -f "$err"; printf '%s\n' "$out"
             else
-              echo "::error::precheck query failed ($(classify "$err")); details suppressed" >&2
+              echo "::error::precheck query failed ($(classify "$err"))" >&2
+              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
               rm -f "$err"; return 1
             fi
           }
@@ -187,12 +200,23 @@ jobs:
           # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
           # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
           GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
-          run() { "$PSQL" "$FCB_PG18_TEST_URL" -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
-          verify() { "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
+          # psql stderr is captured and printed only in sanitized form (no host/IP/credentials).
+          sp() {
+            local err rc=0
+            err="$(mktemp)"
+            "$PSQL" "$FCB_PG18_TEST_URL" "$@" 2>"$err" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::psql failed (exit $rc)" >&2
+              echo "psql (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+            fi
+            rm -f "$err"; return "$rc"
+          }
+          run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
+          verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
           run;    first="$(verify)"
-          applied1="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
           run;    second="$(verify)"
-          applied2="$("$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          applied2="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
           test "$first" = "$second" || { echo "::error::second run changed the schema evidence"; exit 1; }
           test "$applied1" = "$applied2" || { echo "::error::second run re-applied migrations"; exit 1; }
           expected="$(printf '%s\n' tables=29 functions=4 triggers=9 indexes=54 constraints_information_schema=307 constraints_pg_constraint=61 schema_migrations_rows=7)"
