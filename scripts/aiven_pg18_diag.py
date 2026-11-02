@@ -91,17 +91,48 @@ def _match(value: str, env_key: str) -> str:
     return "yes" if hashlib.sha256(value.encode()).hexdigest() == want else "no"
 
 
+PUBLIC_PORT = "14274"  # public port of the Aiven service piero-1 (not a secret)
+
+
+def port_layout(raw: str, public_port: str = PUBLIC_PORT) -> str:
+    """Where the port is in the URI, without printing any value.
+
+    port_form: explicit (digits after host:), empty ("host:"), absent (no ':' after host).
+    public_port_in: which URI parts contain the public port string (netloc_port,
+    userinfo, path, query, fragment) or "none".
+    """
+    u = urlsplit(raw.strip())
+    hostinfo = u.netloc.rpartition("@")[2]
+    userinfo = u.netloc.rpartition("@")[0] if "@" in u.netloc else ""
+    if hostinfo.startswith("["):
+        _, _, after = hostinfo.partition("]")
+    else:
+        _, _, after = hostinfo.partition(":")
+        after = ":" + after if ":" in hostinfo else ""
+    if not after:
+        form = "absent"
+    elif after == ":":
+        form = "empty"
+    else:
+        form = "explicit"
+    where = [name for name, part in (("netloc_port", after), ("userinfo", userinfo),
+                                     ("path", u.path), ("query", u.query),
+                                     ("fragment", u.fragment)) if public_port in part]
+    return f"port_form={form} public_port_in={','.join(where) or 'none'}"
+
+
 def probe(raw: str, timeout: float = 5.0) -> list[str]:
     u = urlsplit(raw.strip())
     host, port = u.hostname, u.port or 5432
     lines: list[str] = [
         f"host_matches_service={_match(host or '', 'EXPECTED_HOST_SHA256')} "
-        f"port_matches_service={_match(str(port), 'EXPECTED_PORT_SHA256')}"
+        f"port_matches_service={_match(str(port), 'EXPECTED_PORT_SHA256')}",
+        port_layout(raw),
     ]
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        return [f"dns=failed errno={exc.errno}"]
+        return lines + [f"dns=failed errno={exc.errno}"]
     fams: dict[str, list] = {"ipv4": [], "ipv6": []}
     for fam, _t, _p, _c, addr in infos:
         key = "ipv4" if fam == socket.AF_INET else "ipv6" if fam == socket.AF_INET6 else None

@@ -1,9 +1,15 @@
 name: FCB Aiven PG18 migration test (fcb_pg18_test only)
 
-# Manual only. Applies migrations 0001-0007 to the temporary database fcb_pg18_test.
+# Manual only. Default mode=diagnose runs read-only prechecks; only mode=apply applies 0001-0007 to fcb_pg18_test.
 # Never targets defaultdb, never applies 0008, uses no SX Bet or wallet secrets.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "diagnose = prechecks only, no writes (default); apply = also apply 0001-0007 to fcb_pg18_test"
+        type: choice
+        options: [diagnose, apply]
+        default: diagnose
 
 permissions:
   contents: read
@@ -194,7 +200,15 @@ jobs:
             echo "- pre-existing relations/functions: 0/0"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode != 'apply' }}
+        run: |
+          echo "## Mode: diagnose - prechecks only, the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
+          echo "diagnose mode: apply step skipped, no database writes"
+
       - name: Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify
+        # Writes only with an explicit mode=apply; any other value (including empty) skips it.
+        if: ${{ inputs.mode == 'apply' }}
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
           PGSSLMODE: require
