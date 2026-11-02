@@ -424,3 +424,19 @@ def test_release_failure_does_not_mask_a_cancellation():
             with pytest.raises(asyncio.CancelledError):
                 await task
     asyncio.run(go())
+
+
+@pytest.mark.parametrize("script", ["inventory", "probe", "smoke"])
+def test_release_failure_stops_every_script_before_any_further_call(script):
+    """Owner condition 3: after a lease-release failure no further (unaccounted) call is made."""
+    calls, transport = _counting(body={"response": [{"league": {"id": 39}}], "results": 1, "errors": {}})
+    coord = _ReleaseFails()
+    if script == "inventory":
+        asyncio.run(inventory(ENV | {"APIFOOTBALL_MAX_DAILY_REQUESTS": "39"}, transport=transport,
+                              sleep=_no_wait, coordinator=coord))
+    elif script == "probe":
+        asyncio.run(probe_run(ENV, transport=transport, sleep=_no_wait, coordinator=coord))
+    else:
+        asyncio.run(run_live(ENV, transport=transport, coordinator=coord))
+    assert len(calls) == 1
+    assert coord.used == 1  # the single call that went out held a counted lease
