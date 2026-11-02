@@ -237,3 +237,11 @@ def test_workflow_writes_only_with_explicit_apply_mode():
     # every step before the apply step that uses the secret is read-only (no -f script, no -1)
     for s in steps[: steps.index(writers[0])]:
         assert '-f "$SCRIPT"' not in s.get("run", "")
+
+
+def test_pgdg_install_retries_but_keeps_pinned_fingerprint():
+    wf = WORKFLOW.read_text()
+    assert "--retry 5" in wf and "--retry-all-errors" in wf and "--max-time 60" in wf
+    assert "--insecure" not in wf and " -k " not in wf
+    assert "Acquire::Retries=5" in wf
+    assert 'test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"' in wf
