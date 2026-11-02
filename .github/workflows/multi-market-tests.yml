@@ -62,3 +62,41 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - run: pytest -q tests/integration
+
+  # FCB-WP-004: the whole PostgreSQL suite also on PostgreSQL 18 (the Aiven major version),
+  # with an explicit server-version check so the job cannot silently run on another major.
+  postgres-18:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: decisions_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/decisions_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Require PostgreSQL 18
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+              major = conn.info.server_version // 10000
+          print(f"server_major={major}")
+          assert major == 18, major
+          PY
+      - run: pytest -q tests/integration

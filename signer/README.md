@@ -135,13 +135,13 @@ Opzionale: `OrderLedger.create/open(..., anchor=<AnchorStore>)`. Senza `anchor` 
   - La conferma viene letta solo quando il file è più avanti dell'ancora, e cita la testa ancorata da cui parte: dopo l'avanzamento non descrive più alcuno stato e non può essere riusata.
 - `create` con un'ancora già esistente per lo stesso ledger_id è `LEDGER_ANCHOR_EXISTS` (il file non viene creato): un ledger nuovo non può sostituire una storia ancorata.
 - **Scrittore stantio:** se la sessione del primo scrittore muore e un secondo prende il lease (token + 1), il primo viene respinto al suo prossimo avanzamento (`LEDGER_FENCED`). Può aver scritto localmente al massimo **una** riga non ancorata, che il nuovo scrittore rileva (`LEDGER_HEAD_MISMATCH` su file condiviso, oppure `LEDGER_LOCAL_AHEAD_OF_ANCHOR` al riavvio).
-- **`PostgresAnchorStore(connect)`** (migration `sql/migrations/0008_signer_ledger_anchor.sql`, additiva):
+- **`PostgresAnchorStore(connect)`** (migration `sql/migrations/signer/0001_signer_ledger_anchor.sql`, serie signer separata, tracciata in `signer_schema_migrations`, additiva):
   - lease: una sessione dedicata tiene `pg_try_advisory_lock` sulla chiave del ledger_id e, sotto il lock, incrementa `signer_ledger_writer_leases.fencing_token`; se la sessione muore PostgreSQL rilascia il lock;
   - avanzamento: transazione breve (`statement_timeout` e `lock_timeout` 2,5 s) che blocca la riga del lease `FOR UPDATE`, controlla token e seq attesa e inserisce la nuova testa in `signer_ledger_anchors`;
   - il database stesso rifiuta `UPDATE`, `DELETE`, `TRUNCATE`, una seq non crescente e un token diverso da quello del lease (trigger). Richiede PostgreSQL ≥ 14 (`CREATE OR REPLACE TRIGGER`);
   - anche `signer_ledger_writer_leases` è protetta da trigger (finding E): un `UPDATE` che non aumenta strettamente `fencing_token` (`SIGNER_LEDGER_LEASE_TOKEN_NOT_INCREASING`) o che cambia `ledger_id` (`SIGNER_LEDGER_LEASE_ID_IMMUTABLE`) è rifiutato. Sono rifiutati anche `DELETE` e `TRUNCATE` (`SIGNER_LEDGER_LEASE_NO_DELETE`), perché una riga cancellata e reinserita a token 1 abbasserebbe il token. Uno scrittore stantio non può quindi tornare valido;
   - la factory di connessione è iniettata: `signer/` non importa driver; il processo del signer passa per esempio `psycopg.connect` con il proprio DSN, fuori da Render MCP.
-- La migration 0008 non viene applicata da sola a nessun database (`app.db.migrate()` non è chiamata dal runtime): applicarla al database del signer è un passo esplicito dell'owner.
+- La migration signer non viene applicata da sola a nessun database e il runner bridge non la applica mai (`app.db.migrate()` applica solo la serie bridge e non è chiamata dal runtime): applicarla al database del signer (`apply_migrations(connect, series=SIGNER)`) è un passo esplicito dell'owner.
 
 ## Risk engine (`signer/risk.py`)
 

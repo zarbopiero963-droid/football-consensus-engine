@@ -25,7 +25,7 @@ the database clock is the only clock, and windows are exact sliding windows.
 ``LocalRateLimiter`` keeps the same semantics in-process for tests/local runs
 without ``DATABASE_URL``. Bucket keys carry only a SHA-256 of the API key.
 
-The schema source of truth is ``sql/migrations/0007_sxbet_rate_limits.sql``;
+The schema source of truth is ``sql/migrations/bridge/0007_sxbet_rate_limits.sql``;
 ``_SCHEMA`` repeats it statement by statement (pinned by tests) so a process
 can ensure it idempotently on a database the migration runner has not reached.
 This module has no database or network side effects when imported.
@@ -201,7 +201,7 @@ class LocalRateLimiter:
             self._cooldowns[plan.cooldown_key] = max(until, self._cooldowns.get(plan.cooldown_key, until))
 
 
-# Runtime copy of sql/migrations/0007_sxbet_rate_limits.sql (the source of truth).
+# Runtime copy of sql/migrations/bridge/0007_sxbet_rate_limits.sql (the source of truth).
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sxbet_rate_attempts (
     attempt_id TEXT PRIMARY KEY,

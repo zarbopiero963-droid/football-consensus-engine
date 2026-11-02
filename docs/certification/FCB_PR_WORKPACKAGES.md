@@ -19,8 +19,8 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 | 1 | FCB-WP-001 | P0 | Browser SSRF class A: validated redirects, fail-closed, read tools re-validate — **DONE** (#165, `a642f3f`, deployed) | — | merge (Render deploy) |
 | 2 | FCB-WP-002 | P0 | Browser SSRF class B: every request validated (fetch/xhr/script/css/img/ws), no `network_responses` oracle, service workers blocked — **PARTIAL** (#166, owner decision "OPTION 1": merged as a partial hardening, Browser kept disabled by `BROWSER_TOOLS_ENABLED=false`) | 001 | merge |
 | 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **OPEN** | 002 | merge; re-enabling Browser = owner |
-| 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **IN REVIEW** (PR for WP-003); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
-| 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision | — | **owner decision on 0008**, merge |
+| 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **DONE (code)** (#167, `df76738`, deployed); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
+| 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision — **IN REVIEW** (option A, owner-approved: bridge/signer series split) | — | merge |
 | 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production` (required reviewer: owner), diagnose then apply | 001, 002 (or stop-gap), 004 | **separate authorization**, Environment/secret by the owner |
 | 6 | FCB-WP-006 | P1 | `/healthz` and startup report schema readiness (`schema_migrations`, required tables) | 004 | merge |
 | 7 | FCB-WP-007 | P1 | OAuth: fixed 503 on storage failure for `/oauth/token` and `/oauth/authorize`; store integration tests on PostgreSQL (code, token, refresh, DCR) | 004 | auth change → owner |
@@ -122,6 +122,15 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
   - **(c)** allow known gaps through an explicit allowlist.
 - **Then:** a migration `000N_runtime_tables.sql` with `IF NOT EXISTS`, compatible with databases that already have the tables (Neon/old), and a test on an already-initialized database (§5).
 - **Effect on 005:** the restore must apply this migration too, otherwise the database stays under-versioned.
+- **Implementation (option A):**
+  - **Bridge series:** `sql/migrations/bridge/0001–0007` are byte-identical moves (same names and SHA-256), tracked in `schema_migrations`. The Aiven 0001–0007 script still regenerates to SHA `b73ed5c2…`.
+  - **New `bridge/0008_runtime_tables.sql`:** exactly the runtime DDL, `IF NOT EXISTS`, additive.
+  - **Signer series:** `sql/migrations/signer/0001_signer_ledger_anchor.sql` (bytes of the former 0008), tracked in `signer_schema_migrations` under its own advisory lock. The bridge runner (`app.db.migrate()`) never applies it.
+- **Pre-split database:** a database already carrying `schema_migrations` v8 = `0008_signer_ledger_anchor.sql` is refused with a checksum/name drift error and its history is left untouched. Only test databases are known to be in this state: `defaultdb` is empty, `fcb_pg18_test` has 0001–0007, and Neon was deleted.
+- **Rollback:**
+  - Reverting the PR is code only. The runtime never runs migrations at boot, so a revert touches no database.
+  - After bridge 0008 has been applied, an old checkout's runner would refuse that database (v8 name drift). That is fail-closed, and no data is lost.
+  - Inside a run, the upgrade is a single transaction, so a failure rolls everything back.
 
 ### FCB-WP-005 — Restore `defaultdb` (P0 production)
 - **Procedure:** the one published on #130 (comment 6583571331).

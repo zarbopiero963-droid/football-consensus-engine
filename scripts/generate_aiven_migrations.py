@@ -1,6 +1,6 @@
-"""Generate (or --check) sql/aiven/aiven_migrations_0001_0007.sql from sql/migrations 0001-0007 only.
+"""Generate (or --check) sql/aiven/aiven_migrations_0001_0007.sql from sql/migrations/bridge 0001-0007 only.
 
-The 0008+ migrations are deliberately excluded: the script is built from a temporary
+Bridge 0008+ (and the separate signer series) are deliberately excluded: the script is built from a temporary
 directory that contains only byte-identical copies of 0001-0007.
 """
 import argparse
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app.migrations import migration_statements  # noqa: E402
 
-SOURCE = ROOT / 'sql' / 'migrations'
+SOURCE = ROOT / 'sql' / 'migrations' / 'bridge'
 TARGET = ROOT / 'sql' / 'aiven' / 'aiven_migrations_0001_0007.sql'
 HEADER = '-- FCB migrations 0001-0007 only, regenerated from main\n'
 INCLUDED = [f'{n:04d}' for n in range(1, 8)]

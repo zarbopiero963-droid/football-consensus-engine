@@ -1,4 +1,4 @@
-"""Real PostgreSQL: ledger head anchoring + writer lease with fencing (H1/H2), migration 0008 (governance §2.6, §5).
+"""Real PostgreSQL: ledger head anchoring + writer lease with fencing (H1/H2), signer migration series 0001 (governance §2.6, §5).
 
 Requires a dedicated, throwaway TEST_DATABASE_URL; never production credentials.
 """
@@ -39,7 +39,9 @@ def _dead_connect(**kwargs):
 @pytest.fixture(scope="module", autouse=True)
 def schema():
     migrations.apply_migrations(_connect)
-    migrations.apply_migrations(_connect)  # idempotent on an initialized database
+    # WP-004: the signer schema is its own series (throwaway test database only).
+    migrations.apply_migrations(_connect, series=migrations.SIGNER)
+    migrations.apply_migrations(_connect, series=migrations.SIGNER)  # idempotent
 
 
 @pytest.fixture
@@ -70,12 +72,12 @@ def _rows(ledger_id):
         return cur.fetchall()
 
 
-def test_migration_0008_applied_once_and_tracked():
+def test_signer_migration_applied_once_and_tracked_in_its_own_series():
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT version, name FROM schema_migrations WHERE version=8")
-        assert cur.fetchall() == [(8, "0008_signer_ledger_anchor.sql")]
-        cur.execute("SELECT count(*) FROM schema_migrations")
-        assert cur.fetchone()[0] == len(migrations.load_migrations())
+        cur.execute("SELECT version, name FROM signer_schema_migrations")
+        assert cur.fetchall() == [(1, "0001_signer_ledger_anchor.sql")]
+        cur.execute("SELECT count(*) FROM schema_migrations WHERE name LIKE '%%signer%%'")
+        assert cur.fetchone()[0] == 0
         cur.execute("SELECT to_regclass('signer_ledger_anchors'), to_regclass('signer_ledger_writer_leases')")
         assert all(cur.fetchone())
 
