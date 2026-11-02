@@ -289,3 +289,86 @@ def test_live_workflows_require_the_coordinator_before_any_live_step(name):
                 and "evidence_log_transport" not in s.get("run", ""))
     assert pre < live
     assert "echo \"$DATABASE_URL" not in steps[pre]["run"] and "set -x" not in steps[pre]["run"]
+
+
+# ---------------------------------------------------------------- review findings (PR #167)
+
+class _LateCommitCoordinator(FakeCoordinator):
+    """Like PostgresQuota.acquire in a thread: the lease is committed AFTER the caller gave up."""
+
+    async def acquire(self, secret):
+        await asyncio.sleep(0.2)
+        return await super().acquire(secret)
+
+
+def test_acquire_timeout_releases_the_late_lease(monkeypatch):
+    from bridge.api_football import live_harness
+    monkeypatch.setattr(live_harness, "_LEASE_TIMEOUT_SECONDS", 0.05)
+    coord = _LateCommitCoordinator()
+    settings = Settings.from_env(ENV)
+    calls, transport = _counting()
+
+    async def go():
+        async with coordinated_client(settings, ENV, transport=transport, quota=coord) as c:
+            with pytest.raises(CoordinatorRefused, match="COORDINATOR_UNAVAILABLE") as err:
+                await c.get("/status")
+            assert err.value.sent is False
+            return c
+    client = asyncio.run(go())
+    assert calls == []
+    assert coord.used == 1 and coord.active == set()  # unit consumed (conservative), lease returned
+    assert client.orphaned_units == 1 and client.attempts == 0
+
+
+class _ReleaseFails(FakeCoordinator):
+    async def release(self, lease):
+        raise RuntimeError("postgresql://user:SECRET_PASSWORD@db.internal/x")
+
+
+def test_accounting_failure_after_send_is_reported_as_sent():
+    calls, transport = _counting()
+    result = asyncio.run(run_live(ENV, transport=transport, coordinator=_ReleaseFails()))
+    assert len(calls) == 1
+    assert result["results"] == [{"path": SAMPLE[0], "outcome": "SENT_ACCOUNTING_FAILED",
+                                  "code": "QUOTA_RELEASE_FAILED"}]
+    assert result["requests_attempted"] == 1
+
+
+def test_refusal_carries_no_original_exception():
+    settings = Settings.from_env(ENV)
+
+    async def go():
+        async with coordinated_client(settings, ENV, transport=_counting()[1], quota=_ReleaseFails()) as c:
+            try:
+                await c.get("/status")
+            except CoordinatorRefused as exc:
+                return exc
+    exc = asyncio.run(go())
+    chain, seen = [], exc
+    while seen is not None:
+        chain.append(repr(seen))
+        seen = seen.__cause__ or seen.__context__
+    assert "SECRET_PASSWORD" not in " ".join(chain)
+
+
+def test_body_read_failure_counts_against_the_breaker():
+    settings = Settings.from_env(ENV)
+
+    class _BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise httpx.ReadError("body cut")
+            yield b""  # pragma: no cover
+
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, stream=_BrokenStream()))
+    breaker = CircuitBreaker(threshold=2, cooldown=30)
+
+    async def go():
+        async with coordinated_client(settings, ENV, transport=transport, quota=FakeCoordinator(),
+                                      breaker=breaker) as c:
+            for _ in range(2):
+                with pytest.raises(httpx.ReadError):
+                    async with c.stream("GET", "/status") as response:
+                        await response.aread()
+            with pytest.raises(CoordinatorRefused, match="CIRCUIT_OPEN"):
+                await c.get("/status")
+    asyncio.run(go())

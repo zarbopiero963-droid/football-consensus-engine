@@ -75,8 +75,10 @@ async def run_live(env, *, transport=None, coordinator=None):
                 if entry["outcome"] != "PASS" or day == 0 or minute == 0:
                     break
             except CoordinatorRefused as refused:
-                # Not sent: quota, concurrency, breaker or coordinator refused it.
-                results.append({"path": path, "outcome": "BLOCKED_COORDINATOR", "code": refused.code})
+                # sent=False: refused before sending (quota, concurrency, breaker, coordinator).
+                # sent=True: sent, but the coordinator accounting failed afterwards.
+                results.append({"path": path, "code": refused.code,
+                                "outcome": "SENT_ACCOUNTING_FAILED" if refused.sent else "BLOCKED_COORDINATOR"})
                 break
             except (httpx.RequestError, httpx.TimeoutException):
                 results.append({"path": path, "outcome": "TRANSPORT_ERROR"})

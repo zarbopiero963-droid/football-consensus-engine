@@ -108,6 +108,8 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 - **RED:** a test that fails if a live script opens an `httpx` client toward the provider outside the client/coordinator.
 - **Until merged:** no live API-FOOTBALL run.
 - **Implementation:** `bridge/api_football/live_harness.py` (`coordinated_client`) is the only provider door for the scripts: one `PostgresQuota` lease per attempt (counted even on failure), circuit breaker (5xx/429/transport), provider zero written back with `mark_exhausted`, fixed refusal codes, `ValueError(COORDINATOR_DATABASE_REQUIRED)` without `DATABASE_URL`. The 3 workflows pass `DATABASE_URL` from `secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL` and fail closed before any live step when it is empty.
+- **Shared-budget semantics (declared):** each job checks the key's shared day/minute counters (runtime and every workflow together) against its own `APIFOOTBALL_MAX_*`. The smoke job (4/day) is therefore refused once the key has made 4 calls that UTC day, and the capability probe (60) gets only `60 − used`. This fails closed. Raising the workflow limits is an owner decision (§2.4).
+- **Provider zero:** a provider-reported zero now raises the shared counters to the configuration upper bound, and a rolling marker blocks the next 60 s. Every consumer is blocked, whatever its own limits.
 - **Owner gate:** which database backs the coordinator (it must be the one Render uses, so that CI and runtime share the same budget) and the creation of that GitHub Environment secret (§2.2: a GitHub secret does not reach Render, and vice versa).
 
 ### FCB-WP-004 — Versioned migration for runtime tables (P1, blocks 005)

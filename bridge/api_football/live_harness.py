@@ -31,14 +31,27 @@ from .quota import PostgresQuota, QuotaConcurrencyBusy, QuotaExceeded, QuotaLimi
 
 COORDINATOR_REQUIRED = "COORDINATOR_DATABASE_REQUIRED"
 _LEASE_TIMEOUT_SECONDS = 15.0
+_ORPHAN_WAIT_SECONDS = 30.0
 
 
 class CoordinatorRefused(RuntimeError):
-    """The request was NOT sent. ``code`` is a fixed, public category."""
+    """A fixed, public category. ``sent`` tells whether the provider request went out.
 
-    def __init__(self, code: str):
+    ``sent=False``: refused BEFORE sending (quota, concurrency, breaker, coordinator).
+    ``sent=True``: the request was sent but its accounting failed afterwards (lease release
+    or provider-zero write-back); the evidence must not claim it was never sent.
+    """
+
+    def __init__(self, code: str, *, sent: bool = False):
         super().__init__(code)
         self.code = code
+        self.sent = sent
+
+
+def _refused(code: str, *, sent: bool = False) -> CoordinatorRefused:
+    # Built outside any ``except`` block by the callers, so neither __cause__ nor
+    # __context__ carries the original exception (DSN, SQL, key) along.
+    return CoordinatorRefused(code, sent=sent)
 
 
 def _remaining(headers: Mapping[str, str], name: str) -> int | None:
@@ -55,42 +68,80 @@ class CoordinatedClient:
         self._quota = quota
         self._breaker = breaker
         self.attempts = 0  # leases actually granted (= requests sent or attempted)
+        self.orphaned_units = 0  # units consumed by a reservation we timed out on (never sent)
 
     async def _acquire(self):
         prepare = getattr(self._quota, "prepare", None)
-        try:
-            if prepare is not None:
+        code = None
+        if prepare is not None:
+            try:
                 await asyncio.wait_for(prepare(), timeout=_LEASE_TIMEOUT_SECONDS)
-            return await asyncio.wait_for(self._quota.acquire(self._settings.api_key),
-                                          timeout=_LEASE_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                code = "COORDINATOR_UNAVAILABLE"
+        if code is not None:
+            raise _refused(code)
+        # shield(): the coordinator runs in a worker thread that cannot be cancelled and may
+        # still commit a lease after we stop waiting (same convention as
+        # ResilientFootballClient._lease). That late lease is released below, never leaked.
+        reservation = asyncio.ensure_future(self._quota.acquire(self._settings.api_key))
+        try:
+            return await asyncio.wait_for(asyncio.shield(reservation), timeout=_LEASE_TIMEOUT_SECONDS)
         except QuotaExceeded:
-            raise CoordinatorRefused("QUOTA_EXCEEDED") from None
+            code = "QUOTA_EXCEEDED"
         except QuotaConcurrencyBusy:
-            raise CoordinatorRefused("QUOTA_CONCURRENCY_BUSY") from None
-        except asyncio.CancelledError:
-            raise
+            code = "QUOTA_CONCURRENCY_BUSY"
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            await self._compensate(reservation)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            code = "COORDINATOR_UNAVAILABLE"
         except Exception:
             # DSN, psycopg detail and the API key never leave this module.
-            raise CoordinatorRefused("COORDINATOR_UNAVAILABLE") from None
+            code = "COORDINATOR_UNAVAILABLE"
+        raise _refused(code)
+
+    async def _compensate(self, reservation: asyncio.Future) -> None:
+        """Wait (bounded) for a reservation we gave up on and return its lease.
+
+        The quota unit stays consumed (conservative) and is counted in ``orphaned_units``;
+        only the concurrency lease is returned. If even the bounded wait expires, the lease
+        falls back to the 180 s expiry enforced by PostgreSQL.
+        """
+        try:
+            lease = await asyncio.wait_for(asyncio.shield(reservation), timeout=_ORPHAN_WAIT_SECONDS)
+        except BaseException:
+            return
+        self.orphaned_units += 1
+        try:
+            await asyncio.shield(self._quota.release(lease))
+        except BaseException:
+            pass
 
     async def _release(self, lease) -> None:
+        failed = False
         try:
             await asyncio.shield(self._quota.release(lease))
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The lease expires server-side; the failure stays visible to the caller.
-            raise CoordinatorRefused("QUOTA_RELEASE_FAILED") from None
+            failed = True  # the lease expires server-side; the failure stays visible
+        if failed:
+            raise _refused("QUOTA_RELEASE_FAILED", sent=True)
 
     async def _reconcile(self, response: httpx.Response) -> None:
         for header, kind in (("x-ratelimit-requests-remaining", "day"), ("x-ratelimit-remaining", "minute")):
             if _remaining(response.headers, header) == 0:
+                failed = False
                 try:
                     await self._quota.mark_exhausted(self._settings.api_key, kind)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    raise CoordinatorRefused("QUOTA_RECONCILIATION_FAILED") from None
+                    failed = True
+                if failed:
+                    raise _refused("QUOTA_RECONCILIATION_FAILED", sent=True)
 
     async def _settle(self, status: int | None) -> None:
         if status is None or status == 429 or status >= 500:
@@ -102,8 +153,11 @@ class CoordinatedClient:
     async def _guarded(self) -> AsyncIterator[dict]:
         try:
             await self._breaker.before_request()
+            open_ = False
         except CircuitOpen:
-            raise CoordinatorRefused("CIRCUIT_OPEN") from None
+            open_ = True
+        if open_:
+            raise _refused("CIRCUIT_OPEN")
         outcome: dict = {"status": None, "settled": False}
         try:
             lease = await self._acquire()
@@ -116,6 +170,10 @@ class CoordinatedClient:
         except asyncio.CancelledError:
             await self._breaker.abort()
             outcome["settled"] = True
+            raise
+        except httpx.TransportError:
+            # Headers may have arrived, but reading the body failed: a provider failure.
+            outcome["status"] = None
             raise
         finally:
             try:

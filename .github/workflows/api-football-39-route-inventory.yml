@@ -18,6 +18,9 @@ jobs:
       APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
       # WP-003: shared PostgreSQL quota coordinator (CLAUDE.md §2.4). Configured by the owner
       # in the api-football-live environment; without it the job fails closed before any call.
+      # APIFOOTBALL_MAX_* below are checked against the key's SHARED counters (runtime + every
+      # workflow, same UTC day/minute), not against this job alone: a job is refused once the
+      # key's shared day total reaches its APIFOOTBALL_MAX_DAILY_REQUESTS. Raising it = owner.
       DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
       APIFOOTBALL_MAX_DAILY_REQUESTS: '39'
       APIFOOTBALL_MAX_RPM: '8'

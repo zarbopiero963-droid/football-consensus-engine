@@ -163,7 +163,7 @@ async def inventory(env, *, transport=None, sleep=asyncio.sleep, coordinator=Non
                     if row["quota_day"] == 0 or row["quota_minute"] == 0:
                         stopped = True
             except CoordinatorRefused as refused:
-                row["outcome"] = "BLOCKED_COORDINATOR"
+                row["outcome"] = "SENT_ACCOUNTING_FAILED" if refused.sent else "BLOCKED_COORDINATOR"
                 row["coordinator_code"] = refused.code
                 stopped = True
             except httpx.RequestError:

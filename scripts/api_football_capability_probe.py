@@ -189,7 +189,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None, coordi
                                 break
                             page += 1
                     except CoordinatorRefused as refused:
-                        evidence.append({"path": path, "status": "BLOCKED_COORDINATOR", "code": refused.code, "page": page})
+                        evidence.append({"path": path, "code": refused.code, "page": page,
+                                         "status": "SENT_ACCOUNTING_FAILED" if refused.sent else "BLOCKED_COORDINATOR"})
                         stopped = True
                         break
                     except (httpx.RequestError, ValueError, UnicodeDecodeError):
@@ -224,7 +225,8 @@ async def run(env, *, transport=None, sleep=asyncio.sleep, previous=None, coordi
                                         "previous_sha256": previous["response_sha256"],
                                         "current_sha256": hashlib.sha256(response.content).hexdigest()})
                         except CoordinatorRefused as refused:
-                            evidence.append({"path": "/odds/live", "fixture": fid, "status": "BLOCKED_COORDINATOR", "code": refused.code})
+                            evidence.append({"path": "/odds/live", "fixture": fid, "code": refused.code,
+                                             "status": "SENT_ACCOUNTING_FAILED" if refused.sent else "BLOCKED_COORDINATOR"})
                         except (httpx.RequestError, ValueError):
                             evidence.append({"path": "/odds/live", "fixture": fid, "status": "SECOND_SNAPSHOT_ERROR"})
                 elif not live_fixtures:

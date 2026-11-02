@@ -87,6 +87,19 @@ def _advisory_lock_key(key_hash: str) -> int:
 
 _SCHEMA_INIT_LOCK_ID = 0x4150464F4F544241
 
+# A provider-reported zero must block EVERY consumer of the key, whatever its own
+# configured limits (runtime 80/day, a 4-request smoke workflow, ...). The counters are
+# therefore raised to the largest limit any configuration may hold (config.py bounds),
+# not to the caller's own limit, and a rolling provider-zero marker blocks the next 60 s
+# for every per-minute limit.
+_EXHAUSTED_COUNT = {"minute": 10_000, "day": 1_000_000}
+_PROVIDER_ZERO_PREFIX = "provider-zero-"
+_PROVIDER_ZERO_RECENT = (
+    "SELECT 1 FROM api_football_quota_attempts WHERE api_key_hash=%s "
+    "AND attempt_id LIKE 'provider-zero-%%' "
+    "AND created_at > clock_timestamp()-INTERVAL '60 seconds' LIMIT 1"
+)
+
 
 class PostgresQuota:
     """Multi-process per-key UTC rolling-bucket accounting on an existing DB.
@@ -163,6 +176,9 @@ class PostgresQuota:
                 recent_count = int(rolling["n"] if isinstance(rolling, dict) else rolling[0])
                 if recent_count >= self.limits.per_minute:
                     raise QuotaExceeded("rolling provider request budget exhausted")
+                cur.execute(_PROVIDER_ZERO_RECENT, (key,))
+                if cur.fetchone() is not None:
+                    raise QuotaExceeded("provider reported a zero per-minute budget")
 
                 for kind, bucket, maximum in (
                     ("minute", epoch // 60, self.limits.per_minute),
@@ -251,6 +267,9 @@ class PostgresQuota:
                 )
                 row = cur.fetchone()
                 rolling_count = int(row["n"] if isinstance(row, dict) else row[0])
+                cur.execute(_PROVIDER_ZERO_RECENT, (key,))
+                if cur.fetchone() is not None:
+                    rolling_count = self.limits.per_minute
         return {
             # Report the effective budget, not just the UTC calendar bucket.
             # Otherwise the snapshot can claim capacity while acquire()
@@ -273,7 +292,7 @@ class PostgresQuota:
             raise ValueError("unsupported budget window")
         key = _key_hash(secret)
         self._ensure_schema()
-        max_count = self.limits.per_minute if kind == "minute" else self.limits.per_day
+        max_count = _EXHAUSTED_COUNT[kind]
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_advisory_xact_lock(%s)", (_advisory_lock_key(key),))
@@ -296,7 +315,7 @@ class PostgresQuota:
                         """INSERT INTO api_football_quota_attempts (attempt_id, api_key_hash)
                            SELECT %s || '-' || generate_series(1, %s)::text, %s
                            ON CONFLICT (attempt_id) DO NOTHING""",
-                        ("provider-zero-" + secrets.token_urlsafe(16), self.limits.per_minute, key),
+                        (_PROVIDER_ZERO_PREFIX + secrets.token_urlsafe(16), self.limits.per_minute, key),
                     )
             conn.commit()
 
