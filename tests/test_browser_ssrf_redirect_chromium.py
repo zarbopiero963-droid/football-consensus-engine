@@ -264,6 +264,44 @@ def test_preexisting_internal_page_is_quarantined_at_guard_arming(servers, tool)
     _run(scenario())
 
 
+@pytest.mark.parametrize("tool", ["html", "dom_text", "screenshot", "elements", "switch_page"])
+def test_read_tools_fail_closed_on_internal_page_behind_a_guard_gap(servers, monkeypatch, tool):
+    """Defence in depth: if an unknown vector (e.g. a WP-002b residual) ever lands a page on an
+    internal address despite the request guards, every read tool still re-validates page.url
+    and frame URLs and raises the fixed CONTENT_BLOCKED, returning nothing internal."""
+    real_verdict, real_validate = browser_use.request_verdict, browser_use.validate_public_http_url
+
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, browser = await _bridge_with_chromium(p)
+            try:
+                gap = await session.context.new_page()
+                # Simulated guard gap: both guards allow everything while the page loads.
+                async def allow_all(url):
+                    return True
+                monkeypatch.setattr(browser_use, "request_verdict", allow_all)
+                monkeypatch.setattr(browser_use, "validate_public_http_url", lambda url: url)
+                await gap.goto(servers.internal_url())
+                assert SECRET in await gap.content()  # the gap really loaded internal content
+                monkeypatch.setattr(browser_use, "request_verdict", real_verdict)
+                monkeypatch.setattr(browser_use, "validate_public_http_url", real_validate)
+                browser_use._verdict_cache.clear()
+                if tool == "switch_page":
+                    call = bridge.switch_page(session.id, list(session.context.pages).index(gap))
+                else:
+                    session.page = gap
+                    call = getattr(bridge, tool)(session.id)
+                with pytest.raises(UnsafeURL) as err:
+                    await call
+                assert str(err.value) == CONTENT_BLOCKED
+                assert SECRET not in str(err.value)
+                listed = await bridge.list_pages(session.id)
+                assert SECRET not in repr(listed) and str(servers.internal_port) not in repr(listed)
+            finally:
+                await browser.close()
+    _run(scenario())
+
+
 def test_history_navigation_cannot_reach_internal(servers):
     async def scenario():
         async with playwright_api.async_playwright() as p:
