@@ -220,3 +220,20 @@ def test_port_not_14274_does_not_match_and_layout_says_where(monkeypatch, uri, l
     first = diag.probe(uri, timeout=0.01)[:2]
     assert first == ["host_matches_service=yes port_matches_service=no", layout]
     assert all("Synth3tic" not in ln and _SVC_HOST not in ln for ln in diag.probe(uri, timeout=0.01))
+
+
+def test_workflow_writes_only_with_explicit_apply_mode():
+    import yaml
+    wf = yaml.safe_load(WORKFLOW.read_text())
+    on = wf.get("on", wf.get(True))
+    assert set(on) == {"workflow_dispatch"}  # manual only
+    mode = on["workflow_dispatch"]["inputs"]["mode"]
+    assert mode["default"] == "diagnose" and mode["options"] == ["diagnose", "apply"]
+    steps = wf["jobs"]["pg18-test"]["steps"]
+    writers = [s for s in steps if '-f "$SCRIPT"' in s.get("run", "")]
+    assert writers, "apply step not found"
+    for s in writers:
+        assert s.get("if") == "${{ inputs.mode == 'apply' }}"
+    # every step before the apply step that uses the secret is read-only (no -f script, no -1)
+    for s in steps[: steps.index(writers[0])]:
+        assert '-f "$SCRIPT"' not in s.get("run", "")
