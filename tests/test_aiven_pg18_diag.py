@@ -161,3 +161,62 @@ def test_probe_match_unset_without_pins(monkeypatch):
 def test_workflow_pins_service_host_and_port_hashes():
     wf = WORKFLOW.read_text()
     assert "EXPECTED_HOST_SHA256: " in wf and "EXPECTED_PORT_SHA256: " in wf
+
+
+# --- Explicit port 14274 (public port of the Aiven service; synthetic host/user/password) ---
+import hashlib as _hl  # noqa: E402
+
+_SVC_HOST = "svc-synthetic-0000.e.aivencloud.com"
+_PINS = {
+    "EXPECTED_HOST_SHA256": _hl.sha256(_SVC_HOST.encode()).hexdigest(),
+    "EXPECTED_PORT_SHA256": _hl.sha256(b"14274").hexdigest(),
+}
+
+
+def test_pinned_port_hash_in_workflow_is_sha256_of_14274():
+    wf = WORKFLOW.read_text()
+    assert f"EXPECTED_PORT_SHA256: {_hl.sha256(b'14274').hexdigest()}" in wf
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        f"postgres://avnadmin:Synth3tic@{_SVC_HOST}:14274/fcb_pg18_test?sslmode=require",
+        f"postgresql://avnadmin:Synth3tic@{_SVC_HOST}:14274/fcb_pg18_test",
+        f"postgres://avnadmin:Syn%40th@{_SVC_HOST}:14274/fcb_pg18_test?sslmode=verify-full",
+        f"postgres://avnadmin:Synth3tic@{_SVC_HOST.upper()}:14274/fcb_pg18_test",
+        f"postgres://avnadmin:Synth3tic@{_SVC_HOST}:014274/fcb_pg18_test",
+    ],
+)
+def test_explicit_port_14274_matches(monkeypatch, uri):
+    for k, v in _PINS.items():
+        monkeypatch.setenv(k, v)
+    first = diag.probe(uri, timeout=0.01)[:2]
+    assert first == ["host_matches_service=yes port_matches_service=yes",
+                     "port_form=explicit public_port_in=netloc_port"]
+
+
+@pytest.mark.parametrize(
+    "uri,layout",
+    [
+        (f"postgres://avnadmin:Synth3tic@{_SVC_HOST}/fcb_pg18_test?sslmode=require",
+         "port_form=absent public_port_in=none"),
+        (f"postgres://avnadmin:Synth3tic@{_SVC_HOST}:/fcb_pg18_test",
+         "port_form=empty public_port_in=none"),
+        (f"postgres://avnadmin:Synth3tic@{_SVC_HOST}:5432/fcb_pg18_test",
+         "port_form=explicit public_port_in=none"),
+        (f"postgres://avnadmin:Synth3tic@{_SVC_HOST}:14247/fcb_pg18_test",
+         "port_form=explicit public_port_in=none"),
+        # 14274 present in the string but not in the port position
+        (f"postgres://avnadmin:Synth3tic:14274@{_SVC_HOST}/fcb_pg18_test",
+         "port_form=absent public_port_in=userinfo"),
+        (f"postgres://avnadmin:Synth3tic@{_SVC_HOST}/fcb_pg18_test:14274",
+         "port_form=absent public_port_in=path"),
+    ],
+)
+def test_port_not_14274_does_not_match_and_layout_says_where(monkeypatch, uri, layout):
+    for k, v in _PINS.items():
+        monkeypatch.setenv(k, v)
+    first = diag.probe(uri, timeout=0.01)[:2]
+    assert first == ["host_matches_service=yes port_matches_service=no", layout]
+    assert all("Synth3tic" not in ln and _SVC_HOST not in ln for ln in diag.probe(uri, timeout=0.01))
