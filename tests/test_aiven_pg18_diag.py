@@ -277,7 +277,6 @@ _SPECIAL_PW = [
     (f"{_T_HOST}:14274", "uri"),
     (f"{_T_HOST}:", "config(empty)"),
     (_T_HOST, "config(absent)"),
-    (f"{_T_HOST.upper()}:", "config(empty)"),
 ])
 def test_target_accepts_pinned_host_db_and_port_policy(pw, hostport, source):
     uri = f"postgres://avnadmin:{pw}@{hostport}/fcb_pg18_test?sslmode=require"
@@ -291,7 +290,26 @@ def test_target_accepts_pinned_host_db_and_port_policy(pw, hostport, source):
     (f"postgres://u:p@{_T_HOST}:5432/fcb_pg18_test", "port_mismatch_explicit"),
     (f"postgres://u:p@{_T_HOST}:14275/fcb_pg18_test", "port_mismatch_explicit"),
     (f"postgres://u:p@{_T_HOST}:0/fcb_pg18_test", "port_mismatch_explicit"),
-    (f"postgres://u:p@{_T_HOST}:99999/fcb_pg18_test", "port_invalid"),
+    (f"postgres://u:p@{_T_HOST}:99999/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:014274/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:+14274/fcb_pg18_test", "port_invalid"),
+    # host must be the pinned lowercase ASCII name, byte for byte
+    (f"postgres://u:p@{_T_HOST.upper()}:/fcb_pg18_test", "host_not_expected_service"),
+    (f"postgres://u:p@{_T_HOST}.:/fcb_pg18_test", "host_not_expected_service"),
+    (f"postgres://u:p@[::1]:/fcb_pg18_test", "host_not_expected_service"),
+    # P0 (review of #163): '#' hides query keys from Python's urlsplit but not from libpq
+    (f"postgres://u:s3cr%23et@{_T_HOST}/fcb_pg18_test?application_name=x#&host=127.0.0.9&port=6666&sslmode=disable",
+     "fragment_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require#&hostaddr=203.0.113.7", "fragment_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test#&sslmode=disable", "fragment_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test#&dbname=defaultdb", "fragment_not_allowed"),
+    # P1 (review of #163): libpq keeps the LAST duplicate; parse_qs decodes key escapes
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslmode=disable", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslm%6Fde=disable", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslm%6Fde=require", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?application_name=x", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode", "query_not_allowed"),
     (f"postgres://u:p@{_T_HOST}:14274x/fcb_pg18_test", "port_invalid"),
     ("postgres://u:p@evil.example.com:14274/fcb_pg18_test", "host_not_expected_service"),
     ("postgres://u:p@evil.example.com/fcb_pg18_test", "host_not_expected_service"),
@@ -305,10 +323,10 @@ def test_target_accepts_pinned_host_db_and_port_policy(pw, hostport, source):
     (f"postgres://u:p@{_T_HOST}/FCB_PG18_TEST", "database_not_expected"),
     (f"postgres://u:p@{_T_HOST}", "database_not_expected"),
     (f"mysql://u:p@{_T_HOST}/fcb_pg18_test", "scheme_not_postgres"),
-    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?host=evil.example.com", "query_redirect_parameter"),
-    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?PORT=5432", "query_redirect_parameter"),
-    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?hostaddr=203.0.113.7", "query_redirect_parameter"),
-    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?dbname=defaultdb", "query_redirect_parameter"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?host=evil.example.com", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?PORT=5432", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?hostaddr=203.0.113.7", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?dbname=defaultdb", "query_not_allowed"),
     (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?sslmode=disable", "sslmode_too_weak"),
     (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?sslmode=prefer", "sslmode_too_weak"),
 ])
@@ -388,3 +406,52 @@ def test_workflow_target_policy_wiring():
     for s in job["steps"]:
         if "$PSQL" in s.get("run", ""):
             assert s["env"].get("PGSSLMODE") == "require"
+
+
+_LIBPQ_ACCEPTED = [
+    f"postgres://avnadmin:{pw}@{hp}/fcb_pg18_test{q}"
+    for pw in _SPECIAL_PW
+    for hp in (f"{_T_HOST}:14274", f"{_T_HOST}:", _T_HOST)
+    for q in ("", "?sslmode=require", "?sslmode=verify-full")
+]
+
+_LIBPQ_ATTACKS = [
+    f"postgres://u:s3cr%23et@{_T_HOST}/fcb_pg18_test?application_name=x#&host=127.0.0.9&port=6666&sslmode=disable",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslmode=disable",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslm%6Fde=disable",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require#&dbname=defaultdb",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?host=evil.example.com",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?h%6Fst=evil.example.com",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?hostaddr=203.0.113.7",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?port=5432",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?service=x",
+    f"postgres://u:p@{_T_HOST},evil.example.com/fcb_pg18_test",
+]
+
+
+def _libpq_view(uri):
+    conninfo = pytest.importorskip("psycopg.conninfo")
+    return conninfo.conninfo_to_dict(uri)
+
+
+@pytest.mark.parametrize("uri", _LIBPQ_ACCEPTED)
+def test_differential_every_accepted_uri_means_the_same_to_libpq(uri):
+    """Whatever target_check accepts, libpq's own parser reads as pinned host/db/port/TLS."""
+    assert diag.target_check(uri, _tenv())[0]
+    d = _libpq_view(uri)
+    assert d["host"] == _T_HOST
+    assert d["dbname"] == "fcb_pg18_test"
+    assert d.get("port") in (None, "", "14274")  # '' / None -> libpq uses PGPORT=14274
+    assert d.get("sslmode", "require") in ("require", "verify-ca", "verify-full")
+    assert not {"hostaddr", "service", "options", "target_session_attrs"} & set(d)
+
+
+@pytest.mark.parametrize("uri", _LIBPQ_ATTACKS)
+def test_differential_attacks_libpq_would_follow_are_rejected(uri):
+    d = _libpq_view(uri)
+    redirected = (d.get("host") != _T_HOST or d.get("dbname") != "fcb_pg18_test"
+                  or d.get("port") not in (None, "", "14274")
+                  or d.get("sslmode", "require") not in ("require", "verify-ca", "verify-full")
+                  or bool({"hostaddr", "service"} & set(d)))
+    assert redirected, "attack sample no longer redirects libpq; update the sample"
+    assert diag.target_check(uri, _tenv())[0] is False

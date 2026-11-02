@@ -130,15 +130,23 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+_ALLOWED_SSLMODES = ("require", "verify-ca", "verify-full")
+_HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
+
+
 def target_check(raw: str, env: dict | None = None) -> tuple[bool, str]:
     """Fail-closed target policy. Returns (ok, non-sensitive message).
 
-    - host: SHA-256 must equal EXPECTED_HOST_SHA256 (the pinned Aiven service host);
-    - database: path must be exactly EXPECTED_DB;
-    - port: the expected public port comes from EXPECTED_PORT (job config), itself pinned by
-      EXPECTED_PORT_SHA256 and exported to libpq as PGPORT. A URI with an empty ("host:") or
-      absent port uses it; an explicit port must equal it, any other explicit port is rejected
-      (never rewritten).
+    Python's urlsplit and libpq parse URIs differently (e.g. libpq does not treat '#' as a
+    fragment and keeps the LAST duplicate parameter), so the raw string is held to a strict
+    grammar that both parsers read the same way:
+      postgres[ql]://<user>:<password>@<host>[:[14274]]/fcb_pg18_test[?sslmode=<allowed>]
+    - no '#' anywhere; the query is empty or exactly one 'sslmode' with an allowed value;
+    - host: lowercase ASCII DNS name whose SHA-256 equals EXPECTED_HOST_SHA256 (pinned);
+    - database: path exactly '/' + EXPECTED_DB;
+    - port: EXPECTED_PORT (job config, pinned by EXPECTED_PORT_SHA256, exported as PGPORT) is
+      used by libpq when the URI port is empty or absent; an explicit port must be exactly
+      that string, anything else is rejected (never rewritten);
     - no libpq environment variable that could redirect the connection may be set.
     """
     env = os.environ if env is None else env
@@ -150,33 +158,41 @@ def target_check(raw: str, env: dict | None = None) -> tuple[bool, str]:
     for k in _REDIRECT_ENV:
         if env.get(k):
             return False, f"config_error: {k} must not be set"
-    try:
-        u = urlsplit(raw.strip())
-        host = u.hostname or ""
-        port = u.port
-    except ValueError:
-        return False, "port_invalid"
-    if u.scheme not in ("postgres", "postgresql"):
+    raw = raw.strip()
+    if "#" in raw:
+        return False, "fragment_not_allowed"
+    scheme, sep, rest = raw.partition("://")
+    if not sep or scheme not in ("postgres", "postgresql"):
         return False, "scheme_not_postgres"
-    if "," in u.netloc or u.netloc.count("@") != 1 or not host:
+    authority, slash, tail = rest.partition("/")
+    if not slash:
+        return False, "database_not_expected"
+    if authority.count("@") != 1 or "," in authority:
         return False, "netloc_not_single_user_at_host"
+    userinfo, _, hostport = authority.partition("@")
+    if not userinfo or "?" in userinfo:
+        return False, "netloc_not_single_user_at_host"
+    host, colon, port = hostport.partition(":")
+    if not _HOST_RE.fullmatch(host):
+        return False, "host_not_expected_service"
     if _sha(host) != env.get("EXPECTED_HOST_SHA256", "").strip().lower():
         return False, "host_not_expected_service"
-    if u.path != "/" + env.get("EXPECTED_DB", "\0"):
+    if port and port != exp_port:
+        if not port.isdigit():
+            return False, "port_invalid"
+        return False, "port_mismatch_explicit (rejected, not rewritten)"
+    path, qmark, query = tail.partition("?")
+    if path != env.get("EXPECTED_DB", "\0"):
         return False, "database_not_expected"
-    q = parse_qs(u.query, keep_blank_values=True)
-    if {k.lower() for k in q} & {"dbname", "host", "hostaddr", "port", "service", "servicefile",
-                                 "options", "target_session_attrs"}:
-        return False, "query_redirect_parameter"
-    if q.get("sslmode", ["require"])[0] not in ("require", "verify-ca", "verify-full"):
-        return False, "sslmode_too_weak"
-    form = port_layout(raw, exp_port).split()[0].split("=", 1)[1]
-    if form == "explicit":
-        if port is None or str(port) != exp_port:
-            return False, "port_mismatch_explicit (rejected, not rewritten)"
-        source = "uri"
-    else:
-        source = f"config({form})"
+    if qmark and query:
+        key, eq, val = query.partition("=")
+        if key != "sslmode" or not eq or "&" in val or "=" in val:
+            return False, "query_not_allowed (only a single sslmode parameter)"
+        if val not in _ALLOWED_SSLMODES:
+            return False, "sslmode_too_weak"
+    elif qmark:
+        return False, "query_not_allowed (only a single sslmode parameter)"
+    source = "uri" if port else ("config(empty)" if colon else "config(absent)")
     return True, f"host=expected_service database={env['EXPECTED_DB']} port={exp_port} port_source={source}"
 
 
