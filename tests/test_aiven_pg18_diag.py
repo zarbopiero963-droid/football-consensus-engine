@@ -245,3 +245,216 @@ def test_pgdg_install_retries_but_keeps_pinned_fingerprint():
     assert "--insecure" not in wf and " -k " not in wf
     assert "Acquire::Retries=5" in wf
     assert 'test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"' in wf
+
+
+# --- target_check: pinned host, exact database, port from pinned config (synthetic values) ---
+_T_HOST = "svc-target-0000.e.aivencloud.com"
+
+
+def _tenv(**over):
+    env = {
+        "EXPECTED_DB": "fcb_pg18_test",
+        "EXPECTED_HOST_SHA256": _hl.sha256(_T_HOST.encode()).hexdigest(),
+        "EXPECTED_PORT": "14274",
+        "EXPECTED_PORT_SHA256": _hl.sha256(b"14274").hexdigest(),
+        "PGPORT": "14274",
+    }
+    env.update(over)
+    return {k: v for k, v in env.items() if v is not None}
+
+
+_SPECIAL_PW = [
+    "S3cr3t",
+    "p%40ss%3Aw%2Fo%3Frd%23",        # encoded @ : / ? #
+    "%25%26%2B%3D%24%21%2A%27%28%29",  # encoded % & + = $ ! * ' ( )
+    "a~b_c-d.e",                     # unreserved punctuation
+    "%C3%A8%E2%82%AC",               # UTF-8 (è €)
+]
+
+
+@pytest.mark.parametrize("pw", _SPECIAL_PW)
+@pytest.mark.parametrize("hostport,source", [
+    (f"{_T_HOST}:14274", "uri"),
+    (f"{_T_HOST}:", "config(empty)"),
+    (_T_HOST, "config(absent)"),
+])
+def test_target_accepts_pinned_host_db_and_port_policy(pw, hostport, source):
+    uri = f"postgres://avnadmin:{pw}@{hostport}/fcb_pg18_test?sslmode=require"
+    ok, msg = diag.target_check(uri, _tenv())
+    assert ok, msg
+    assert msg == f"host=expected_service database=fcb_pg18_test port=14274 port_source={source}"
+    assert pw not in msg and _T_HOST not in msg.lower()
+
+
+@pytest.mark.parametrize("uri,reason", [
+    (f"postgres://u:p@{_T_HOST}:5432/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:14275/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:0/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:99999/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:014274/fcb_pg18_test", "port_mismatch_explicit"),
+    (f"postgres://u:p@{_T_HOST}:+14274/fcb_pg18_test", "port_invalid"),
+    # host must be the pinned lowercase ASCII name, byte for byte
+    (f"postgres://u:p@{_T_HOST.upper()}:/fcb_pg18_test", "host_not_expected_service"),
+    (f"postgres://u:p@{_T_HOST}.:/fcb_pg18_test", "host_not_expected_service"),
+    (f"postgres://u:p@[::1]:/fcb_pg18_test", "host_not_expected_service"),
+    # P0 (review of #163): '#' hides query keys from Python's urlsplit but not from libpq
+    (f"postgres://u:s3cr%23et@{_T_HOST}/fcb_pg18_test?application_name=x#&host=127.0.0.9&port=6666&sslmode=disable",
+     "fragment_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require#&hostaddr=203.0.113.7", "fragment_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test#&sslmode=disable", "fragment_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test#&dbname=defaultdb", "fragment_not_allowed"),
+    # P1 (review of #163): libpq keeps the LAST duplicate; parse_qs decodes key escapes
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslmode=disable", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslm%6Fde=disable", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslm%6Fde=require", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?application_name=x", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require\n", "whitespace_or_control_char"),
+    (f" postgres://u:p@{_T_HOST}/fcb_pg18_test", "whitespace_or_control_char"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test\t", "whitespace_or_control_char"),
+    (f"postgres://u:p@{_T_HOST}:14274x/fcb_pg18_test", "port_invalid"),
+    ("postgres://u:p@evil.example.com:14274/fcb_pg18_test", "host_not_expected_service"),
+    ("postgres://u:p@evil.example.com/fcb_pg18_test", "host_not_expected_service"),
+    (f"postgres://u:p@{_T_HOST}.evil.com:/fcb_pg18_test", "host_not_expected_service"),
+    ("postgres://u:p@203.0.113.7:/fcb_pg18_test", "host_not_expected_service"),
+    (f"postgres://u:p@{_T_HOST},evil.example.com/fcb_pg18_test", "netloc_not_single_user_at_host"),
+    (f"postgres://u:p@x@{_T_HOST}/fcb_pg18_test", "netloc_not_single_user_at_host"),
+    (f"postgres://{_T_HOST}/fcb_pg18_test", "netloc_not_single_user_at_host"),
+    (f"postgres://u:p@{_T_HOST}/defaultdb", "database_not_expected"),
+    (f"postgres://u:p@{_T_HOST}/fcb_pg18_test/", "database_not_expected"),
+    (f"postgres://u:p@{_T_HOST}/FCB_PG18_TEST", "database_not_expected"),
+    (f"postgres://u:p@{_T_HOST}", "database_not_expected"),
+    (f"mysql://u:p@{_T_HOST}/fcb_pg18_test", "scheme_not_postgres"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?host=evil.example.com", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?PORT=5432", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?hostaddr=203.0.113.7", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?dbname=defaultdb", "query_not_allowed"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?sslmode=disable", "sslmode_too_weak"),
+    (f"postgres://u:p@{_T_HOST}:/fcb_pg18_test?sslmode=prefer", "sslmode_too_weak"),
+])
+def test_target_rejects(uri, reason):
+    ok, msg = diag.target_check(uri, _tenv())
+    assert not ok and msg.startswith(reason), msg
+    assert "evil" not in msg and _T_HOST not in msg and "203.0.113.7" not in msg
+
+
+@pytest.mark.parametrize("over,reason", [
+    ({"EXPECTED_PORT": "5432"}, "config_error: EXPECTED_PORT"),
+    ({"EXPECTED_PORT": None}, "config_error: EXPECTED_PORT"),
+    ({"PGPORT": "5432"}, "config_error: PGPORT"),
+    ({"PGPORT": None}, "config_error: PGPORT"),
+    ({"PGHOST": "evil.example.com"}, "config_error: PGHOST"),
+    ({"PGHOSTADDR": "203.0.113.7"}, "config_error: PGHOSTADDR"),
+    ({"PGSERVICE": "x"}, "config_error: PGSERVICE"),
+    ({"PGDATABASE": "defaultdb"}, "config_error: PGDATABASE"),
+    ({"EXPECTED_HOST_SHA256": ""}, "host_not_expected_service"),
+])
+def test_target_rejects_bad_config(over, reason):
+    uri = f"postgres://u:p@{_T_HOST}:/fcb_pg18_test"
+    ok, msg = diag.target_check(uri, _tenv(**over))
+    assert not ok and msg.startswith(reason), msg
+
+
+def test_cli_target_fails_closed_and_prints_no_secret():
+    env = dict(_tenv(), PATH="/usr/bin:/bin",
+               FCB_PG18_TEST_URL=f"postgres://avnadmin:Sup3r%40Secret@{_T_HOST}:5432/fcb_pg18_test")
+    r = subprocess.run([sys.executable, "-I", "-S", str(SCRIPT), "target"], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "port_mismatch_explicit" in r.stderr
+    out = r.stdout + r.stderr
+    assert "Sup3r" not in out and _T_HOST not in out and "avnadmin" not in out
+
+
+def test_probe_uses_pgport_when_uri_port_empty(monkeypatch):
+    monkeypatch.setenv("EXPECTED_HOST_SHA256", _hl.sha256(b"127.0.0.1").hexdigest())
+    monkeypatch.setenv("EXPECTED_PORT_SHA256", _hl.sha256(b"14274").hexdigest())
+    monkeypatch.setenv("PGPORT", "14274")
+    lines = diag.probe("postgres://u:p@127.0.0.1:/fcb_pg18_test", timeout=0.5)
+    assert lines[0] == "host_matches_service=yes port_matches_service=yes"
+    assert lines[1] == "port_form=empty public_port_in=none"
+
+
+@pytest.mark.skipif(shutil.which("psql") is None, reason="psql not installed")
+@pytest.mark.parametrize("uri", ["postgres://u:p@127.0.0.1:/x", "postgres://u:p@127.0.0.1/x"])
+def test_real_libpq_uses_pgport_for_empty_or_absent_uri_port(tmp_path, uri):
+    r = subprocess.run(["psql", uri, "-X", "-c", "select 1"], capture_output=True, text=True,
+                       env={"PATH": "/usr/bin:/bin", "PGPORT": "1", "PGCONNECT_TIMEOUT": "2"})
+    assert "port 1 failed" in r.stderr
+
+
+@pytest.mark.skipif(shutil.which("psql") is None, reason="psql not installed")
+def test_real_libpq_explicit_uri_port_overrides_pgport():
+    r = subprocess.run(["psql", "postgres://u:p@127.0.0.1:2/x", "-X", "-c", "select 1"],
+                       capture_output=True, text=True,
+                       env={"PATH": "/usr/bin:/bin", "PGPORT": "1", "PGCONNECT_TIMEOUT": "2"})
+    # explicit port wins in libpq: this is why target_check rejects any explicit non-pinned port
+    assert "port 2 failed" in r.stderr
+
+
+def test_workflow_target_policy_wiring():
+    import yaml
+    wf = yaml.safe_load(WORKFLOW.read_text())
+    job = wf["jobs"]["pg18-test"]
+    env = job["env"]
+    assert env["EXPECTED_PORT"] == "14274" == env["PGPORT"]
+    assert env["EXPECTED_PORT_SHA256"] == _hl.sha256(b"14274").hexdigest()
+    assert env["EXPECTED_DB"] == "fcb_pg18_test"
+    names = [s.get("name", "") for s in job["steps"]]
+    mask = job["steps"][names.index("Mask connection details and enforce TLS")]
+    assert "aiven_pg18_diag.py target" in mask["run"]
+    # the target check runs before any step that connects with the secret
+    first_connect = min(i for i, s in enumerate(job["steps"]) if "$PSQL" in s.get("run", ""))
+    assert names.index("Mask connection details and enforce TLS") < first_connect
+    for s in job["steps"]:
+        if "$PSQL" in s.get("run", ""):
+            assert s["env"].get("PGSSLMODE") == "require"
+
+
+_LIBPQ_ACCEPTED = [
+    f"postgres://avnadmin:{pw}@{hp}/fcb_pg18_test{q}"
+    for pw in _SPECIAL_PW
+    for hp in (f"{_T_HOST}:14274", f"{_T_HOST}:", _T_HOST)
+    for q in ("", "?sslmode=require", "?sslmode=verify-full")
+]
+
+_LIBPQ_ATTACKS = [
+    f"postgres://u:s3cr%23et@{_T_HOST}/fcb_pg18_test?application_name=x#&host=127.0.0.9&port=6666&sslmode=disable",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslmode=disable",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require&sslm%6Fde=disable",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?sslmode=require#&dbname=defaultdb",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?host=evil.example.com",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?h%6Fst=evil.example.com",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?hostaddr=203.0.113.7",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?port=5432",
+    f"postgres://u:p@{_T_HOST}/fcb_pg18_test?service=x",
+    f"postgres://u:p@{_T_HOST},evil.example.com/fcb_pg18_test",
+]
+
+
+def _libpq_view(uri):
+    conninfo = pytest.importorskip("psycopg.conninfo")
+    return conninfo.conninfo_to_dict(uri)
+
+
+@pytest.mark.parametrize("uri", _LIBPQ_ACCEPTED)
+def test_differential_every_accepted_uri_means_the_same_to_libpq(uri):
+    """Whatever target_check accepts, libpq's own parser reads as pinned host/db/port/TLS."""
+    assert diag.target_check(uri, _tenv())[0]
+    d = _libpq_view(uri)
+    assert d["host"] == _T_HOST
+    assert d["dbname"] == "fcb_pg18_test"
+    assert d.get("port") in (None, "", "14274")  # '' / None -> libpq uses PGPORT=14274
+    assert d.get("sslmode", "require") in ("require", "verify-ca", "verify-full")
+    assert not {"hostaddr", "service", "options", "target_session_attrs"} & set(d)
+
+
+@pytest.mark.parametrize("uri", _LIBPQ_ATTACKS)
+def test_differential_attacks_libpq_would_follow_are_rejected(uri):
+    d = _libpq_view(uri)
+    redirected = (d.get("host") != _T_HOST or d.get("dbname") != "fcb_pg18_test"
+                  or d.get("port") not in (None, "", "14274")
+                  or d.get("sslmode", "require") not in ("require", "verify-ca", "verify-full")
+                  or bool({"hostaddr", "service"} & set(d)))
+    assert redirected, "attack sample no longer redirects libpq; update the sample"
+    assert diag.target_check(uri, _tenv())[0] is False
