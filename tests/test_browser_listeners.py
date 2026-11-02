@@ -35,7 +35,7 @@ class Page(EventEmitter):
 def bridge_page(monkeypatch):
     bridge = BrowserUseBridge()
     page = Page()
-    session = Session('test', 'memory-only', None)
+    session = Session('test', 'memory-only', None, redirect_guard_active=True)
     bridge._sessions['test'] = session
     monkeypatch.setattr(session_leases, 'renew', lambda *args: None)
     monkeypatch.setattr(browser_use, 'validate_public_http_url', lambda url: url)
@@ -107,8 +107,10 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
     session = Session('test', 'memory-only', None, playwright=old_playwright,
                       browser=old_browser, page=object(), navigation_guard_installed=True)
     new_page = object()
-    context = SimpleNamespace(pages=[new_page], route=AsyncMock())
-    new_browser = SimpleNamespace(contexts=[context], is_connected=lambda: True)
+    cdp = SimpleNamespace(on=Mock(), send=AsyncMock())
+    context = SimpleNamespace(pages=[new_page], route=AsyncMock(), on=Mock())
+    new_browser = SimpleNamespace(contexts=[context], is_connected=lambda: True,
+                                  new_browser_cdp_session=AsyncMock(return_value=cdp))
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=new_browser)))
     monkeypatch.setattr(browser_use, 'async_playwright', Mock(return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))))
     assert asyncio.run(bridge._page(session)) is new_page
@@ -123,6 +125,11 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
     handler.assert_awaited_once_with(route, session)
     assert asyncio.run(bridge._page(session)) is new_page
     context.route.assert_awaited_once()
+    # WP-001: the redirect guard is armed once at the browser level (Document requests, Fetch domain).
+    new_browser.new_browser_cdp_session.assert_awaited_once_with()
+    cdp.send.assert_any_await("Fetch.enable", {"patterns": [
+        {"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"}]})
+    assert session.redirect_guard_active is True
 
 
 def test_reconnect_cleanup_error_is_visible_and_clears_old_guard(monkeypatch):

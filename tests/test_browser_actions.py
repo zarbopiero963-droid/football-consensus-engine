@@ -35,6 +35,7 @@ def make_bridge(monkeypatch, session_id="cloak-actions"):
         browser=browser,
         context=SimpleNamespace(),
         page=page,
+        redirect_guard_active=True,
     )
     bridge._sessions[session_id] = session
     monkeypatch.setattr(session_leases, "renew", lambda *args: None)
