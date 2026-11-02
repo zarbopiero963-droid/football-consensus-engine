@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from collections import deque
 from functools import wraps
+from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,10 +26,29 @@ from bridge import session_leases
 API_ROOT = "https://api.browser-use.com/api/v4"
 LOG = logging.getLogger(__name__)
 
+# Fixed, non-sensitive messages: never echo the rejected URL or provider errors.
+REDIRECT_BLOCKED = "navigation redirected to a non-public address"
+CONTENT_BLOCKED = "page content is not from a public address"
+TOOLS_DISABLED = "browser tools are disabled on this server"
+
+# Schemes a frame may legitimately carry without a network fetch of its own.
+_LOCAL_FRAME_PREFIXES = ("about:blank", "about:srcdoc", "data:", "blob:", "chrome-error://")
+
+
+def browser_tools_enabled() -> bool:
+    """Server-side kill switch (default on). Off blocks every session create and operation."""
+    return os.environ.get("BROWSER_TOOLS_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _require_enabled() -> None:
+    if not browser_tools_enabled():
+        raise RuntimeError(TOOLS_DISABLED)
+
 
 def session_operation(method):
     @wraps(method)
     async def wrapped(self, session_id, *args, **kwargs):
+        _require_enabled()
         # Operation duration is bounded below the durable lease. A crashed
         # worker can be reclaimed; a healthy in-flight operation stays owned.
         async with asyncio.timeout(180):
@@ -50,6 +70,9 @@ class Session:
     context: BrowserContext | None = None
     page: Page | None = None
     navigation_guard_installed: bool = False
+    guarded_pages: set = field(default_factory=set)
+    cdp_sessions: list = field(default_factory=list)
+    redirect_blocked: bool = False
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
 
@@ -76,6 +99,7 @@ class BrowserUseBridge:
         }
 
     async def create(self, proxy_country_code: str | None = None) -> dict[str, Any]:
+        _require_enabled()
         payload: dict[str, Any] = {}
         if proxy_country_code:
             if len(proxy_country_code) != 2 or not proxy_country_code.isalpha():
@@ -161,6 +185,7 @@ class BrowserUseBridge:
 
     async def create_cloak(self) -> dict[str, Any]:
         """Create one bridge-owned CloakBrowser session. No CDP or secret is returned."""
+        _require_enabled()
         if not self._cloak_enabled():
             raise RuntimeError("CloakBrowser is not enabled")
 
@@ -188,10 +213,7 @@ class BrowserUseBridge:
             async with asyncio.timeout(30):
                 session.context = await browser.new_context()
                 session.page = await session.context.new_page()
-            async def guard(route):
-                await self._navigation_guard(route, session)
-            await session.context.route("**/*", guard)
-            session.navigation_guard_installed = True
+            await self._install_guards(session)
             await asyncio.to_thread(session_leases.register, session.id, self._owner_id)
         except Exception:
             try:
@@ -256,12 +278,131 @@ class BrowserUseBridge:
         pages = session.context.pages
         session.page = pages[0] if pages else await session.context.new_page()
 
+        await self._install_guards(session)
+        return session.page
+
+    async def _install_guards(self, session: Session) -> None:
+        """Request guard on the context + redirect guard on every page (existing and future)."""
         if not session.navigation_guard_installed:
             async def guard(route):
                 await self._navigation_guard(route, session)
             await session.context.route("**/*", guard)
+
+            def on_page(new_page):
+                task = asyncio.ensure_future(self._guard_redirects(session, new_page))
+                task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            session.context.on("page", on_page)
             session.navigation_guard_installed = True
-        return session.page
+        for candidate in list(session.context.pages):
+            await self._guard_redirects(session, candidate)
+
+    async def _guard_redirects(self, session: Session, page: Page) -> None:
+        """Validate every HTTP redirect hop of document loads BEFORE Chromium follows it.
+
+        Playwright's route handler sees only the first request of a redirect chain, so a
+        public URL answering 30x -> internal address would otherwise be fetched and loaded.
+        The CDP Fetch domain pauses each document response; a 30x whose Location is not a
+        public http(s) address is failed with BlockedByClient. Works on local Chromium
+        (Cloak) and on remote CDP (Browser Use). Any handler error fails the hop closed.
+        """
+        key = id(page)
+        if key in session.guarded_pages:
+            return
+        cdp = await session.context.new_cdp_session(page)
+
+        async def on_paused(event: dict[str, Any]) -> None:
+            request_id = event.get("requestId")
+            try:
+                status = event.get("responseStatusCode")
+                location = None
+                for header in event.get("responseHeaders") or []:
+                    if str(header.get("name", "")).lower() == "location":
+                        location = header.get("value")
+                if status is not None and 300 <= int(status) < 400 and location is not None:
+                    target = urljoin(event.get("request", {}).get("url", ""), location)
+                    try:
+                        await asyncio.to_thread(validate_public_http_url, target)
+                    except UnsafeURL:
+                        session.redirect_blocked = True
+                        await cdp.send("Fetch.failRequest", {"requestId": request_id,
+                                                             "errorReason": "BlockedByClient"})
+                        return
+                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+            except Exception as exc:
+                session.redirect_blocked = True
+                LOG.warning("Redirect guard failed closed: session=%s error=%s", session.id, type(exc).__name__)
+                try:
+                    await cdp.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+                except Exception:
+                    pass
+
+        def dispatch(event):
+            task = asyncio.ensure_future(on_paused(event))
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
+        cdp.on("Fetch.requestPaused", dispatch)
+        await cdp.send("Fetch.enable", {"patterns": [
+            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"},
+        ]})
+        session.guarded_pages.add(key)
+        session.cdp_sessions.append(cdp)
+
+    async def _quarantine(self, session: Session, page: Page) -> None:
+        """Discard a page that reached (or tried to reach) a non-public address.
+
+        The page is closed and, if it was current, replaced by a fresh guarded blank page,
+        so nothing of the rejected navigation stays readable and no later read can race
+        Chromium committing its own error page.
+        """
+        replacement = None
+        if session.page is page and session.context is not None:
+            try:
+                replacement = await session.context.new_page()
+                await self._guard_redirects(session, replacement)
+            except Exception as exc:
+                LOG.warning("Quarantine replacement page failed: session=%s error=%s", session.id, type(exc).__name__)
+        try:
+            await page.close()
+        except Exception:
+            pass
+        session.guarded_pages.discard(id(page))
+        if session.page is page:
+            session.page = replacement
+
+    async def _assert_public_page(self, session: Session, page: Page) -> None:
+        """Fail closed before any read: the page and every frame must be public or local-only."""
+        urls = [page.url] + [frame.url for frame in getattr(page, "frames", [])]
+        for value in urls:
+            if not value or value.startswith(_LOCAL_FRAME_PREFIXES):
+                continue
+            try:
+                await asyncio.to_thread(validate_public_http_url, value)
+            except UnsafeURL:
+                await self._quarantine(session, page)
+                raise UnsafeURL(CONTENT_BLOCKED) from None
+
+    async def _after_navigation(self, session: Session, page: Page) -> None:
+        """Post-navigation check shared by every navigating tool; quarantines on failure."""
+        blocked = session.redirect_blocked
+        session.redirect_blocked = False
+        if blocked:
+            await self._quarantine(session, page)
+            raise UnsafeURL(REDIRECT_BLOCKED)
+        await self._assert_public_page(session, page)
+
+    async def _navigate(self, session: Session, page: Page, action):
+        """Run one navigation with the redirect guard armed, then fail closed if needed."""
+        session.redirect_blocked = False
+        try:
+            response = await action()
+        except PlaywrightError:
+            if session.redirect_blocked:
+                session.redirect_blocked = False
+                await self._quarantine(session, page)
+                raise UnsafeURL(REDIRECT_BLOCKED) from None
+            raise
+        await self._after_navigation(session, page)
+        return response
 
     @session_operation
     async def open_url(
@@ -297,9 +438,9 @@ class BrowserUseBridge:
             page.on("response", on_response)
 
         try:
-            response = await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            response = await self._navigate(
+                session, page, lambda: page.goto(url, wait_until=wait_until, timeout=timeout_ms))
             final_url = page.url
-            await asyncio.to_thread(validate_public_http_url, final_url)
             return {
                 "session_id": session_id,
                 "requested_url": url,
@@ -319,6 +460,7 @@ class BrowserUseBridge:
     async def html(self, session_id: str, selector: str | None = None) -> dict[str, Any]:
         session = await self._session(session_id)
         page = await self._page(session)
+        await self._assert_public_page(session, page)
         if selector:
             locator = page.locator(selector).first
             content = await locator.evaluate("(el) => el.outerHTML")
@@ -336,6 +478,7 @@ class BrowserUseBridge:
     async def dom_text(self, session_id: str, selector: str = "body", max_chars: int = 100000) -> dict[str, Any]:
         session = await self._session(session_id)
         page = await self._page(session)
+        await self._assert_public_page(session, page)
         max_chars = max(1000, min(int(max_chars), 500000))
         if session.provider == "cloak":
             # Cloak's Locator.inner_text path can wedge on reactive pages.
@@ -372,6 +515,7 @@ class BrowserUseBridge:
     async def screenshot(self, session_id: str, full_page: bool = True) -> dict[str, Any]:
         session = await self._session(session_id)
         page = await self._page(session)
+        await self._assert_public_page(session, page)
         body = await page.screenshot(full_page=bool(full_page), type="png")
         return {
             "session_id": session_id,
@@ -597,8 +741,8 @@ class BrowserUseBridge:
             raise ValueError("invalid wait_until")
         session = await self._session(session_id)
         page = await self._page(session)
-        response = await page.go_back(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms))
-        await asyncio.to_thread(validate_public_http_url, page.url)
+        response = await self._navigate(
+            session, page, lambda: page.go_back(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms)))
         return {"session_id": session_id, "url": page.url, "title": await page.title(),
                 "http_status": response.status if response else None}
 
@@ -608,8 +752,8 @@ class BrowserUseBridge:
             raise ValueError("invalid wait_until")
         session = await self._session(session_id)
         page = await self._page(session)
-        response = await page.go_forward(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms))
-        await asyncio.to_thread(validate_public_http_url, page.url)
+        response = await self._navigate(
+            session, page, lambda: page.go_forward(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms)))
         return {"session_id": session_id, "url": page.url, "title": await page.title(),
                 "http_status": response.status if response else None}
 
@@ -619,8 +763,8 @@ class BrowserUseBridge:
             raise ValueError("invalid wait_until")
         session = await self._session(session_id)
         page = await self._page(session)
-        response = await page.reload(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms))
-        await asyncio.to_thread(validate_public_http_url, page.url)
+        response = await self._navigate(
+            session, page, lambda: page.reload(wait_until=wait_until, timeout=self._bounded_timeout(timeout_ms)))
         return {"session_id": session_id, "url": page.url, "title": await page.title(),
                 "http_status": response.status if response else None}
 
@@ -630,6 +774,7 @@ class BrowserUseBridge:
             raise ValueError("limit must be 1..200")
         session = await self._session(session_id)
         page = await self._page(session)
+        await self._assert_public_page(session, page)
         locators = page.locator(selector)
         count = await locators.count()
         items = []
@@ -664,6 +809,12 @@ class BrowserUseBridge:
         pages = list(session.context.pages if session.context else [])
         items = []
         for index, candidate in enumerate(pages):
+            try:
+                await self._assert_public_page(session, candidate)
+            except UnsafeURL:
+                items.append({"index": index, "url": "about:blank", "title": "", "blocked": True,
+                              "current": candidate is session.page})
+                continue
             items.append({"index": index, "url": candidate.url, "title": await candidate.title(),
                           "current": candidate is session.page})
         return {"session_id": session_id, "pages": items, "count": len(items)}
@@ -674,12 +825,14 @@ class BrowserUseBridge:
         await self._page(session)
         if session.context is None:
             raise RuntimeError("browser context unavailable")
-        page = await session.context.new_page()
-        session.page = page
         if url:
             await asyncio.to_thread(validate_public_http_url, url)
-            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await asyncio.to_thread(validate_public_http_url, page.url)
+        page = await session.context.new_page()
+        await self._guard_redirects(session, page)
+        session.page = page
+        if url:
+            await self._navigate(session, page,
+                                 lambda: page.goto(url, wait_until="domcontentloaded", timeout=45000))
         return {"session_id": session_id, "url": page.url, "title": await page.title(),
                 "page_index": list(session.context.pages).index(page)}
 
@@ -690,8 +843,8 @@ class BrowserUseBridge:
         pages = list(session.context.pages if session.context else [])
         if type(page_index) is not int or page_index < 0 or page_index >= len(pages):
             raise ValueError("invalid page_index")
+        await self._assert_public_page(session, pages[page_index])
         session.page = pages[page_index]
-        await asyncio.to_thread(validate_public_http_url, session.page.url)
         return {"session_id": session_id, "url": session.page.url, "title": await session.page.title(),
                 "page_index": page_index}
 

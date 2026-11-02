@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -25,7 +25,9 @@ def test_cloak_create_returns_only_opaque_session(monkeypatch):
     monkeypatch.setattr(session_leases, "register", lambda *args: None)
 
     page = SimpleNamespace()
-    context = SimpleNamespace(new_page=AsyncMock(return_value=page), route=AsyncMock())
+    cdp = SimpleNamespace(on=Mock(), send=AsyncMock())
+    context = SimpleNamespace(new_page=AsyncMock(return_value=page), route=AsyncMock(), pages=[page],
+                              on=Mock(), new_cdp_session=AsyncMock(return_value=cdp))
     browser = SimpleNamespace(
         new_context=AsyncMock(return_value=context),
         close=AsyncMock(),
@@ -43,6 +45,7 @@ def test_cloak_create_returns_only_opaque_session(monkeypatch):
     assert session.provider == "cloak"
     assert session.cdp_url == "local-cloak-owned"
     context.route.assert_awaited_once()
+    context.new_cdp_session.assert_awaited_once_with(page)  # WP-001 redirect guard armed
     browser.close.assert_not_awaited()
 
 
