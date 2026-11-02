@@ -21,7 +21,7 @@ jobs:
       - run: pytest -q
 
   browser-ssrf-chromium:
-    # FCB-WP-001: the SSRF regression tests must run against a REAL Chromium; this job
+    # FCB-WP-001/002: the SSRF regression tests must run against a REAL Chromium; this job
     # fails (never skips) if Chromium cannot start. Offline: loopback servers only.
     runs-on: ubuntu-latest
     env:
@@ -34,7 +34,7 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - run: python -m playwright install --with-deps chromium
-      - run: pytest -q tests/test_browser_ssrf_redirect_chromium.py
+      - run: pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py
 
   decision-postgres:
     runs-on: ubuntu-latest

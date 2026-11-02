@@ -1,3 +1,4 @@
+import pytest
 from starlette.testclient import TestClient
 
 from bridge.server import app
@@ -37,3 +38,24 @@ def test_legacy_internal_pinnacle_routes_are_removed(monkeypatch):
     for path in ("/internal/pinnacle/leagues", "/internal/pinnacle/league-batch"):
         response = client.get(path, headers={"Authorization": "Bearer secret-test-token"})
         assert response.status_code == 404
+
+
+@pytest.mark.parametrize("value,expected", [(None, True), ("true", True), ("false", False),
+                                            ("0", False), ("OFF", False), (" no ", False)])
+def test_healthz_reports_browser_kill_switch(monkeypatch, value, expected):
+    """WP-002: BROWSER_TOOLS_ENABLED is verifiable in production via /healthz (default on)."""
+    if value is None:
+        monkeypatch.delenv("BROWSER_TOOLS_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BROWSER_TOOLS_ENABLED", value)
+    data = TestClient(app).get("/healthz").json()
+    assert data["browser_tools_enabled"] is expected
+
+
+@pytest.mark.parametrize("value,expected", [(None, False), ("false", False), ("true", True)])
+def test_healthz_reports_cloak_flag(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("CLOAKBROWSER_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("CLOAKBROWSER_ENABLED", value)
+    assert TestClient(app).get("/healthz").json()["cloak_enabled"] is expected

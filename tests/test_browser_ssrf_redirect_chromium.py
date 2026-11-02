@@ -238,9 +238,11 @@ def test_public_redirect_chains_still_work(servers):
     _run(scenario())
 
 
-@pytest.mark.parametrize("tool", ["html", "dom_text", "screenshot", "elements", "switch_page"])
-def test_read_tools_fail_closed_on_a_page_that_is_not_public(servers, tool):
-    """Defense in depth: even if internal content got loaded by any path, reads refuse it."""
+@pytest.mark.parametrize("tool", ["html", "dom_text", "screenshot", "elements", "list_pages"])
+def test_preexisting_internal_page_is_quarantined_at_guard_arming(servers, tool):
+    """A page that loaded an internal address BEFORE the guard was armed is navigated to
+    about:blank when _install_guards runs, so no read can ever return its content and
+    nothing internal remains in the context."""
     async def scenario():
         async with playwright_api.async_playwright() as p:
             browser = await _launch(p)
@@ -251,18 +253,50 @@ def test_read_tools_fail_closed_on_a_page_that_is_not_public(servers, tool):
                 session.context = await browser.new_context()
                 session.page = await session.context.new_page()
                 await session.page.goto(servers.internal_url())  # loaded BEFORE guards exist
-                await bridge._install_guards(session)
+                await bridge._install_guards(session)  # quarantines the internal page
                 bridge._sessions[session.id] = session
-                with pytest.raises(UnsafeURL) as err:
-                    if tool == "switch_page":
-                        await bridge.switch_page(session.id, 0)
-                    else:
-                        await getattr(bridge, tool)(session.id)
-                assert str(err.value) == CONTENT_BLOCKED
-                listing = await bridge.list_pages(session.id)
-                # the internal page was discarded; nothing internal remains anywhere
-                assert SECRET not in repr(listing)
+                assert all(pg.url == "about:blank" for pg in session.context.pages)
+                result = await getattr(bridge, tool)(session.id)
+                assert SECRET not in repr(result)
                 assert all(SECRET not in body for body in [await pg.content() for pg in session.context.pages])
+            finally:
+                await browser.close()
+    _run(scenario())
+
+
+@pytest.mark.parametrize("tool", ["html", "dom_text", "screenshot", "elements", "switch_page"])
+def test_read_tools_fail_closed_on_internal_page_behind_a_guard_gap(servers, monkeypatch, tool):
+    """Defence in depth: if an unknown vector (e.g. a WP-002b residual) ever lands a page on an
+    internal address despite the request guards, every read tool still re-validates page.url
+    and frame URLs and raises the fixed CONTENT_BLOCKED, returning nothing internal."""
+    real_verdict, real_validate = browser_use.request_verdict, browser_use.validate_public_http_url
+
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, browser = await _bridge_with_chromium(p)
+            try:
+                gap = await session.context.new_page()
+                # Simulated guard gap: both guards allow everything while the page loads.
+                async def allow_all(url):
+                    return True
+                monkeypatch.setattr(browser_use, "request_verdict", allow_all)
+                monkeypatch.setattr(browser_use, "validate_public_http_url", lambda url: url)
+                await gap.goto(servers.internal_url())
+                assert SECRET in await gap.content()  # the gap really loaded internal content
+                monkeypatch.setattr(browser_use, "request_verdict", real_verdict)
+                monkeypatch.setattr(browser_use, "validate_public_http_url", real_validate)
+                browser_use._verdict_cache.clear()
+                if tool == "switch_page":
+                    call = bridge.switch_page(session.id, list(session.context.pages).index(gap))
+                else:
+                    session.page = gap
+                    call = getattr(bridge, tool)(session.id)
+                with pytest.raises(UnsafeURL) as err:
+                    await call
+                assert str(err.value) == CONTENT_BLOCKED
+                assert SECRET not in str(err.value)
+                listed = await bridge.list_pages(session.id)
+                assert SECRET not in repr(listed) and str(servers.internal_port) not in repr(listed)
             finally:
                 await browser.close()
     _run(scenario())

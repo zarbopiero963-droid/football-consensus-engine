@@ -27,7 +27,7 @@ def test_cloak_create_returns_only_opaque_session(monkeypatch):
     page = SimpleNamespace()
     cdp = SimpleNamespace(on=Mock(), send=AsyncMock())
     context = SimpleNamespace(new_page=AsyncMock(return_value=page), route=AsyncMock(), pages=[page],
-                              on=Mock())
+                              on=Mock(), route_web_socket=AsyncMock())
     browser = SimpleNamespace(
         new_context=AsyncMock(return_value=context),
         new_browser_cdp_session=AsyncMock(return_value=cdp),
@@ -48,6 +48,7 @@ def test_cloak_create_returns_only_opaque_session(monkeypatch):
     context.route.assert_awaited_once()
     browser.new_browser_cdp_session.assert_awaited_once_with()  # WP-001 browser-level redirect guard
     assert session.redirect_guard_active is True
+    context.route_web_socket.assert_awaited_once()  # WP-002 WebSocket guard
     browser.close.assert_not_awaited()
 
 

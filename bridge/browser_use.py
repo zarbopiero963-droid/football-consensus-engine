@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from collections import deque
 from functools import wraps
+from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +38,49 @@ _LOCAL_FRAME_PREFIXES = ("about:blank", "about:srcdoc", "data:", "blob:", "chrom
 def browser_tools_enabled() -> bool:
     """Server-side kill switch (default on). Off blocks every session create and operation."""
     return os.environ.get("BROWSER_TOOLS_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+_LOCAL_REQUEST_SCHEMES = ("data:", "blob:", "about:", "chrome-extension:")
+_VERDICT_TTL_SECONDS = 10.0
+_VERDICT_CACHE_MAX = 1024
+_verdict_cache: dict[tuple[str, str, int | None], tuple[bool, float]] = {}
+
+
+async def request_verdict(url: str):
+    """True = public http(s)/ws(s) or local-only scheme; False = refused; str = guard error.
+
+    http(s) and ws(s) destinations are checked with validate_public_http_url (ws/wss are
+    validated as http/https). data:/blob:/about:/chrome-extension: never leave the browser.
+    Every other scheme (file:, ftp:, ...) is refused. Results for a scheme/host/port are
+    cached for a few seconds so a page's sub-resources do not each re-resolve DNS.
+    """
+    try:
+        lowered = url.lower()
+        if lowered.startswith(_LOCAL_REQUEST_SCHEMES):
+            return True
+        parts = urlsplit(url)
+        scheme = {"ws": "http", "wss": "https"}.get(parts.scheme, parts.scheme)
+        if scheme not in ("http", "https") or not parts.hostname:
+            return False
+        if parts.username or parts.password:
+            return False  # credentials in a request URL are always refused
+        key = (scheme, parts.hostname.lower(), parts.port)
+        now = time.monotonic()
+        cached = _verdict_cache.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        probe = urlunsplit((scheme, parts.netloc, parts.path or "/", "", ""))
+        try:
+            await asyncio.to_thread(validate_public_http_url, probe)
+            ok = True
+        except UnsafeURL:
+            ok = False
+        if len(_verdict_cache) >= _VERDICT_CACHE_MAX:
+            _verdict_cache.clear()
+        _verdict_cache[key] = (ok, now + _VERDICT_TTL_SECONDS)
+        return ok
+    except Exception as exc:  # fail closed, never let a guard error allow a request
+        return type(exc).__name__
 
 
 def _require_enabled() -> None:
@@ -72,6 +116,8 @@ class Session:
     redirect_guard: Any = None
     redirect_guard_active: bool = False
     redirect_blocked: bool = False
+    websocket_guard_installed: bool = False
+    blocked_requests: int = 0
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
 
@@ -281,15 +327,17 @@ class BrowserUseBridge:
         return session.page
 
     async def _install_guards(self, session: Session) -> None:
-        """Context navigation guard + browser-level redirect guard.
+        """Context navigation guard + browser-level request guard + WebSocket guard.
 
         The context route is a first defence on the initial navigation request. The
-        browser-level CDP Fetch guard is the one that closes SSRF via redirects: it pauses
-        every document request at the REQUEST stage (so Chromium has already normalised the
-        URL the socket will use — no Location/urljoin parser gap) across the whole browser,
-        including popups and out-of-process iframes via flat auto-attach, and it is armed
-        before any navigation. If it cannot be armed the session is left guard-inactive and
-        every navigation and read fails closed.
+        browser-level CDP Fetch guard closes SSRF for EVERY request the browser makes
+        (documents, redirects, fetch/XHR, script, CSS, images, fonts, beacons, EventSource,
+        prefetch, workers, service workers, form posts): each request is paused at the
+        REQUEST stage, so the URL validated is the one Chromium itself resolved and will
+        connect to, across popups and out-of-process iframes via flat auto-attach. WebSocket
+        handshakes are not Fetch requests, so a context WebSocket route validates them. All
+        guards are armed before any navigation; if the request guard cannot be armed the
+        session stays guard-inactive and every navigation and read fails closed.
         """
         if not session.navigation_guard_installed:
             async def guard(route):
@@ -297,6 +345,36 @@ class BrowserUseBridge:
             await session.context.route("**/*", guard)
             session.navigation_guard_installed = True
         await self._arm_redirect_guard(session)
+        await self._arm_websocket_guard(session)
+        await self._quarantine_preexisting(session)
+
+    async def _quarantine_preexisting(self, session: Session) -> None:
+        """A document loaded before the guard was armed (e.g. a page that already existed
+        when the bridge connected over CDP, or one that kept running while the connection
+        was down) is not covered by the request guard. Navigate every such page to
+        about:blank so nothing loaded pre-guard stays active or readable; the guard then
+        covers all subsequent requests. Best-effort and bounded; a page that will not
+        settle is closed."""
+        if not session.redirect_guard_active or session.context is None:
+            return
+        for page in list(session.context.pages):
+            url = getattr(page, "url", "") or ""
+            if url.startswith(_LOCAL_FRAME_PREFIXES):
+                continue
+            try:
+                async with asyncio.timeout(6):
+                    await page.goto("about:blank")
+                    await page.wait_for_load_state("load")
+            except Exception:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                if session.page is page:
+                    session.page = None
+        if session.page is None or session.page not in list(session.context.pages):
+            pages = list(session.context.pages)
+            session.page = pages[0] if pages else await session.context.new_page()
 
     async def _arm_redirect_guard(self, session: Session) -> None:
         if session.redirect_guard_active or session.browser is None:
@@ -308,15 +386,16 @@ class BrowserUseBridge:
             # Validate the URL Chromium itself resolved (request stage), not a header we
             # re-parse: this is what the connection will actually go to.
             url = (event.get("request") or {}).get("url", "")
-            try:
-                await asyncio.to_thread(validate_public_http_url, url)
-            except UnsafeURL:
-                session.redirect_blocked = True
-                await self._fetch_fail(cdp, request_id)
-                return
-            except Exception as exc:
-                session.redirect_blocked = True
-                LOG.warning("Redirect guard failed closed: session=%s error=%s", session.id, type(exc).__name__)
+            document = event.get("resourceType") == "Document"
+            verdict = await request_verdict(url)
+            if verdict is not True:
+                if verdict is not False:
+                    LOG.warning("Request guard failed closed: session=%s error=%s", session.id, verdict)
+                session.blocked_requests += 1
+                if document:
+                    # A blocked document (main frame, iframe, popup, redirect hop) fails the
+                    # navigation closed; a blocked sub-resource is dropped silently.
+                    session.redirect_blocked = True
                 await self._fetch_fail(cdp, request_id)
                 return
             try:
@@ -329,14 +408,34 @@ class BrowserUseBridge:
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
         cdp.on("Fetch.requestPaused", dispatch)
-        await cdp.send("Fetch.enable", {"patterns": [
-            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"},
-        ]})
-        # Flat auto-attach so popups and OOPIFs inherit the same Fetch guard before they run.
+        await cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+        # Flat auto-attach so popups, OOPIFs, workers and service workers inherit the guard.
         await cdp.send("Target.setAutoAttach",
                        {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True})
         session.redirect_guard = cdp
         session.redirect_guard_active = True
+
+    async def _arm_websocket_guard(self, session: Session) -> None:
+        if session.websocket_guard_installed or session.context is None:
+            return
+        route_ws = getattr(session.context, "route_web_socket", None)
+        if route_ws is None:
+            # Without a WebSocket guard the session cannot be used safely.
+            session.redirect_guard_active = False
+            return
+
+        async def ws_guard(ws) -> None:
+            if await request_verdict(ws.url) is True:
+                ws.connect_to_server()
+                return
+            session.blocked_requests += 1
+            try:
+                await ws.close(code=1008, reason="blocked")
+            except Exception:
+                pass
+
+        await route_ws("**/*", ws_guard)
+        session.websocket_guard_installed = True
 
     @staticmethod
     async def _fetch_fail(cdp, request_id) -> None:
@@ -441,11 +540,13 @@ class BrowserUseBridge:
 
             page.on("response", on_response)
 
+        blocked_before = session.blocked_requests
         try:
             response = await self._navigate(
                 session, page, lambda: page.goto(url, wait_until=wait_until, timeout=timeout_ms))
             final_url = page.url
             return {
+                "blocked_requests": session.blocked_requests - blocked_before,
                 "session_id": session_id,
                 "requested_url": url,
                 "final_url": final_url,
@@ -919,6 +1020,7 @@ class BrowserUseBridge:
             session.navigation_guard_installed = False
             session.redirect_guard = None
             session.redirect_guard_active = False
+            session.websocket_guard_installed = False
 
     async def _stop_remote(self, session_id):
         # CloakBrowser sessions are local child processes. Their lifecycle is handled

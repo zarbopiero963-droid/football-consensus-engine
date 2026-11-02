@@ -108,7 +108,7 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
                       browser=old_browser, page=object(), navigation_guard_installed=True)
     new_page = object()
     cdp = SimpleNamespace(on=Mock(), send=AsyncMock())
-    context = SimpleNamespace(pages=[new_page], route=AsyncMock(), on=Mock())
+    context = SimpleNamespace(pages=[new_page], route=AsyncMock(), on=Mock(), route_web_socket=AsyncMock())
     new_browser = SimpleNamespace(contexts=[context], is_connected=lambda: True,
                                   new_browser_cdp_session=AsyncMock(return_value=cdp))
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=new_browser)))
@@ -127,9 +127,12 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
     context.route.assert_awaited_once()
     # WP-001: the redirect guard is armed once at the browser level (Document requests, Fetch domain).
     new_browser.new_browser_cdp_session.assert_awaited_once_with()
+    # WP-002: every request type is paused at the request stage (no resourceType filter).
     cdp.send.assert_any_await("Fetch.enable", {"patterns": [
-        {"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"}]})
+        {"urlPattern": "*", "requestStage": "Request"}]})
     assert session.redirect_guard_active is True
+    context.route_web_socket.assert_awaited_once()  # WP-002 WebSocket guard
+    assert session.websocket_guard_installed is True
 
 
 def test_reconnect_cleanup_error_is_visible_and_clears_old_guard(monkeypatch):
