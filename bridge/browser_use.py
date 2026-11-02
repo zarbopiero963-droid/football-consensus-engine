@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from collections import deque
 from functools import wraps
-from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -70,8 +69,8 @@ class Session:
     context: BrowserContext | None = None
     page: Page | None = None
     navigation_guard_installed: bool = False
-    guarded_pages: set = field(default_factory=set)
-    cdp_sessions: list = field(default_factory=list)
+    redirect_guard: Any = None
+    redirect_guard_active: bool = False
     redirect_blocked: bool = False
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
@@ -282,59 +281,48 @@ class BrowserUseBridge:
         return session.page
 
     async def _install_guards(self, session: Session) -> None:
-        """Request guard on the context + redirect guard on every page (existing and future)."""
+        """Context navigation guard + browser-level redirect guard.
+
+        The context route is a first defence on the initial navigation request. The
+        browser-level CDP Fetch guard is the one that closes SSRF via redirects: it pauses
+        every document request at the REQUEST stage (so Chromium has already normalised the
+        URL the socket will use — no Location/urljoin parser gap) across the whole browser,
+        including popups and out-of-process iframes via flat auto-attach, and it is armed
+        before any navigation. If it cannot be armed the session is left guard-inactive and
+        every navigation and read fails closed.
+        """
         if not session.navigation_guard_installed:
             async def guard(route):
                 await self._navigation_guard(route, session)
             await session.context.route("**/*", guard)
-
-            def on_page(new_page):
-                task = asyncio.ensure_future(self._guard_redirects(session, new_page))
-                task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
-            session.context.on("page", on_page)
             session.navigation_guard_installed = True
-        for candidate in list(session.context.pages):
-            await self._guard_redirects(session, candidate)
+        await self._arm_redirect_guard(session)
 
-    async def _guard_redirects(self, session: Session, page: Page) -> None:
-        """Validate every HTTP redirect hop of document loads BEFORE Chromium follows it.
-
-        Playwright's route handler sees only the first request of a redirect chain, so a
-        public URL answering 30x -> internal address would otherwise be fetched and loaded.
-        The CDP Fetch domain pauses each document response; a 30x whose Location is not a
-        public http(s) address is failed with BlockedByClient. Works on local Chromium
-        (Cloak) and on remote CDP (Browser Use). Any handler error fails the hop closed.
-        """
-        key = id(page)
-        if key in session.guarded_pages:
+    async def _arm_redirect_guard(self, session: Session) -> None:
+        if session.redirect_guard_active or session.browser is None:
             return
-        cdp = await session.context.new_cdp_session(page)
+        cdp = await session.browser.new_browser_cdp_session()
 
         async def on_paused(event: dict[str, Any]) -> None:
             request_id = event.get("requestId")
+            # Validate the URL Chromium itself resolved (request stage), not a header we
+            # re-parse: this is what the connection will actually go to.
+            url = (event.get("request") or {}).get("url", "")
             try:
-                status = event.get("responseStatusCode")
-                location = None
-                for header in event.get("responseHeaders") or []:
-                    if str(header.get("name", "")).lower() == "location":
-                        location = header.get("value")
-                if status is not None and 300 <= int(status) < 400 and location is not None:
-                    target = urljoin(event.get("request", {}).get("url", ""), location)
-                    try:
-                        await asyncio.to_thread(validate_public_http_url, target)
-                    except UnsafeURL:
-                        session.redirect_blocked = True
-                        await cdp.send("Fetch.failRequest", {"requestId": request_id,
-                                                             "errorReason": "BlockedByClient"})
-                        return
-                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+                await asyncio.to_thread(validate_public_http_url, url)
+            except UnsafeURL:
+                session.redirect_blocked = True
+                await self._fetch_fail(cdp, request_id)
+                return
             except Exception as exc:
                 session.redirect_blocked = True
                 LOG.warning("Redirect guard failed closed: session=%s error=%s", session.id, type(exc).__name__)
-                try:
-                    await cdp.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
-                except Exception:
-                    pass
+                await self._fetch_fail(cdp, request_id)
+                return
+            try:
+                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+            except Exception:
+                pass
 
         def dispatch(event):
             task = asyncio.ensure_future(on_paused(event))
@@ -342,35 +330,50 @@ class BrowserUseBridge:
 
         cdp.on("Fetch.requestPaused", dispatch)
         await cdp.send("Fetch.enable", {"patterns": [
-            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"},
+            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Request"},
         ]})
-        session.guarded_pages.add(key)
-        session.cdp_sessions.append(cdp)
+        # Flat auto-attach so popups and OOPIFs inherit the same Fetch guard before they run.
+        await cdp.send("Target.setAutoAttach",
+                       {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True})
+        session.redirect_guard = cdp
+        session.redirect_guard_active = True
+
+    @staticmethod
+    async def _fetch_fail(cdp, request_id) -> None:
+        try:
+            await cdp.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+        except Exception:
+            pass
+
+    def _require_guard(self, session: Session) -> None:
+        """Fail closed: never navigate or read on a session without an active redirect guard."""
+        if not session.redirect_guard_active:
+            raise UnsafeURL(CONTENT_BLOCKED)
 
     async def _quarantine(self, session: Session, page: Page) -> None:
         """Discard a page that reached (or tried to reach) a non-public address.
 
-        The page is closed and, if it was current, replaced by a fresh guarded blank page,
-        so nothing of the rejected navigation stays readable and no later read can race
-        Chromium committing its own error page.
+        The page is closed and, if it was current, replaced by a fresh blank page; the
+        browser-level redirect guard already covers that new page, so nothing of the
+        rejected navigation stays readable and no later read can race Chromium committing
+        its own error page.
         """
         replacement = None
         if session.page is page and session.context is not None:
             try:
                 replacement = await session.context.new_page()
-                await self._guard_redirects(session, replacement)
             except Exception as exc:
                 LOG.warning("Quarantine replacement page failed: session=%s error=%s", session.id, type(exc).__name__)
         try:
             await page.close()
         except Exception:
             pass
-        session.guarded_pages.discard(id(page))
         if session.page is page:
             session.page = replacement
 
     async def _assert_public_page(self, session: Session, page: Page) -> None:
         """Fail closed before any read: the page and every frame must be public or local-only."""
+        self._require_guard(session)
         urls = [page.url] + [frame.url for frame in getattr(page, "frames", [])]
         for value in urls:
             if not value or value.startswith(_LOCAL_FRAME_PREFIXES):
@@ -392,6 +395,7 @@ class BrowserUseBridge:
 
     async def _navigate(self, session: Session, page: Page, action):
         """Run one navigation with the redirect guard armed, then fail closed if needed."""
+        self._require_guard(session)
         session.redirect_blocked = False
         try:
             response = await action()
@@ -828,7 +832,6 @@ class BrowserUseBridge:
         if url:
             await asyncio.to_thread(validate_public_http_url, url)
         page = await session.context.new_page()
-        await self._guard_redirects(session, page)
         session.page = page
         if url:
             await self._navigate(session, page,
@@ -914,6 +917,8 @@ class BrowserUseBridge:
             session.context = None
             session.page = None
             session.navigation_guard_installed = False
+            session.redirect_guard = None
+            session.redirect_guard_active = False
 
     async def _stop_remote(self, session_id):
         # CloakBrowser sessions are local child processes. Their lifecycle is handled

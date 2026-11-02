@@ -58,6 +58,23 @@ class _Servers:
             def do_GET(self):
                 url = urlsplit(self.path)
                 q = parse_qs(url.query)
+                if url.path == "/backslash":
+                    # WHATWG treats \\ as / : urljoin would keep it on the public host,
+                    # Chromium resolves it to the internal host. Guard must see Chromium's view.
+                    self.send_response(302)
+                    self.send_header("Location", f"/\\{INTERNAL_HOST}:{servers.internal_port}/secret")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if url.path == "/popup":
+                    body = (f"<html><body><script>window.open('/hop?n=1&code=302&final=internal','_blank')"
+                            f"</script>popper</body></html>").encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if url.path == "/hop":
                     # /hop?n=K&code=C&final=internal|public[&rel=1]
                     n = int(q["n"][0])
@@ -295,6 +312,43 @@ def test_fuzz_random_redirect_chains(servers):
             finally:
                 await browser.close()
         assert servers.internal_hits == []
+    _run(scenario())
+
+
+@pytest.mark.parametrize("variant", ["/backslash"])
+def test_backslash_location_parser_mismatch_is_blocked(servers, variant):
+    """Review P0: a Location containing a backslash must not reach the internal host.
+
+    Chromium normalises the backslash to '/'; the guard validates the request stage URL
+    (Chromium's view), so the hop never leaves for the internal address.
+    """
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, browser = await _bridge_with_chromium(p)
+            try:
+                with pytest.raises(UnsafeURL):
+                    await bridge.open_url(session.id, servers.public_url(variant))
+                text = await _read_everything(bridge, session.id)
+            finally:
+                await browser.close()
+        assert servers.internal_hits == []
+        assert SECRET not in text
+    _run(scenario())
+
+
+def test_popup_redirect_to_internal_never_reaches_it(servers):
+    """Review P1: a window.open popup that 30x-redirects to internal is caught before the hop."""
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, browser = await _bridge_with_chromium(p)
+            try:
+                await bridge.open_url(session.id, servers.public_url("/popup"))
+                await asyncio.sleep(1.5)  # let the popup attempt its navigation
+                listing = await bridge.list_pages(session.id)
+            finally:
+                await browser.close()
+        assert servers.internal_hits == []
+        assert SECRET not in repr(listing)
     _run(scenario())
 
 

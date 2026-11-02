@@ -70,11 +70,10 @@ def test_page_installs_handler_bound_to_its_own_session(monkeypatch):
     handlers = []
     async def route(pattern, handler): handlers.append(handler)
     page = SimpleNamespace()
-    async def new_cdp_session(_page):
+    async def new_browser_cdp_session():
         return SimpleNamespace(on=lambda *a: None, send=lambda *a, **k: asyncio.sleep(0))
-    context = SimpleNamespace(pages=[page], route=route, on=lambda *a: None,
-                              new_cdp_session=new_cdp_session)
-    browser = SimpleNamespace(contexts=[context])
+    context = SimpleNamespace(pages=[page], route=route, on=lambda *a: None)
+    browser = SimpleNamespace(contexts=[context], new_browser_cdp_session=new_browser_cdp_session)
     async def connect(cdp): return browser
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
     async def start(): return playwright
