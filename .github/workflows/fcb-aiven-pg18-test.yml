@@ -98,8 +98,15 @@ jobs:
           ssl="$(q 'select ssl from pg_stat_ssl where pid = pg_backend_pid()')"
           test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
           tls="$(q 'select version || $$ $$ || cipher from pg_stat_ssl where pid = pg_backend_pid()')"
-          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
-          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema')")"
+          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast','_avnadmin_monitor','_aiven') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
+          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema','_avnadmin_monitor','_aiven')")"
+          # Aiven installs its own monitoring schema (_avnadmin_monitor, owned by postgres) in every
+          # database; it is excluded by exact name only. Any other non-system schema besides public
+          # makes the precheck fail.
+          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor','_aiven') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
+          if [ "$schemas" != "0" ]; then
+            echo "::error::unexpected non-system schemas present ($schemas); refusing to run"; exit 1
+          fi
           if [ "$objects" != "0" ] || [ "$funcs" != "0" ]; then
             echo "::error::database is not empty (relations=$objects functions=$funcs); refusing to run"; exit 1
           fi
