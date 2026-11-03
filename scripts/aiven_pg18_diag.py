@@ -5,7 +5,8 @@ environment. Nothing printed by this module may contain the host, IP address, po
 user, password or database name of the secret URI: only fixed categories and a libpq
 message with every such value replaced by a placeholder.
 
-Subcommands (the URI is always read from $FCB_PG18_TEST_URL, never from argv):
+Subcommands (the URI is always read from $FCB_PG18_TEST_URL, or from $FCB_DEFAULTDB_URL when
+FCB_DB_URL_VAR names it, never from argv):
   check-raw          fail if the raw secret has whitespace or control characters
                      (Python's urlsplit silently drops them, libpq does not)
   probe              DNS address-family counts + TCP reachability per family
@@ -22,6 +23,15 @@ import sys
 from urllib.parse import parse_qs, unquote, urlsplit
 
 ENV = "FCB_PG18_TEST_URL"
+# FCB-WP-005: the defaultdb restore workflow reuses this module with its own secret name.
+# Only these variable names may carry the URI; anything else is a configuration error.
+URL_VARS = ("FCB_PG18_TEST_URL", "FCB_DEFAULTDB_URL")
+
+
+def url_var(env=None) -> str | None:
+    env = os.environ if env is None else env
+    name = env.get("FCB_DB_URL_VAR", ENV)
+    return name if name in URL_VARS else None
 MAX_LINE = 300
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -238,7 +248,11 @@ def probe(raw: str, timeout: float = 5.0) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    raw = os.environ.get(ENV, "")
+    var = url_var()
+    if var is None:
+        print("::error::diag: FCB_DB_URL_VAR is not an allowed variable name", file=sys.stderr)
+        return 2
+    raw = os.environ.get(var, "")
     if not raw or len(argv) < 2:
         print("::error::diag: missing secret or subcommand", file=sys.stderr)
         return 2

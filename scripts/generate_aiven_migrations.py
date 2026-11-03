@@ -34,17 +34,108 @@ def render():
     return text
 
 
+# FCB-WP-005: the full bridge series for the defaultdb restore (owner-gated workflow).
+# Built from the whole bridge directory, never from the signer series.
+BRIDGE_TARGET = ROOT / 'sql' / 'aiven' / 'aiven_migrations_bridge_0001_0008.sql'
+BRIDGE_HEADER = '-- FCB bridge migrations 0001-0008 only (no signer series), regenerated from main\n'
+BRIDGE_VERSIONS = list(range(1, 9))
+
+
+def render_bridge():
+    from app.migrations import BRIDGE, load_migrations
+    migrations = load_migrations(BRIDGE.directory)
+    if [m.version for m in migrations] != BRIDGE_VERSIONS:
+        raise SystemExit(f'expected bridge versions {BRIDGE_VERSIONS}')
+    text = BRIDGE_HEADER + ';\n'.join(migration_statements(series=BRIDGE)) + ';\n'
+    for marker in ('signer_ledger_anchors', 'signer_ledger_writer_leases', 'signer_schema_migrations'):
+        if marker in text:
+            raise SystemExit('signer content leaked into the bridge script')
+    return text
+
+
+# FCB-WP-005: the precheck, re-evaluated INSIDE the restore transaction (no TOCTOU window).
+# Generated from the two read-only precheck files so the logic cannot diverge.
+GUARD_TARGET = ROOT / 'sql' / 'aiven' / 'defaultdb_restore_guard.sql'
+ALLOWED_STATES = ('EMPTY', 'RUNTIME_ONLY', 'BRIDGE_0001_0007', 'BRIDGE_0001_0008')
+
+
+def _query(name):
+    text = (ROOT / 'sql' / 'aiven' / name).read_text(encoding='utf-8')
+    body = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('--')).strip()
+    if not body.endswith(';') or '$fcbq$' in body:
+        raise SystemExit(f'unexpected precheck file shape: {name}')
+    return body[:-1]
+
+
+def render_guard():
+    allowed = ', '.join(f"'{s}'" for s in ALLOWED_STATES)
+    return (
+        '-- FCB-WP-005: generated from defaultdb_precheck.sql + defaultdb_precheck_tracked.sql.\n'
+        '-- Runs in the SAME transaction as the restore, after the bridge advisory lock: if the\n'
+        '-- state is not allowed at that instant, the whole transaction aborts before any write.\n'
+        'SELECT pg_advisory_xact_lock(460244120);\n'
+        'DO $fcbguard$\n'
+        'DECLARE s text;\n'
+        'BEGIN\n'
+        f'    EXECUTE $fcbq$\n{_query("defaultdb_precheck.sql")}\n$fcbq$ INTO s;\n'
+        "    IF s = 'TRACKED' THEN\n"
+        f'        EXECUTE $fcbq$\n{_query("defaultdb_precheck_tracked.sql")}\n$fcbq$ INTO s;\n'
+        '    END IF;\n'
+        f'    IF s IS NULL OR s NOT IN ({allowed}) THEN\n'
+        "        RAISE EXCEPTION 'FCB_RESTORE_STATE_REFUSED %', s;\n"
+        '    END IF;\n'
+        'END $fcbguard$;\n'
+    )
+
+
+POST_GUARD_TARGET = ROOT / 'sql' / 'aiven' / 'defaultdb_restore_post_guard.sql'
+
+
+def render_post_guard():
+    return (
+        '-- FCB-WP-005: generated. Runs in the SAME transaction, AFTER the bridge script: the end\n'
+        '-- state must be BRIDGE_0001_0008 with every runtime-table check passing, and the catalog\n'
+        "-- fingerprint must equal :'expected_fingerprint' (pinned in the workflow, PostgreSQL 18).\n"
+        '-- Otherwise the transaction aborts and nothing is committed.\n'
+        "SELECT set_config('fcb.expected_fingerprint', :'expected_fingerprint', true) IS NOT NULL AS expected_set;\n"
+        'DO $fcbpost$\n'
+        'DECLARE s text; f text;\n'
+        'BEGIN\n'
+        f'    EXECUTE $fcbq$\n{_query("defaultdb_precheck.sql")}\n$fcbq$ INTO s;\n'
+        "    IF s = 'TRACKED' THEN\n"
+        f'        EXECUTE $fcbq$\n{_query("defaultdb_precheck_tracked.sql")}\n$fcbq$ INTO s;\n'
+        '    END IF;\n'
+        "    IF s IS DISTINCT FROM 'BRIDGE_0001_0008' THEN\n"
+        "        RAISE EXCEPTION 'FCB_RESTORE_POST_STATE %', s;\n"
+        '    END IF;\n'
+        f'    EXECUTE $fcbq$\n{_query("fingerprint_bridge_schema.sql")}\n$fcbq$ INTO f;\n'
+        "    IF f IS DISTINCT FROM current_setting('fcb.expected_fingerprint') THEN\n"
+        "        RAISE EXCEPTION 'FCB_RESTORE_FINGERPRINT_MISMATCH %', f;\n"
+        '    END IF;\n'
+        'END $fcbpost$;\n'
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'restore-guard', 'restore-post-guard'),
+                        default='aiven-0001-0007')
     args = parser.parse_args()
-    text = render()
+    if args.target == 'bridge-0001-0008':
+        text, target = render_bridge(), BRIDGE_TARGET
+    elif args.target == 'restore-guard':
+        text, target = render_guard(), GUARD_TARGET
+    elif args.target == 'restore-post-guard':
+        text, target = render_post_guard(), POST_GUARD_TARGET
+    else:
+        text, target = render(), TARGET
     digest = hashlib.sha256(text.encode()).hexdigest()
     if args.check:
-        if TARGET.read_text(encoding='utf-8') != text:
+        if target.read_text(encoding='utf-8') != text:
             raise SystemExit('committed script differs from regenerated script')
     else:
-        TARGET.write_text(text, encoding='utf-8')
+        target.write_text(text, encoding='utf-8')
     print(digest)
 
 
