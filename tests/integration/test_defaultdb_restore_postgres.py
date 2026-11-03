@@ -410,7 +410,8 @@ def test_every_route_ends_in_the_same_catalog_fingerprint(schema):
     assert rc == 0, err
     assert _fingerprint(schema) == _clean_fingerprint()
     if _major() == 18:
-        assert _clean_fingerprint() == _pinned_fingerprint()
+        fp = _clean_fingerprint()
+        assert fp == _pinned_fingerprint(), f"PG18_FINGERPRINT={fp}"
 
 
 def test_runtime_and_0007_routes_end_in_the_clean_fingerprint(schema):
