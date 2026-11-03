@@ -51,6 +51,12 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 | `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, or a database/role `search_path` setting exists | no |
 | `REFUSE_EVENT_TRIGGERS` | an enabled event trigger exists; it would act on the restore's own DDL | no |
 | `REFUSE_DEFAULT_PRIVILEGES` | `ALTER DEFAULT PRIVILEGES` entries exist; they would grant on the new tables | no |
+| `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
+| `BRIDGE_0001_0008` | already restored | yes (no-op) |
+| `REFUSE_UNTRACKED_OBJECTS` | any other table, function or type | no |
+| `REFUSE_PARTIAL_OR_DRIFT` | partial history or checksum mismatch | no |
+| `REFUSE_PRE_SPLIT_SIGNER_0008` | v8 is the old signer anchor | no |
+| `REFUSE_SIGNER_SERIES_PRESENT` | signer tracking found in `public` | no |
 
 `REFUSE_UNTRACKED_OBJECTS` also covers operators, operator classes and families, collations, conversions, text-search objects, extensions, aggregates, window functions and procedures in `public`, plus any publication. 0001–0008 create plain functions only.
 
@@ -59,12 +65,6 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 - The fingerprint ordering uses the database collation. Results were identical under C and ICU en-US; glibc locales were not tested.
 
 On the real `defaultdb`, read-only on 2026-11-03, all of these were 0 and the only extension is `plpgsql`.
-| `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
-| `BRIDGE_0001_0008` | already restored | yes (no-op) |
-| `REFUSE_UNTRACKED_OBJECTS` | any other table, function or type | no |
-| `REFUSE_PARTIAL_OR_DRIFT` | partial history or checksum mismatch | no |
-| `REFUSE_PRE_SPLIT_SIGNER_0008` | v8 is the old signer anchor | no |
-| `REFUSE_SIGNER_SERIES_PRESENT` | signer tracking found in `public` | no |
 
 The restore also refuses when:
 - the database is not `defaultdb`;

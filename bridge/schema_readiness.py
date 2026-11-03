@@ -42,8 +42,11 @@ REQUIRED_TABLES = (
 
 
 def _default_connect():
-    from app.db import connect
-    return connect()
+    import psycopg
+    from psycopg.rows import dict_row
+    from app.db import database_url
+    # Bounded connect: a timed-out check must not leave a thread stuck for libpq's default.
+    return psycopg.connect(database_url(), row_factory=dict_row, connect_timeout=3)
 
 
 def evaluate(connect: Callable = _default_connect) -> dict[str, Any]:
@@ -67,15 +70,17 @@ def evaluate(connect: Callable = _default_connect) -> dict[str, Any]:
                 for r in rows:
                     v, n, s = (r["version"], r["name"], r["sha256"]) if isinstance(r, dict) else r
                     recorded[int(v)] = (n, s)
-                cur.execute("SELECT t FROM unnest(%s::text[]) AS t WHERE to_regclass(t) IS NULL",
+                # A view or sequence with a required name does not count as the table.
+                cur.execute("SELECT t FROM unnest(%s::text[]) AS t WHERE NOT EXISTS ("
+                            "SELECT 1 FROM pg_class c WHERE c.oid = to_regclass(t) AND c.relkind IN ('r', 'p'))",
                             (list(REQUIRED_TABLES),))
                 missing = sorted((r["t"] if isinstance(r, dict) else r[0]) for r in cur.fetchall())
     except Exception:
         return result
-    if set(recorded) - set(expected):
+    if any(v in expected and recorded[v] != expected[v] for v in recorded):
+        state = "DRIFT"  # most serious first: a recorded migration differs from the repository
+    elif set(recorded) - set(expected):
         state = "AHEAD"
-    elif any(recorded[v] != expected[v] for v in recorded):
-        state = "DRIFT"
     elif set(expected) - set(recorded):
         state = "OUTDATED"
     elif missing:

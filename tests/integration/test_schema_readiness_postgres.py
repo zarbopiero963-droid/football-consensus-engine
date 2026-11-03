@@ -60,3 +60,20 @@ def test_drift_ahead_and_missing_tables(connect):
                      (migrations.load_migrations()[1].checksum,))
         conn.execute("INSERT INTO schema_migrations(version, name, sha256) VALUES (99, '0099_x.sql', 'x')")
     assert evaluate(connect)["state"] == "AHEAD"
+
+
+def test_drift_wins_over_ahead_and_a_view_is_not_a_table(connect):
+    """Review of #171: the most serious state is reported; a same-named view does not count."""
+    migrations.apply_migrations(connect)
+    with connect() as conn:
+        conn.execute("UPDATE schema_migrations SET sha256 = repeat('0', 64) WHERE version = 2")
+        conn.execute("INSERT INTO schema_migrations(version, name, sha256) VALUES (99, '0099_x.sql', 'x')")
+    assert evaluate(connect)["state"] == "DRIFT"
+    with connect() as conn:
+        conn.execute("UPDATE schema_migrations SET sha256 = %s WHERE version = 2",
+                     (migrations.load_migrations()[1].checksum,))
+        conn.execute("DELETE FROM schema_migrations WHERE version = 99")
+        conn.execute("DROP TABLE oauth_claude_dcr_clients")
+        conn.execute("CREATE VIEW oauth_claude_dcr_clients AS SELECT 1 AS x")
+    result = evaluate(connect)
+    assert result["state"] == "MISSING_TABLES" and result["missing_tables"] == ["oauth_claude_dcr_clients"]
