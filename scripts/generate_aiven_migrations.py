@@ -34,17 +34,40 @@ def render():
     return text
 
 
+# FCB-WP-005: the full bridge series for the defaultdb restore (owner-gated workflow).
+# Built from the whole bridge directory, never from the signer series.
+BRIDGE_TARGET = ROOT / 'sql' / 'aiven' / 'aiven_migrations_bridge_0001_0008.sql'
+BRIDGE_HEADER = '-- FCB bridge migrations 0001-0008 only (no signer series), regenerated from main\n'
+BRIDGE_VERSIONS = list(range(1, 9))
+
+
+def render_bridge():
+    from app.migrations import BRIDGE, load_migrations
+    migrations = load_migrations(BRIDGE.directory)
+    if [m.version for m in migrations] != BRIDGE_VERSIONS:
+        raise SystemExit(f'expected bridge versions {BRIDGE_VERSIONS}')
+    text = BRIDGE_HEADER + ';\n'.join(migration_statements(series=BRIDGE)) + ';\n'
+    for marker in ('signer_ledger_anchors', 'signer_ledger_writer_leases', 'signer_schema_migrations'):
+        if marker in text:
+            raise SystemExit('signer content leaked into the bridge script')
+    return text
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008'), default='aiven-0001-0007')
     args = parser.parse_args()
-    text = render()
+    if args.target == 'bridge-0001-0008':
+        text, target = render_bridge(), BRIDGE_TARGET
+    else:
+        text, target = render(), TARGET
     digest = hashlib.sha256(text.encode()).hexdigest()
     if args.check:
-        if TARGET.read_text(encoding='utf-8') != text:
+        if target.read_text(encoding='utf-8') != text:
             raise SystemExit('committed script differs from regenerated script')
     else:
-        TARGET.write_text(text, encoding='utf-8')
+        target.write_text(text, encoding='utf-8')
     print(digest)
 
 

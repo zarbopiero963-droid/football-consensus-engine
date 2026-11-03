@@ -1,0 +1,314 @@
+name: FCB Aiven defaultdb restore (owner-gated)
+
+# FCB-WP-005. Manual only. Restores the PRODUCTION database `defaultdb` (Aiven piero-1, PG18) to
+# the bridge migration series 0001-0008. Never applies the signer series. Gates, all required:
+#   1. GitHub Environment `aiven-production` with at least one required reviewer (checked by
+#      the job itself; an auto-created unprotected environment is refused);
+#   2. the secret FCB_DEFAULTDB_URL exists only in that environment (owner-created);
+#   3. mode=apply AND the exact confirmation phrase; default mode=diagnose never writes;
+#   4. pinned target (host/port hashes, database name), PostgreSQL 18, TLS;
+#   5. a read-only precheck state that allows it (EMPTY, RUNTIME_ONLY, BRIDGE_0001_0007,
+#      BRIDGE_0001_0008), re-checked inside the apply step right before writing;
+#   6. one transaction with an in-session target guard; second run must be a no-op.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "diagnose = read-only prechecks (default); apply = restore bridge 0001-0008 to defaultdb"
+        type: choice
+        options: [diagnose, apply]
+        default: diagnose
+      confirm:
+        description: "For mode=apply only: type exactly APPLY BRIDGE 0001-0008 TO defaultdb"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_DEFAULTDB_URL
+      CONFIRM_PHRASE: APPLY BRIDGE 0001-0008 TO defaultdb
+      SCRIPT: sql/aiven/aiven_migrations_bridge_0001_0008.sql
+      EXPECTED_SCRIPT_SHA256: a6525b5baeade9cad1f3eb5fc27c506199c3d30ccabab5fd57f21eeb01b85a5c
+      # Object counts after the restore on PostgreSQL 18, pinned and checked in CI (postgres-18)
+      # by tests/integration/test_defaultdb_restore_postgres.py.
+      EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
+      PGCONNECT_TIMEOUT: '15'
+      # Same Aiven service as fcb-aiven-pg18-test.yml (public values from the Aiven API).
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+    steps:
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(gh api "repos/$REPO/environments/aiven-production" \
+            --jq '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?] | length' 2>/dev/null || echo 0)"
+          if [ "${reviewers:-0}" -lt 1 ]; then
+            echo "::error::environment aiven-production has no required reviewer; refusing"; exit 1
+          fi
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            apply)
+              if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+                echo "::error::mode=apply requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: apply (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fail closed if the secret is missing
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then
+            echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate the bridge script and verify the pinned SHA-256 (no signer series)
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'psycopg[binary]==3.3.6'
+          generated="$(python scripts/generate_aiven_migrations.py --target bridge-0001-0008 --check)"
+          actual="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
+          test "$generated" = "$EXPECTED_SCRIPT_SHA256"
+          test "$actual" = "$EXPECTED_SCRIPT_SHA256"
+          if grep -Eq 'signer_ledger_anchors|signer_ledger_writer_leases|signer_schema_migrations' "$SCRIPT"; then
+            echo "::error::signer content found"; exit 1
+          fi
+          echo "script_sha256=$actual" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install postgresql-client-18 from PGDG (pinned key fingerprint)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          # Transient TLS EOFs from postgresql.org failed runs 9 and 11 before any database step:
+          # retry the download; the pinned fingerprint check below still decides trust.
+          sudo curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 60 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/psql --version
+
+      - name: Mask connection details and enforce TLS
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          # -I -S: isolated interpreter, no site-packages (.pth) while the secret is in env.
+          python -I -S - <<'PY'
+          import os, sys
+          from urllib.parse import urlsplit, parse_qs, unquote
+          raw = os.environ['FCB_DEFAULTDB_URL']
+          try:
+              u = urlsplit(raw)
+              parts = (u.hostname, u.username, u.password, u.password and unquote(u.password), str(u.port or ''))
+              q = parse_qs(u.query, keep_blank_values=True)
+          except Exception:
+              sys.exit('::error::secret is not a parseable PostgreSQL URI')
+          for v in parts:
+              if v:
+                  print(f'::add-mask::{v}')
+          if u.scheme not in ('postgres', 'postgresql'):
+              sys.exit('::error::unexpected URL scheme')
+          if ',' in u.netloc or not u.hostname:
+              sys.exit('::error::multi-host or empty host URIs are not allowed')
+          # libpq splits userinfo at the FIRST '@' (Python at the last): an unencoded '@' in the
+          # password would make libpq connect to a different host string. Require percent-encoding.
+          if u.netloc.count('@') > 1:
+              sys.exit('::error::password contains an unencoded @ (percent-encode it as %40)')
+          expected = os.environ['EXPECTED_DB']
+          dbpath = u.path.lstrip('/')
+          if dbpath != expected:
+              # Non-sensitive classification only: the path value itself is never printed.
+              if not dbpath:
+                  why = 'path_empty'
+              elif dbpath == 'defaultdb':
+                  why = 'path_is_defaultdb'
+              elif dbpath.rstrip('/') == expected:
+                  why = 'trailing_slash'
+              elif dbpath.strip() == expected or any(c.isspace() for c in dbpath):
+                  why = 'whitespace_in_path'
+              elif '%' in dbpath and unquote(dbpath) == expected:
+                  why = 'percent_encoded_name'
+              elif dbpath.lower() == expected:
+                  why = 'case_mismatch'
+              else:
+                  why = f'other_name_len_{len(dbpath)}'
+              sys.exit(f'::error::secret does not point to the expected database ({why})')
+          forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
+          if forbidden & {k.lower() for k in q}:
+              sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
+          mode = q.get('sslmode', ['require'])[0]
+          if mode not in ('require', 'verify-ca', 'verify-full'):
+              sys.exit('::error::sslmode must be require, verify-ca or verify-full')
+          PY
+          # urlsplit silently drops spaces/newlines/tabs that libpq keeps (e.g. a final newline
+          # after "sslmode=require" makes libpq fail before connecting): reject them explicitly.
+          python -I -S scripts/aiven_pg18_diag.py check-raw
+          # Fail-closed target policy before any connection: pinned host, exact database,
+          # port from the pinned config (empty/absent URI port) or equal to it (explicit).
+          python -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Network probe (DNS families and TCP reachability; categories only)
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          python -I -S scripts/aiven_pg18_diag.py probe | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prechecks (database, PostgreSQL 18, TLS, restore state)
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          PGSSLMODE: require
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          classify() {
+            local f="$1"
+            if grep -qiE 'password authentication failed' "$f"; then echo auth_failed
+            elif grep -qiE 'could not translate host name|Name or service not known|Temporary failure in name resolution|nodename nor servname' "$f"; then echo dns_resolution_failed
+            elif grep -qiE 'invalid URI|invalid connection option|invalid percent-encoded|invalid integer value|invalid port number|unexpected .* in URI|missing "=" after|invalid [a-z_]+ value' "$f"; then echo libpq_rejected_uri
+            elif grep -qiE 'timeout expired|timed out' "$f"; then echo connect_timeout
+            elif grep -qiE 'Connection refused' "$f"; then echo connection_refused
+            elif grep -qiE 'Network is unreachable|No route to host|Cannot assign requested address' "$f"; then echo network_unreachable
+            elif grep -qiE 'server closed the connection|Connection reset|could not receive data|could not send data' "$f"; then echo connection_closed
+            elif grep -qiE 'no pg_hba.conf entry|not permitted to log in' "$f"; then echo access_rule_rejected
+            elif grep -qiE 'database .* does not exist' "$f"; then echo database_missing
+            elif grep -qiE 'too many connections|remaining connection slots' "$f"; then echo too_many_connections
+            elif grep -qiE 'SSL|certificate|TLS' "$f"; then echo tls_error
+            else echo other_error
+            fi
+          }
+          q() {
+            local err out
+            err="$(mktemp)"
+            if out="$("$PSQL" "$FCB_DEFAULTDB_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>"$err")"; then
+              rm -f "$err"; printf '%s\n' "$out"
+            else
+              echo "::error::precheck query failed ($(classify "$err"))" >&2
+              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          qf() {
+            local err out
+            err="$(mktemp)"
+            if out="$("$PSQL" "$FCB_DEFAULTDB_URL" -X -A -t -v ON_ERROR_STOP=1 -f "$1" 2>"$err")"; then
+              rm -f "$err"; printf '%s\n' "$out"
+            else
+              echo "::error::precheck file failed ($(classify "$err"))" >&2
+              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          db="$(q 'select current_database()')"
+          test "$db" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
+          ver="$(q "select current_setting('server_version_num')::int")"
+          [ "$ver" -ge 180000 ] && [ "$ver" -lt 190000 ] || { echo "::error::server is not PostgreSQL 18"; exit 1; }
+          ssl="$(q 'select ssl from pg_stat_ssl where pid = pg_backend_pid()')"
+          test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
+          cs="$(q 'select current_schema()')"
+          test "$cs" = "public" || { echo "::error::current schema is not public"; exit 1; }
+          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
+          [ "$schemas" = "0" ] || { echo "::error::unexpected non-system schemas present ($schemas); refusing"; exit 1; }
+          state="$(qf sql/aiven/defaultdb_precheck.sql)"
+          if [ "$state" = "TRACKED" ]; then state="$(qf sql/aiven/defaultdb_precheck_tracked.sql)"; fi
+          echo "## Precheck state: $state" >> "$GITHUB_STEP_SUMMARY"
+          case "$state" in
+            EMPTY|RUNTIME_ONLY|BRIDGE_0001_0007|BRIDGE_0001_0008) ;;
+            *) echo "::error::restore refused by precheck state $state"; exit 1 ;;
+          esac
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode != 'apply' }}
+        run: |
+          echo "## Diagnose mode: prechecks only, the restore step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore bridge 0001-0008 (single transaction, run twice) and verify
+        # Writes only with mode=apply AND the exact confirmation phrase (re-checked here).
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY BRIDGE 0001-0008 TO defaultdb' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          PGSSLMODE: require
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_schema() <> 'public' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          sp() {
+            local err rc=0
+            err="$(mktemp)"
+            "$PSQL" "$FCB_DEFAULTDB_URL" "$@" 2>"$err" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::psql failed (exit $rc)" >&2
+              echo "psql (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+            fi
+            rm -f "$err"; return "$rc"
+          }
+          state() {
+            local s
+            s="$(sp -X -A -t -v ON_ERROR_STOP=1 -f sql/aiven/defaultdb_precheck.sql)"
+            if [ "$s" = "TRACKED" ]; then s="$(sp -X -A -t -v ON_ERROR_STOP=1 -f sql/aiven/defaultdb_precheck_tracked.sql)"; fi
+            printf '%s' "$s"
+          }
+          before="$(state)"
+          case "$before" in
+            EMPTY|RUNTIME_ONLY|BRIDGE_0001_0007|BRIDGE_0001_0008) ;;
+            *) echo "::error::state changed since precheck ($before); refusing"; exit 1 ;;
+          esac
+          run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
+          verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_bridge_schema.sql; }
+          run;    first="$(verify)"
+          applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          run;    second="$(verify)"
+          applied2="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          test "$first" = "$second" || { echo "::error::second run changed the schema evidence"; exit 1; }
+          test "$applied1" = "$applied2" || { echo "::error::second run re-applied migrations"; exit 1; }
+          counts="$(printf '%s\n' "$second" | head -n 7 | paste -sd' ')"
+          test "$counts" = "$EXPECTED_COUNTS" || { echo "::error::object counts differ from expected"; printf '%s\n' "$counts"; exit 1; }
+          files="$(for f in sql/migrations/bridge/000[1-8]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done)"
+          recorded="$(printf '%s\n' "$second" | tail -n +8)"
+          test "$recorded" = "$files" || { echo "::error::recorded migration checksums differ from repo files"; exit 1; }
+          after="$(state)"
+          test "$after" = "BRIDGE_0001_0008" || { echo "::error::post-restore state is $after"; exit 1; }
+          {
+            echo "## Restore: PASS (state before: $before; run 1 applied, run 2 no-op; state after: $after)"
+            echo '```'
+            printf '%s\n' "$second"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
