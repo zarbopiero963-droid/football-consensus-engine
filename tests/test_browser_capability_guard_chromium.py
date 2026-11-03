@@ -2,15 +2,21 @@
 
 Reproduced on main 25a1d8e on both provider paths, then fixed fail-closed: a WebSocket or
 WebSocketStream opened INSIDE a dedicated or shared worker reached an internal host. The
-Fetch request stage and route_web_socket only cover page contexts. Worker, SharedWorker,
-RTCPeerConnection, RTCDataChannel, WebTransport and WebSocketStream are now undefined in
-every realm through a context init script.
+Fetch request stage and route_web_socket only cover page contexts. Two layers now:
+1. a context init script makes Worker, SharedWorker, RTCPeerConnection, RTCDataChannel,
+   WebTransport and WebSocketStream undefined in every realm the script reaches;
+2. a browser-enforced document CSP (worker-src 'none', no ws:/wss: in connect-src), appended at
+   the Fetch response stage and inherited by srcdoc/about:blank/blob/data documents. It closes
+   the review P0: on the remote path a sandboxed srcdoc frame commits in its own process before
+   any DevTools client attaches, so layer 1 never reaches it.
 
 NOT mitigated, and kept honest as a strict xfail:
 - speculation-rules prefetch/prerender sends browser-process GET requests that CDP Fetch never
   pauses;
 - Page.setPrerenderingAllowed, a data-saver override and Chromium launch flags did not stop it;
-- text/DOM filtering was bypassed (character references, split writes, blob: documents).
+- text/DOM filtering was bypassed (character references, split writes, blob: documents);
+- WebRTC (TURN over TCP) from a sandboxed srcdoc frame on the remote path: no CSP directive
+  governs WebRTC in Chromium.
 
 It needs an egress proxy that validates resolved IPs. The browser stays behind the kill switch.
 
@@ -20,7 +26,8 @@ which records every TCP connection with its first request line.
 from __future__ import annotations
 
 import asyncio
-import json
+import base64
+import gzip
 import os
 import socket
 import subprocess
@@ -38,8 +45,6 @@ from bridge.security import UnsafeURL
 playwright_api = pytest.importorskip("playwright.async_api")
 
 PUB, INT = "127.0.0.2", "127.0.0.1"
-RULES = "JSON.stringify({prefetch:[{source:'list',urls:['http://INT/r']}],prerender:[{source:'list',urls:['http://INT/p']}]})"
-T = "'specula'+'tionrules'"  # obfuscated so the static body scan does NOT see it: tests the runtime guard
 WS_BLOB = "URL.createObjectURL(new Blob([\"new WebSocket('ws://INT/')\"]))"
 
 WORKER_PAGES = {
@@ -53,22 +58,20 @@ WORKER_PAGES = {
     "worker_websocketstream": "<script>try{new Worker(URL.createObjectURL(new Blob([\"new WebSocketStream('ws://INT/')\"])))}catch(e){}</script>",
     "blob_document_worker": "<script>const html='<script>try{new Worker(URL.createObjectURL(new Blob([\\\"new WebSocket(\\'ws://INT/\\')\\\"])))}catch(e){}<'+'/script>';const f=document.createElement('iframe');f.src=URL.createObjectURL(new Blob([html],{type:'text/html'}));document.body.appendChild(f)</script>",
 }
-DYNAMIC_RULES = {
-    "dyn_type": f"<script>const s=document.createElement('script');try{{s.type={T}}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
-    "dyn_setattr": f"<script>const s=document.createElement('script');try{{s.setAttribute('type',{T})}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
-    "dyn_setattrns": f"<script>const s=document.createElement('script');try{{s.setAttributeNS(null,'type',{T})}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
-    "dyn_attrnode": f"<script>const s=document.createElement('script');const a=document.createAttribute('type');a.value={T};try{{s.setAttributeNode(a)}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
-    "dyn_attrvalue": f"<script>const s=document.createElement('script');s.setAttribute('type','x');try{{s.getAttributeNode('type').value={T}}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
-    "dyn_namednodemap": f"<script>const s=document.createElement('script');const a=document.createAttribute('type');a.value={T};try{{s.attributes.setNamedItem(a)}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
-    "dyn_late_text": f"<script>const s=document.createElement('script');s.type='x';document.head.appendChild(s);try{{s.getAttributeNode('type').value={T}}}catch(e){{}};s.textContent={RULES}</script>",
-    "dyn_fragment": f"<script>try{{document.body.appendChild(document.createRange().createContextualFragment('<script type='+{T}+'>'+{RULES}+'<\\/script>'))}}catch(e){{}}</script>",
-    "dyn_docwrite": f"<script>try{{document.write('<script type='+{T}+'>'+{RULES}+'<\\/script>')}}catch(e){{}}</script>",
-}
-STATIC_RULES = {
+SPECULATION = {
     "static_inline": "<script type=speculationrules>{\"prefetch\":[{\"source\":\"list\",\"urls\":[\"http://INT/s\"]}]}</script>",
-    "static_prerender": "<script type=\"SpeculationRules\">{\"prerender\":[{\"source\":\"list\",\"urls\":[\"http://INT/s2\"]}]}</script>",
-    "header_rules": "",
 }
+# A sandboxed srcdoc frame runs in its own process on the remote path, committed before any
+# DevTools client can attach: the init script never reaches it (review P0). Only the
+# browser-enforced document CSP does.
+SANDBOX_PAGES = {
+    "sandbox_srcdoc_worker": "<iframe sandbox=allow-scripts srcdoc=\"<script>try{new Worker(URL.createObjectURL(new Blob([&quot;new WebSocket('ws://INT/sbw')&quot;])))}catch(e){}</script>\"></iframe>",
+    "sandbox_srcdoc_websocket": "<iframe sandbox=allow-scripts srcdoc=\"<script>try{new WebSocket('ws://INT/sbws')}catch(e){}</script>\"></iframe>",
+    "sandbox_srcdoc_websocketstream": "<iframe sandbox=allow-scripts srcdoc=\"<script>try{new WebSocketStream('ws://INT/sbwss')}catch(e){}</script>\"></iframe>",
+}
+RTC_TURN = ("<iframe sandbox=allow-scripts srcdoc=\"<script>try{const pc=new RTCPeerConnection({iceServers:"
+            "[{urls:'turn:INT?transport=tcp',username:'u',credential:'c'}],iceTransportPolicy:'relay'});"
+            "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch(e){}</script>\"></iframe>")
 
 
 class _Servers:
@@ -88,18 +91,14 @@ class _Servers:
 
             def do_GET(self):
                 name = urlsplit(self.path).path.strip("/")
-                if name == "rules.json":
-                    body = json.dumps({"prefetch": [{"source": "list", "urls": [f"http://{servers.internal}/h"]}]}).encode()
-                    ctype = "application/speculationrules+json"
-                else:
-                    page = {**WORKER_PAGES, **DYNAMIC_RULES, **STATIC_RULES, **POSITIVE}.get(name, "")
-                    body = (f"<html><head></head><body><p id=ok>public</p>{page}</body></html>"
-                            .replace("INT", servers.internal).encode())
-                    ctype = "text/html"
+                page = {**WORKER_PAGES, **SANDBOX_PAGES, **SPECULATION, **POSITIVE}.get(name, "")
+                body = (f"<html><head></head><body><p id=ok>public</p>{page}</body></html>"
+                        .replace("INT", servers.internal).encode())
                 self.send_response(200)
-                self.send_header("Content-Type", ctype)
-                if name == "header_rules":
-                    self.send_header("Speculation-Rules", '"/rules.json"')
+                self.send_header("Content-Type", "text/html")
+                if name == "gzip_page":  # the re-served body is decoded: framing headers are dropped
+                    body = gzip.compress(body)
+                    self.send_header("Content-Encoding", "gzip")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -132,6 +131,8 @@ class _Servers:
 
 POSITIVE = {
     "normal": "<script>document.title='scripts-run'</script>",
+    "rtc_turn": RTC_TURN,
+    "gzip_page": "<script>document.title='gz-ok'</script>",
 }
 
 
@@ -219,13 +220,14 @@ PROVIDERS = {"local": _local_session, "remote": _remote_session}
 
 
 def _visit(servers, provider, names, settle=2.0):
-    """Open each page in a fresh session; return {name: (error message or None, title)}."""
+    """Open each page in a fresh session; return {name: (error or None, title, internal lines)}."""
     async def scenario():
         out = {}
         async with playwright_api.async_playwright() as p:
             for name in names:
                 bridge, session, close = await PROVIDERS[provider](p)
                 try:
+                    before = len(servers.lines)
                     error = None
                     try:
                         await bridge.open_url(session.id, servers.url(name))
@@ -233,19 +235,49 @@ def _visit(servers, provider, names, settle=2.0):
                         error = str(exc)
                     await asyncio.sleep(settle)
                     title = await session.page.title() if session.page else ""
-                    out[name] = (error, title)
+                    out[name] = (error, title, servers.lines[before:])
                 finally:
                     await close()
         return out
     return asyncio.run(scenario())
 
 
+def _guards_off(monkeypatch, *, init_script: bool, csp: bool):
+    """RED controls only: switch a WP-002b layer off to prove the vectors are real."""
+    if init_script:
+        monkeypatch.setattr(browser_use, "CAPABILITY_GUARD_JS", "/* WP-002b control: guard off */")
+    if csp:
+        monkeypatch.setattr(BrowserUseBridge, "_document_csp_headers",
+                            staticmethod(lambda headers: list(headers or [])))
+
+
 @pytest.mark.parametrize("provider", sorted(PROVIDERS))
 def test_worker_websockets_never_reach_internal(servers, provider):
-    results = _visit(servers, provider, list(WORKER_PAGES))
+    results = _visit(servers, provider, list(WORKER_PAGES) + list(SANDBOX_PAGES))
     assert servers.lines == []
-    # Not vacuous: every page really loaded (no refusal), so the sockets were attempted and blocked.
-    assert all(error is None for error, _ in results.values()), results
+    # Every page really loaded (no refusal); the RED controls below prove the vectors fire.
+    assert all(error is None for error, _, _ in results.values()), results
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_control_every_worker_vector_leaks_without_the_guards(servers, provider, monkeypatch):
+    """Review P2: not vacuous. With both layers off every vector reaches the internal host."""
+    _guards_off(monkeypatch, init_script=True, csp=True)
+    results = _visit(servers, provider, list(WORKER_PAGES))
+    expected = {name: True for name in WORKER_PAGES}
+    if provider == "remote":
+        # Full Chrome's popup blocker refuses window.open without a user gesture (window.open
+        # returns null, verified): not a vector on that path, and the test says so explicitly.
+        expected["popup_worker"] = False
+    assert {name: bool(lines) for name, (_, _, lines) in results.items()} == expected
+
+
+def test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path(servers, monkeypatch):
+    """Review P0 RED: init script ON, document CSP OFF -> a sandboxed srcdoc frame on the remote
+    (Browser Use / CDP) path still reaches the internal host. Only the CSP closes it."""
+    _guards_off(monkeypatch, init_script=False, csp=True)
+    results = _visit(servers, "remote", list(SANDBOX_PAGES))
+    assert {name: bool(lines) for name, (_, _, lines) in results.items()} == {name: True for name in SANDBOX_PAGES}
 
 
 @pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): speculation-rules "
@@ -257,6 +289,20 @@ def test_speculation_rules_residual_is_still_open(servers):
     assert servers.lines == []
 
 
+@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
+                   "the remote path keeps RTCPeerConnection (the init script cannot reach it) and no CSP "
+                   "directive governs WebRTC in Chromium: a TURN-over-TCP allocation reaches an internal "
+                   "host. Needs an egress proxy. A pass means the residual is gone: update the registry.")
+def test_webrtc_from_a_sandboxed_srcdoc_residual_is_still_open(servers):
+    _visit(servers, "remote", ["rtc_turn"])
+    assert servers.lines == []
+
+
+def test_webrtc_from_a_sandboxed_srcdoc_is_blocked_on_the_local_path(servers):
+    _visit(servers, "local", ["rtc_turn"])
+    assert servers.lines == []
+
+
 @pytest.mark.parametrize("provider", sorted(PROVIDERS))
 def test_positive_controls(servers, provider):
     """Legitimate pages still load and run scripts; the disabled capabilities are explicit."""
@@ -264,27 +310,37 @@ def test_positive_controls(servers, provider):
         async with playwright_api.async_playwright() as p:
             bridge, session, close = await PROVIDERS[provider](p)
             try:
+                await bridge.open_url(session.id, servers.url("gzip_page"))
+                gz_title = await session.page.title()
                 result = await bridge.open_url(session.id, servers.url("normal"))
                 title = await session.page.title()
-                probe = await session.page.evaluate("""() => {
+                probe = await session.page.evaluate("""async (wsUrl) => {
                     const out = {};
-                    for (const n of ['Worker', 'SharedWorker', 'RTCPeerConnection', 'WebTransport', 'WebSocketStream']) {
+                    for (const n of ['Worker', 'SharedWorker', 'RTCPeerConnection', 'webkitRTCPeerConnection',
+                                     'RTCDataChannel', 'WebTransport', 'WebSocketStream']) {
                         // Ordinary feature detection must not throw.
                         out[n] = (typeof globalThis[n] === 'undefined' && !globalThis[n]) ? 'disabled' : 'available';
                     }
                     try { globalThis.Worker = function () {}; } catch (e) {}
                     out.redefined = typeof globalThis.Worker;
                     out.fetch = typeof fetch; out.websocket = typeof WebSocket;
+                    // Behaviour change (documented): the document CSP refuses every ws:/wss: socket.
+                    const violations = [];
+                    document.addEventListener('securitypolicyviolation', e => violations.push(e.effectiveDirective));
+                    try { new WebSocket(wsUrl); } catch (e) { violations.push('threw:' + e.name); }
+                    await new Promise(r => setTimeout(r, 300));
+                    out.websocket_refused_by = violations.filter(v => v === 'connect-src').length ? 'connect-src' : violations.join(',');
                     return out;
-                }""")
-                return result, title, probe
+                }""", servers.url("x").replace("http://", "ws://"))
+                return result, title, probe, gz_title
             finally:
                 await close()
-    result, title, probe = asyncio.run(scenario())
-    assert result["final_url"].startswith(f"http://{PUB}") and title == "scripts-run"
+    result, title, probe, gz_title = asyncio.run(scenario())
+    assert result["final_url"].startswith(f"http://{PUB}") and title == "scripts-run" and gz_title == "gz-ok"
     assert probe == {"Worker": "disabled", "SharedWorker": "disabled", "RTCPeerConnection": "disabled",
+                     "webkitRTCPeerConnection": "disabled", "RTCDataChannel": "disabled",
                      "WebTransport": "disabled", "WebSocketStream": "disabled", "redefined": "undefined",
-                     "fetch": "function", "websocket": "function"}
+                     "fetch": "function", "websocket": "function", "websocket_refused_by": "connect-src"}
     assert servers.lines == []
 
 
@@ -300,3 +356,76 @@ def test_session_without_init_scripts_fails_closed():
     assert session.capability_guard_installed is False and session.redirect_guard_active is False
     with pytest.raises(UnsafeURL):
         BrowserUseBridge()._require_guard(session)
+
+
+class _FakeCDP:
+    def __init__(self, fail=(), chunks=(b"<p>x</p>",)):
+        self.sent, self.fail, self.chunks = [], set(fail), list(chunks)
+
+    async def send(self, method, params=None):
+        self.sent.append((method, params))
+        if method in self.fail:
+            raise RuntimeError("not supported")
+        if method == "Fetch.takeResponseBodyAsStream":
+            return {"stream": "s1"}
+        if method == "IO.read":
+            data = self.chunks.pop(0) if self.chunks else b""
+            return {"data": base64.b64encode(data).decode(), "base64Encoded": True, "eof": not self.chunks}
+        return {}
+
+
+def _respond(event, **kw):
+    cdp = _FakeCDP(**kw)
+    session = Session(id="x", cdp_url="local", live_url=None, provider="cloak")
+    asyncio.run(BrowserUseBridge()._document_response(cdp, session, {"requestId": "r1", **event}))
+    return cdp, session
+
+
+def test_document_csp_is_appended_and_site_policies_are_kept():
+    headers = [{"name": "Content-Type", "value": "text/html"},
+               {"name": "Content-Security-Policy", "value": "default-src 'self'"},
+               {"name": "Content-Encoding", "value": "gzip"}, {"name": "content-length", "value": "9"}]
+    out = BrowserUseBridge._document_csp_headers(headers)
+    assert out == headers[:2] + [{"name": "Content-Security-Policy", "value": browser_use.DOCUMENT_CSP}]
+    assert "worker-src 'none'" in browser_use.DOCUMENT_CSP
+    connect = next(d for d in browser_use.DOCUMENT_CSP.split(";") if d.strip().startswith("connect-src"))
+    assert "ws:" not in connect and "wss:" not in connect and "*" not in connect and "'self'" not in connect
+
+
+def test_document_is_re_served_with_the_csp_never_continued():
+    cdp, session = _respond({"responseStatusCode": 200, "responseStatusText": "OK",
+                             "responseHeaders": [{"name": "Content-Type", "value": "text/html"}]},
+                            chunks=[b"<p>a", b"b</p>"])
+    methods = [m for m, _ in cdp.sent]
+    assert "Fetch.continueResponse" not in methods  # Chromium would not enforce an appended CSP
+    fulfil = dict(cdp.sent)["Fetch.fulfillRequest"]
+    assert base64.b64decode(fulfil["body"]) == b"<p>ab</p>" and fulfil["responseCode"] == 200
+    assert fulfil["responseHeaders"][-1] == {"name": "Content-Security-Policy", "value": browser_use.DOCUMENT_CSP}
+    assert ("IO.close", {"handle": "s1"}) in cdp.sent and session.redirect_blocked is False
+
+
+@pytest.mark.parametrize("kw", [{"fail": {"Fetch.takeResponseBodyAsStream"}}, {"fail": {"IO.read"}},
+                                {"fail": {"Fetch.fulfillRequest"}}])
+def test_document_response_fails_closed_when_the_csp_cannot_be_applied(kw):
+    cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, **kw)
+    assert cdp.sent[-1] == ("Fetch.failRequest", {"requestId": "r1", "errorReason": "BlockedByClient"})
+    assert session.redirect_blocked is True and session.blocked_requests == 1
+
+
+def test_document_over_the_cap_fails_closed(monkeypatch):
+    monkeypatch.setattr(browser_use, "DOCUMENT_BODY_MAX_BYTES", 4)
+    cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc", b"de"])
+    assert "Fetch.fulfillRequest" not in [m for m, _ in cdp.sent]
+    assert cdp.sent[-1][0] == "Fetch.failRequest" and session.redirect_blocked is True
+
+
+def test_redirect_hop_and_network_error_are_not_re_served():
+    cdp, _ = _respond({"responseStatusCode": 302, "responseHeaders": [{"name": "Location", "value": "/n"}]})
+    assert cdp.sent == [("Fetch.continueRequest", {"requestId": "r1"})]
+    cdp, _ = _respond({"responseErrorReason": "Failed"})
+    assert cdp.sent == [("Fetch.continueRequest", {"requestId": "r1"})]
+
+
+def test_a_3xx_without_location_renders_and_is_re_served():
+    cdp, _ = _respond({"responseStatusCode": 302, "responseHeaders": []})
+    assert "Fetch.fulfillRequest" in [m for m, _ in cdp.sent]

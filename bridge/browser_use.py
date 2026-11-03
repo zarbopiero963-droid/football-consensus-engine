@@ -31,11 +31,12 @@ REDIRECT_BLOCKED = "navigation redirected to a non-public address"
 CONTENT_BLOCKED = "page content is not from a public address"
 # FCB-WP-002b: network capabilities that bypass the CDP request guard (reproduced on real
 # Chromium: a WebSocket/WebSocketStream opened inside a dedicated or shared worker reached an
-# internal host; WebRTC/WebTransport use UDP/QUIC outside the Fetch domain). They are removed
-# from every realm before any page script runs: the context init script runs in every frame,
-# popup and srcdoc/data/about:blank/blob document. The properties read as undefined and cannot be
-# redefined, so ordinary feature detection degrades gracefully. NOT covered here:
-# speculation-rules prefetch/prerender (browser-process requests, no CDP block exists) — see
+# internal host; WebRTC/WebTransport use UDP/QUIC outside the Fetch domain). Layer 1: the
+# context init script removes them before page script runs in every realm it reaches (frames,
+# popups, srcdoc/data/about:blank/blob documents). The properties read as undefined and cannot be
+# redefined, so ordinary feature detection degrades gracefully. Layer 2 (DOCUMENT_CSP below)
+# covers the realms layer 1 cannot reach. NOT covered: speculation-rules prefetch/prerender
+# (browser-process requests) and WebRTC from a sandboxed srcdoc frame on the remote path — see
 # docs/certification/FCB_PR_WORKPACKAGES.md WP-002b; the browser stays behind the kill switch.
 DISABLED_CAPABILITIES = ("Worker", "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection",
                          "RTCDataChannel", "WebTransport", "WebSocketStream")
@@ -50,6 +51,26 @@ CAPABILITY_GUARD_JS = r"""
   }
 })();
 """ % json.dumps(list(DISABLED_CAPABILITIES))
+# FCB-WP-002b review P0: on the remote (CDP) path a sandboxed srcdoc iframe is committed in its
+# own process BEFORE any DevTools client can attach to it (attachedToTarget arrives already
+# committed, waitingForDebugger=false), so neither the init script above nor Playwright's
+# WebSocket route reaches it: a WebSocket, WebSocketStream or worker opened there reached an
+# internal host. A Content-Security-Policy is enforced by the browser, not by page script, and is
+# inherited by every srcdoc/about:blank/blob/data document, sandboxed or not. It is appended to
+# every document response at the Fetch response stage (re-served with Fetch.fulfillRequest):
+#   worker-src 'none'                       no dedicated/shared/service workers in any realm;
+#   connect-src http: https: data: blob:    fetch/XHR/EventSource stay (each request is still
+#                                           validated by the request guard); ws:/wss: schemes
+#                                           are not matched, so WebSocket, WebSocketStream and
+#                                           WebTransport-to-ws are refused everywhere.
+# Behaviour change: pages can no longer open WebSockets. NOT covered (no CSP directive exists in
+# Chromium): WebRTC ICE/TURN from such a frame — documented residual, needs an egress proxy.
+DOCUMENT_CSP = "worker-src 'none'; connect-src http: https: data: blob:"
+# A document is re-served whole to carry the CSP; larger ones fail closed instead of streaming
+# unguarded.
+DOCUMENT_BODY_MAX_BYTES = 8 * 1024 * 1024
+_FULFILL_DROPPED_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 TOOLS_DISABLED = "browser tools are disabled on this server"
 
 # Schemes a frame may legitimately carry without a network fetch of its own.
@@ -381,9 +402,8 @@ class BrowserUseBridge:
         if not session.redirect_guard_active or session.context is None:
             return
         for page in list(session.context.pages):
-            url = getattr(page, "url", "") or ""
-            if url.startswith(_LOCAL_FRAME_PREFIXES):
-                continue
+            # about:blank included (review P3): a pre-existing blank document carries neither the
+            # init script nor the document CSP; re-navigating creates one that does.
             try:
                 async with asyncio.timeout(6):
                     await page.goto("about:blank")
@@ -406,6 +426,9 @@ class BrowserUseBridge:
 
         async def on_paused(event: dict[str, Any]) -> None:
             request_id = event.get("requestId")
+            if "responseStatusCode" in event or "responseErrorReason" in event:
+                await self._document_response(cdp, session, event)
+                return
             # Validate the URL Chromium itself resolved (request stage), not a header we
             # re-parse: this is what the connection will actually go to.
             url = (event.get("request") or {}).get("url", "")
@@ -431,7 +454,12 @@ class BrowserUseBridge:
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
         cdp.on("Fetch.requestPaused", dispatch)
-        await cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+        await cdp.send("Fetch.enable", {"patterns": [
+            {"urlPattern": "*", "requestStage": "Request"},
+            # Document responses only: append DOCUMENT_CSP (WP-002b). The URL was already
+            # validated at the request stage of the same request.
+            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"},
+        ]})
         # Flat auto-attach so popups, OOPIFs, workers and service workers inherit the guard.
         await cdp.send("Target.setAutoAttach",
                        {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True})
@@ -473,6 +501,74 @@ class BrowserUseBridge:
 
         await route_ws("**/*", ws_guard)
         session.websocket_guard_installed = True
+
+    @staticmethod
+    def _document_csp_headers(headers: list[dict[str, str]] | None) -> list[dict[str, str]]:
+        """The response headers plus DOCUMENT_CSP. The site's own policies are kept: every
+        Content-Security-Policy header is enforced, so ours can only restrict further. The body
+        is handed back already decoded, so encoding/length framing headers are dropped."""
+        out = [{"name": h.get("name", ""), "value": h.get("value", "")} for h in (headers or [])
+               if h.get("name", "").lower() not in _FULFILL_DROPPED_HEADERS]
+        out.append({"name": "Content-Security-Policy", "value": DOCUMENT_CSP})
+        return out
+
+    async def _read_document_body(self, cdp, request_id) -> str | None:
+        """Base64 body of a paused document response, or None when over the cap or unreadable."""
+        stream = (await cdp.send("Fetch.takeResponseBodyAsStream", {"requestId": request_id}))["stream"]
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            while True:
+                part = await cdp.send("IO.read", {"handle": stream, "size": 1 << 16})
+                data = part.get("data", "")
+                raw = base64.b64decode(data) if part.get("base64Encoded") else data.encode("utf-8")
+                total += len(raw)
+                if total > DOCUMENT_BODY_MAX_BYTES:
+                    return None
+                chunks.append(raw)
+                if part.get("eof"):
+                    break
+        finally:
+            try:
+                await cdp.send("IO.close", {"handle": stream})
+            except Exception:
+                pass
+        return base64.b64encode(b"".join(chunks)).decode("ascii")
+
+    async def _document_response(self, cdp, session: Session, event: dict[str, Any]) -> None:
+        """Response stage of a document: re-serve it with DOCUMENT_CSP, or fail it closed.
+
+        Fetch.continueResponse is NOT used: Chromium replaces the headers but keeps the policy it
+        parsed from the original response, so an appended CSP is silently not enforced (verified
+        on real Chromium). Fetch.fulfillRequest makes Chromium parse the headers it is given."""
+        request_id = event.get("requestId")
+        status = event.get("responseStatusCode")
+        headers = event.get("responseHeaders") or []
+        redirect = status in _REDIRECT_STATUSES and any(
+            h.get("name", "").lower() == "location" and h.get("value") for h in headers)
+        if "responseErrorReason" in event or redirect:
+            # No document is committed from these (network error page; a redirect hop whose
+            # target is paused again). A 3xx without Location renders its body: it is re-served.
+            try:
+                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+            except Exception:
+                pass
+            return
+        try:
+            body = await self._read_document_body(cdp, request_id)
+            if body is None:
+                raise ValueError("document body over cap")
+            params = {"requestId": request_id, "responseCode": status, "body": body,
+                      "responseHeaders": self._document_csp_headers(headers)}
+            if event.get("responseStatusText"):
+                params["responsePhrase"] = event["responseStatusText"]
+            await cdp.send("Fetch.fulfillRequest", params)
+        except Exception:
+            # Without the CSP the document could open unguarded sockets: never render it.
+            LOG.warning("Document CSP could not be applied: session=%s", session.id)
+            session.blocked_requests += 1
+            session.redirect_blocked = True
+            await self._fetch_fail(cdp, request_id)
 
     @staticmethod
     async def _fetch_fail(cdp, request_id) -> None:
