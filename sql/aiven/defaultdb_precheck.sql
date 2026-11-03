@@ -7,28 +7,30 @@
 -- constraints; indexes a subset of the expected ones), a plain permanent heap table owned by
 -- the restoring role, default privileges, no reloptions, default replica identity, no rule,
 -- trigger, policy, RLS, inheritance, identity or generated column.
--- pg_catalog must come first in the search path, so no object in the target schema can shadow
--- a built-in used here. The signature below was taken from a clean runtime creation; tests
+-- pg_catalog must come first in the search path (no database/role search_path setting either),
+-- and the schema may hold no operator, operator class/family, collation, conversion, text-search
+-- object or extension, so nothing can shadow a built-in used here. Database-wide default
+-- privileges and enabled event triggers are refused: they would act on the restore's own DDL. The signature below was taken from a clean runtime creation; tests
 -- keep it in sync. No data row is read.
 WITH expected(kind, relname, def) AS (VALUES
-    ('col', 'api_football_quota_attempts', 'api_key_hash text COLLATE default NOT NULL'),
-    ('col', 'api_football_quota_attempts', 'attempt_id text COLLATE default NOT NULL'),
+    ('col', 'api_football_quota_attempts', 'api_key_hash text COLLATE pg_catalog.default NOT NULL'),
+    ('col', 'api_football_quota_attempts', 'attempt_id text COLLATE pg_catalog.default NOT NULL'),
     ('col', 'api_football_quota_attempts', 'created_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()'),
-    ('col', 'api_football_quota_counters', 'api_key_hash text COLLATE default NOT NULL'),
+    ('col', 'api_football_quota_counters', 'api_key_hash text COLLATE pg_catalog.default NOT NULL'),
     ('col', 'api_football_quota_counters', 'bucket bigint NOT NULL'),
     ('col', 'api_football_quota_counters', 'used integer NOT NULL'),
-    ('col', 'api_football_quota_counters', 'window_kind text COLLATE default NOT NULL'),
-    ('col', 'api_football_quota_leases', 'api_key_hash text COLLATE default NOT NULL'),
+    ('col', 'api_football_quota_counters', 'window_kind text COLLATE pg_catalog.default NOT NULL'),
+    ('col', 'api_football_quota_leases', 'api_key_hash text COLLATE pg_catalog.default NOT NULL'),
     ('col', 'api_football_quota_leases', 'expires_at timestamp with time zone NOT NULL'),
-    ('col', 'api_football_quota_leases', 'lease_id text COLLATE default NOT NULL'),
-    ('col', 'oauth_claude_dcr_clients', 'client_id_hash text COLLATE default NOT NULL'),
+    ('col', 'api_football_quota_leases', 'lease_id text COLLATE pg_catalog.default NOT NULL'),
+    ('col', 'oauth_claude_dcr_clients', 'client_id_hash text COLLATE pg_catalog.default NOT NULL'),
     ('col', 'oauth_claude_dcr_clients', 'created_at timestamp with time zone NOT NULL DEFAULT now()'),
     ('col', 'oauth_claude_dcr_clients', 'expires_at timestamp with time zone NOT NULL'),
-    ('col', 'oauth_claude_dcr_clients', 'redirect_uri text COLLATE default NOT NULL'),
-    ('col', 'sxbet_rate_attempts', 'attempt_id text COLLATE default NOT NULL'),
-    ('col', 'sxbet_rate_attempts', 'bucket_key text COLLATE default NOT NULL'),
+    ('col', 'oauth_claude_dcr_clients', 'redirect_uri text COLLATE pg_catalog.default NOT NULL'),
+    ('col', 'sxbet_rate_attempts', 'attempt_id text COLLATE pg_catalog.default NOT NULL'),
+    ('col', 'sxbet_rate_attempts', 'bucket_key text COLLATE pg_catalog.default NOT NULL'),
     ('col', 'sxbet_rate_attempts', 'created_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()'),
-    ('col', 'sxbet_rate_cooldowns', 'bucket_key text COLLATE default NOT NULL'),
+    ('col', 'sxbet_rate_cooldowns', 'bucket_key text COLLATE pg_catalog.default NOT NULL'),
     ('col', 'sxbet_rate_cooldowns', 'cooldown_until timestamp with time zone NOT NULL'),
     ('col', 'sxbet_rate_cooldowns', 'updated_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()'),
     ('con', 'api_football_quota_attempts', 'api_football_quota_attempts_pkey PRIMARY KEY (attempt_id)'),
@@ -66,7 +68,7 @@ present AS (
 ),
 got(kind, relname, def) AS (
     SELECT 'col', p.relname, a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
-        || CASE WHEN a.attcollation <> 0 THEN ' COLLATE ' || (SELECT collname FROM pg_collation WHERE oid = a.attcollation) ELSE '' END
+        || CASE WHEN a.attcollation <> 0 THEN ' COLLATE ' || (SELECT cn.nspname || '.' || co.collname FROM pg_collation co JOIN pg_namespace cn ON cn.oid = co.collnamespace WHERE co.oid = a.attcollation) ELSE '' END
         || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END
         || COALESCE(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
     FROM present p JOIN pg_attribute a ON a.attrelid = p.oid AND a.attnum > 0 AND NOT a.attisdropped
@@ -76,6 +78,7 @@ got(kind, relname, def) AS (
     FROM present p JOIN pg_constraint k ON k.conrelid = p.oid AND k.contype IN ('p', 'u', 'f', 'c', 'x')
     UNION ALL
     SELECT 'idx', p.relname, regexp_replace(pg_get_indexdef(i.indexrelid), ' ON \S+\.', ' ON ')
+        || CASE WHEN i.indisvalid AND i.indisready THEN '' ELSE ' INVALID' END
     FROM present p JOIN pg_index i ON i.indrelid = p.oid
 ),
 want AS (SELECT e.* FROM expected e JOIN present p USING (relname)),
@@ -102,6 +105,28 @@ facts AS (
         (SELECT count(*) FROM present p JOIN pg_attribute a ON a.attrelid = p.oid AND a.attnum > 0
             WHERE a.attacl IS NOT NULL OR a.attoptions IS NOT NULL OR a.attidentity <> '' OR a.attgenerated <> '') AS column_props,
         (SELECT count(*) FROM pg_policy pol JOIN present p ON p.oid = pol.polrelid) AS policies,
+        -- PG18: NOT NULL constraints may exist NOT VALID while attnotnull stays true
+        (SELECT count(*) FROM pg_constraint k JOIN present p ON p.oid = k.conrelid
+            WHERE NOT k.convalidated) AS unvalidated,
+        -- objects that can change how SQL resolves or behaves, never created by 0001-0008
+        (SELECT count(*) FROM pg_operator o JOIN pg_namespace n ON n.oid = o.oprnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_opclass o JOIN pg_namespace n ON n.oid = o.opcnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_opfamily o JOIN pg_namespace n ON n.oid = o.opfnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_collation o JOIN pg_namespace n ON n.oid = o.collnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_conversion o JOIN pg_namespace n ON n.oid = o.connamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_ts_config o JOIN pg_namespace n ON n.oid = o.cfgnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_ts_dict o JOIN pg_namespace n ON n.oid = o.dictnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_ts_parser o JOIN pg_namespace n ON n.oid = o.prsnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_ts_template o JOIN pg_namespace n ON n.oid = o.tmplnamespace WHERE n.nspname = current_schema())
+        + (SELECT count(*) FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE n.nspname = current_schema())
+          AS catalog_objects,
+        -- database-wide hazards: they would act on the restore's own DDL, then be certified
+        (SELECT count(*) FROM pg_default_acl) AS default_acls,
+        (SELECT count(*) FROM pg_event_trigger WHERE evtenabled <> 'D') AS event_triggers,
+        (SELECT count(*) FROM pg_db_role_setting rs
+            WHERE (rs.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) OR rs.setdatabase = 0)
+              AND (rs.setrole = 0 OR rs.setrole = (SELECT oid FROM pg_roles WHERE rolname = current_user))
+              AND array_to_string(rs.setconfig, ',') LIKE '%search_path%') AS search_path_settings,
         (SELECT count(*) FROM pg_rewrite rw JOIN present p ON p.oid = rw.ev_class) AS rules,
         (SELECT count(*) FROM pg_trigger tg JOIN present p ON p.oid = tg.tgrelid WHERE NOT tg.tgisinternal) AS triggers,
         (SELECT count(*) FROM pg_inherits ih JOIN present p ON p.oid IN (ih.inhrelid, ih.inhparent)) AS inheritance,
@@ -109,10 +134,13 @@ facts AS (
         to_regclass(quote_ident(current_schema()) || '.signer_schema_migrations') IS NOT NULL AS signer_tracked
 )
 SELECT CASE
-    WHEN unsafe_search_path THEN 'REFUSE_UNSAFE_SEARCH_PATH'
+    WHEN unsafe_search_path OR search_path_settings > 0 THEN 'REFUSE_UNSAFE_SEARCH_PATH'
+    WHEN event_triggers > 0 THEN 'REFUSE_EVENT_TRIGGERS'
+    WHEN default_acls > 0 THEN 'REFUSE_DEFAULT_PRIVILEGES'
+    WHEN catalog_objects > 0 THEN 'REFUSE_UNTRACKED_OBJECTS'
     WHEN signer_tracked THEN 'REFUSE_SIGNER_SERIES_PRESENT'
     WHEN signature_diffs > 0 OR table_props > 0 OR column_props > 0 OR policies > 0 OR rules > 0
-         OR triggers > 0 OR inheritance > 0 THEN 'REFUSE_RUNTIME_TABLE_DRIFT'
+         OR triggers > 0 OR inheritance > 0 OR unvalidated > 0 THEN 'REFUSE_RUNTIME_TABLE_DRIFT'
     WHEN tracked THEN 'TRACKED'
     WHEN relations = 0 AND functions = 0 AND user_types = 0 THEN 'EMPTY'
     WHEN foreign_relations > 0 OR functions > 0 OR user_types > 0 THEN 'REFUSE_UNTRACKED_OBJECTS'

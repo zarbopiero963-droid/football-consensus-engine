@@ -35,7 +35,9 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
    Anything else is refused.
 4. **Run `mode=apply`** with confirmation `APPLY BRIDGE 0001-0008 TO defaultdb` only after an explicit owner decision. The run:
    - uses **one transaction** containing: the target guard, the state guard (`defaultdb_restore_guard.sql`, generated from the two prechecks, evaluated under the bridge advisory lock), the bridge script, and the object-count assertion (`assert_bridge_counts.sql`);
+   - ends with the post guard (`defaultdb_restore_post_guard.sql`, generated): the end state must be `BRIDGE_0001_0008` and the md5 catalog fingerprint (`fingerprint_bridge_schema.sql`) must equal `EXPECTED_FINGERPRINT`, pinned on PostgreSQL 18. A tampered 0001–0007 object (function body, disabled trigger, extra column, privilege) therefore aborts the transaction;
    - commits nothing if any of them fails, including a count mismatch;
+   - forces `search_path=public` through `PGOPTIONS` on every psql connection, which overrides database and role settings; `pg_catalog` stays implicitly first;
    - runs the script a second time, which must be a no-op;
    - verifies the pinned object counts and the recorded checksums;
    - requires the final state `BRIDGE_0001_0008`.
@@ -46,7 +48,13 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 | `EMPTY` | no object in `public` | yes |
 | `RUNTIME_ONLY` | only the tables the running code creates itself (SX Bet rate coordinator, API-FOOTBALL quota coordinator, OAuth DCR), each **exactly** as the code creates it: columns, types, NOT NULL, defaults and constraints identical; indexes a subset; no rule, trigger, policy, RLS or inheritance | yes, data preserved |
 | `REFUSE_RUNTIME_TABLE_DRIFT` | a runtime-named table that differs, checked in every state (tracked or not): definition, collation, UNLOGGED, reloptions, replica identity, privileges, owner other than the restoring role, RLS, rules, triggers, policies, inheritance, identity or generated columns. It would be skipped by `IF NOT EXISTS` and certified | no |
-| `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, so an object could shadow a built-in | no |
+| `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, or a database/role `search_path` setting exists | no |
+| `REFUSE_EVENT_TRIGGERS` | an enabled event trigger exists; it would act on the restore's own DDL | no |
+| `REFUSE_DEFAULT_PRIVILEGES` | `ALTER DEFAULT PRIVILEGES` entries exist; they would grant on the new tables | no |
+
+`REFUSE_UNTRACKED_OBJECTS` also covers operators, operator classes and families, collations, conversions, text-search objects and extensions in `public`.
+
+On the real `defaultdb`, read-only on 2026-11-03, all of these were 0 and the only extension is `plpgsql`.
 | `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
 | `BRIDGE_0001_0008` | already restored | yes (no-op) |
 | `REFUSE_UNTRACKED_OBJECTS` | any other table, function or type | no |

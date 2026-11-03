@@ -46,6 +46,9 @@ jobs:
       EXPECTED_SCRIPT_SHA256: a6525b5baeade9cad1f3eb5fc27c506199c3d30ccabab5fd57f21eeb01b85a5c
       # Object counts after the restore on PostgreSQL 18, pinned and checked in CI (postgres-18)
       # by tests/integration/test_defaultdb_restore_postgres.py.
+      # md5 catalog fingerprint of the end state on PostgreSQL 18 (sql/aiven/fingerprint_bridge_schema.sql),
+      # asserted inside the transaction; pinned and checked by the postgres-18 CI job.
+      EXPECTED_FINGERPRINT: '107ce62faccbfee79a74d972b65ea6c5'
       EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
       PGCONNECT_TIMEOUT: '15'
       # Same Aiven service as fcb-aiven-pg18-test.yml (public values from the Aiven API).
@@ -116,6 +119,7 @@ jobs:
           generated="$(python scripts/generate_aiven_migrations.py --target bridge-0001-0008 --check)"
           # The in-transaction state guard must be regenerated from the committed prechecks.
           python scripts/generate_aiven_migrations.py --target restore-guard --check >/dev/null
+          python scripts/generate_aiven_migrations.py --target restore-post-guard --check >/dev/null
           actual="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
           test "$generated" = "$EXPECTED_SCRIPT_SHA256"
           test "$actual" = "$EXPECTED_SCRIPT_SHA256"
@@ -207,6 +211,8 @@ jobs:
 
       - name: Prechecks (database, PostgreSQL 18, TLS, restore state)
         env:
+          # Overrides any database/role search_path setting; pg_catalog stays implicitly first.
+          PGOPTIONS: '-c search_path=public'
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
           PGSSLMODE: require
         run: |
@@ -277,6 +283,7 @@ jobs:
         # Writes only with mode=apply AND the exact confirmation phrase (re-checked here).
         if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY BRIDGE 0001-0008 TO defaultdb' }}
         env:
+          PGOPTIONS: '-c search_path=public'
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
           PGSSLMODE: require
         run: |
@@ -308,7 +315,9 @@ jobs:
           # advisory lock), bridge script, then the object-count assertion. Any failure, including
           # a count mismatch, aborts the transaction before anything is committed.
           run() { sp -X -q -v ON_ERROR_STOP=1 -v expected_counts="$EXPECTED_COUNTS" -1 -c "$GUARD" \
-                    -f sql/aiven/defaultdb_restore_guard.sql -f "$SCRIPT" -f sql/aiven/assert_bridge_counts.sql >/dev/null; }
+                    -v expected_fingerprint="$EXPECTED_FINGERPRINT" \
+                    -f sql/aiven/defaultdb_restore_guard.sql -f "$SCRIPT" -f sql/aiven/assert_bridge_counts.sql \
+                    -f sql/aiven/defaultdb_restore_post_guard.sql >/dev/null; }
           verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_bridge_schema.sql; }
           run;    first="$(verify)"
           applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"

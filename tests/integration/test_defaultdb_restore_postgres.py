@@ -182,13 +182,47 @@ def test_a_failing_restore_leaves_nothing_behind(schema, tmp_path):
 
 # ---------------------------------------------------------------- review findings (PR #169)
 
-def _restore_tx(schema_name, expected_counts):
+def _restore_tx(schema_name, expected_counts, expected_fingerprint=None):
     """Exactly the workflow's write path minus the defaultdb target guard: one transaction with
-    the generated state guard, the bridge script and the in-transaction count assertion."""
-    return _psql(schema_name, "-v", f"expected_counts={expected_counts}", "-1",
+    the generated state guard, the bridge script, the count assertion and the post guard
+    (end state + catalog fingerprint)."""
+    fp = expected_fingerprint or _clean_fingerprint()
+    return _psql(schema_name, "-v", f"expected_counts={expected_counts}", "-v", f"expected_fingerprint={fp}", "-1",
                  "-f", str(AIVEN / "defaultdb_restore_guard.sql"),
                  "-f", str(AIVEN / "aiven_migrations_bridge_0001_0008.sql"),
-                 "-f", str(AIVEN / "assert_bridge_counts.sql"))
+                 "-f", str(AIVEN / "assert_bridge_counts.sql"),
+                 "-f", str(AIVEN / "defaultdb_restore_post_guard.sql"))
+
+
+def _fingerprint(schema_name):
+    rc, out, err = _psql(schema_name, "-f", str(AIVEN / "fingerprint_bridge_schema.sql"))
+    assert rc == 0, err
+    return out
+
+
+_CLEAN = {}
+
+
+def _clean_fingerprint():
+    if "fp" not in _CLEAN:
+        dsn = os.environ["TEST_DATABASE_URL"]
+        name = "wp005_fp_" + uuid.uuid4().hex[:10]
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(SQL("CREATE SCHEMA {}").format(Identifier(name)))
+        try:
+            rc, _, err = _apply(name)
+            assert rc == 0, err
+            _CLEAN["fp"] = _fingerprint(name)
+        finally:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute(SQL("DROP SCHEMA {} CASCADE").format(Identifier(name)))
+    return _CLEAN["fp"]
+
+
+def _pinned_fingerprint():
+    found = re.search(r"EXPECTED_FINGERPRINT: '([0-9a-f]{32})'", WORKFLOW.read_text(encoding="utf-8"))
+    assert found, "workflow must pin EXPECTED_FINGERPRINT"
+    return found.group(1)
 
 
 def _clean_counts():
@@ -366,3 +400,107 @@ def test_the_workflow_target_guard_itself(schema):
                           _workflow_guard().replace("$EXPECTED_DB", "defaultdb_not_this_one")],
                          env=env, capture_output=True, text=True)
     assert out.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in out.stderr
+
+
+# ---------------------------------------------------------------- round-3 findings (PR #169)
+
+def test_every_route_ends_in_the_same_catalog_fingerprint(schema):
+    """Empty, runtime-only and 0001-0007 routes must produce one identical end state."""
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc == 0, err
+    assert _fingerprint(schema) == _clean_fingerprint()
+    if _major() == 18:
+        assert _clean_fingerprint() == _pinned_fingerprint()
+
+
+def test_runtime_and_0007_routes_end_in_the_clean_fingerprint(schema):
+    rc, _, err = _apply(schema, "aiven_migrations_0001_0007.sql")
+    assert rc == 0, err
+    _runtime_tables(schema)
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc == 0, err
+    assert _fingerprint(schema) == _clean_fingerprint()
+
+
+@pytest.mark.parametrize("tamper", [
+    # a no-op immutability function: same name, same count, different body
+    "CREATE OR REPLACE FUNCTION canonical_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS "
+    "$$ BEGIN RETURN NEW; END $$",
+    "ALTER TABLE canonical_entities DISABLE TRIGGER canonical_entities_immutable",
+    "ALTER TABLE canonical_entities ADD COLUMN backdoor text",
+])
+def test_tampered_0001_0007_objects_abort_the_restore_before_commit(schema, tamper):
+    """Round-3 P2: tracked states were certified on checksums and counts only."""
+    rc, _, err = _apply(schema, "aiven_migrations_0001_0007.sql")
+    assert rc == 0, err
+    rc, _, err = _psql(schema, "-c", tamper)
+    assert rc == 0, err
+    assert _state(schema) == "BRIDGE_0001_0007"  # history alone cannot see it ...
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and ("FCB_RESTORE_FINGERPRINT_MISMATCH" in err or "FCB_RESTORE_COUNTS_MISMATCH" in err)
+    assert _state(schema) == "BRIDGE_0001_0007"  # ... but nothing was committed
+
+
+def test_public_operators_and_search_path_settings_are_refused(schema):
+    """Round-3 P1: shadowing operators in the target schema."""
+    rc, _, err = _psql(schema, "-c", f"CREATE OPERATOR {schema}.<> (leftarg = name, rightarg = name, "
+                                     "function = pg_catalog.namelt)")
+    assert rc == 0, err
+    assert _state(schema) == "REFUSE_UNTRACKED_OBJECTS"
+
+
+def test_role_search_path_setting_is_refused(schema):
+    rc, _, err = _psql(schema, "-c", f"ALTER ROLE CURRENT_USER SET search_path = {schema}, pg_catalog")
+    assert rc == 0, err
+    try:
+        assert _state(schema) == "REFUSE_UNSAFE_SEARCH_PATH"
+    finally:
+        _psql(schema, "-c", "ALTER ROLE CURRENT_USER RESET search_path")
+
+
+def test_default_privileges_are_refused_before_any_write(schema):
+    """Round-3 P2-A: the restore used to commit 33 tables granted to another role first."""
+    role = "wp005_dp_" + uuid.uuid4().hex[:6]
+    rc, _, err = _psql(schema, "-c", f"CREATE ROLE {role}")
+    assert rc == 0, err
+    try:
+        rc, _, err = _psql(schema, "-c", f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} GRANT ALL ON TABLES TO {role}")
+        assert rc == 0, err
+        assert _state(schema) == "REFUSE_DEFAULT_PRIVILEGES"
+        rc, _, err = _restore_tx(schema, _clean_counts())
+        assert rc != 0
+        rc, out, _ = _psql(schema, "-c", "SELECT to_regclass('schema_migrations') IS NULL")
+        assert out == "t"
+    finally:
+        _psql(schema, "-c", f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} REVOKE ALL ON TABLES FROM {role}")
+        _psql(schema, "-c", f"DROP ROLE {role}")
+
+
+def test_enabled_event_triggers_are_refused(schema):
+    name = "wp005_evt_" + uuid.uuid4().hex[:6]
+    rc, _, err = _psql(schema, "-c", f"CREATE FUNCTION {name}() RETURNS event_trigger LANGUAGE plpgsql "
+                                     f"AS $$ BEGIN END $$; CREATE EVENT TRIGGER {name} ON ddl_command_end "
+                                     f"EXECUTE FUNCTION {name}()")
+    assert rc == 0, err
+    try:
+        assert _state(schema) == "REFUSE_EVENT_TRIGGERS"
+    finally:
+        _psql(schema, "-c", f"DROP EVENT TRIGGER {name}; DROP FUNCTION {name}()")
+
+
+def test_lookalike_collation_named_default_is_refused(schema):
+    """Round-3 P3: collation was matched by name only."""
+    _runtime_tables(schema)
+    rc, _, err = _psql(schema, "-c", f"CREATE COLLATION {schema}.\"default\" FROM \"C\"; "
+                                     f"ALTER TABLE oauth_claude_dcr_clients ALTER COLUMN redirect_uri TYPE text "
+                                     f"COLLATE {schema}.\"default\"")
+    assert rc == 0, err
+    assert _state(schema) in ("REFUSE_UNTRACKED_OBJECTS", "REFUSE_RUNTIME_TABLE_DRIFT")
+
+
+def test_invalid_runtime_index_is_refused(schema):
+    _runtime_tables(schema)
+    rc, _, err = _psql(schema, "-c", "UPDATE pg_index SET indisvalid = false WHERE indexrelid = "
+                                     "'idx_api_football_lease_expires'::regclass")
+    assert rc == 0, err
+    assert _state(schema) == "REFUSE_RUNTIME_TABLE_DRIFT"

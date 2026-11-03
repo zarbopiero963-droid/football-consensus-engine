@@ -88,16 +88,46 @@ def render_guard():
     )
 
 
+POST_GUARD_TARGET = ROOT / 'sql' / 'aiven' / 'defaultdb_restore_post_guard.sql'
+
+
+def render_post_guard():
+    return (
+        '-- FCB-WP-005: generated. Runs in the SAME transaction, AFTER the bridge script: the end\n'
+        '-- state must be BRIDGE_0001_0008 with every runtime-table check passing, and the catalog\n'
+        "-- fingerprint must equal :'expected_fingerprint' (pinned in the workflow, PostgreSQL 18).\n"
+        '-- Otherwise the transaction aborts and nothing is committed.\n'
+        "SELECT set_config('fcb.expected_fingerprint', :'expected_fingerprint', true) IS NOT NULL AS expected_set;\n"
+        'DO $fcbpost$\n'
+        'DECLARE s text; f text;\n'
+        'BEGIN\n'
+        f'    EXECUTE $fcbq$\n{_query("defaultdb_precheck.sql")}\n$fcbq$ INTO s;\n'
+        "    IF s = 'TRACKED' THEN\n"
+        f'        EXECUTE $fcbq$\n{_query("defaultdb_precheck_tracked.sql")}\n$fcbq$ INTO s;\n'
+        '    END IF;\n'
+        "    IF s IS DISTINCT FROM 'BRIDGE_0001_0008' THEN\n"
+        "        RAISE EXCEPTION 'FCB_RESTORE_POST_STATE %', s;\n"
+        '    END IF;\n'
+        f'    EXECUTE $fcbq$\n{_query("fingerprint_bridge_schema.sql")}\n$fcbq$ INTO f;\n'
+        "    IF f IS DISTINCT FROM current_setting('fcb.expected_fingerprint') THEN\n"
+        "        RAISE EXCEPTION 'FCB_RESTORE_FINGERPRINT_MISMATCH %', f;\n"
+        '    END IF;\n'
+        'END $fcbpost$;\n'
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'restore-guard'),
+    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'restore-guard', 'restore-post-guard'),
                         default='aiven-0001-0007')
     args = parser.parse_args()
     if args.target == 'bridge-0001-0008':
         text, target = render_bridge(), BRIDGE_TARGET
     elif args.target == 'restore-guard':
         text, target = render_guard(), GUARD_TARGET
+    elif args.target == 'restore-post-guard':
+        text, target = render_post_guard(), POST_GUARD_TARGET
     else:
         text, target = render(), TARGET
     digest = hashlib.sha256(text.encode()).hexdigest()

@@ -147,7 +147,8 @@ def test_tracked_precheck_pins_exactly_the_bridge_files():
 
 @pytest.mark.parametrize("name", ["defaultdb_precheck.sql", "defaultdb_precheck_tracked.sql",
                                   "verify_bridge_schema.sql", "defaultdb_restore_guard.sql",
-                                  "assert_bridge_counts.sql"])
+                                  "assert_bridge_counts.sql", "defaultdb_restore_post_guard.sql",
+                                  "fingerprint_bridge_schema.sql"])
 def test_precheck_and_verify_files_are_read_only(name):
     sql = (ROOT / "sql" / "aiven" / name).read_text(encoding="utf-8").upper()
     code = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
@@ -180,3 +181,25 @@ def test_runs_only_from_main_and_the_target_guard_pins_the_search_path():
     assert "pg_catalog.pg_namespace" in guard  # foreign schemas re-checked inside the transaction
     for fn in ("current_database()", "current_setting(", "pg_backend_pid()"):
         assert f"pg_catalog.{fn}" in guard, fn
+
+
+def test_post_guard_runs_last_in_the_transaction_with_the_pinned_fingerprint():
+    restore = STEPS[_index(lambda s: "Restore bridge 0001-0008" in s.get("name", ""))]["run"]
+    run_line = restore[restore.index("run() {"):restore.index("verify() {")]
+    assert run_line.index("assert_bridge_counts.sql") < run_line.index("defaultdb_restore_post_guard.sql")
+    assert '-v expected_fingerprint="$EXPECTED_FINGERPRINT"' in run_line
+    assert re.fullmatch(r"[0-9a-f]{32}", JOB["env"]["EXPECTED_FINGERPRINT"])
+    out = subprocess.run([sys.executable, "scripts/generate_aiven_migrations.py", "--target", "restore-post-guard",
+                          "--check"], cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    post = (ROOT / "sql" / "aiven" / "defaultdb_restore_post_guard.sql").read_text(encoding="utf-8")
+    assert "FCB_RESTORE_POST_STATE" in post and "FCB_RESTORE_FINGERPRINT_MISMATCH" in post
+
+
+def test_psql_steps_force_the_search_path_and_the_target_check_step_does_not():
+    for name in ("Prechecks (database, PostgreSQL 18, TLS, restore state)",
+                 "Restore bridge 0001-0008 (single transaction, run twice) and verify"):
+        step = STEPS[_index(lambda s, n=name: s.get("name") == n)]
+        assert step["env"]["PGOPTIONS"] == "-c search_path=public", name
+    mask = STEPS[_index(lambda s: s.get("name") == "Mask connection details and enforce TLS")]
+    assert "PGOPTIONS" not in mask.get("env", {})  # the target check refuses redirecting libpq env
