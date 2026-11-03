@@ -52,7 +52,11 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 | `REFUSE_EVENT_TRIGGERS` | an enabled event trigger exists; it would act on the restore's own DDL | no |
 | `REFUSE_DEFAULT_PRIVILEGES` | `ALTER DEFAULT PRIVILEGES` entries exist; they would grant on the new tables | no |
 
-`REFUSE_UNTRACKED_OBJECTS` also covers operators, operator classes and families, collations, conversions, text-search objects and extensions in `public`.
+`REFUSE_UNTRACKED_OBJECTS` also covers operators, operator classes and families, collations, conversions, text-search objects, extensions, aggregates, window functions and procedures in `public`, plus any publication. 0001–0008 create plain functions only.
+
+**Documented residuals:**
+- These are not fingerprinted, but they are not created or made worse by the restore: extended statistics, comments, and column STORAGE/attoptions on non-runtime tables.
+- The fingerprint ordering uses the database collation. Results were identical under C and ICU en-US; glibc locales were not tested.
 
 On the real `defaultdb`, read-only on 2026-11-03, all of these were 0 and the only extension is `plpgsql`.
 | `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |

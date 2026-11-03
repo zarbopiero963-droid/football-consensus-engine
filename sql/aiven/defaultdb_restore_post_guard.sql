@@ -112,6 +112,9 @@ facts AS (
         + (SELECT count(*) FROM pg_ts_template o JOIN pg_namespace n ON n.oid = o.tmplnamespace WHERE n.nspname = current_schema())
         + (SELECT count(*) FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE n.nspname = current_schema())
           AS catalog_objects,
+        (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = current_schema() AND p.prokind <> 'f') AS non_function_routines,
+        (SELECT count(*) FROM pg_publication) AS publications,
         (SELECT count(*) FROM pg_default_acl) AS default_acls,
         (SELECT count(*) FROM pg_event_trigger WHERE evtenabled <> 'D') AS event_triggers,
         (SELECT count(*) FROM pg_db_role_setting rs
@@ -128,7 +131,7 @@ SELECT CASE
     WHEN unsafe_search_path OR search_path_settings > 0 THEN 'REFUSE_UNSAFE_SEARCH_PATH'
     WHEN event_triggers > 0 THEN 'REFUSE_EVENT_TRIGGERS'
     WHEN default_acls > 0 THEN 'REFUSE_DEFAULT_PRIVILEGES'
-    WHEN catalog_objects > 0 THEN 'REFUSE_UNTRACKED_OBJECTS'
+    WHEN catalog_objects > 0 OR non_function_routines > 0 OR publications > 0 THEN 'REFUSE_UNTRACKED_OBJECTS'
     WHEN signer_tracked THEN 'REFUSE_SIGNER_SERIES_PRESENT'
     WHEN signature_diffs > 0 OR table_props > 0 OR column_props > 0 OR policies > 0 OR rules > 0
          OR triggers > 0 OR inheritance > 0 OR unvalidated > 0 THEN 'REFUSE_RUNTIME_TABLE_DRIFT'

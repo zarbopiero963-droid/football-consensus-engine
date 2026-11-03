@@ -200,6 +200,6 @@ def test_psql_steps_force_the_search_path_and_the_target_check_step_does_not():
     for name in ("Prechecks (database, PostgreSQL 18, TLS, restore state)",
                  "Restore bridge 0001-0008 (single transaction, run twice) and verify"):
         step = STEPS[_index(lambda s, n=name: s.get("name") == n)]
-        assert step["env"]["PGOPTIONS"] == "-c search_path=public", name
+        assert step["env"]["PGOPTIONS"] == "-c search_path=public -c quote_all_identifiers=off", name
     mask = STEPS[_index(lambda s: s.get("name") == "Mask connection details and enforce TLS")]
     assert "PGOPTIONS" not in mask.get("env", {})  # the target check refuses redirecting libpq env

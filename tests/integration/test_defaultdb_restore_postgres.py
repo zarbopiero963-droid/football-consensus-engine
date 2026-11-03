@@ -505,3 +505,31 @@ def test_invalid_runtime_index_is_refused(schema):
                                      "'idx_api_football_lease_expires'::regclass")
     assert rc == 0, err
     assert _state(schema) == "REFUSE_RUNTIME_TABLE_DRIFT"
+
+
+# ---------------------------------------------------------------- round-4 finding (PR #169)
+
+@pytest.mark.parametrize("obj", [
+    "CREATE AGGREGATE count(integer) (sfunc = int4larger, stype = int4)",
+    "CREATE PROCEDURE p() LANGUAGE sql AS 'SELECT 1'",
+])
+def test_aggregates_and_procedures_are_refused_in_every_state(schema, obj):
+    """Round-4 P2: an aggregate in the target schema shadowed count() and passed tracked states."""
+    rc, _, err = _apply(schema)
+    assert rc == 0, err
+    rc, _, err = _psql(schema, "-c", obj)
+    assert rc == 0, err
+    assert _state(schema) == "REFUSE_UNTRACKED_OBJECTS"
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and "FCB_RESTORE_STATE_REFUSED" in err
+
+
+def test_publications_are_refused(schema):
+    _runtime_tables(schema)
+    name = "wp005_pub_" + uuid.uuid4().hex[:6]
+    rc, _, err = _psql(schema, "-c", f"CREATE PUBLICATION {name} FOR TABLE oauth_claude_dcr_clients")
+    assert rc == 0, err
+    try:
+        assert _state(schema) == "REFUSE_UNTRACKED_OBJECTS"
+    finally:
+        _psql(schema, "-c", f"DROP PUBLICATION {name}")

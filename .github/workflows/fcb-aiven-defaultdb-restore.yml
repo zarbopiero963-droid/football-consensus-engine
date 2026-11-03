@@ -212,7 +212,7 @@ jobs:
       - name: Prechecks (database, PostgreSQL 18, TLS, restore state)
         env:
           # Overrides any database/role search_path setting; pg_catalog stays implicitly first.
-          PGOPTIONS: '-c search_path=public'
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
           PGSSLMODE: require
         run: |
@@ -283,7 +283,7 @@ jobs:
         # Writes only with mode=apply AND the exact confirmation phrase (re-checked here).
         if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY BRIDGE 0001-0008 TO defaultdb' }}
         env:
-          PGOPTIONS: '-c search_path=public'
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
           PGSSLMODE: require
         run: |
