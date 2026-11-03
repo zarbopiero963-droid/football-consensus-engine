@@ -29,6 +29,59 @@ LOG = logging.getLogger(__name__)
 # Fixed, non-sensitive messages: never echo the rejected URL or provider errors.
 REDIRECT_BLOCKED = "navigation redirected to a non-public address"
 CONTENT_BLOCKED = "page content is not from a public address"
+DOCUMENT_REFUSED = "page document could not be served under the browser security policy"
+# FCB-WP-002b: network capabilities that bypass the CDP request guard (reproduced on real
+# Chromium: a WebSocket/WebSocketStream opened inside a dedicated or shared worker reached an
+# internal host; WebRTC/WebTransport use UDP/QUIC outside the Fetch domain). Layer 1: the
+# context init script removes them before page script runs in every realm it reaches (frames,
+# popups, srcdoc/data/about:blank/blob documents). The properties read as undefined and cannot be
+# redefined, so ordinary feature detection degrades gracefully. Layer 2 (DOCUMENT_CSP below)
+# covers the realms layer 1 cannot reach. NOT covered: speculation-rules prefetch/prerender
+# (browser-process requests), WebRTC and WebTransport from a sandboxed srcdoc frame on the remote
+# path, and DNS rebinding — see
+# docs/certification/FCB_PR_WORKPACKAGES.md WP-002b; the browser stays behind the kill switch.
+DISABLED_CAPABILITIES = ("Worker", "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection",
+                         "RTCDataChannel", "WebTransport", "WebSocketStream")
+CAPABILITY_GUARD_JS = r"""
+(() => {
+  for (const name of %s) {
+    try {
+      Object.defineProperty(globalThis, name, {
+        value: undefined, configurable: false, enumerable: false, writable: false,
+      });
+    } catch (e) {}
+  }
+})();
+""" % json.dumps(list(DISABLED_CAPABILITIES))
+# FCB-WP-002b review P0: on the remote (CDP) path a sandboxed srcdoc iframe is committed in its
+# own process BEFORE any DevTools client can attach to it (attachedToTarget arrives already
+# committed, waitingForDebugger=false), so neither the init script above nor Playwright's
+# WebSocket route reaches it: a WebSocket, WebSocketStream or worker opened there reached an
+# internal host. A Content-Security-Policy is enforced by the browser, not by page script, and is
+# inherited by every srcdoc/about:blank/blob/data document, sandboxed or not. It is appended to
+# every document response at the Fetch response stage (re-served with Fetch.fulfillRequest):
+#   worker-src 'none'                       no dedicated/shared/service workers in any realm;
+#   connect-src http: https: data: blob:    fetch/XHR/EventSource stay (each request is still
+#                                           validated by the request guard); ws:/wss: schemes
+#                                           are not matched, so WebSocket and WebSocketStream
+#                                           are refused everywhere.
+# Behaviour change: pages can no longer open WebSockets. NOT covered in such a frame (no CSP
+# directive can separate them): WebRTC ICE/TURN, and WebTransport, whose URLs are https: and so
+# match connect-src like fetch does — documented residuals, they need an egress proxy.
+DOCUMENT_CSP = "worker-src 'none'; connect-src http: https: data: blob:"
+# A document is re-served whole to carry the CSP; larger ones fail closed instead of streaming
+# unguarded. Memory held for documents in flight is bounded twice, counting the raw body AND its
+# base64 copy until Fetch.fulfillRequest returns: per session (one session cannot starve the
+# others) and across all sessions (many large frames cannot exhaust the bridge). A body read is
+# also time-bounded, so a stalling server cannot hold its share for the session's lifetime.
+# Over any bound fails closed (DOCUMENT_REFUSED).
+DOCUMENT_BODY_MAX_BYTES = 4 * 1024 * 1024
+DOCUMENT_SESSION_BUDGET_BYTES = 12 * 1024 * 1024
+DOCUMENT_BUFFER_BUDGET_BYTES = 32 * 1024 * 1024
+DOCUMENT_READ_TIMEOUT_SECONDS = 30.0
+_document_buffered_bytes = 0
+_FULFILL_DROPPED_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 TOOLS_DISABLED = "browser tools are disabled on this server"
 
 # Schemes a frame may legitimately carry without a network fetch of its own.
@@ -117,7 +170,10 @@ class Session:
     redirect_guard_active: bool = False
     redirect_blocked: bool = False
     websocket_guard_installed: bool = False
+    capability_guard_installed: bool = False
     blocked_requests: int = 0
+    document_csp_failures: int = 0
+    document_buffered_bytes: int = 0
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
 
@@ -346,6 +402,7 @@ class BrowserUseBridge:
             session.navigation_guard_installed = True
         await self._arm_redirect_guard(session)
         await self._arm_websocket_guard(session)
+        await self._arm_capability_guard(session)
         await self._quarantine_preexisting(session)
 
     async def _quarantine_preexisting(self, session: Session) -> None:
@@ -358,9 +415,8 @@ class BrowserUseBridge:
         if not session.redirect_guard_active or session.context is None:
             return
         for page in list(session.context.pages):
-            url = getattr(page, "url", "") or ""
-            if url.startswith(_LOCAL_FRAME_PREFIXES):
-                continue
+            # about:blank included (review P3): a pre-existing blank document carries neither the
+            # init script nor the document CSP; re-navigating creates one that does.
             try:
                 async with asyncio.timeout(6):
                     await page.goto("about:blank")
@@ -383,6 +439,9 @@ class BrowserUseBridge:
 
         async def on_paused(event: dict[str, Any]) -> None:
             request_id = event.get("requestId")
+            if "responseStatusCode" in event or "responseErrorReason" in event:
+                await self._document_response(cdp, session, event)
+                return
             # Validate the URL Chromium itself resolved (request stage), not a header we
             # re-parse: this is what the connection will actually go to.
             url = (event.get("request") or {}).get("url", "")
@@ -408,12 +467,31 @@ class BrowserUseBridge:
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
         cdp.on("Fetch.requestPaused", dispatch)
-        await cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+        await cdp.send("Fetch.enable", {"patterns": [
+            {"urlPattern": "*", "requestStage": "Request"},
+            # Document responses only: append DOCUMENT_CSP (WP-002b). The URL was already
+            # validated at the request stage of the same request.
+            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"},
+        ]})
         # Flat auto-attach so popups, OOPIFs, workers and service workers inherit the guard.
         await cdp.send("Target.setAutoAttach",
                        {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True})
         session.redirect_guard = cdp
         session.redirect_guard_active = True
+
+    async def _arm_capability_guard(self, session: Session) -> None:
+        if session.capability_guard_installed or session.context is None:
+            return
+        add_init = getattr(session.context, "add_init_script", None)
+        if add_init is None:
+            session.redirect_guard_active = False  # fail closed: cannot disable capabilities
+            return
+        try:
+            await add_init(CAPABILITY_GUARD_JS)
+        except Exception:
+            session.redirect_guard_active = False
+            return
+        session.capability_guard_installed = True
 
     async def _arm_websocket_guard(self, session: Session) -> None:
         if session.websocket_guard_installed or session.context is None:
@@ -438,6 +516,103 @@ class BrowserUseBridge:
         session.websocket_guard_installed = True
 
     @staticmethod
+    def _document_csp_headers(headers: list[dict[str, str]] | None) -> list[dict[str, str]]:
+        """The response headers plus DOCUMENT_CSP. The site's own policies are kept: every
+        Content-Security-Policy header is enforced, so ours can only restrict further. The body
+        is handed back already decoded, so encoding/length framing headers are dropped."""
+        out = [{"name": h.get("name", ""), "value": h.get("value", "")} for h in (headers or [])
+               if h.get("name", "").lower() not in _FULFILL_DROPPED_HEADERS]
+        out.append({"name": "Content-Security-Policy", "value": DOCUMENT_CSP})
+        return out
+
+    @staticmethod
+    def _reserve(session: Session, amount: int) -> bool:
+        """Account `amount` bytes against the session and global budgets; False if over either."""
+        global _document_buffered_bytes
+        if (session.document_buffered_bytes + amount > DOCUMENT_SESSION_BUDGET_BYTES
+                or _document_buffered_bytes + amount > DOCUMENT_BUFFER_BUDGET_BYTES):
+            return False
+        session.document_buffered_bytes += amount
+        _document_buffered_bytes += amount
+        return True
+
+    @staticmethod
+    def _release(session: Session, amount: int) -> None:
+        global _document_buffered_bytes
+        session.document_buffered_bytes -= amount
+        _document_buffered_bytes -= amount
+
+    async def _read_document_body(self, cdp, session: Session, request_id, held: list[int]) -> str | None:
+        """Base64 body of a paused document response, or None when over a cap or budget. Every
+        byte accounted is added to held[0]; the CALLER releases it after fulfillRequest returns."""
+        stream = (await cdp.send("Fetch.takeResponseBodyAsStream", {"requestId": request_id}))["stream"]
+        body = bytearray()
+        try:
+            while True:
+                part = await cdp.send("IO.read", {"handle": stream, "size": 1 << 16})
+                data = part.get("data", "")
+                raw = base64.b64decode(data) if part.get("base64Encoded") else data.encode("utf-8")
+                if len(body) + len(raw) > DOCUMENT_BODY_MAX_BYTES or not self._reserve(session, len(raw)):
+                    return None
+                held[0] += len(raw)
+                body += raw
+                if part.get("eof"):
+                    break
+        finally:
+            try:
+                await cdp.send("IO.close", {"handle": stream})
+            except Exception:
+                pass
+        encoded_size = 4 * ((len(body) + 2) // 3)
+        if not self._reserve(session, encoded_size):
+            return None
+        held[0] += encoded_size
+        return base64.b64encode(body).decode("ascii")
+
+    async def _document_response(self, cdp, session: Session, event: dict[str, Any]) -> None:
+        """Response stage of a document: re-serve it with DOCUMENT_CSP, or fail it closed.
+
+        Fetch.continueResponse is NOT used: Chromium replaces the headers but keeps the policy it
+        parsed from the original response, so an appended CSP is silently not enforced (verified
+        on real Chromium). Fetch.fulfillRequest makes Chromium parse the headers it is given."""
+        request_id = event.get("requestId")
+        status = event.get("responseStatusCode")
+        headers = event.get("responseHeaders") or []
+        redirect = status in _REDIRECT_STATUSES and any(
+            h.get("name", "").lower() == "location" and h.get("value") for h in headers)
+        if "responseErrorReason" in event or redirect:
+            # No document is committed from these (network error page; a redirect hop whose
+            # target is paused again). A 3xx without Location renders its body: it is re-served.
+            try:
+                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+            except Exception:
+                pass
+            return
+        held = [0]
+        try:
+            async with asyncio.timeout(DOCUMENT_READ_TIMEOUT_SECONDS):
+                body = await self._read_document_body(cdp, session, request_id, held)
+            if body is None:
+                raise ValueError("document body over cap")
+            params = {"requestId": request_id, "responseCode": status, "body": body,
+                      "responseHeaders": self._document_csp_headers(headers)}
+            if event.get("responseStatusText"):
+                params["responsePhrase"] = event["responseStatusText"]
+            await cdp.send("Fetch.fulfillRequest", params)
+        except Exception:
+            # Without the CSP the document could open unguarded sockets: never render it.
+            # Fetch.failRequest alone fails it closed (a main-frame navigation then errors with
+            # net::ERR_BLOCKED_BY_CLIENT). This is NOT an SSRF verdict: it does not touch
+            # redirect_blocked or blocked_requests (review P2: a cancelled iframe or an oversized
+            # page must not be reported as a non-public redirect, nor spill into the next
+            # navigation).
+            LOG.warning("Document CSP could not be applied: session=%s", session.id)
+            session.document_csp_failures += 1
+            await self._fetch_fail(cdp, request_id)
+        finally:
+            self._release(session, held[0])
+
+    @staticmethod
     async def _fetch_fail(cdp, request_id) -> None:
         try:
             await cdp.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
@@ -445,8 +620,9 @@ class BrowserUseBridge:
             pass
 
     def _require_guard(self, session: Session) -> None:
-        """Fail closed: never navigate or read on a session without an active redirect guard."""
-        if not session.redirect_guard_active:
+        """Fail closed: never navigate or read on a session without an active redirect guard
+        and the capability guard (WP-002b)."""
+        if not (session.redirect_guard_active and session.capability_guard_installed):
             raise UnsafeURL(CONTENT_BLOCKED)
 
     async def _quarantine(self, session: Session, page: Page) -> None:
@@ -496,6 +672,7 @@ class BrowserUseBridge:
         """Run one navigation with the redirect guard armed, then fail closed if needed."""
         self._require_guard(session)
         session.redirect_blocked = False
+        csp_failures_before = session.document_csp_failures
         try:
             response = await action()
         except PlaywrightError:
@@ -503,6 +680,11 @@ class BrowserUseBridge:
                 session.redirect_blocked = False
                 await self._quarantine(session, page)
                 raise UnsafeURL(REDIRECT_BLOCKED) from None
+            if session.document_csp_failures != csp_failures_before:
+                # A document of this navigation was refused because the WP-002b CSP could not be
+                # applied (oversized, unreadable, buffer budget): fixed code, nothing rendered.
+                await self._quarantine(session, page)
+                raise UnsafeURL(DOCUMENT_REFUSED) from None
             raise
         await self._after_navigation(session, page)
         return response
@@ -541,12 +723,15 @@ class BrowserUseBridge:
             page.on("response", on_response)
 
         blocked_before = session.blocked_requests
+        csp_failures_before = session.document_csp_failures
         try:
             response = await self._navigate(
                 session, page, lambda: page.goto(url, wait_until=wait_until, timeout=timeout_ms))
             final_url = page.url
             return {
                 "blocked_requests": session.blocked_requests - blocked_before,
+                # Documents (frames) not rendered because the WP-002b CSP could not be applied.
+                "documents_refused": session.document_csp_failures - csp_failures_before,
                 "session_id": session_id,
                 "requested_url": url,
                 "final_url": final_url,
@@ -1021,6 +1206,7 @@ class BrowserUseBridge:
             session.redirect_guard = None
             session.redirect_guard_active = False
             session.websocket_guard_installed = False
+            session.capability_guard_installed = False
 
     async def _stop_remote(self, session_id):
         # CloakBrowser sessions are local child processes. Their lifecycle is handled

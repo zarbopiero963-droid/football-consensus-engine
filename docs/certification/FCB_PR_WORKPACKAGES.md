@@ -18,7 +18,7 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 |---|---|---|---|---|---|
 | 1 | FCB-WP-001 | P0 | Browser SSRF class A: validated redirects, fail-closed, read tools re-validate — **DONE** (#165, `a642f3f`, deployed) | — | merge (Render deploy) |
 | 2 | FCB-WP-002 | P0 | Browser SSRF class B: every request validated (fetch/xhr/script/css/img/ws), no `network_responses` oracle, service workers blocked — **PARTIAL** (#166, owner decision "OPTION 1": merged as a partial hardening, Browser kept disabled by `BROWSER_TOOLS_ENABLED=false`) | 001 | merge |
-| 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **OPEN** | 002 | merge; re-enabling Browser = owner |
+| 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **PARTIAL** (PR #172: worker WS/WebSocketStream fixed fail-closed on both paths; sandboxed-srcdoc WebSocket/WebSocketStream/workers on the remote path fixed by a browser-enforced document CSP; `fec0::/10` fixed. OPEN, need an egress proxy (WP-024): speculation-rules prefetch/prerender, WebRTC TURN/STUN and WebTransport from a sandboxed srcdoc on the remote path, DNS rebinding) | 002 | merge; re-enabling Browser = owner |
 | 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **DONE (code)** (#167, `df76738`, deployed); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
 | 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision — **DONE (code)** (#168, `43c7926`; option A: bridge/signer series split) | — | merge |
 | 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production` (required reviewer: owner), diagnose then apply — **DONE_CODE / BLOCKED_OWNER** (#169, `2068f6d`; workflow + runbook `areas/defaultdb_restore_runbook.md`; environment, secret and run by the owner; not PRODUCTION_VERIFIED until defaultdb, OAuth and MCP are verified) | 001, 002 (or stop-gap), 004 | **separate authorization**, Environment/secret by the owner |
@@ -40,6 +40,7 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 | 21 | FCB-WP-021 | P2 | Remove out-of-scope modules from `bridge/api_football/` (`capabilities`, `indicators`, `gap_matrix`, `registry_import`) | — | **owner decision** |
 | 22 | FCB-WP-022 | P3 | Docs (README still says Neon), OAuth revocation endpoint, refresh-token reuse detection, consent password throttling | 007 | auth → owner |
 | 23 | FCB-WP-023 | BLOCKED | Signer: wire KMS DIGEST and the Toronto profile into `core`/`gateway`; testnet | 012, 013, legal | **legal + owner** |
+| 24 | FCB-WP-024 | P1 | Browser egress proxy, fail closed: resolve DNS in the proxy, refuse non-public resolved IPs, block UDP/QUIC; real tests on both providers. Closes the WP-002b OPEN rows (speculation rules, WebRTC/WebTransport from unguarded frames, DNS rebinding) | 002b | **new cost/infra → owner** |
 
 **Count:** 3 P0 security/governance packages (001, 002, 003), plus 1 P0 production package (005) that depends on them; 11 P1; 6 P2; 1 P3; 1 BLOCKED.
 
@@ -96,6 +97,37 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 - **Must also evaluate:** Browser Use cloud limits (what CDP allows remotely), network/proxy/egress or provider-policy controls, and positive tests proving legitimate public features still work.
 - **Rule:** a capability that cannot be made safe on the cloud provider is documented as a limit and blocked fail-closed (e.g. disabled by launch flag/CDP or the provider refused); a frozen or hung component does not count as a protection.
 - **Until DONE:** `BROWSER_TOOLS_ENABLED=false` in production; re-enabling Browser requires the owner.
+- **Implementation:** RED reproduced on real Chromium, on both the local provider and remote CDP.
+
+| Residual | RED | Status |
+|---|---|---|
+| WebSocket / `WebSocketStream` inside a dedicated or shared worker, from page, iframe, late iframe, srcdoc, popup or blob realms (P0) | Handshake reached the internal host on both paths, 9/9 vectors (locked by a RED control with the guards off, `test_control_every_worker_vector_leaks_without_the_guards`) | **FIXED.** Layer 1: `Worker`, `SharedWorker`, `RTCPeerConnection`, `webkitRTCPeerConnection`, `RTCDataChannel`, `WebTransport` and `WebSocketStream` read as `undefined`, set non-configurable by a context init script, in every realm the script reaches. Layer 2 below. GREEN 9/9 on both paths. |
+| Sandboxed `srcdoc` iframe on the remote (Browser Use / CDP) path: `WebSocket`, `WebSocketStream`, worker (P0, independent re-review of #172) | Reached the internal host 3/3. The frame commits in its own process before any DevTools client attaches (`waitingForDebugger=false`, verified with raw CDP), so neither the init script nor Playwright's WebSocket route reach it | **FIXED by layer 2.** Every document response is re-served with `Fetch.fulfillRequest` carrying an added `Content-Security-Policy: worker-src 'none'; connect-src http: https: data: blob:`. It is enforced by the browser and inherited by srcdoc, about:blank, blob: and data: documents, sandboxed or not. `Fetch.continueResponse` was tried and rejected: Chromium does not enforce a CSP added that way. Fail closed: a body that cannot be read in time, exceeds 4 MiB, or exceeds the per-session or global buffer budget fails the document. RED locked by `test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path`; GREEN 3/3. |
+| WebRTC / WebTransport (P2) | UDP/QUIC outside the Fetch domain | **FIXED in realms the init script reaches** (both paths, and every realm on the local path). |
+| WebRTC (TURN over TCP, STUN over UDP) and WebTransport from a sandboxed `srcdoc` frame on the remote path (P1) | TURN/STUN bytes and QUIC packets reached the internal host | **OPEN.** The constructors are still defined in that frame. Chromium has no CSP directive for WebRTC (`webrtc 'block'` tried, not enforced). WebTransport URLs are `https:` and match `connect-src` like `fetch` does. Not HTTP to the internal host. Locked by strict xfails: `test_webrtc_from_a_sandboxed_srcdoc_residual_is_still_open`, `test_webrtc_udp_from_a_sandboxed_srcdoc_residual_is_still_open`, `test_webtransport_from_a_sandboxed_srcdoc_residual_is_still_open`. Clean on the local path, with a RED control proving the vectors fire there without the guards. |
+| `fec0::/10` (P3) | Accepted by the validator | **FIXED.** Refused (`is_site_local`). |
+| Arming | — | A session without the capability guard is guard-inactive (fail closed). |
+| Speculation-rules prefetch/prerender (P1) | Browser-process `GET` reached the internal host | **OPEN.** Probably wider than a blind GET: an activated prerendered document may carry neither the CSP nor the init script (not verified; to be covered by WP-024). CDP Fetch never pauses it. `Page.setPrerenderingAllowed`, the data-saver override and the Chromium launch flags tried (`--disable-blink-features=SpeculationRules`, `--disable-features=Prerender2,...`) do not stop it. Text and DOM filtering was bypassed by character references, split `document.write` arguments and blob: documents (independent review of #172), so it was not shipped. Locked by a strict xfail: `test_speculation_rules_residual_is_still_open`. |
+| DNS rebinding (P3) | A name the bridge validates as public, resolved by Chromium to the internal host, reached it on both paths | **OPEN.** The request stage does not expose the connected IP. Locked by a strict xfail: `test_dns_rebinding_residual_is_still_open` (Chromium `--host-resolver-rules`, test only). |
+
+- **Test profiles (TEST ENVIRONMENT ONLY):** the WP-002b suite runs twice in CI.
+  - Applies to `tests/test_browser_capability_guard_chromium.py`; the older WP-001/WP-002 Chromium suites run in the native profile only.
+  - `lna_off`: Chromium's Local Network Access checks are disabled so the bridge's guards are proven on their own; the RED controls (guards off: every vector fires) and the residual xfails run here.
+  - `native`: the unmodified browser; every GREEN test must hold as well.
+  - Production Chromium flags, Render and Browser Use are never changed. The full vector × provider × guards matrix is reproducible with `scripts/wp002b_browser_matrix.py`.
+- **Document re-serve (layer 2), checked on both paths:** redirects, `Set-Cookie` (two cookies), the site's own CSP still enforced, `iso-8859-1` charset, gzip, a 404 status, a reload of a `Cache-Control: max-age` document (each navigation reaches the site again, with or without the re-serve, measured, so no cache regression and no cache-served document is claimed), and a page after an oversized one: `test_re_serving_documents_keeps_navigation_semantics`.
+- **Fail closed without false SSRF verdicts:** a document that cannot be re-served is failed with `Fetch.failRequest`. That covers a body unreadable within 30 s, over the 4 MiB per-document cap, or over the buffer budgets (12 MiB per session, so one session cannot starve the others, and 32 MiB across all sessions; raw body and base64 copy are both counted until the fulfil returns). The navigation raises the fixed code `DOCUMENT_REFUSED`, never `REDIRECT_BLOCKED`. A cancelled frame no longer spills into the next navigation (regression test). `open_url` reports `documents_refused`.
+- **Way forward for the OPEN rows:** an egress proxy that resolves DNS and validates every resolved IP before connecting (FCB-WP-024).
+  - Cloak: `--proxy-server`, plus WebRTC policy `disable_non_proxied_udp`.
+  - Browser Use cloud: only if its API accepts a custom proxy, which is not verified.
+
+  This covers browser-process prefetch, WebRTC/WebTransport from unguarded frames and rebinding.
+- **Until then:** `BROWSER_TOOLS_ENABLED=false` stays on in production. Re-enabling Browser requires the owner, who accepts the open P1.
+- **Declared limits of the fix (compatibility):**
+  - sites that need web workers, WebRTC, WebTransport or **WebSockets** do not work. The document CSP refuses every `ws:`/`wss:` socket, including on the page itself, so live pages that push updates over WebSocket only show the state at load. Feature detection sees `undefined` and degrades instead of throwing;
+  - a document renders only once its whole body has arrived (no progressive rendering; streaming or forever-frame pages wait until timeout, and `wait_until="commit"` waits for the body);
+  - documents over 4 MiB fail closed with `DOCUMENT_REFUSED`;
+  - one CDP round trip per 64 KiB of every document.
 
 ### FCB-WP-003 — API-FOOTBALL live scripts through the coordinator (P0, §2.4)
 - **Evidence:**
@@ -150,3 +182,16 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 
 ### FCB-WP-006 … FCB-WP-023
 See the table above. Each of these packages follows the same template: gap and evidence from the CSV row, files, RED, GREEN, adversarial tests, real test, owner gate and DONE. Each is detailed in the corresponding `areas/*.md` section: Platform WP-2…WP-9, API-FOOTBALL A2–A7, Browser WP-BR-3…7, SX Bet WP1–WP9.
+
+### FCB-WP-024 — Browser egress proxy, fail closed (P1, proposal)
+- **Why:** the WP-002b residuals cannot be closed inside the browser. Speculation-rules requests leave from the browser process, and WebRTC/WebTransport from a sandboxed srcdoc on the remote path escape both the init script and the CSP. DNS rebinding happens between the bridge's resolver and Chromium's.
+- **Design (to be validated):**
+  - every browser connection (TCP and UDP) goes through a proxy owned by the bridge;
+  - the proxy resolves DNS itself, refuses any resolved non-public IP (same rules as `bridge/security.py`), and pins the connection to the validated IP;
+  - UDP and QUIC are refused (no WebRTC, no WebTransport, no HTTP/3).
+  - Fail closed: no proxy means no navigation.
+- **Per provider:**
+  - Cloak (local): `--proxy-server` plus WebRTC IP handling `disable_non_proxied_udp`.
+  - Browser Use cloud: only if its API accepts a custom egress proxy and UDP blocking. Not verified; if it cannot, Browser Use stays disabled for untrusted pages.
+- **Tests:** every OPEN row of WP-002b turns from strict xfail into GREEN on both providers, in both Chromium profiles, plus positive public navigation.
+- **Gate:** new infrastructure and possible cost, so the owner decides. Until it is done, `BROWSER_TOOLS_ENABLED=false` and `CLOAKBROWSER_ENABLED=false` stay in production.
