@@ -60,6 +60,9 @@ def _non_public(addr) -> bool:
         or addr.is_reserved
         or addr.is_unspecified
         or not addr.is_global
+        # Deprecated IPv6 site-local fec0::/10 (RFC 3879): Python reports it as global, but
+        # such addresses can still be routed inside a provider network. WP-002b.
+        or (addr.version == 6 and addr.is_site_local)
     )
 
 

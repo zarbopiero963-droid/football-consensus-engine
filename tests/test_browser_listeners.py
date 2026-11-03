@@ -35,7 +35,7 @@ class Page(EventEmitter):
 def bridge_page(monkeypatch):
     bridge = BrowserUseBridge()
     page = Page()
-    session = Session('test', 'memory-only', None, redirect_guard_active=True)
+    session = Session('test', 'memory-only', None, redirect_guard_active=True, capability_guard_installed=True)
     bridge._sessions['test'] = session
     monkeypatch.setattr(session_leases, 'renew', lambda *args: None)
     monkeypatch.setattr(browser_use, 'validate_public_http_url', lambda url: url)
@@ -108,7 +108,8 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
                       browser=old_browser, page=object(), navigation_guard_installed=True)
     new_page = object()
     cdp = SimpleNamespace(on=Mock(), send=AsyncMock())
-    context = SimpleNamespace(pages=[new_page], route=AsyncMock(), on=Mock(), route_web_socket=AsyncMock())
+    context = SimpleNamespace(pages=[new_page], route=AsyncMock(), on=Mock(), route_web_socket=AsyncMock(),
+                              add_init_script=AsyncMock())
     new_browser = SimpleNamespace(contexts=[context], is_connected=lambda: True,
                                   new_browser_cdp_session=AsyncMock(return_value=cdp))
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=new_browser)))
@@ -129,10 +130,14 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
     new_browser.new_browser_cdp_session.assert_awaited_once_with()
     # WP-002: every request type is paused at the request stage (no resourceType filter).
     cdp.send.assert_any_await("Fetch.enable", {"patterns": [
-        {"urlPattern": "*", "requestStage": "Request"}]})
+        {"urlPattern": "*", "requestStage": "Request"},
+        # WP-002b (declared change): documents are also inspected at the response stage.
+        {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"}]})
     assert session.redirect_guard_active is True
     context.route_web_socket.assert_awaited_once()  # WP-002 WebSocket guard
     assert session.websocket_guard_installed is True
+    context.add_init_script.assert_awaited_once()  # WP-002b capability guard
+    assert session.capability_guard_installed is True
 
 
 def test_reconnect_cleanup_error_is_visible_and_clears_old_guard(monkeypatch):

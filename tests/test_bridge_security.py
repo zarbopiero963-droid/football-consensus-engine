@@ -56,3 +56,11 @@ def test_refusal_message_does_not_echo_the_address():
     with pytest.raises(UnsafeURL) as err:
         validate_public_http_url("http://[64:ff9b::a9fe:a9fe]/")
     assert "a9fe" not in str(err.value) and "169.254" not in str(err.value)
+
+
+@pytest.mark.parametrize("url", ["http://[fec0::1]/", "http://[fec0::7f00:1]/", "https://[feff::1]/",
+                                 "http://[fed0:1::2]:8080/x"])
+def test_ipv6_site_local_is_refused(url):
+    """WP-002b P3: fec0::/10 was accepted because Python marks it is_global."""
+    with pytest.raises(UnsafeURL):
+        validate_public_http_url(url)
