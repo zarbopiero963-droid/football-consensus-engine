@@ -13,15 +13,15 @@ WITH expected(version, name, sha256) AS (VALUES
     (8, '0008_runtime_tables.sql', '2ee5a7bbe9ce1a8b55474ba73288c1dfda6c847f81b7277bf5956f080dab759d')
 ),
 got AS (SELECT version, name, sha256 FROM schema_migrations),
-n AS (SELECT count(*) AS rows FROM got)
+n AS (SELECT count(*) AS rows, count(DISTINCT version) AS versions FROM got)
 SELECT CASE
     WHEN EXISTS (SELECT 1 FROM got WHERE version = 8 AND name = '0008_signer_ledger_anchor.sql')
         THEN 'REFUSE_PRE_SPLIT_SIGNER_0008'
-    WHEN (SELECT rows FROM n) = 7 AND NOT EXISTS (
+    WHEN (SELECT rows FROM n) = 7 AND (SELECT versions FROM n) = 7 AND NOT EXISTS (
             SELECT version, name, sha256 FROM got
             EXCEPT SELECT version, name, sha256 FROM expected WHERE version <= 7)
         THEN 'BRIDGE_0001_0007'
-    WHEN (SELECT rows FROM n) = 8 AND NOT EXISTS (
+    WHEN (SELECT rows FROM n) = 8 AND (SELECT versions FROM n) = 8 AND NOT EXISTS (
             SELECT version, name, sha256 FROM got EXCEPT SELECT version, name, sha256 FROM expected)
         THEN 'BRIDGE_0001_0008'
     ELSE 'REFUSE_PARTIAL_OR_DRIFT'

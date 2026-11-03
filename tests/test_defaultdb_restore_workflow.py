@@ -40,11 +40,64 @@ def test_runs_in_the_protected_environment_with_read_only_token():
 
 
 def test_environment_protection_is_checked_before_anything_else():
-    first = STEPS[0]
-    assert "required_reviewers" in first["run"] and "exit 1" in first["run"]
-    assert "secrets." not in yaml.safe_dump(first)
+    gate_idx = _index(lambda s: "protected environment" in s.get("name", ""))
+    gate = STEPS[gate_idx]
+    assert "scripts/require_protected_environment.sh" in gate["run"]
+    assert "|| echo" not in gate["run"]  # review P1: no fallback value that can fail open
+    assert "secrets." not in yaml.safe_dump(gate)
+    assert all("uses" in s for s in STEPS[:gate_idx])  # only the checkout runs before it
     secret_steps = [i for i, s in enumerate(STEPS) if "secrets.FCB_DEFAULTDB_URL" in yaml.safe_dump(s)]
-    assert secret_steps and min(secret_steps) > 1  # protection and confirmation gates come first
+    confirm_idx = _index(lambda s: s.get("name") == "Mode and confirmation gate")
+    assert secret_steps and min(secret_steps) > max(gate_idx, confirm_idx)
+
+
+def _gate(tmp_path, gh_body, gh_rc=0):
+    stub = tmp_path / "bin"
+    stub.mkdir(exist_ok=True)
+    (stub / "gh").write_text(f"#!/usr/bin/env bash\nprintf '%s' '{gh_body}'\nexit {gh_rc}\n")
+    (stub / "gh").chmod(0o755)
+    import os
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", str(ROOT / "scripts" / "require_protected_environment.sh"), "o/r",
+                           "aiven-production"], env=env, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("body,rc", [
+    ('{"message":"Access to this GitHub API path is not permitted"}', 1),  # review P1 repro
+    ('{"message":"Not Found"}', 1),
+    ('not json', 0),
+    ('{"protection_rules":[]}', 0),
+    ('{"protection_rules":[{"type":"wait_timer","wait_timer":5}]}', 0),
+    ('{"protection_rules":[{"type":"required_reviewers","reviewers":[]}]}', 0),
+    ('{}', 0),
+])
+def test_protection_gate_fails_closed(tmp_path, body, rc):
+    out = _gate(tmp_path, body, rc)
+    assert out.returncode != 0
+    assert out.stdout == ""
+
+
+def test_protection_gate_passes_with_a_required_reviewer(tmp_path):
+    out = _gate(tmp_path, '{"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User"}]}]}')
+    assert out.returncode == 0 and out.stdout.strip() == "1"
+
+
+def test_apply_runs_guard_script_and_count_assertion_in_one_transaction():
+    restore = STEPS[_index(lambda s: "Restore bridge 0001-0008" in s.get("name", ""))]["run"]
+    run_line = restore[restore.index("run() {"):restore.index("verify() {")]
+    order = [run_line.index(x) for x in ('-1 -c "$GUARD"', "defaultdb_restore_guard.sql", '-f "$SCRIPT"',
+                                         "assert_bridge_counts.sql")]
+    assert order == sorted(order)
+    assert '-v expected_counts="$EXPECTED_COUNTS"' in run_line
+
+
+def test_restore_guard_is_generated_from_the_prechecks():
+    out = subprocess.run([sys.executable, "scripts/generate_aiven_migrations.py", "--target", "restore-guard",
+                          "--check"], cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    guard = (ROOT / "sql" / "aiven" / "defaultdb_restore_guard.sql").read_text(encoding="utf-8")
+    assert "pg_advisory_xact_lock(460244120)" in guard and "FCB_RESTORE_STATE_REFUSED" in guard
+    assert "REFUSE_RUNTIME_TABLE_DRIFT" in guard and "REFUSE_PARTIAL_OR_DRIFT" in guard
 
 
 def test_only_the_apply_step_writes_and_it_needs_mode_and_phrase():
@@ -93,10 +146,12 @@ def test_tracked_precheck_pins_exactly_the_bridge_files():
 
 
 @pytest.mark.parametrize("name", ["defaultdb_precheck.sql", "defaultdb_precheck_tracked.sql",
-                                  "verify_bridge_schema.sql"])
+                                  "verify_bridge_schema.sql", "defaultdb_restore_guard.sql",
+                                  "assert_bridge_counts.sql"])
 def test_precheck_and_verify_files_are_read_only(name):
     sql = (ROOT / "sql" / "aiven" / name).read_text(encoding="utf-8").upper()
     code = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
+    code = re.sub(r"'(?:[^']|'')*'", "''", code)  # string literals (expected signatures) are data
     for word in ("INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "CREATE ", "TRUNCATE", "GRANT ", "COPY "):
         assert word not in code, (name, word)
 
@@ -107,3 +162,10 @@ def test_diag_url_variable_is_allowlisted():
     assert diag.url_var({}) == "FCB_PG18_TEST_URL"
     assert diag.url_var({"FCB_DB_URL_VAR": "FCB_DEFAULTDB_URL"}) == "FCB_DEFAULTDB_URL"
     assert diag.url_var({"FCB_DB_URL_VAR": "PATH"}) is None
+
+
+def test_only_the_repository_owner_can_start_or_rerun_it():
+    gate = STEPS[_index(lambda s: s.get("name") == "Mode and confirmation gate")]
+    assert gate["env"]["TRIGGERING_ACTOR"] == "${{ github.triggering_actor }}"
+    assert gate["env"]["REPO_OWNER"] == "${{ github.repository_owner }}"
+    assert '"$TRIGGERING_ACTOR" != "$REPO_OWNER"' in gate["run"] and '"$ACTOR" != "$REPO_OWNER"' in gate["run"]

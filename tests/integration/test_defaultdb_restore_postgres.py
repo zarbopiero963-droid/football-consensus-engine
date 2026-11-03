@@ -178,3 +178,101 @@ def test_a_failing_restore_leaves_nothing_behind(schema, tmp_path):
                           "-f", str(broken)], env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode != 0
     assert _state(schema) == "EMPTY"  # single transaction: rolled back completely
+
+
+# ---------------------------------------------------------------- review findings (PR #169)
+
+def _restore_tx(schema_name, expected_counts):
+    """Exactly the workflow's write path minus the defaultdb target guard: one transaction with
+    the generated state guard, the bridge script and the in-transaction count assertion."""
+    return _psql(schema_name, "-v", f"expected_counts={expected_counts}", "-1",
+                 "-f", str(AIVEN / "defaultdb_restore_guard.sql"),
+                 "-f", str(AIVEN / "aiven_migrations_bridge_0001_0008.sql"),
+                 "-f", str(AIVEN / "assert_bridge_counts.sql"))
+
+
+def _clean_counts():
+    """Counts of a clean restore on THIS server (PG16 locally, PG18 in CI)."""
+    dsn = os.environ["TEST_DATABASE_URL"]
+    name = "wp005_ref_" + uuid.uuid4().hex[:10]
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(SQL("CREATE SCHEMA {}").format(Identifier(name)))
+    try:
+        rc, _, err = _apply(name)
+        assert rc == 0, err
+        return _counts(name)[0]
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(SQL("DROP SCHEMA {} CASCADE").format(Identifier(name)))
+
+
+@pytest.mark.parametrize("drift", [
+    "ALTER TABLE sxbet_rate_cooldowns ADD COLUMN evil text",
+    "CREATE RULE r AS ON INSERT TO sxbet_rate_cooldowns DO INSTEAD NOTHING",  # review P2 repro
+    "ALTER TABLE api_football_quota_counters ALTER COLUMN used DROP NOT NULL",
+    "ALTER TABLE api_football_quota_attempts ALTER COLUMN created_at SET DEFAULT now()",
+    "ALTER TABLE oauth_claude_dcr_clients ENABLE ROW LEVEL SECURITY",
+    "CREATE POLICY p ON oauth_claude_dcr_clients USING (true)",
+    "CREATE TRIGGER t BEFORE UPDATE ON api_football_quota_leases FOR EACH ROW "
+    "EXECUTE FUNCTION suppress_redundant_updates_trigger()",
+    "ALTER TABLE sxbet_rate_attempts DROP CONSTRAINT sxbet_rate_attempts_bucket_key_check",
+    "CREATE INDEX idx_extra ON api_football_quota_leases(expires_at)",
+])
+def test_runtime_table_with_drifted_ddl_is_refused(schema, drift):
+    _runtime_tables(schema)
+    assert _state(schema) == "RUNTIME_ONLY"
+    rc, _, err = _psql(schema, "-c", drift)
+    assert rc == 0, err
+    assert _state(schema) in ("REFUSE_RUNTIME_TABLE_DRIFT", "REFUSE_UNTRACKED_OBJECTS")
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and "FCB_RESTORE_STATE_REFUSED" in err
+    rc, out, _ = _psql(schema, "-c", "SELECT to_regclass('schema_migrations') IS NULL")
+    assert out == "t"  # nothing was written
+
+
+def test_a_runtime_table_missing_an_index_is_still_accepted_and_completed(schema):
+    _runtime_tables(schema)
+    rc, _, err = _psql(schema, "-c", "DROP INDEX idx_api_football_lease_expires")
+    assert rc == 0, err
+    assert _state(schema) == "RUNTIME_ONLY"  # indexes may be a subset: 0008 creates the missing one
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc == 0, err
+    assert _state(schema) == "BRIDGE_0001_0008"
+
+
+def test_duplicate_tracking_rows_are_refused(schema):
+    rc, _, err = _psql(schema, "-c", "CREATE TABLE schema_migrations (version int, name text, sha256 text, "
+                                     "applied_at timestamptz DEFAULT now())")
+    assert rc == 0, err
+    for _ in range(7):
+        rc, _, err = _psql(schema, "-c", "INSERT INTO schema_migrations(version,name,sha256) VALUES "
+                                         "(1,'0001_baseline.sql','a6cd3bda6f1bfb8f029d4039b2c50d0ed8d444bc12470b28a382faac068f7287')")
+        assert rc == 0, err
+    assert _state(schema) == "REFUSE_PARTIAL_OR_DRIFT"
+
+
+def test_in_transaction_guard_catches_a_state_change_after_the_precheck(schema):
+    assert _state(schema) == "EMPTY"  # the workflow's precheck passed ...
+    rc, _, err = _psql(schema, "-c", "CREATE TABLE stranger (id int)")  # ... then the DB changed
+    assert rc == 0, err
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and "FCB_RESTORE_STATE_REFUSED REFUSE_UNTRACKED_OBJECTS" in err
+    rc, out, _ = _psql(schema, "-c", "SELECT to_regclass('schema_migrations') IS NULL")
+    assert out == "t"
+
+
+def test_count_mismatch_aborts_before_commit(schema):
+    rc, _, err = _restore_tx(schema, "tables=0 functions=0 triggers=0 indexes=0 constraints_information_schema=0 "
+                                     "constraints_pg_constraint=0 schema_migrations_rows=0")
+    assert rc != 0 and "FCB_RESTORE_COUNTS_MISMATCH" in err
+    assert _state(schema) == "EMPTY"  # review P3: nothing committed on a count mismatch
+
+
+def test_full_transaction_path_succeeds_twice_with_the_right_counts(schema):
+    expected = _clean_counts()
+    if _major() == 18:
+        assert expected == _pinned_counts()
+    for _ in range(2):
+        rc, _, err = _restore_tx(schema, expected)
+        assert rc == 0, err
+    assert _state(schema) == "BRIDGE_0001_0008"

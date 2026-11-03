@@ -53,13 +53,51 @@ def render_bridge():
     return text
 
 
+# FCB-WP-005: the precheck, re-evaluated INSIDE the restore transaction (no TOCTOU window).
+# Generated from the two read-only precheck files so the logic cannot diverge.
+GUARD_TARGET = ROOT / 'sql' / 'aiven' / 'defaultdb_restore_guard.sql'
+ALLOWED_STATES = ('EMPTY', 'RUNTIME_ONLY', 'BRIDGE_0001_0007', 'BRIDGE_0001_0008')
+
+
+def _query(name):
+    text = (ROOT / 'sql' / 'aiven' / name).read_text(encoding='utf-8')
+    body = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('--')).strip()
+    if not body.endswith(';') or '$fcbq$' in body:
+        raise SystemExit(f'unexpected precheck file shape: {name}')
+    return body[:-1]
+
+
+def render_guard():
+    allowed = ', '.join(f"'{s}'" for s in ALLOWED_STATES)
+    return (
+        '-- FCB-WP-005: generated from defaultdb_precheck.sql + defaultdb_precheck_tracked.sql.\n'
+        '-- Runs in the SAME transaction as the restore, after the bridge advisory lock: if the\n'
+        '-- state is not allowed at that instant, the whole transaction aborts before any write.\n'
+        'SELECT pg_advisory_xact_lock(460244120);\n'
+        'DO $fcbguard$\n'
+        'DECLARE s text;\n'
+        'BEGIN\n'
+        f'    EXECUTE $fcbq$\n{_query("defaultdb_precheck.sql")}\n$fcbq$ INTO s;\n'
+        "    IF s = 'TRACKED' THEN\n"
+        f'        EXECUTE $fcbq$\n{_query("defaultdb_precheck_tracked.sql")}\n$fcbq$ INTO s;\n'
+        '    END IF;\n'
+        f'    IF s IS NULL OR s NOT IN ({allowed}) THEN\n'
+        "        RAISE EXCEPTION 'FCB_RESTORE_STATE_REFUSED %', s;\n"
+        '    END IF;\n'
+        'END $fcbguard$;\n'
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008'), default='aiven-0001-0007')
+    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'restore-guard'),
+                        default='aiven-0001-0007')
     args = parser.parse_args()
     if args.target == 'bridge-0001-0008':
         text, target = render_bridge(), BRIDGE_TARGET
+    elif args.target == 'restore-guard':
+        text, target = render_guard(), GUARD_TARGET
     else:
         text, target = render(), TARGET
     digest = hashlib.sha256(text.encode()).hexdigest()

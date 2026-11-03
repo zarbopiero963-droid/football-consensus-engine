@@ -3,7 +3,9 @@ name: FCB Aiven defaultdb restore (owner-gated)
 # FCB-WP-005. Manual only. Restores the PRODUCTION database `defaultdb` (Aiven piero-1, PG18) to
 # the bridge migration series 0001-0008. Never applies the signer series. Gates, all required:
 #   1. GitHub Environment `aiven-production` with at least one required reviewer (checked by
-#      the job itself; an auto-created unprotected environment is refused);
+#      the job itself; an auto-created unprotected environment is refused). The repository is
+#      public, where required reviewers are available on every GitHub plan; the job is started
+#      and re-run only by the repository owner (github.triggering_actor), a second gate;
 #   2. the secret FCB_DEFAULTDB_URL exists only in that environment (owner-created);
 #   3. mode=apply AND the exact confirmation phrase; default mode=diagnose never writes;
 #   4. pinned target (host/port hashes, database name), PostgreSQL 18, TLS;
@@ -52,25 +54,33 @@ jobs:
       EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
       PGPORT: '14274'
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Require a protected environment (required reviewer), else refuse
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          reviewers="$(gh api "repos/$REPO/environments/aiven-production" \
-            --jq '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[]?] | length' 2>/dev/null || echo 0)"
-          if [ "${reviewers:-0}" -lt 1 ]; then
-            echo "::error::environment aiven-production has no required reviewer; refusing"; exit 1
-          fi
+          # Fails closed on any API/JSON error or a missing/zero reviewer count.
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
           echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mode and confirmation gate
         env:
           MODE: ${{ inputs.mode }}
           CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          # Second, plan-independent gate: only the repository owner may start (or re-run) it.
+          if [ "$TRIGGERING_ACTOR" != "$REPO_OWNER" ] || [ "$ACTOR" != "$REPO_OWNER" ]; then
+            echo "::error::only the repository owner may run the defaultdb restore"; exit 1
+          fi
           case "$MODE" in
             diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
             apply)
@@ -80,10 +90,6 @@ jobs:
               echo "## Mode: apply (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
             *) echo "::error::unknown mode"; exit 1 ;;
           esac
-
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Fail closed if the secret is missing
         env:
@@ -103,6 +109,8 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet 'psycopg[binary]==3.3.6'
           generated="$(python scripts/generate_aiven_migrations.py --target bridge-0001-0008 --check)"
+          # The in-transaction state guard must be regenerated from the committed prechecks.
+          python scripts/generate_aiven_migrations.py --target restore-guard --check >/dev/null
           actual="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
           test "$generated" = "$EXPECTED_SCRIPT_SHA256"
           test "$actual" = "$EXPECTED_SCRIPT_SHA256"
@@ -291,7 +299,11 @@ jobs:
             EMPTY|RUNTIME_ONLY|BRIDGE_0001_0007|BRIDGE_0001_0008) ;;
             *) echo "::error::state changed since precheck ($before); refusing"; exit 1 ;;
           esac
-          run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
+          # ONE transaction: target guard, state guard (precheck re-evaluated under the bridge
+          # advisory lock), bridge script, then the object-count assertion. Any failure, including
+          # a count mismatch, aborts the transaction before anything is committed.
+          run() { sp -X -q -v ON_ERROR_STOP=1 -v expected_counts="$EXPECTED_COUNTS" -1 -c "$GUARD" \
+                    -f sql/aiven/defaultdb_restore_guard.sql -f "$SCRIPT" -f sql/aiven/assert_bridge_counts.sql >/dev/null; }
           verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_bridge_schema.sql; }
           run;    first="$(verify)"
           applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
