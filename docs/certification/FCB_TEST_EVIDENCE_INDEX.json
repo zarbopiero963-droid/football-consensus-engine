@@ -40,8 +40,10 @@
       "runner": "GitHub Actions (not Render)",
       "outcome": "46 PASS / 13 EMPTY_VALID / 3 NOT_TESTED / 1 PARTIAL / 0 FAIL, 0 writes",
       "rate_coordinator": "LOCAL_PROCESS",
-      "evidence_in_repo": false,
-      "artifact_expires": "2026-12-01",
+      "evidence_in_repo": true,
+      "evidence_path": "evidence/sxbet/readonly_audit_run41320538088.json",
+      "evidence_sha256": "2582808205479f6023bcbd7f3a83359459b55f122f3d91b66be5458e7d07db9b",
+      "artifact_expires": "2026-12-01 (archived by FCB-WP-011)",
       "note": "bridge/sxbet and signer unchanged d569e6e..342fed6"
     },
     {
