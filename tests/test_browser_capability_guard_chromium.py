@@ -74,6 +74,26 @@ RTC_TURN = ("<iframe sandbox=allow-scripts srcdoc=\"<script>try{const pc=new RTC
             "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch(e){}</script>\"></iframe>")
 
 
+REGRESSION_RESPONSES = {
+    # (status, headers, body) for the re-serve regression matrix (review item 5)
+    "redir": lambda sv: (302, [("Location", "/normal")], b""),
+    "cookie": lambda sv: (200, [("Content-Type", "text/html"), ("Set-Cookie", "fcb=1; Path=/"),
+                                ("Set-Cookie", "fcb2=2; Path=/")],
+                          b"<script>document.title='cookie-ok'</script>"),
+    # The site's own CSP must still be enforced next to ours: its inline script must NOT run.
+    "site_csp": lambda sv: (200, [("Content-Type", "text/html"), ("Content-Security-Policy", "script-src 'none'")],
+                            b"<title>site-csp</title><script>document.title='script-ran'</script>"),
+    "latin1": lambda sv: (200, [("Content-Type", "text/html; charset=iso-8859-1")],
+                          "<title>caf\u00e9</title>".encode("latin-1")),
+    "status404": lambda sv: (404, [("Content-Type", "text/html")], b"<title>nf</title>"),
+    "cached": lambda sv: (200, [("Content-Type", "text/html"), ("Cache-Control", "max-age=600")],
+                          b"<title>cached</title><iframe sandbox=allow-scripts srcdoc=\"<script>try{new WebSocket('ws://"
+                          + sv.internal.encode() + b"/cached')}catch(e){}</script>\"></iframe>"),
+    "big": lambda sv: (200, [("Content-Type", "text/html")],
+                       b"<title>big</title>" + b"x" * (browser_use.DOCUMENT_BODY_MAX_BYTES + 1)),
+}
+
+
 class _Servers:
     def __init__(self):
         self.lines: list[bytes] = []
@@ -91,6 +111,29 @@ class _Servers:
 
             def do_GET(self):
                 name = urlsplit(self.path).path.strip("/")
+                extra = REGRESSION_RESPONSES.get(name)
+                if extra is not None:
+                    status, headers, body = extra(servers)
+                    self.send_response(status)
+                    for k, v in headers:
+                        self.send_header(k, v)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if name == "slowbody":  # a frame whose document body takes seconds to arrive
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", "20")
+                    self.end_headers()
+                    self.wfile.write(b"<p>")
+                    self.wfile.flush()
+                    time.sleep(3)
+                    try:
+                        self.wfile.write(b"slow body here </p>"[:17])
+                    except OSError:
+                        pass
+                    return
                 page = {**WORKER_PAGES, **SANDBOX_PAGES, **SPECULATION, **POSITIVE}.get(name, "")
                 body = (f"<html><head></head><body><p id=ok>public</p>{page}</body></html>"
                         .replace("INT", servers.internal).encode())
@@ -133,6 +176,7 @@ POSITIVE = {
     "normal": "<script>document.title='scripts-run'</script>",
     "rtc_turn": RTC_TURN,
     "gzip_page": "<script>document.title='gz-ok'</script>",
+    "slow_frame": "<iframe src='/slowbody'></iframe>",
 }
 
 
@@ -147,7 +191,7 @@ def servers():
 def _offline_policy(monkeypatch):
     def validate(url):
         parts = urlsplit(url)
-        if parts.scheme not in ("http", "https") or parts.hostname != PUB:
+        if parts.scheme not in ("http", "https") or parts.hostname not in (PUB, REBIND_HOST):
             raise UnsafeURL("URL is not public")
         return url
 
@@ -158,9 +202,25 @@ def _offline_policy(monkeypatch):
     monkeypatch.delenv("BROWSER_TOOLS_ENABLED", raising=False)
 
 
+# Two Chromium profiles, both run in CI (TEST ENVIRONMENT ONLY; production flags are never changed):
+#   lna_off (default)  Chromium's own Local Network Access checks are OFF, so the bridge's guards are
+#                      proven without relying on a browser policy a provider can change: the RED
+#                      controls and the residual xfails run here.
+#   native             normal Chromium configuration: the GREEN tests must hold as well. RED controls
+#                      and residual xfails are skipped (native LNA can mask a vector; that is the
+#                      browser, not the bridge) — the residuals stay OPEN regardless.
+PROFILE = os.environ.get("FCB_CHROMIUM_PROFILE", "lna_off")
+assert PROFILE in {"lna_off", "native"}, PROFILE
+REBIND_HOST = "rebind.test"  # the bridge's validator sees it as public; Chromium resolves it to INT
+CHROMIUM_TEST_ARGS = [f"--host-resolver-rules=MAP {REBIND_HOST} {INT}"] + (
+    ["--disable-features=LocalNetworkAccessChecks"] if PROFILE == "lna_off" else [])
+red_profile_only = pytest.mark.skipif(PROFILE != "lna_off", reason="RED controls and residuals run in the "
+                                      "lna_off profile (native LNA can mask a vector)")
+
+
 async def _launch(p):
     try:
-        return await p.chromium.launch()
+        return await p.chromium.launch(args=CHROMIUM_TEST_ARGS)
     except Exception as exc:  # pragma: no cover
         if os.environ.get("FCB_REQUIRE_CHROMIUM") == "1":
             raise
@@ -193,7 +253,7 @@ async def _remote_session(p):
         pytest.skip("Chromium executable not found")
     port = _free_port()
     proc = subprocess.Popen([executable, "--headless=new", "--no-sandbox", f"--remote-debugging-port={port}",
-                             "--remote-debugging-address=127.0.0.1", "about:blank"],
+                             "--remote-debugging-address=127.0.0.1", *CHROMIUM_TEST_ARGS, "about:blank"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
@@ -259,6 +319,7 @@ def test_worker_websockets_never_reach_internal(servers, provider):
     assert all(error is None for error, _, _ in results.values()), results
 
 
+@red_profile_only
 @pytest.mark.parametrize("provider", sorted(PROVIDERS))
 def test_control_every_worker_vector_leaks_without_the_guards(servers, provider, monkeypatch):
     """Review P2: not vacuous. With both layers off every vector reaches the internal host."""
@@ -272,6 +333,7 @@ def test_control_every_worker_vector_leaks_without_the_guards(servers, provider,
     assert {name: bool(lines) for name, (_, _, lines) in results.items()} == expected
 
 
+@red_profile_only
 def test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path(servers, monkeypatch):
     """Review P0 RED: init script ON, document CSP OFF -> a sandboxed srcdoc frame on the remote
     (Browser Use / CDP) path still reaches the internal host. Only the CSP closes it."""
@@ -280,6 +342,7 @@ def test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path(ser
     assert {name: bool(lines) for name, (_, _, lines) in results.items()} == {name: True for name in SANDBOX_PAGES}
 
 
+@red_profile_only
 @pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): speculation-rules "
                    "prefetch/prerender is issued by the browser process and cannot be blocked over CDP; "
                    "needs an egress proxy. Browser stays behind the kill switch. A pass here means the "
@@ -289,6 +352,7 @@ def test_speculation_rules_residual_is_still_open(servers):
     assert servers.lines == []
 
 
+@red_profile_only
 @pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
                    "the remote path keeps RTCPeerConnection (the init script cannot reach it) and no CSP "
                    "directive governs WebRTC in Chromium: a TURN-over-TCP allocation reaches an internal "
@@ -300,6 +364,158 @@ def test_webrtc_from_a_sandboxed_srcdoc_residual_is_still_open(servers):
 
 def test_webrtc_from_a_sandboxed_srcdoc_is_blocked_on_the_local_path(servers):
     _visit(servers, "local", ["rtc_turn"])
+    assert servers.lines == []
+
+
+class _Udp:
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((INT, 0))
+        self.port = self.sock.getsockname()[1]
+        self.packets = 0
+        threading.Thread(target=self._rx, daemon=True).start()
+
+    def _rx(self):
+        while True:
+            try:
+                self.sock.recvfrom(65535)
+            except OSError:
+                return
+            self.packets += 1
+
+
+@pytest.fixture()
+def udp():
+    u = _Udp()
+    yield u
+    u.sock.close()
+
+
+def _rtc_udp_page(udp):
+    js = (f"try{{const pc=new RTCPeerConnection({{iceServers:[{{urls:'stun:{INT}:{udp.port}'}}]}});"
+          "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch(e){}")
+    POSITIVE["rtc_udp_sandbox"] = f"<iframe sandbox=allow-scripts srcdoc=\"<script>{js}</script>\"></iframe>"
+    return "rtc_udp_sandbox"
+
+
+def _webtransport_page(udp):
+    js = f"try{{new WebTransport('https://{INT}:{udp.port}/x').ready.catch(()=>{{}})}}catch(e){{}}"
+    POSITIVE["wt_sandbox"] = f"<iframe sandbox=allow-scripts srcdoc=\"<script>{js}</script>\"></iframe>"
+    return "wt_sandbox"
+
+
+@red_profile_only
+@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
+                   "the remote path keeps WebTransport (the init script cannot reach it) and its https: URL "
+                   "matches connect-src like fetch: QUIC packets reach an internal host. Needs an egress "
+                   "proxy. A pass means the residual is gone: update the registry.")
+def test_webtransport_from_a_sandboxed_srcdoc_residual_is_still_open(servers, udp):
+    _visit(servers, "remote", [_webtransport_page(udp)], settle=3.0)
+    assert udp.packets == 0
+
+
+@red_profile_only
+@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): WebRTC STUN over UDP from a "
+                   "sandboxed srcdoc frame on the remote path reaches an internal host (no CSP directive "
+                   "governs WebRTC). Needs an egress proxy. A pass means the residual is gone.")
+def test_webrtc_udp_from_a_sandboxed_srcdoc_residual_is_still_open(servers, udp):
+    _visit(servers, "remote", [_rtc_udp_page(udp)], settle=3.0)
+    assert udp.packets == 0
+
+
+@red_profile_only
+@pytest.mark.xfail(strict=True, reason="WP-002b residual (P3, documented): DNS rebinding. The bridge "
+                   "validates the name with its own resolver while Chromium connects to whatever its "
+                   "resolver returns (here mapped to the internal host). Needs an egress proxy that "
+                   "validates the connected IP. A pass means the residual is gone.")
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_dns_rebinding_residual_is_still_open(servers, provider):
+    port = servers.internal.split(":")[1]
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, close = await PROVIDERS[provider](p)
+            try:
+                try:
+                    await bridge.open_url(session.id, f"http://{REBIND_HOST}:{port}/rebind", timeout_ms=4000)
+                except Exception:
+                    pass
+            finally:
+                await close()
+    asyncio.run(scenario())
+    assert servers.lines == []
+
+
+def test_webtransport_and_webrtc_from_a_sandboxed_srcdoc_are_blocked_on_the_local_path(servers, udp):
+    _visit(servers, "local", [_webtransport_page(udp), "rtc_turn", _rtc_udp_page(udp)], settle=3.0)
+    assert udp.packets == 0 and servers.lines == []
+
+
+@red_profile_only
+def test_control_webtransport_and_webrtc_fire_on_the_local_path_without_the_guards(servers, udp, monkeypatch):
+    """Review P3: the local GREEN above is not vacuous."""
+    _guards_off(monkeypatch, init_script=True, csp=True)
+    counts = {}
+    for name in (_webtransport_page(udp), _rtc_udp_page(udp)):
+        before = udp.packets
+        _visit(servers, "local", [name], settle=3.0)
+        counts[name] = udp.packets - before
+    results = _visit(servers, "local", ["rtc_turn"], settle=3.0)
+    assert all(counts.values()) and results["rtc_turn"][2], counts
+
+
+def test_a_cancelled_frame_is_not_reported_as_a_redirect_into_the_next_navigation(servers):
+    """Review P2 regression: a frame whose re-serve is cancelled by the next navigation must not
+    make that next, fully public navigation fail with REDIRECT_BLOCKED."""
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, close = await PROVIDERS["local"](p)
+            try:
+                await bridge.open_url(session.id, servers.url("slow_frame"), wait_until="commit")
+                result = await bridge.open_url(session.id, servers.url("normal"), wait_until="load")
+                return result, await session.page.title()
+            finally:
+                await close()
+    result, title = asyncio.run(scenario())
+    assert title == "scripts-run" and result["blocked_requests"] == 0
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_re_serving_documents_keeps_navigation_semantics(servers, provider):
+    """Review item 5: redirects, cookies, the site's own CSP, charset, status, HTTP cache, cap."""
+    async def scenario():
+        out = {}
+        async with playwright_api.async_playwright() as p:
+            bridge, session, close = await PROVIDERS[provider](p)
+            try:
+                async def visit(name):
+                    try:
+                        result = await bridge.open_url(session.id, servers.url(name), wait_until="load")
+                    except UnsafeURL as exc:
+                        return ("refused", str(exc))
+                    await asyncio.sleep(0.3)
+                    return (result["final_url"].rsplit("/", 1)[-1], result["http_status"],
+                            await session.page.title(), result["documents_refused"])
+                for name in ("redir", "cookie", "site_csp", "latin1", "status404", "cached", "cached"):
+                    out.setdefault(name, []).append(await visit(name))
+                    if name == "cookie":
+                        # document.cookie: Playwright's context.cookies() is empty for the default
+                        # context over CDP whether or not documents are re-served (verified).
+                        out["cookies"] = sorted(c.split("=")[0].strip() for c in
+                                                (await session.page.evaluate("document.cookie")).split(";"))
+                out["big"] = await visit("big")
+                out["after_big"] = await visit("normal")
+            finally:
+                await close()
+        return out
+    out = asyncio.run(scenario())
+    assert out["redir"] == [("normal", 200, "scripts-run", 0)]
+    assert out["cookie"] == [("cookie", 200, "cookie-ok", 0)] and out["cookies"] == ["fcb", "fcb2"]
+    assert out["site_csp"] == [("site_csp", 200, "site-csp", 0)]  # the site's script-src 'none' held
+    assert out["latin1"] == [("latin1", 200, "caf\u00e9", 0)]
+    assert out["status404"] == [("status404", 404, "nf", 0)]
+    assert out["cached"] == [("cached", 200, "cached", 0)] * 2  # the cached copy is guarded too
+    assert out["big"] == ("refused", browser_use.DOCUMENT_REFUSED)  # fixed code, not REDIRECT_BLOCKED
+    assert out["after_big"] == ("normal", 200, "scripts-run", 0)
     assert servers.lines == []
 
 
@@ -409,14 +625,29 @@ def test_document_is_re_served_with_the_csp_never_continued():
 def test_document_response_fails_closed_when_the_csp_cannot_be_applied(kw):
     cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, **kw)
     assert cdp.sent[-1] == ("Fetch.failRequest", {"requestId": "r1", "errorReason": "BlockedByClient"})
-    assert session.redirect_blocked is True and session.blocked_requests == 1
+    # Fail closed, but not an SSRF verdict (review P2): no REDIRECT_BLOCKED spill-over.
+    assert session.document_csp_failures == 1
+    assert session.redirect_blocked is False and session.blocked_requests == 0
 
 
 def test_document_over_the_cap_fails_closed(monkeypatch):
     monkeypatch.setattr(browser_use, "DOCUMENT_BODY_MAX_BYTES", 4)
     cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc", b"de"])
     assert "Fetch.fulfillRequest" not in [m for m, _ in cdp.sent]
-    assert cdp.sent[-1][0] == "Fetch.failRequest" and session.redirect_blocked is True
+    assert cdp.sent[-1][0] == "Fetch.failRequest" and session.document_csp_failures == 1
+    assert session.redirect_blocked is False and browser_use._document_buffered_bytes == 0
+
+
+def test_documents_buffered_at_once_share_a_global_budget(monkeypatch):
+    """Review P2: many large frames cannot exhaust the bridge's memory."""
+    monkeypatch.setattr(browser_use, "DOCUMENT_BUFFER_BUDGET_BYTES", 5)
+    monkeypatch.setattr(browser_use, "_document_buffered_bytes", 3)  # another document in flight
+    cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc"])
+    assert cdp.sent[-1][0] == "Fetch.failRequest" and session.document_csp_failures == 1
+    assert browser_use._document_buffered_bytes == 3  # nothing leaked into the shared budget
+    monkeypatch.setattr(browser_use, "_document_buffered_bytes", 0)
+    cdp, _ = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc"])
+    assert "Fetch.fulfillRequest" in [m for m, _ in cdp.sent] and browser_use._document_buffered_bytes == 0
 
 
 def test_redirect_hop_and_network_error_are_not_re_served():

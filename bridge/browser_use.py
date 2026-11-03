@@ -29,6 +29,7 @@ LOG = logging.getLogger(__name__)
 # Fixed, non-sensitive messages: never echo the rejected URL or provider errors.
 REDIRECT_BLOCKED = "navigation redirected to a non-public address"
 CONTENT_BLOCKED = "page content is not from a public address"
+DOCUMENT_REFUSED = "page document could not be served under the browser security policy"
 # FCB-WP-002b: network capabilities that bypass the CDP request guard (reproduced on real
 # Chromium: a WebSocket/WebSocketStream opened inside a dedicated or shared worker reached an
 # internal host; WebRTC/WebTransport use UDP/QUIC outside the Fetch domain). Layer 1: the
@@ -61,14 +62,18 @@ CAPABILITY_GUARD_JS = r"""
 #   worker-src 'none'                       no dedicated/shared/service workers in any realm;
 #   connect-src http: https: data: blob:    fetch/XHR/EventSource stay (each request is still
 #                                           validated by the request guard); ws:/wss: schemes
-#                                           are not matched, so WebSocket, WebSocketStream and
-#                                           WebTransport-to-ws are refused everywhere.
-# Behaviour change: pages can no longer open WebSockets. NOT covered (no CSP directive exists in
-# Chromium): WebRTC ICE/TURN from such a frame — documented residual, needs an egress proxy.
+#                                           are not matched, so WebSocket and WebSocketStream
+#                                           are refused everywhere.
+# Behaviour change: pages can no longer open WebSockets. NOT covered in such a frame (no CSP
+# directive can separate them): WebRTC ICE/TURN, and WebTransport, whose URLs are https: and so
+# match connect-src like fetch does — documented residuals, they need an egress proxy.
 DOCUMENT_CSP = "worker-src 'none'; connect-src http: https: data: blob:"
 # A document is re-served whole to carry the CSP; larger ones fail closed instead of streaming
-# unguarded.
-DOCUMENT_BODY_MAX_BYTES = 8 * 1024 * 1024
+# unguarded. The bytes buffered at once across ALL sessions are also bounded, so a page with many
+# large frames cannot exhaust the bridge's memory (review P2): over budget fails closed.
+DOCUMENT_BODY_MAX_BYTES = 4 * 1024 * 1024
+DOCUMENT_BUFFER_BUDGET_BYTES = 16 * 1024 * 1024
+_document_buffered_bytes = 0
 _FULFILL_DROPPED_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 TOOLS_DISABLED = "browser tools are disabled on this server"
@@ -161,6 +166,7 @@ class Session:
     websocket_guard_installed: bool = False
     capability_guard_installed: bool = False
     blocked_requests: int = 0
+    document_csp_failures: int = 0
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
 
@@ -513,27 +519,32 @@ class BrowserUseBridge:
         return out
 
     async def _read_document_body(self, cdp, request_id) -> str | None:
-        """Base64 body of a paused document response, or None when over the cap or unreadable."""
+        """Base64 body of a paused document response, or None when over the per-document cap or
+        the global buffer budget. Raises when the stream cannot be read."""
+        global _document_buffered_bytes
         stream = (await cdp.send("Fetch.takeResponseBodyAsStream", {"requestId": request_id}))["stream"]
-        chunks: list[bytes] = []
-        total = 0
+        body = bytearray()
+        reserved = 0
         try:
             while True:
                 part = await cdp.send("IO.read", {"handle": stream, "size": 1 << 16})
                 data = part.get("data", "")
                 raw = base64.b64decode(data) if part.get("base64Encoded") else data.encode("utf-8")
-                total += len(raw)
-                if total > DOCUMENT_BODY_MAX_BYTES:
+                if (len(body) + len(raw) > DOCUMENT_BODY_MAX_BYTES
+                        or _document_buffered_bytes + len(raw) > DOCUMENT_BUFFER_BUDGET_BYTES):
                     return None
-                chunks.append(raw)
+                _document_buffered_bytes += len(raw)
+                reserved += len(raw)
+                body += raw
                 if part.get("eof"):
                     break
+            return base64.b64encode(body).decode("ascii")
         finally:
+            _document_buffered_bytes -= reserved
             try:
                 await cdp.send("IO.close", {"handle": stream})
             except Exception:
                 pass
-        return base64.b64encode(b"".join(chunks)).decode("ascii")
 
     async def _document_response(self, cdp, session: Session, event: dict[str, Any]) -> None:
         """Response stage of a document: re-serve it with DOCUMENT_CSP, or fail it closed.
@@ -565,9 +576,13 @@ class BrowserUseBridge:
             await cdp.send("Fetch.fulfillRequest", params)
         except Exception:
             # Without the CSP the document could open unguarded sockets: never render it.
+            # Fetch.failRequest alone fails it closed (a main-frame navigation then errors with
+            # net::ERR_BLOCKED_BY_CLIENT). This is NOT an SSRF verdict: it does not touch
+            # redirect_blocked or blocked_requests (review P2: a cancelled iframe or an oversized
+            # page must not be reported as a non-public redirect, nor spill into the next
+            # navigation).
             LOG.warning("Document CSP could not be applied: session=%s", session.id)
-            session.blocked_requests += 1
-            session.redirect_blocked = True
+            session.document_csp_failures += 1
             await self._fetch_fail(cdp, request_id)
 
     @staticmethod
@@ -630,6 +645,7 @@ class BrowserUseBridge:
         """Run one navigation with the redirect guard armed, then fail closed if needed."""
         self._require_guard(session)
         session.redirect_blocked = False
+        csp_failures_before = session.document_csp_failures
         try:
             response = await action()
         except PlaywrightError:
@@ -637,6 +653,11 @@ class BrowserUseBridge:
                 session.redirect_blocked = False
                 await self._quarantine(session, page)
                 raise UnsafeURL(REDIRECT_BLOCKED) from None
+            if session.document_csp_failures != csp_failures_before:
+                # A document of this navigation was refused because the WP-002b CSP could not be
+                # applied (oversized, unreadable, buffer budget): fixed code, nothing rendered.
+                await self._quarantine(session, page)
+                raise UnsafeURL(DOCUMENT_REFUSED) from None
             raise
         await self._after_navigation(session, page)
         return response
@@ -675,12 +696,15 @@ class BrowserUseBridge:
             page.on("response", on_response)
 
         blocked_before = session.blocked_requests
+        csp_failures_before = session.document_csp_failures
         try:
             response = await self._navigate(
                 session, page, lambda: page.goto(url, wait_until=wait_until, timeout=timeout_ms))
             final_url = page.url
             return {
                 "blocked_requests": session.blocked_requests - blocked_before,
+                # Documents (frames) not rendered because the WP-002b CSP could not be applied.
+                "documents_refused": session.document_csp_failures - csp_failures_before,
                 "session_id": session_id,
                 "requested_url": url,
                 "final_url": final_url,
