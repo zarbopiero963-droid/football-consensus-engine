@@ -99,6 +99,9 @@ def test_healthz_reports_shared_postgres_coordinator_without_touching_the_databa
     assert h["sxbet_rate_coordinator"] == "POSTGRES_SHARED" and h["mcp_tools_by_component"]["sxbet"] == 46
     assert h["sxbet_registration_error_type"] is None
     assert "unused@127.0.0.1" not in json.dumps(out) and FAKE_KEY not in logs
+    # WP-006: the readiness check against the closed port is a fixed code, never the DSN.
+    assert h["schema_state"] in ("UNKNOWN", "DB_UNAVAILABLE")
+    assert "SCHEMA_READINESS state=DB_UNAVAILABLE" in logs and "unused@127.0.0.1" not in logs
 
 
 def test_rate_coordinator_kind_helper_has_no_side_effects():

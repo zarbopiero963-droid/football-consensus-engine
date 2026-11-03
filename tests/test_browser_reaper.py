@@ -252,3 +252,14 @@ def test_stop_waits_for_existing_stopping_lease(monkeypatch):
     result = run(scenario())
     assert result == {"session_id": "cloak-race", "status": "stopped"}
     assert session.id not in bridge._sessions
+
+
+@pytest.mark.parametrize('value,expected', [(None, True), ('false', False)])
+def test_health_reports_the_kill_switch(monkeypatch, value, expected):
+    """WP-006: browser_health tells the client the server-side kill switch state."""
+    if value is None:
+        monkeypatch.delenv('BROWSER_TOOLS_ENABLED', raising=False)
+    else:
+        monkeypatch.setenv('BROWSER_TOOLS_ENABLED', value)
+    monkeypatch.setattr(session_leases, 'healthcheck', lambda: True)
+    assert run(BrowserUseBridge().health())['browser_tools_enabled'] is expected
