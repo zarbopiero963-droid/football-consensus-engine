@@ -18,7 +18,7 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 |---|---|---|---|---|---|
 | 1 | FCB-WP-001 | P0 | Browser SSRF class A: validated redirects, fail-closed, read tools re-validate — **DONE** (#165, `a642f3f`, deployed) | — | merge (Render deploy) |
 | 2 | FCB-WP-002 | P0 | Browser SSRF class B: every request validated (fetch/xhr/script/css/img/ws), no `network_responses` oracle, service workers blocked — **PARTIAL** (#166, owner decision "OPTION 1": merged as a partial hardening, Browser kept disabled by `BROWSER_TOOLS_ENABLED=false`) | 001 | merge |
-| 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **IN REVIEW** (PR for WP-002b: worker WS, speculation rules, WebRTC/WebTransport, fec0::/10 fixed fail-closed; DNS rebinding window documented residual) | 002 | merge; re-enabling Browser = owner |
+| 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **PARTIAL** (PR for WP-002b: worker WS/WebSocketStream, WebRTC, WebTransport and fec0::/10 fixed fail-closed; speculation-rules prefetch/prerender and DNS rebinding stay OPEN, need an egress proxy) | 002 | merge; re-enabling Browser = owner |
 | 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **DONE (code)** (#167, `df76738`, deployed); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
 | 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision — **DONE (code)** (#168, `43c7926`; option A: bridge/signer series split) | — | merge |
 | 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production` (required reviewer: owner), diagnose then apply — **DONE_CODE / BLOCKED_OWNER** (#169, `2068f6d`; workflow + runbook `areas/defaultdb_restore_runbook.md`; environment, secret and run by the owner; not PRODUCTION_VERIFIED until defaultdb, OAuth and MCP are verified) | 001, 002 (or stop-gap), 004 | **separate authorization**, Environment/secret by the owner |
@@ -96,24 +96,24 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 - **Must also evaluate:** Browser Use cloud limits (what CDP allows remotely), network/proxy/egress or provider-policy controls, and positive tests proving legitimate public features still work.
 - **Rule:** a capability that cannot be made safe on the cloud provider is documented as a limit and blocked fail-closed (e.g. disabled by launch flag/CDP or the provider refused); a frozen or hung component does not count as a protection.
 - **Until DONE:** `BROWSER_TOOLS_ENABLED=false` in production; re-enabling Browser requires the owner.
-- **Implementation:** RED reproduced on real Chromium (local and remote CDP) for each residual.
+- **Implementation:** RED reproduced on real Chromium, on both the local provider and remote CDP.
 
-| Residual | RED (before the fix) | Fix |
+| Residual | RED | Status |
 |---|---|---|
-| Worker / shared-worker WebSocket (P0) | Handshake reached the internal host | `Worker`, `SharedWorker`, `RTCPeerConnection`, `RTCDataChannel` and `WebTransport` are removed from every realm by a context init script: frames, srcdoc, data: and about:blank documents, popups. Accessing them throws. |
-| Speculation rules (P1) | Browser-process `GET` reached the internal host. CDP Fetch never paused it; `Page.setPrerenderingAllowed` and the data-saver override did not stop it. | Documents that declare rules (`Speculation-Rules` header, or `speculationrules` in the body) are refused at the response stage with `CAPABILITY_BLOCKED`. Every DOM path that can set a script's type to `speculationrules` at runtime throws: the `type` property, `setAttribute`, `setAttributeNS`, `setAttributeNode(NS)`, `NamedNodeMap.setNamedItem(NS)`, the `Attr.value` / `nodeValue` / `textContent` setters, `document.write(ln)`, `createContextualFragment`, `setHTMLUnsafe` and `parseHTMLUnsafe`. |
-| WebRTC / WebTransport (P2) | UDP/QUIC, not covered by the Fetch domain | Constructors disabled, as above. |
-| `fec0::/10` (P3) | Accepted by the validator | Refused (`is_site_local`). |
-| Fail-closed arming | — | A session without the capability guard is guard-inactive, so every navigation and read is refused. |
+| WebSocket / `WebSocketStream` inside a dedicated or shared worker, from page, iframe, late iframe, srcdoc, popup or blob realms (P0) | Handshake reached the internal host (9/9 vectors) | **FIXED.** `Worker`, `SharedWorker`, `RTCPeerConnection`, `webkitRTCPeerConnection`, `RTCDataChannel`, `WebTransport` and `WebSocketStream` read as `undefined` in every realm, set non-configurable by a context init script. GREEN 9/9. |
+| WebRTC / WebTransport (P2) | UDP/QUIC outside the Fetch domain | **FIXED.** Constructors disabled, as above. |
+| `fec0::/10` (P3) | Accepted by the validator | **FIXED.** Refused (`is_site_local`). |
+| Arming | — | A session without the capability guard is guard-inactive (fail closed). |
+| Speculation-rules prefetch/prerender (P1) | Browser-process `GET` reached the internal host | **OPEN.** CDP Fetch never pauses it. `Page.setPrerenderingAllowed`, the data-saver override and the Chromium launch flags tried (`--disable-blink-features=SpeculationRules`, `--disable-features=Prerender2,...`) do not stop it. Text and DOM filtering was bypassed by character references, split `document.write` arguments and blob: documents (independent review of #172), so it was not shipped. Locked by a strict xfail: `test_speculation_rules_residual_is_still_open`. |
+| DNS rebinding window (P3) | — | **OPEN.** The request stage does not expose the connected IP. |
 
-- **Tests:**
-  - `tests/test_browser_capability_guard_chromium.py`: 9 tests on both providers, including positive controls (legitimate pages load and run scripts; `fetch` and page `WebSocket` are still available). RED with main's `browser_use.py`: 3/3. GREEN: 9/9.
-  - Plus `fec0` validator tests: RED 4/4, GREEN.
-- **Declared limits:**
-  1. A page whose HTML merely contains the string `speculationrules` is refused (fail-closed false positive).
-  2. Sites that need web workers, WebRTC or WebTransport do not work.
-  3. A DOM API path not listed above that could set a script's type is a residual risk. There is no CDP-level block for browser-process prefetch.
-  4. DNS rebinding (P3): the request stage does not expose the IP Chromium connects to. The 10 s verdict cache and Chromium's own resolution leave a window that only an egress proxy validating resolved IPs could close. Browser Use's cloud proxy configuration was not verified.
+- **Way forward for the OPEN rows:** an egress proxy that resolves DNS and validates every resolved IP before connecting.
+  - Cloak: `--proxy-server`, plus WebRTC policy `disable_non_proxied_udp`.
+  - Browser Use cloud: only if its API accepts a custom proxy, which is not verified.
+
+  This covers browser-process prefetch and rebinding. Proposed as part of WP-010 (DNS pinning).
+- **Until then:** `BROWSER_TOOLS_ENABLED=false` stays on in production. Re-enabling Browser requires the owner, who accepts the open P1.
+- **Declared limit of the fix:** sites that need web workers, WebRTC or WebTransport do not work. Feature detection sees `undefined` and degrades instead of throwing.
 
 ### FCB-WP-003 — API-FOOTBALL live scripts through the coordinator (P0, §2.4)
 - **Evidence:**
