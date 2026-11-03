@@ -1,0 +1,1129 @@
+{
+ "suite": "sxbet_live_readonly_certification",
+ "network": "mainnet",
+ "mode": "READ_ONLY",
+ "started_at_utc": "2026-11-01T15:18:37.351303+00:00",
+ "finished_at_utc": "2026-11-01T15:21:14.522446+00:00",
+ "api_key_present": true,
+ "write_operations_attempted": 0,
+ "outcome_counts": {
+  "PASS": 46,
+  "EMPTY_VALID": 13,
+  "NOT_TESTED": 3,
+  "PARTIAL": 1
+ },
+ "context": {
+  "sx_tool_names": [
+   "sxbet_balance",
+   "sxbet_best_odds",
+   "sxbet_close_position_preview",
+   "sxbet_exposure_pnl",
+   "sxbet_fees",
+   "sxbet_fills",
+   "sxbet_fixture_status",
+   "sxbet_fixtures_active",
+   "sxbet_health",
+   "sxbet_hedge_simulation",
+   "sxbet_leagues",
+   "sxbet_ledger",
+   "sxbet_live_scores",
+   "sxbet_markets_active",
+   "sxbet_markets_find",
+   "sxbet_markets_popular",
+   "sxbet_metadata",
+   "sxbet_open_orders",
+   "sxbet_order",
+   "sxbet_order_by_client_id",
+   "sxbet_order_status",
+   "sxbet_orderbook_event",
+   "sxbet_orderbook_market",
+   "sxbet_positions",
+   "sxbet_positions_summary",
+   "sxbet_privacy",
+   "sxbet_proxy_address_check",
+   "sxbet_proxy_deploy_pending",
+   "sxbet_proxy_funding_pending",
+   "sxbet_proxy_funding_status",
+   "sxbet_proxy_wallet",
+   "sxbet_public_market_orders",
+   "sxbet_public_positions",
+   "sxbet_public_trades",
+   "sxbet_public_user_orders",
+   "sxbet_reconciliation_diagnostics",
+   "sxbet_resting_orders_scope",
+   "sxbet_risk_status",
+   "sxbet_rules_evaluate",
+   "sxbet_safe_info",
+   "sxbet_search",
+   "sxbet_simulate_order",
+   "sxbet_sports",
+   "sxbet_teams",
+   "sxbet_trade",
+   "sxbet_trades"
+  ],
+  "soccer_sport_id": 5,
+  "prematch_markets_sample": [
+   {
+    "marketHash": "0x454bc8186fb776e0c62bffea045bac32f5927c7d12c1f46c5b961d4b2c0d2091",
+    "sportXeventId": "L20571970",
+    "leagueLabel": "Ligue 1",
+    "teamOneName": "Lorient",
+    "teamTwoName": "Stade Brestois (Brest)",
+    "outcomeOneName": "Lorient 0",
+    "outcomeTwoName": "Stade Brestois (Brest) 0",
+    "type": 3,
+    "line": 0,
+    "gameTime": 1793648700,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0xe1a7cc07b7b0506f12ac19901fd13108bb5baa7c3c788e9d768a7b6969a16691",
+    "sportXeventId": "L20571963",
+    "leagueLabel": "Ligue 1",
+    "teamOneName": "Lyon",
+    "teamTwoName": "Angers SC",
+    "outcomeOneName": "Lyon",
+    "outcomeTwoName": "Angers SC",
+    "type": 52,
+    "line": null,
+    "gameTime": 1793549700,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0xaec4e02ae959e1ab106b2071e785e84d70210f0935bffacc92ba343b06ff19bf",
+    "sportXeventId": "L20571963",
+    "leagueLabel": "Ligue 1",
+    "teamOneName": "Lyon",
+    "teamTwoName": "Angers SC",
+    "outcomeOneName": "Lyon -1.25",
+    "outcomeTwoName": "Angers SC +1.25",
+    "type": 3,
+    "line": -1.25,
+    "gameTime": 1793549700,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0xc647b3a5699f2c29d0ac01dde7599a0d8b2a836f0fdbe3f7c2b83ee0e853b5e0",
+    "sportXeventId": "L20571963",
+    "leagueLabel": "Ligue 1",
+    "teamOneName": "Lyon",
+    "teamTwoName": "Angers SC",
+    "outcomeOneName": "Lyon",
+    "outcomeTwoName": "Not Lyon",
+    "type": 1,
+    "line": null,
+    "gameTime": 1793549700,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0x8e44a68564a833f24a2ff2f5be2603f8cba8be8ee073797a2003d3220cf5b2d6",
+    "sportXeventId": "L20571963",
+    "leagueLabel": "Ligue 1",
+    "teamOneName": "Lyon",
+    "teamTwoName": "Angers SC",
+    "outcomeOneName": "Angers SC",
+    "outcomeTwoName": "Not Angers SC",
+    "type": 1,
+    "line": null,
+    "gameTime": 1793549700,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   }
+  ],
+  "live_markets_sample": [
+   {
+    "marketHash": "0x0c6f3f6753f073d78bd2a215b24b2e54a614d1e6950085f9d190759ac3d9c690",
+    "sportXeventId": "L18572866",
+    "leagueLabel": "English Premier League",
+    "teamOneName": "Sunderland",
+    "teamTwoName": "Nottingham Forest",
+    "outcomeOneName": "Over 5.5",
+    "outcomeTwoName": "Under 5.5",
+    "type": 2,
+    "line": 5.5,
+    "gameTime": 1777057200,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0x7b546cd6202358d1a860e6469e7e26f49431ece79e073a6dd074216442dce11a",
+    "sportXeventId": "L18572866",
+    "leagueLabel": "English Premier League",
+    "teamOneName": "Sunderland",
+    "teamTwoName": "Nottingham Forest",
+    "outcomeOneName": "Over 0.5",
+    "outcomeTwoName": "Under 0.5",
+    "type": 2,
+    "line": 0.5,
+    "gameTime": 1777057200,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0xa5c78eafbc91fef68b8b5d4caac1f052c15b3a0c76971a9d4b397cc95d1b4ea4",
+    "sportXeventId": "L16045094",
+    "leagueLabel": "German Bundesliga",
+    "teamOneName": "RB Leipzig",
+    "teamTwoName": "Union Berlin",
+    "outcomeOneName": "Over 2.5",
+    "outcomeTwoName": "Under 2.5",
+    "type": 2,
+    "line": 2.5,
+    "gameTime": 1777055400,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0xedb54b4d38e6b3187f2ece8b0102c04eaff06c78a2ae46c3a9107edf7a3d9e42",
+    "sportXeventId": "L16045094",
+    "leagueLabel": "German Bundesliga",
+    "teamOneName": "RB Leipzig",
+    "teamTwoName": "Union Berlin",
+    "outcomeOneName": "Over 3.5",
+    "outcomeTwoName": "Under 3.5",
+    "type": 2,
+    "line": 3.5,
+    "gameTime": 1777055400,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   },
+   {
+    "marketHash": "0x7e3611989e94b3ddf78b8227c7fe5863317dd840d13a11092ef3ebb3f4d55e06",
+    "sportXeventId": "L16045094",
+    "leagueLabel": "German Bundesliga",
+    "teamOneName": "RB Leipzig",
+    "teamTwoName": "Union Berlin",
+    "outcomeOneName": "Over 1.5",
+    "outcomeTwoName": "Under 1.5",
+    "type": 2,
+    "line": 1.5,
+    "gameTime": 1777055400,
+    "status": "ACTIVE",
+    "liveEnabled": true
+   }
+  ],
+  "prematch_markets_page1": 20,
+  "live_markets_page1": 20,
+  "probe_market_hash": "0x454bc8186fb776e0c62bffea045bac32f5927c7d12c1f46c5b961d4b2c0d2091",
+  "probe_event_id": "L20571970",
+  "mcp_calls": 51,
+  "paced_seconds_for_local_rate_limit": 122
+ },
+ "results": [
+  {
+   "test": "mcp_tools_list",
+   "kind": "MCP_PROTOCOL",
+   "outcome": "PASS",
+   "total_tools": 80,
+   "sxbet_tools": 46,
+   "schema_errors": [],
+   "has_next_cursor": false
+  },
+  {
+   "test": "sxbet_health",
+   "kind": "MCP_NO_NETWORK",
+   "outcome": "PASS",
+   "mode": "READ_ONLY",
+   "write_tools": [],
+   "api_key_present": true,
+   "live_trading": "UNAVAILABLE"
+  },
+  {
+   "test": "sxbet_risk_status",
+   "kind": "MCP_NO_NETWORK",
+   "outcome": "PASS",
+   "rate_coordinator": "LOCAL_PROCESS",
+   "live_trading": "UNAVAILABLE"
+  },
+  {
+   "test": "sxbet_sports",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 29,
+    "item_fields": [
+     "label",
+     "sportId"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_leagues",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 41,
+    "item_fields": [
+     "eventsByType",
+     "label",
+     "leagueId",
+     "popularity",
+     "sportId"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_markets_active_prematch_p1",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "markets",
+     "nextKey"
+    ],
+    "markets_items": 20
+   }
+  },
+  {
+   "test": "sxbet_markets_active_prematch_p2",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "markets",
+     "nextKey"
+    ],
+    "markets_items": 20
+   },
+   "overlap_with_p1": 0
+  },
+  {
+   "test": "sxbet_markets_active_live",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "markets",
+     "nextKey"
+    ],
+    "markets_items": 20
+   }
+  },
+  {
+   "test": "sxbet_markets_find",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 3,
+    "item_fields": [
+     "__type",
+     "binaryOnly",
+     "chainVersion",
+     "gameTime",
+     "group1",
+     "isQuarterLineMarket",
+     "leagueId",
+     "leagueLabel",
+     "liveEnabled",
+     "marketHash",
+     "outcomeOneName",
+     "outcomeTwoName",
+     "outcomeVoidName",
+     "participantOneId",
+     "participantTwoId",
+     "sportId",
+     "sportLabel",
+     "sportXeventId",
+     "status",
+     "teamOneName",
+     "teamTwoName",
+     "tradingModes",
+     "type"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_fixtures_active",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 34,
+    "item_fields": [
+     "eventId",
+     "leagueId",
+     "leagueLabel",
+     "participantOneId",
+     "participantOneName",
+     "participantTwoId",
+     "participantTwoName",
+     "provider",
+     "sportId",
+     "startDate",
+     "status"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_fixture_status",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "L18572866",
+     "L20571963",
+     "L20571970"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_live_scores",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 0,
+    "item_fields": []
+   }
+  },
+  {
+   "test": "sxbet_metadata",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "activeAsset",
+     "bettingDelay",
+     "chainId",
+     "domain",
+     "limits",
+     "oddsLadderStepSize",
+     "transferToProxyExecutorAddress"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_markets_popular",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 0,
+    "item_fields": []
+   }
+  },
+  {
+   "test": "sxbet_search",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 5,
+    "item_fields": [
+     "chainVersion",
+     "eventId",
+     "gameTime",
+     "league",
+     "provider",
+     "providerEventId",
+     "teamOneName",
+     "teamTwoName",
+     "type"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_teams",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "list",
+    "items": 5,
+    "item_fields": [
+     "id",
+     "name",
+     "sport"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_public_trades",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "nextKey",
+     "trades"
+    ],
+    "trades_items": 5
+   }
+  },
+  {
+   "test": "invalid_input_rejected_offline",
+   "kind": "MCP_NO_NETWORK",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "INVALID_INPUT",
+   "http_status": null,
+   "error_code": "INVALID_MARKET_HASHES",
+   "network_calls_made": 0
+  },
+  {
+   "test": "sxbet_orderbook_market_prematch",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "marketHash",
+     "outcomeOne",
+     "outcomeTwo",
+     "version"
+    ],
+    "outcomeOne_items": 3,
+    "outcomeTwo_items": 3
+   }
+  },
+  {
+   "test": "sxbet_best_odds_prematch",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "bestOdds"
+    ],
+    "bestOdds_items": 3
+   }
+  },
+  {
+   "test": "sxbet_orderbook_market_live",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "marketHash",
+     "outcomeOne",
+     "outcomeTwo",
+     "version"
+    ],
+    "outcomeOne_items": 0,
+    "outcomeTwo_items": 0
+   }
+  },
+  {
+   "test": "sxbet_best_odds_live",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "bestOdds"
+    ],
+    "bestOdds_items": 2
+   }
+  },
+  {
+   "test": "sxbet_orderbook_event",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "eventId",
+     "markets"
+    ],
+    "markets_items": 15
+   }
+  },
+  {
+   "test": "sxbet_balance",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "balances"
+    ],
+    "balances_items": 0
+   }
+  },
+  {
+   "test": "sxbet_fees",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "makerParlayPayoutFee",
+     "makerPayoutFee",
+     "refundFee",
+     "takerParlayPayoutFee",
+     "takerPayoutFee"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_positions_open",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "positions"
+    ],
+    "positions_items": 0
+   }
+  },
+  {
+   "test": "sxbet_open_orders",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "orders"
+    ],
+    "orders_items": 0
+   }
+  },
+  {
+   "test": "sxbet_trades",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "trades"
+    ],
+    "trades_items": 0
+   }
+  },
+  {
+   "test": "sxbet_fills",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "fills"
+    ],
+    "fills_items": 0
+   }
+  },
+  {
+   "test": "sxbet_ledger",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "entries"
+    ],
+    "entries_items": 0
+   }
+  },
+  {
+   "test": "sxbet_order_not_found",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "PROVIDER_ERROR",
+   "http_status": 404,
+   "error_code": "SXBET_HTTP_ERROR",
+   "network_calls_made": 1
+  },
+  {
+   "test": "sxbet_order_by_client_id_not_found",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "PROVIDER_ERROR",
+   "http_status": 404,
+   "error_code": "SXBET_HTTP_ERROR",
+   "network_calls_made": 1
+  },
+  {
+   "test": "sxbet_trade_not_found",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "PROVIDER_ERROR",
+   "http_status": 404,
+   "error_code": "SXBET_HTTP_ERROR",
+   "network_calls_made": 1
+  },
+  {
+   "test": "sxbet_privacy",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "isPrivate"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_public_market_orders",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "orders"
+    ],
+    "orders_items": 0
+   }
+  },
+  {
+   "test": "sxbet_public_user_orders",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "NOT_TESTED",
+   "reason": "NO_DEANONYMIZED_MAKER_ON_PROBE_MARKET"
+  },
+  {
+   "test": "sxbet_public_positions",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "NOT_TESTED",
+   "reason": "NO_DEANONYMIZED_MAKER_ON_PROBE_MARKET"
+  },
+  {
+   "test": "sxbet_proxy_wallet",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "deployed",
+     "multisigSafeAddress",
+     "obv3ProxyWalletAddress"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_proxy_deploy_pending",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "pending",
+     "sessionId"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_proxy_funding_pending",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "EMPTY_VALID",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "sessionIds"
+    ],
+    "sessionIds_items": 0
+   }
+  },
+  {
+   "test": "sxbet_proxy_funding_status",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "NOT_TESTED",
+   "reason": "NO_DEPOSIT_SESSION_ID (no deposit was ever started by this suite)"
+  },
+  {
+   "test": "sxbet_simulate_order",
+   "kind": "REAL_API_VIA_MCP (reads) + SIMULATION",
+   "outcome": "PASS",
+   "status": "SIMULATED",
+   "signed": false,
+   "submitted": false,
+   "fill_status": "SIMULATED",
+   "error_code": null,
+   "network_calls_made": 3
+  },
+  {
+   "test": "sxbet_order_status_not_found",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "DERIVED_FROM_REAL_API",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 2,
+   "hedge_status": null,
+   "hedge_reason": null
+  },
+  {
+   "test": "sxbet_positions_summary",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "DERIVED_FROM_REAL_API",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 7,
+   "hedge_status": null,
+   "hedge_reason": null
+  },
+  {
+   "test": "sxbet_exposure_pnl",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "DERIVED_FROM_REAL_API",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 2,
+   "hedge_status": null,
+   "hedge_reason": null
+  },
+  {
+   "test": "sxbet_reconciliation_diagnostics",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "DERIVED_FROM_REAL_API",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 5,
+   "hedge_status": null,
+   "hedge_reason": null
+  },
+  {
+   "test": "sxbet_resting_orders_scope",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "DERIVED_FROM_REAL_API",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 2,
+   "hedge_status": null,
+   "hedge_reason": null
+  },
+  {
+   "test": "sxbet_hedge_simulation",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "HEDGE_AVAILABLE",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 7,
+   "hedge_status": "HEDGE_AVAILABLE",
+   "hedge_reason": "POSITION_ALREADY_BALANCED"
+  },
+  {
+   "test": "sxbet_close_position_preview",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "HEDGE_AVAILABLE",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 7,
+   "hedge_status": "HEDGE_AVAILABLE",
+   "hedge_reason": "POSITION_ALREADY_BALANCED"
+  },
+  {
+   "test": "sxbet_rules_evaluate",
+   "kind": "REAL_API_VIA_MCP (reads) + DERIVED",
+   "outcome": "PASS",
+   "status": "NO_ACTION",
+   "signed": false,
+   "submitted": false,
+   "error_code": null,
+   "network_calls_made": 7,
+   "hedge_status": null,
+   "hedge_reason": null
+  },
+  {
+   "test": "sxbet_proxy_address_check",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "address",
+     "deployed",
+     "exists"
+    ]
+   }
+  },
+  {
+   "test": "sxbet_safe_info",
+   "kind": "REAL_API_VIA_MCP",
+   "outcome": "PASS",
+   "mcp_http": 200,
+   "status": "REAL_API_RESPONSE",
+   "http_status": 200,
+   "error_code": null,
+   "network_calls_made": 1,
+   "data_shape": {
+    "type": "object",
+    "fields": [
+     "nonce",
+     "owners",
+     "pendingTransaction",
+     "safeAddress",
+     "threshold"
+    ],
+    "owners_items": 1
+   },
+   "proxy_deployed": true
+  },
+  {
+   "test": "tool_coverage",
+   "kind": "MCP_PROTOCOL",
+   "outcome": "PARTIAL",
+   "exercised": 43,
+   "published": 46,
+   "not_exercised": [
+    "sxbet_proxy_funding_status",
+    "sxbet_public_positions",
+    "sxbet_public_user_orders"
+   ]
+  },
+  {
+   "test": "invalid_key_rejected",
+   "kind": "REAL_API_DIRECT",
+   "outcome": "PASS",
+   "error_code": "SXBET_UNAUTHORIZED",
+   "http_status": 401
+  },
+  {
+   "test": "realtime_token",
+   "kind": "REAL_API_DIRECT",
+   "outcome": "PASS",
+   "http_status": 200
+  },
+  {
+   "test": "realtime_websocket_connect",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "PASS",
+   "server_pings_answered": 1,
+   "listen_seconds": 20.0
+  },
+  {
+   "test": "realtime_subscribe best_odds_v3:global",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "PASS",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 2729
+  },
+  {
+   "test": "realtime_subscribe markets:global",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "PASS",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 3
+  },
+  {
+   "test": "realtime_subscribe fixtures:live_scores",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "PASS",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 51
+  },
+  {
+   "test": "realtime_subscribe recent_trades_v3:global",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "PASS",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 10
+  },
+  {
+   "test": "realtime_subscribe orderbook_v3:<probe market>",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "EMPTY_VALID",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 0
+  },
+  {
+   "test": "realtime_subscribe orderbook_v3_event:<probe event>",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "PASS",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 2
+  },
+  {
+   "test": "realtime_subscribe account:orders_v3_#<own address>",
+   "kind": "REAL_WEBSOCKET",
+   "outcome": "EMPTY_VALID",
+   "subscribed": true,
+   "error_code": null,
+   "publications": 0
+  }
+ ]
+}
