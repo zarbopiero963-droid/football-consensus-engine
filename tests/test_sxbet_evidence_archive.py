@@ -26,16 +26,55 @@ def test_report_is_read_only_and_matches_the_registered_outcome():
     assert data["api_key_present"] is True  # a boolean, never the key
 
 
+MARKET_HASH_KEYS = {"marketHash", "probe_market_hash"}
+
+
+def _walk(node, key=None):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield from _walk(v, k)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk(v, key)
+    else:
+        yield key, node
+
+
 def test_report_contains_no_secret_or_wallet_material():
     text = EVIDENCE.read_text(encoding="utf-8")
-    assert not re.search(r'"0x[0-9a-fA-F]{40}"', text)  # no bare EVM address
-    for value in re.findall(r'"([^"]{24,})"', text):
-        if value.startswith("0x") and len(value) == 66:
-            continue  # public market hashes
-        # opaque token shape: long, no spaces/underscores, letters AND digits (keys, JWT parts)
-        token_like = re.fullmatch(r"[A-Za-z0-9\-.]{32,}", value) and re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
-        assert not token_like, value
+    # No EVM address anywhere, also embedded inside a longer string.
+    assert not re.search(r"0x[0-9a-fA-F]{40}(?![0-9a-fA-F])", text)
+    for key, value in _walk(json.loads(text)):
+        if not isinstance(value, str):
+            continue
+        # 32-byte hex is allowed ONLY as a public market hash; elsewhere it could be a private key.
+        if re.search(r"0x[0-9a-fA-F]{64}", value):
+            assert key in MARKET_HASH_KEYS and re.fullmatch(r"0x[0-9a-fA-F]{64}", value), key
+        assert not re.search(r"\beyJ[A-Za-z0-9_-]{8,}\.", value), key  # JWT
+        for word in re.findall(r"[A-Za-z0-9_\-.+/=]{32,}", value):
+            if re.fullmatch(r"0x[0-9a-fA-F]{64}", word):
+                continue
+            # opaque token shape: upper AND lower case AND digits (snake_case names are lowercase)
+            assert not (re.search(r"[a-z]", word) and re.search(r"[A-Z]", word) and re.search(r"\d", word)), key
     assert "<own address>" in text  # the account address is a placeholder, never the value
     lowered = text.lower()
     for word in ("private_key", "privatekey", "mnemonic", "seed phrase", "authorization", "bearer "):
         assert word not in lowered, word
+
+
+def test_the_guard_catches_planted_secrets(tmp_path, monkeypatch):
+    """The checks above must fail on realistic leaks (review of #170)."""
+    import tests.test_sxbet_evidence_archive as mod
+    data = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    for planted in ({"wallet": "account:orders_v3_#0x" + "ab" * 20},
+                    {"note": "0x" + "1f" * 32},
+                    {"token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc_DEF-123"},
+                    {"key": "sk_live_" + "Ab1" * 12}):
+        leaked = tmp_path / "leak.json"
+        leaked.write_text(json.dumps({**data, "planted": planted}), encoding="utf-8")
+        monkeypatch.setattr(mod, "EVIDENCE", leaked)
+        try:
+            mod.test_report_contains_no_secret_or_wallet_material()
+        except AssertionError:
+            continue
+        raise AssertionError(f"leak not detected: {planted}")
