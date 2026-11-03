@@ -1168,6 +1168,8 @@ class BrowserUseBridge:
             },
             "local_session_count": local_count,
             "reaper_error": self.reaper_error,
+            # WP-006: the server-side kill switch, so a client sees why tools refuse.
+            "browser_tools_enabled": browser_tools_enabled(),
         }
 
     async def cleanup_report(self) -> dict[str, Any]:

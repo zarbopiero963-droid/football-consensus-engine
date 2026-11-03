@@ -18,6 +18,7 @@ from starlette.routing import Mount, Route
 
 from bridge import oauth, oauth_store
 from bridge.browser_use import BrowserUseBridge, browser_tools_enabled
+from bridge.schema_readiness import SchemaReadiness
 
 bridge = BrowserUseBridge()
 mcp = MCPServer(
@@ -380,7 +381,11 @@ async def _tool_registry_counts() -> tuple[int, dict[str, int]]:
     return len(tools), counts
 
 
+schema_readiness = SchemaReadiness()
+
+
 async def healthz(_request: Request):
+    schema = schema_readiness.snapshot()  # cached; never waits on the database
     total, by_component = await _tool_registry_counts()
     return JSONResponse(
         {
@@ -391,6 +396,9 @@ async def healthz(_request: Request):
             "browser_use_configured": bool(os.environ.get("BROWSER_USE_API_KEY", "").strip()),
             # WP-002: the browser kill switch is observable in production (no secret involved).
             "browser_tools_enabled": browser_tools_enabled(),
+            # WP-006: does the database carry the bridge migration series this build expects?
+            "schema_state": schema["state"],
+            "schema_missing_tables": schema["missing_tables"],
             "cloak_enabled": BrowserUseBridge._cloak_enabled(),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
@@ -441,6 +449,10 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         "MCP_TOOL_REGISTRY total=%d browser=%d apifootball=%d sxbet=%d other=%d commit=%s",
         total, by_component["browser"], by_component["apifootball"], by_component["sxbet"],
         by_component["other"], _deploy_commit() or "unknown")
+    schema = await schema_readiness.refresh()  # bounded; fixed codes only
+    logging.getLogger(__name__).info(
+        "SCHEMA_READINESS state=%s missing_tables=%s bridge_versions=%s",
+        schema["state"], len(schema["missing_tables"] or []), schema["bridge_versions"])
     async with mcp.session_manager.run():
         reaper = asyncio.create_task(bridge.reaper_loop())
         try:

@@ -51,6 +51,12 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 | `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, or a database/role `search_path` setting exists | no |
 | `REFUSE_EVENT_TRIGGERS` | an enabled event trigger exists; it would act on the restore's own DDL | no |
 | `REFUSE_DEFAULT_PRIVILEGES` | `ALTER DEFAULT PRIVILEGES` entries exist; they would grant on the new tables | no |
+| `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
+| `BRIDGE_0001_0008` | already restored | yes (no-op) |
+| `REFUSE_UNTRACKED_OBJECTS` | any other table, function or type | no |
+| `REFUSE_PARTIAL_OR_DRIFT` | partial history or checksum mismatch | no |
+| `REFUSE_PRE_SPLIT_SIGNER_0008` | v8 is the old signer anchor | no |
+| `REFUSE_SIGNER_SERIES_PRESENT` | signer tracking found in `public` | no |
 
 `REFUSE_UNTRACKED_OBJECTS` also covers operators, operator classes and families, collations, conversions, text-search objects, extensions, aggregates, window functions and procedures in `public`, plus any publication. 0001–0008 create plain functions only.
 
@@ -59,12 +65,6 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 - The fingerprint ordering uses the database collation. Results were identical under C and ICU en-US; glibc locales were not tested.
 
 On the real `defaultdb`, read-only on 2026-11-03, all of these were 0 and the only extension is `plpgsql`.
-| `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
-| `BRIDGE_0001_0008` | already restored | yes (no-op) |
-| `REFUSE_UNTRACKED_OBJECTS` | any other table, function or type | no |
-| `REFUSE_PARTIAL_OR_DRIFT` | partial history or checksum mismatch | no |
-| `REFUSE_PRE_SPLIT_SIGNER_0008` | v8 is the old signer anchor | no |
-| `REFUSE_SIGNER_SERIES_PRESENT` | signer tracking found in `public` | no |
 
 The restore also refuses when:
 - the database is not `defaultdb`;
@@ -82,3 +82,64 @@ The restore also refuses when:
 ## Rollback
 - The apply is a single transaction, so a failure leaves nothing behind (tested).
 - After a successful restore, a rollback is an owner decision. The migrations are additive and the runtime does not migrate at boot, so a code revert never touches the database.
+
+## WP-005 owner checklist (diagnose → apply → verify)
+Values below were read from Aiven read-only on 2026-11-03. Re-check them before the run.
+
+### 1. Backups (before any write)
+- [ ] Aiven Console → `piero-1` → **Backups**:
+  - the latest automatic backup is recent. Schedule: daily at 21:11 UTC. Observed: full `20261101-224828F` and incremental `20261102-211103I`;
+  - the plan (`developer-1`) keeps backups for its retention window. Note the restore point you would use.
+- [ ] Optional safety net. `defaultdb` is empty today, so there is no data to lose; this matters only if data appears first. Fork the service from the latest backup and keep the fork until verification passes. **The fork is a new paid resource: owner decision.**
+- [ ] Recommended: enable **termination protection** on `piero-1`. It is `false` today.
+
+### 2. PostgreSQL permissions
+- [ ] The URI in `FCB_DEFAULTDB_URL` uses the same role the application uses. Today that is `avnadmin`, the only user. The restore refuses runtime tables owned by another role.
+- [ ] That role can `CREATE` in schema `public` of `defaultdb`, and no `ALTER DEFAULT PRIVILEGES` entries exist. On 2026-11-03 there were 0.
+- [ ] After WP-009, re-check with the dedicated migrator role. Until then, `avnadmin` is the owner's decision.
+
+### 3. GitHub gates
+- [ ] Create the environment `aiven-production` with **Required reviewers: owner**. Optionally restrict deployment branches to `main`.
+- [ ] Add the **environment secret** `FCB_DEFAULTDB_URL` there: `sslmode=require` (or stronger), the pinned host, port `14274`, path `/defaultdb`.
+
+### 4. Diagnose (read-only)
+- [ ] Run the workflow with `mode=diagnose`, from `main`, as the owner.
+- [ ] Expected:
+  - target check PASS, PostgreSQL 18, TLS;
+  - precheck state `EMPTY`, or `RUNTIME_ONLY` if the application created its own tables meanwhile.
+- [ ] Any `REFUSE_*` state means **stop**. Do not apply; report the state on #130.
+
+### 5. Apply (single transaction)
+- [ ] Run `mode=apply` with confirmation `APPLY BRIDGE 0001-0008 TO defaultdb`.
+- [ ] Expected summary:
+  - `Restore: PASS`;
+  - state before `EMPTY` or `RUNTIME_ONLY`, after `BRIDGE_0001_0008`;
+  - second run a no-op;
+  - counts `tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8`;
+  - 8 checksums identical to `sql/migrations/bridge`.
+- [ ] If the job fails at any step, nothing was committed: the whole restore is one transaction. Report the step and the fixed code.
+
+### 6. Rollback (only if a committed restore must be undone)
+- The migrations are additive and the runtime never migrates at boot, so a **code revert never touches the database**.
+- Undoing a committed restore is an **owner decision**. Two options:
+  - restore or fork from the backup noted in step 1;
+  - if the database held nothing else, drop the objects created by 0001–0008.
+
+  The agent never drops production objects without an explicit owner mandate.
+
+### 7. Post-restore verification (the agent can run it; read-only)
+- [ ] `/healthz`: `ok`, `schema_state: READY`, `schema_missing_tables: []`, `mcp_tools_total: 122`.
+- [ ] `/healthz`: `browser_tools_enabled: false` and `cloak_enabled: false`, **still disabled**.
+- [ ] `/mcp` without a token returns **401**.
+- [ ] OAuth with a real client (Claude/ChatGPT connector):
+  - registration and authorization succeed;
+  - `initialize` and `tools/list` return 122 tools, no longer 503.
+- [ ] One read-only call per component:
+  - `apifootball_health` (no provider request);
+  - `sxbet_health`;
+  - `browser_health`, which must report disabled.
+- [ ] Render logs:
+  - `SCHEMA_READINESS state=READY`;
+  - no `UndefinedTable`;
+  - no `Browser reaper unavailable`.
+- [ ] Only then mark WP-005 **PRODUCTION_VERIFIED** on #130, with run id, SHA, counts and the client used.
