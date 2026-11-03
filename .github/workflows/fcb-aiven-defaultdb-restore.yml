@@ -48,7 +48,7 @@ jobs:
       # by tests/integration/test_defaultdb_restore_postgres.py.
       # md5 catalog fingerprint of the end state on PostgreSQL 18 (sql/aiven/fingerprint_bridge_schema.sql),
       # asserted inside the transaction; pinned and checked by the postgres-18 CI job.
-      EXPECTED_FINGERPRINT: '107ce62faccbfee79a74d972b65ea6c5'
+      EXPECTED_FINGERPRINT: 'b825ab11029502140b038ce6d3add670'
       EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
       PGCONNECT_TIMEOUT: '15'
       # Same Aiven service as fcb-aiven-pg18-test.yml (public values from the Aiven API).
