@@ -37,11 +37,12 @@ jobs:
       # WP-002b: two Chromium profiles, TEST ONLY. lna_off disables Chromium's Local Network Access
       # checks so the bridge's own guards are proven (RED controls + residual xfails); native is the
       # unmodified browser (GREEN tests must hold too). Production flags are never changed.
-      - name: Browser SSRF suite (profile lna_off)
+      # The profile applies to the WP-002b suite; the WP-001/002 suites run natively (step below).
+      - name: WP-002b suite (profile lna_off)
         env:
           FCB_CHROMIUM_PROFILE: lna_off
-        run: pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py
-      - name: Browser SSRF suite (profile native)
+        run: pytest -q tests/test_browser_capability_guard_chromium.py
+      - name: Browser SSRF suites (profile native)
         env:
           FCB_CHROMIUM_PROFILE: native
         run: pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py

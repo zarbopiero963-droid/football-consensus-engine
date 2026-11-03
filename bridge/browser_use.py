@@ -37,7 +37,8 @@ DOCUMENT_REFUSED = "page document could not be served under the browser security
 # popups, srcdoc/data/about:blank/blob documents). The properties read as undefined and cannot be
 # redefined, so ordinary feature detection degrades gracefully. Layer 2 (DOCUMENT_CSP below)
 # covers the realms layer 1 cannot reach. NOT covered: speculation-rules prefetch/prerender
-# (browser-process requests) and WebRTC from a sandboxed srcdoc frame on the remote path — see
+# (browser-process requests), WebRTC and WebTransport from a sandboxed srcdoc frame on the remote
+# path, and DNS rebinding — see
 # docs/certification/FCB_PR_WORKPACKAGES.md WP-002b; the browser stays behind the kill switch.
 DISABLED_CAPABILITIES = ("Worker", "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection",
                          "RTCDataChannel", "WebTransport", "WebSocketStream")
@@ -69,10 +70,15 @@ CAPABILITY_GUARD_JS = r"""
 # match connect-src like fetch does — documented residuals, they need an egress proxy.
 DOCUMENT_CSP = "worker-src 'none'; connect-src http: https: data: blob:"
 # A document is re-served whole to carry the CSP; larger ones fail closed instead of streaming
-# unguarded. The bytes buffered at once across ALL sessions are also bounded, so a page with many
-# large frames cannot exhaust the bridge's memory (review P2): over budget fails closed.
+# unguarded. Memory held for documents in flight is bounded twice, counting the raw body AND its
+# base64 copy until Fetch.fulfillRequest returns: per session (one session cannot starve the
+# others) and across all sessions (many large frames cannot exhaust the bridge). A body read is
+# also time-bounded, so a stalling server cannot hold its share for the session's lifetime.
+# Over any bound fails closed (DOCUMENT_REFUSED).
 DOCUMENT_BODY_MAX_BYTES = 4 * 1024 * 1024
-DOCUMENT_BUFFER_BUDGET_BYTES = 16 * 1024 * 1024
+DOCUMENT_SESSION_BUDGET_BYTES = 12 * 1024 * 1024
+DOCUMENT_BUFFER_BUDGET_BYTES = 32 * 1024 * 1024
+DOCUMENT_READ_TIMEOUT_SECONDS = 30.0
 _document_buffered_bytes = 0
 _FULFILL_DROPPED_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -167,6 +173,7 @@ class Session:
     capability_guard_installed: bool = False
     blocked_requests: int = 0
     document_csp_failures: int = 0
+    document_buffered_bytes: int = 0
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
 
@@ -518,33 +525,49 @@ class BrowserUseBridge:
         out.append({"name": "Content-Security-Policy", "value": DOCUMENT_CSP})
         return out
 
-    async def _read_document_body(self, cdp, request_id) -> str | None:
-        """Base64 body of a paused document response, or None when over the per-document cap or
-        the global buffer budget. Raises when the stream cannot be read."""
+    @staticmethod
+    def _reserve(session: Session, amount: int) -> bool:
+        """Account `amount` bytes against the session and global budgets; False if over either."""
         global _document_buffered_bytes
+        if (session.document_buffered_bytes + amount > DOCUMENT_SESSION_BUDGET_BYTES
+                or _document_buffered_bytes + amount > DOCUMENT_BUFFER_BUDGET_BYTES):
+            return False
+        session.document_buffered_bytes += amount
+        _document_buffered_bytes += amount
+        return True
+
+    @staticmethod
+    def _release(session: Session, amount: int) -> None:
+        global _document_buffered_bytes
+        session.document_buffered_bytes -= amount
+        _document_buffered_bytes -= amount
+
+    async def _read_document_body(self, cdp, session: Session, request_id, held: list[int]) -> str | None:
+        """Base64 body of a paused document response, or None when over a cap or budget. Every
+        byte accounted is added to held[0]; the CALLER releases it after fulfillRequest returns."""
         stream = (await cdp.send("Fetch.takeResponseBodyAsStream", {"requestId": request_id}))["stream"]
         body = bytearray()
-        reserved = 0
         try:
             while True:
                 part = await cdp.send("IO.read", {"handle": stream, "size": 1 << 16})
                 data = part.get("data", "")
                 raw = base64.b64decode(data) if part.get("base64Encoded") else data.encode("utf-8")
-                if (len(body) + len(raw) > DOCUMENT_BODY_MAX_BYTES
-                        or _document_buffered_bytes + len(raw) > DOCUMENT_BUFFER_BUDGET_BYTES):
+                if len(body) + len(raw) > DOCUMENT_BODY_MAX_BYTES or not self._reserve(session, len(raw)):
                     return None
-                _document_buffered_bytes += len(raw)
-                reserved += len(raw)
+                held[0] += len(raw)
                 body += raw
                 if part.get("eof"):
                     break
-            return base64.b64encode(body).decode("ascii")
         finally:
-            _document_buffered_bytes -= reserved
             try:
                 await cdp.send("IO.close", {"handle": stream})
             except Exception:
                 pass
+        encoded_size = 4 * ((len(body) + 2) // 3)
+        if not self._reserve(session, encoded_size):
+            return None
+        held[0] += encoded_size
+        return base64.b64encode(body).decode("ascii")
 
     async def _document_response(self, cdp, session: Session, event: dict[str, Any]) -> None:
         """Response stage of a document: re-serve it with DOCUMENT_CSP, or fail it closed.
@@ -565,8 +588,10 @@ class BrowserUseBridge:
             except Exception:
                 pass
             return
+        held = [0]
         try:
-            body = await self._read_document_body(cdp, request_id)
+            async with asyncio.timeout(DOCUMENT_READ_TIMEOUT_SECONDS):
+                body = await self._read_document_body(cdp, session, request_id, held)
             if body is None:
                 raise ValueError("document body over cap")
             params = {"requestId": request_id, "responseCode": status, "body": body,
@@ -584,6 +609,8 @@ class BrowserUseBridge:
             LOG.warning("Document CSP could not be applied: session=%s", session.id)
             session.document_csp_failures += 1
             await self._fetch_fail(cdp, request_id)
+        finally:
+            self._release(session, held[0])
 
     @staticmethod
     async def _fetch_fail(cdp, request_id) -> None:

@@ -15,8 +15,9 @@ NOT mitigated, and kept honest as a strict xfail:
   pauses;
 - Page.setPrerenderingAllowed, a data-saver override and Chromium launch flags did not stop it;
 - text/DOM filtering was bypassed (character references, split writes, blob: documents);
-- WebRTC (TURN over TCP) from a sandboxed srcdoc frame on the remote path: no CSP directive
-  governs WebRTC in Chromium.
+- WebRTC (TURN over TCP, STUN over UDP) and WebTransport from a sandboxed srcdoc frame on the
+  remote path: no CSP directive governs WebRTC, and WebTransport's https: URLs match connect-src;
+- DNS rebinding: the bridge's resolver and Chromium's can disagree.
 
 It needs an egress proxy that validates resolved IPs. The browser stays behind the kill switch.
 
@@ -97,6 +98,7 @@ REGRESSION_RESPONSES = {
 class _Servers:
     def __init__(self):
         self.lines: list[bytes] = []
+        self.hits: dict[str, int] = {}
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((INT, 0))
@@ -111,6 +113,7 @@ class _Servers:
 
             def do_GET(self):
                 name = urlsplit(self.path).path.strip("/")
+                servers.hits[name] = servers.hits.get(name, 0) + 1
                 extra = REGRESSION_RESPONSES.get(name)
                 if extra is not None:
                     status, headers, body = extra(servers)
@@ -391,6 +394,14 @@ def udp():
     u.sock.close()
 
 
+def _wait_for_packets(udp, seconds=10.0):
+    """Review P3-4: wait for the residual to show up before asserting, so load cannot turn a
+    strict xfail into a false 'residual closed'."""
+    deadline = time.monotonic() + seconds
+    while udp.packets == 0 and time.monotonic() < deadline:
+        time.sleep(0.2)
+
+
 def _rtc_udp_page(udp):
     js = (f"try{{const pc=new RTCPeerConnection({{iceServers:[{{urls:'stun:{INT}:{udp.port}'}}]}});"
           "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch(e){}")
@@ -411,6 +422,7 @@ def _webtransport_page(udp):
                    "proxy. A pass means the residual is gone: update the registry.")
 def test_webtransport_from_a_sandboxed_srcdoc_residual_is_still_open(servers, udp):
     _visit(servers, "remote", [_webtransport_page(udp)], settle=3.0)
+    _wait_for_packets(udp)
     assert udp.packets == 0
 
 
@@ -420,6 +432,7 @@ def test_webtransport_from_a_sandboxed_srcdoc_residual_is_still_open(servers, ud
                    "governs WebRTC). Needs an egress proxy. A pass means the residual is gone.")
 def test_webrtc_udp_from_a_sandboxed_srcdoc_residual_is_still_open(servers, udp):
     _visit(servers, "remote", [_rtc_udp_page(udp)], settle=3.0)
+    _wait_for_packets(udp)
     assert udp.packets == 0
 
 
@@ -513,7 +526,11 @@ def test_re_serving_documents_keeps_navigation_semantics(servers, provider):
     assert out["site_csp"] == [("site_csp", 200, "site-csp", 0)]  # the site's script-src 'none' held
     assert out["latin1"] == [("latin1", 200, "caf\u00e9", 0)]
     assert out["status404"] == [("status404", 404, "nf", 0)]
-    assert out["cached"] == [("cached", 200, "cached", 0)] * 2  # the cached copy is guarded too
+    assert out["cached"] == [("cached", 200, "cached", 0)] * 2
+    # Review P3-6, measured: with request interception every navigation reaches the site again,
+    # with or without the document re-serve (pass-through also gives 2 hits). No cache regression
+    # from the re-serve, and a cache-served document is not claimed here.
+    assert servers.hits["cached"] == 2
     assert out["big"] == ("refused", browser_use.DOCUMENT_REFUSED)  # fixed code, not REDIRECT_BLOCKED
     assert out["after_big"] == ("normal", 200, "scripts-run", 0)
     assert servers.lines == []
@@ -639,15 +656,50 @@ def test_document_over_the_cap_fails_closed(monkeypatch):
 
 
 def test_documents_buffered_at_once_share_a_global_budget(monkeypatch):
-    """Review P2: many large frames cannot exhaust the bridge's memory."""
-    monkeypatch.setattr(browser_use, "DOCUMENT_BUFFER_BUDGET_BYTES", 5)
+    """Review P2: many large frames cannot exhaust the bridge's memory. The raw body AND its
+    base64 copy (3 + 4 bytes here) are counted until fulfillRequest returns."""
+    monkeypatch.setattr(browser_use, "DOCUMENT_BUFFER_BUDGET_BYTES", 7)
     monkeypatch.setattr(browser_use, "_document_buffered_bytes", 3)  # another document in flight
     cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc"])
     assert cdp.sent[-1][0] == "Fetch.failRequest" and session.document_csp_failures == 1
-    assert browser_use._document_buffered_bytes == 3  # nothing leaked into the shared budget
+    assert browser_use._document_buffered_bytes == 3 and session.document_buffered_bytes == 0
     monkeypatch.setattr(browser_use, "_document_buffered_bytes", 0)
-    cdp, _ = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc"])
-    assert "Fetch.fulfillRequest" in [m for m, _ in cdp.sent] and browser_use._document_buffered_bytes == 0
+    cdp, session = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc"])
+    assert "Fetch.fulfillRequest" in [m for m, _ in cdp.sent]
+    assert browser_use._document_buffered_bytes == 0 and session.document_buffered_bytes == 0
+
+
+def test_one_session_cannot_starve_the_others(monkeypatch):
+    """Review P2-1 regression: a session holding its whole share is refused, another is served."""
+    monkeypatch.setattr(browser_use, "DOCUMENT_SESSION_BUDGET_BYTES", 10)
+    monkeypatch.setattr(browser_use, "_document_buffered_bytes", 0)
+    hog = Session(id="a", cdp_url="local", live_url=None, provider="cloak")
+    hog.document_buffered_bytes = 10  # e.g. frames stalled mid-body
+    browser_use._document_buffered_bytes = 10
+    cdp = _FakeCDP(chunks=[b"abc"])
+    asyncio.run(BrowserUseBridge()._document_response(cdp, hog, {"requestId": "r1", "responseStatusCode": 200}))
+    assert cdp.sent[-1][0] == "Fetch.failRequest"
+    cdp, other = _respond({"responseStatusCode": 200, "responseHeaders": []}, chunks=[b"abc"])
+    assert "Fetch.fulfillRequest" in [m for m, _ in cdp.sent] and other.document_csp_failures == 0
+    assert hog.document_buffered_bytes == 10 and browser_use._document_buffered_bytes == 10
+
+
+def test_a_stalled_body_read_times_out_closed_and_releases_its_share(monkeypatch):
+    monkeypatch.setattr(browser_use, "DOCUMENT_READ_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(browser_use, "_document_buffered_bytes", 0)
+
+    class Stalling(_FakeCDP):
+        async def send(self, method, params=None):
+            if method == "IO.read" and len([m for m, _ in self.sent if m == "IO.read"]) >= 1:
+                self.sent.append((method, params))
+                await asyncio.sleep(5)
+            return await super().send(method, params)
+
+    cdp = Stalling(chunks=[b"abc", b"def"])
+    session = Session(id="x", cdp_url="local", live_url=None, provider="cloak")
+    asyncio.run(BrowserUseBridge()._document_response(cdp, session, {"requestId": "r1", "responseStatusCode": 200}))
+    assert cdp.sent[-1][0] == "Fetch.failRequest" and session.document_csp_failures == 1
+    assert session.document_buffered_bytes == 0 and browser_use._document_buffered_bytes == 0
 
 
 def test_redirect_hop_and_network_error_are_not_re_served():
