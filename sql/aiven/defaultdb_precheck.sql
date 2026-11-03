@@ -1,31 +1,34 @@
 -- FCB-WP-005: read-only restore precheck for the CURRENT schema (public on Aiven).
 -- Prints exactly one word: EMPTY or RUNTIME_ONLY may proceed, TRACKED is resolved by
 -- defaultdb_precheck_tracked.sql, every REFUSE_* state stops the restore (fail closed).
--- RUNTIME_ONLY = only tables the running code creates itself, each one EXACTLY as the code
--- creates it (columns, types, NOT NULL, defaults, constraints; indexes a subset of the
--- expected ones), plain tables with no rule, trigger, policy, RLS or inheritance. Anything
--- else would be skipped by CREATE TABLE IF NOT EXISTS and silently certified, so it refuses.
--- The signature below was taken from a clean runtime creation; tests keep it in sync.
--- No data row is read.
+-- Runtime tables (the ones the running code creates itself) are checked in EVERY state, tracked
+-- or not, because CREATE TABLE IF NOT EXISTS in 0007/0008 would skip and then certify them:
+-- each must be EXACTLY as the code creates it (columns, types, collations, NOT NULL, defaults,
+-- constraints; indexes a subset of the expected ones), a plain permanent heap table owned by
+-- the restoring role, default privileges, no reloptions, default replica identity, no rule,
+-- trigger, policy, RLS, inheritance, identity or generated column.
+-- pg_catalog must come first in the search path, so no object in the target schema can shadow
+-- a built-in used here. The signature below was taken from a clean runtime creation; tests
+-- keep it in sync. No data row is read.
 WITH expected(kind, relname, def) AS (VALUES
-    ('col', 'api_football_quota_attempts', 'api_key_hash text NOT NULL'),
-    ('col', 'api_football_quota_attempts', 'attempt_id text NOT NULL'),
+    ('col', 'api_football_quota_attempts', 'api_key_hash text COLLATE default NOT NULL'),
+    ('col', 'api_football_quota_attempts', 'attempt_id text COLLATE default NOT NULL'),
     ('col', 'api_football_quota_attempts', 'created_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()'),
-    ('col', 'api_football_quota_counters', 'api_key_hash text NOT NULL'),
+    ('col', 'api_football_quota_counters', 'api_key_hash text COLLATE default NOT NULL'),
     ('col', 'api_football_quota_counters', 'bucket bigint NOT NULL'),
     ('col', 'api_football_quota_counters', 'used integer NOT NULL'),
-    ('col', 'api_football_quota_counters', 'window_kind text NOT NULL'),
-    ('col', 'api_football_quota_leases', 'api_key_hash text NOT NULL'),
+    ('col', 'api_football_quota_counters', 'window_kind text COLLATE default NOT NULL'),
+    ('col', 'api_football_quota_leases', 'api_key_hash text COLLATE default NOT NULL'),
     ('col', 'api_football_quota_leases', 'expires_at timestamp with time zone NOT NULL'),
-    ('col', 'api_football_quota_leases', 'lease_id text NOT NULL'),
-    ('col', 'oauth_claude_dcr_clients', 'client_id_hash text NOT NULL'),
+    ('col', 'api_football_quota_leases', 'lease_id text COLLATE default NOT NULL'),
+    ('col', 'oauth_claude_dcr_clients', 'client_id_hash text COLLATE default NOT NULL'),
     ('col', 'oauth_claude_dcr_clients', 'created_at timestamp with time zone NOT NULL DEFAULT now()'),
     ('col', 'oauth_claude_dcr_clients', 'expires_at timestamp with time zone NOT NULL'),
-    ('col', 'oauth_claude_dcr_clients', 'redirect_uri text NOT NULL'),
-    ('col', 'sxbet_rate_attempts', 'attempt_id text NOT NULL'),
-    ('col', 'sxbet_rate_attempts', 'bucket_key text NOT NULL'),
+    ('col', 'oauth_claude_dcr_clients', 'redirect_uri text COLLATE default NOT NULL'),
+    ('col', 'sxbet_rate_attempts', 'attempt_id text COLLATE default NOT NULL'),
+    ('col', 'sxbet_rate_attempts', 'bucket_key text COLLATE default NOT NULL'),
     ('col', 'sxbet_rate_attempts', 'created_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()'),
-    ('col', 'sxbet_rate_cooldowns', 'bucket_key text NOT NULL'),
+    ('col', 'sxbet_rate_cooldowns', 'bucket_key text COLLATE default NOT NULL'),
     ('col', 'sxbet_rate_cooldowns', 'cooldown_until timestamp with time zone NOT NULL'),
     ('col', 'sxbet_rate_cooldowns', 'updated_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()'),
     ('con', 'api_football_quota_attempts', 'api_football_quota_attempts_pkey PRIMARY KEY (attempt_id)'),
@@ -57,10 +60,13 @@ rel AS (
     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'i', 'I', 'c')
 ),
 present AS (
-    SELECT r.oid, r.relname, r.relkind FROM rel r JOIN runtime_tables t USING (relname)
+    SELECT c.oid, c.relname, c.relkind, c.relpersistence, c.reloptions, c.relreplident, c.relacl,
+           c.relowner, c.relrowsecurity, c.relam
+    FROM rel r JOIN runtime_tables t USING (relname) JOIN pg_class c ON c.oid = r.oid
 ),
 got(kind, relname, def) AS (
     SELECT 'col', p.relname, a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+        || CASE WHEN a.attcollation <> 0 THEN ' COLLATE ' || (SELECT collname FROM pg_collation WHERE oid = a.attcollation) ELSE '' END
         || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END
         || COALESCE(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
     FROM present p JOIN pg_attribute a ON a.attrelid = p.oid AND a.attnum > 0 AND NOT a.attisdropped
@@ -75,6 +81,7 @@ got(kind, relname, def) AS (
 want AS (SELECT e.* FROM expected e JOIN present p USING (relname)),
 facts AS (
     SELECT
+        (current_schemas(true))[1] <> 'pg_catalog' AS unsafe_search_path,
         (SELECT count(*) FROM rel) AS relations,
         (SELECT count(*) FROM rel WHERE relname NOT IN (SELECT relname FROM runtime_rel)) AS foreign_relations,
         (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -89,8 +96,11 @@ facts AS (
             UNION ALL
             (SELECT * FROM got WHERE kind = 'idx' EXCEPT SELECT * FROM want WHERE kind = 'idx')
         ) diff) AS signature_diffs,
-        (SELECT count(*) FROM present WHERE relkind <> 'r') AS not_plain,
-        (SELECT count(*) FROM present p JOIN pg_class c ON c.oid = p.oid WHERE c.relrowsecurity) AS rls,
+        (SELECT count(*) FROM present WHERE relkind <> 'r' OR relpersistence <> 'p' OR reloptions IS NOT NULL
+            OR relreplident <> 'd' OR relacl IS NOT NULL OR relowner <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
+            OR relrowsecurity OR relam <> (SELECT oid FROM pg_am WHERE amname = 'heap')) AS table_props,
+        (SELECT count(*) FROM present p JOIN pg_attribute a ON a.attrelid = p.oid AND a.attnum > 0
+            WHERE a.attacl IS NOT NULL OR a.attoptions IS NOT NULL OR a.attidentity <> '' OR a.attgenerated <> '') AS column_props,
         (SELECT count(*) FROM pg_policy pol JOIN present p ON p.oid = pol.polrelid) AS policies,
         (SELECT count(*) FROM pg_rewrite rw JOIN present p ON p.oid = rw.ev_class) AS rules,
         (SELECT count(*) FROM pg_trigger tg JOIN present p ON p.oid = tg.tgrelid WHERE NOT tg.tgisinternal) AS triggers,
@@ -99,11 +109,12 @@ facts AS (
         to_regclass(quote_ident(current_schema()) || '.signer_schema_migrations') IS NOT NULL AS signer_tracked
 )
 SELECT CASE
+    WHEN unsafe_search_path THEN 'REFUSE_UNSAFE_SEARCH_PATH'
     WHEN signer_tracked THEN 'REFUSE_SIGNER_SERIES_PRESENT'
+    WHEN signature_diffs > 0 OR table_props > 0 OR column_props > 0 OR policies > 0 OR rules > 0
+         OR triggers > 0 OR inheritance > 0 THEN 'REFUSE_RUNTIME_TABLE_DRIFT'
     WHEN tracked THEN 'TRACKED'
     WHEN relations = 0 AND functions = 0 AND user_types = 0 THEN 'EMPTY'
     WHEN foreign_relations > 0 OR functions > 0 OR user_types > 0 THEN 'REFUSE_UNTRACKED_OBJECTS'
-    WHEN signature_diffs > 0 OR not_plain > 0 OR rls > 0 OR policies > 0 OR rules > 0
-         OR triggers > 0 OR inheritance > 0 THEN 'REFUSE_RUNTIME_TABLE_DRIFT'
     ELSE 'RUNTIME_ONLY'
 END FROM facts;

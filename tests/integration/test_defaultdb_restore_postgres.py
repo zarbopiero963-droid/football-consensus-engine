@@ -276,3 +276,93 @@ def test_full_transaction_path_succeeds_twice_with_the_right_counts(schema):
         rc, _, err = _restore_tx(schema, expected)
         assert rc == 0, err
     assert _state(schema) == "BRIDGE_0001_0008"
+
+
+# ---------------------------------------------------------------- re-review findings (PR #169)
+
+def test_drifted_runtime_table_on_a_0001_0007_database_is_refused(schema):
+    """Re-review P1: the signature check used to be skipped once schema_migrations existed."""
+    rc, _, err = _apply(schema, "aiven_migrations_0001_0007.sql")
+    assert rc == 0, err
+    rc, _, err = _psql(schema, "-c", "CREATE UNLOGGED TABLE api_football_quota_counters (api_key_hash TEXT NOT NULL, "
+                                     "window_kind TEXT NOT NULL, bucket BIGINT NOT NULL, used BIGINT NOT NULL, "
+                                     "backdoor TEXT, PRIMARY KEY (api_key_hash, window_kind, bucket))")
+    assert rc == 0, err
+    assert _state(schema) == "REFUSE_RUNTIME_TABLE_DRIFT"
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and "REFUSE_RUNTIME_TABLE_DRIFT" in err
+
+
+def test_clean_runtime_table_on_a_0001_0007_database_is_accepted(schema):
+    rc, _, err = _apply(schema, "aiven_migrations_0001_0007.sql")
+    assert rc == 0, err
+    _runtime_tables(schema)
+    assert _state(schema) == "BRIDGE_0001_0007"
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc == 0, err
+    assert _state(schema) == "BRIDGE_0001_0008"
+
+
+@pytest.mark.parametrize("variant", [
+    "ALTER TABLE api_football_quota_counters SET UNLOGGED",
+    "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash TYPE text COLLATE \"C\"",
+    "ALTER TABLE api_football_quota_counters SET (fillfactor = 10)",
+    "ALTER TABLE api_football_quota_counters SET (autovacuum_enabled = false)",
+    "ALTER TABLE api_football_quota_counters REPLICA IDENTITY FULL",
+    "GRANT ALL ON api_football_quota_counters TO PUBLIC",
+    "GRANT SELECT (api_key_hash) ON api_football_quota_counters TO PUBLIC",
+    "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (n_distinct = 5)",
+])
+def test_signature_refuses_storage_privilege_and_collation_variants(schema, variant):
+    """Re-review P2: these variants used to pass as RUNTIME_ONLY."""
+    _runtime_tables(schema)
+    rc, _, err = _psql(schema, "-c", variant)
+    assert rc == 0, err
+    assert _state(schema) == "REFUSE_RUNTIME_TABLE_DRIFT"
+
+
+def test_table_owned_by_another_role_is_refused(schema):
+    _runtime_tables(schema)
+    role = "wp005_evil_" + uuid.uuid4().hex[:6]
+    rc, _, err = _psql(schema, "-c", f"CREATE ROLE {role}")
+    assert rc == 0, err
+    try:
+        rc, _, err = _psql(schema, "-c", f"ALTER TABLE oauth_claude_dcr_clients OWNER TO {role}")
+        assert rc == 0, err
+        assert _state(schema) == "REFUSE_RUNTIME_TABLE_DRIFT"
+    finally:
+        _psql(schema, "-c", f"ALTER TABLE oauth_claude_dcr_clients OWNER TO CURRENT_USER")
+        _psql(schema, "-c", f"DROP ROLE {role}")
+
+
+def test_search_path_that_puts_the_target_schema_before_pg_catalog_is_refused(schema):
+    env = {**os.environ, "PGOPTIONS": f"-c search_path={schema},pg_catalog"}
+    out = subprocess.run(["psql", os.environ["TEST_DATABASE_URL"], "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+                          "-f", str(AIVEN / "defaultdb_precheck.sql")], env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "REFUSE_UNSAFE_SEARCH_PATH"
+
+
+def _workflow_guard():
+    import yaml
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    restore = next(s for s in wf["jobs"]["restore"]["steps"] if "Restore bridge" in s.get("name", ""))["run"]
+    line = next(l.strip() for l in restore.splitlines() if l.strip().startswith('GUARD="DO'))
+    return line[len('GUARD="'):-1].replace("\\$", "$")
+
+
+def test_the_workflow_target_guard_itself(schema):
+    """Runs the exact $GUARD text from the workflow (re-review: tests rebuilt it instead)."""
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        db = conn.execute("SELECT current_database()").fetchone()[0]
+    guard = _workflow_guard().replace("$EXPECTED_DB", db)
+    # In the shared test DB other schemas exist and the connection is not TLS: must refuse.
+    env = {**os.environ, "PGOPTIONS": "-c search_path=public"}
+    out = subprocess.run(["psql", os.environ["TEST_DATABASE_URL"], "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c", guard],
+                         env=env, capture_output=True, text=True)
+    assert out.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in out.stderr
+    # A wrong database name is refused too.
+    out = subprocess.run(["psql", os.environ["TEST_DATABASE_URL"], "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+                          _workflow_guard().replace("$EXPECTED_DB", "defaultdb_not_this_one")],
+                         env=env, capture_output=True, text=True)
+    assert out.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in out.stderr

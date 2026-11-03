@@ -169,3 +169,14 @@ def test_only_the_repository_owner_can_start_or_rerun_it():
     assert gate["env"]["TRIGGERING_ACTOR"] == "${{ github.triggering_actor }}"
     assert gate["env"]["REPO_OWNER"] == "${{ github.repository_owner }}"
     assert '"$TRIGGERING_ACTOR" != "$REPO_OWNER"' in gate["run"] and '"$ACTOR" != "$REPO_OWNER"' in gate["run"]
+
+
+def test_runs_only_from_main_and_the_target_guard_pins_the_search_path():
+    gate = STEPS[_index(lambda s: s.get("name") == "Mode and confirmation gate")]
+    assert gate["env"]["GIT_REF"] == "${{ github.ref }}" and '"$GIT_REF" != "refs/heads/main"' in gate["run"]
+    restore = STEPS[_index(lambda s: "Restore bridge 0001-0008" in s.get("name", ""))]["run"]
+    guard = next(l for l in restore.splitlines() if l.strip().startswith('GUARD="DO'))
+    assert "(pg_catalog.current_schemas(true))[1] <> 'pg_catalog'" in guard
+    assert "pg_catalog.pg_namespace" in guard  # foreign schemas re-checked inside the transaction
+    for fn in ("current_database()", "current_setting(", "pg_backend_pid()"):
+        assert f"pg_catalog.{fn}" in guard, fn

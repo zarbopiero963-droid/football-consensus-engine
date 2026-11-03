@@ -11,7 +11,11 @@ It restores the production database `defaultdb` (Aiven `piero-1`, PostgreSQL 18)
 ## Gate availability (verified)
 The repository is **public**. On every GitHub plan, including Free, environment required reviewers are available for public repositories, so the `aiven-production` gate can be used.
 
-The job adds a second gate that does not depend on the plan: `github.triggering_actor` and `github.actor` must both be the repository owner.
+The job adds two gates that do not depend on the plan:
+- `github.triggering_actor` and `github.actor` must both be the repository owner;
+- the run must start from `refs/heads/main`.
+
+The runtime tables must be owned by the role that runs the restore. Today the application and the restore use the same Aiven role. If they ever differ (WP-009), the restore refuses until the owner aligns ownership.
 
 Workflow logs of a public repository are public. The workflow prints only fixed categories, counts, migration names and checksums, never the URI, host, user or password.
 
@@ -41,7 +45,8 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 |---|---|---|
 | `EMPTY` | no object in `public` | yes |
 | `RUNTIME_ONLY` | only the tables the running code creates itself (SX Bet rate coordinator, API-FOOTBALL quota coordinator, OAuth DCR), each **exactly** as the code creates it: columns, types, NOT NULL, defaults and constraints identical; indexes a subset; no rule, trigger, policy, RLS or inheritance | yes, data preserved |
-| `REFUSE_RUNTIME_TABLE_DRIFT` | a runtime-named table whose definition differs (it would be skipped by `IF NOT EXISTS` and certified) | no |
+| `REFUSE_RUNTIME_TABLE_DRIFT` | a runtime-named table that differs, checked in every state (tracked or not): definition, collation, UNLOGGED, reloptions, replica identity, privileges, owner other than the restoring role, RLS, rules, triggers, policies, inheritance, identity or generated columns. It would be skipped by `IF NOT EXISTS` and certified | no |
+| `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, so an object could shadow a built-in | no |
 | `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
 | `BRIDGE_0001_0008` | already restored | yes (no-op) |
 | `REFUSE_UNTRACKED_OBJECTS` | any other table, function or type | no |

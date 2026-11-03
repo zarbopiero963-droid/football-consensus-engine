@@ -73,10 +73,15 @@ jobs:
           MODE: ${{ inputs.mode }}
           CONFIRM: ${{ inputs.confirm }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
           ACTOR: ${{ github.actor }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          # Only the reviewed workflow on main may restore production.
+          if [ "$GIT_REF" != "refs/heads/main" ]; then
+            echo "::error::the defaultdb restore runs only from main"; exit 1
+          fi
           # Second, plan-independent gate: only the repository owner may start (or re-run) it.
           if [ "$TRIGGERING_ACTOR" != "$REPO_OWNER" ] || [ "$ACTOR" != "$REPO_OWNER" ]; then
             echo "::error::only the repository owner may run the defaultdb restore"; exit 1
@@ -277,7 +282,7 @@ jobs:
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
-          GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_schema() <> 'public' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() <> '$EXPECTED_DB' OR pg_catalog.current_schema() <> 'public' OR (pg_catalog.current_schemas(true))[1] <> 'pg_catalog' OR pg_catalog.current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid = pg_catalog.pg_backend_pid()), false) OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname NOT IN ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor') AND n.nspname NOT LIKE 'pg_temp%' AND n.nspname NOT LIKE 'pg_toast_temp%') THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
           sp() {
             local err rc=0
             err="$(mktemp)"
