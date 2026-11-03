@@ -29,94 +29,27 @@ LOG = logging.getLogger(__name__)
 # Fixed, non-sensitive messages: never echo the rejected URL or provider errors.
 REDIRECT_BLOCKED = "navigation redirected to a non-public address"
 CONTENT_BLOCKED = "page content is not from a public address"
-CAPABILITY_BLOCKED = "page uses a browser capability the bridge does not allow (speculation rules)"
-
-# FCB-WP-002b: capabilities that can reach the network outside the CDP request guard and that
-# could not be made safe over CDP alone (so they also fail closed on Browser Use cloud):
-#  - Worker / SharedWorker: a WebSocket opened inside a worker is not seen by the Fetch
-#    request stage nor by route_web_socket (reproduced: handshake reached an internal host);
-#  - RTCPeerConnection / WebTransport: UDP/QUIC egress, not seen by the Fetch domain;
-#  - dynamically inserted speculation rules (static ones are refused at the response stage).
-# Each one is removed from every realm before any page script runs (the init script runs in
-# every frame, popup, srcdoc/data/about:blank document). Accessing them throws.
+# FCB-WP-002b: network capabilities that bypass the CDP request guard (reproduced on real
+# Chromium: a WebSocket/WebSocketStream opened inside a dedicated or shared worker reached an
+# internal host; WebRTC/WebTransport use UDP/QUIC outside the Fetch domain). They are removed
+# from every realm before any page script runs: the context init script runs in every frame,
+# popup and srcdoc/data/about:blank/blob document. The properties read as undefined and cannot be
+# redefined, so ordinary feature detection degrades gracefully. NOT covered here:
+# speculation-rules prefetch/prerender (browser-process requests, no CDP block exists) — see
+# docs/certification/FCB_PR_WORKPACKAGES.md WP-002b; the browser stays behind the kill switch.
+DISABLED_CAPABILITIES = ("Worker", "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection",
+                         "RTCDataChannel", "WebTransport", "WebSocketStream")
 CAPABILITY_GUARD_JS = r"""
 (() => {
-  const deny = (owner, name) => {
+  for (const name of %s) {
     try {
-      Object.defineProperty(owner, name, {
-        configurable: false, enumerable: false,
-        get() { throw new TypeError(name + ' is disabled by the bridge'); },
+      Object.defineProperty(globalThis, name, {
+        value: undefined, configurable: false, enumerable: false, writable: false,
       });
     } catch (e) {}
-  };
-  for (const name of ['Worker', 'SharedWorker', 'RTCPeerConnection', 'webkitRTCPeerConnection',
-                      'RTCDataChannel', 'WebTransport']) deny(globalThis, name);
-  const isRules = (v) => typeof v === 'string' && /speculationrules/i.test(v);
-  const refuse = () => { throw new TypeError('speculation rules are disabled by the bridge'); };
-  try {
-    const proto = HTMLScriptElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'type');
-    Object.defineProperty(proto, 'type', {
-      configurable: false, enumerable: true, get: desc.get,
-      set(v) { if (isRules(v)) refuse(); return desc.set.call(this, v); },
-    });
-    const setAttr = Element.prototype.setAttribute;
-    Object.defineProperty(Element.prototype, 'setAttribute', {
-      configurable: false, writable: false,
-      value: function (n, v) {
-        if (this instanceof HTMLScriptElement && String(n).toLowerCase() === 'type' && isRules(String(v))) refuse();
-        return setAttr.call(this, n, v);
-      },
-    });
-    // Every attribute-write path that can set a script element's type.
-    const isTypeAttr = (n) => String(n).toLowerCase() === 'type';
-    const wrap = (owner, name, check) => {
-      const orig = owner && owner[name];
-      if (typeof orig !== 'function') return;
-      Object.defineProperty(owner, name, {
-        configurable: false, writable: false,
-        value: function (...args) { if (check.apply(this, args)) refuse(); return orig.apply(this, args); },
-      });
-    };
-    wrap(Element.prototype, 'setAttributeNS', function (ns, n, v) {
-      return this instanceof HTMLScriptElement && isTypeAttr(String(n).split(':').pop()) && isRules(String(v));
-    });
-    const attrRules = (a) => a && isTypeAttr(a.localName || a.name) && isRules(String(a.value));
-    wrap(Element.prototype, 'setAttributeNode', function (a) { return attrRules(a); });
-    wrap(Element.prototype, 'setAttributeNodeNS', function (a) { return attrRules(a); });
-    wrap(NamedNodeMap.prototype, 'setNamedItem', function (a) { return attrRules(a); });
-    wrap(NamedNodeMap.prototype, 'setNamedItemNS', function (a) { return attrRules(a); });
-    for (const [owner, name] of [[Attr.prototype, 'value'], [Node.prototype, 'nodeValue'], [Node.prototype, 'textContent']]) {
-      const d = Object.getOwnPropertyDescriptor(owner, name);
-      if (!d || !d.set) continue;
-      Object.defineProperty(owner, name, {
-        configurable: false, enumerable: d.enumerable, get: d.get,
-        set(v) {
-          if (this instanceof Attr && isTypeAttr(this.localName || this.name) && isRules(String(v))) refuse();
-          return d.set.call(this, v);
-        },
-      });
-    }
-    for (const [owner, name] of [[Document.prototype, 'write'], [Document.prototype, 'writeln'],
-                                 [Range.prototype, 'createContextualFragment'],
-                                 [Element.prototype, 'setHTMLUnsafe'], [ShadowRoot.prototype, 'setHTMLUnsafe']]) {
-      const orig = owner && owner[name];
-      if (typeof orig !== 'function') continue;
-      Object.defineProperty(owner, name, {
-        configurable: false, writable: false,
-        value: function (...args) { if (args.some(isRules)) refuse(); return orig.apply(this, args); },
-      });
-    }
-    const parseUnsafe = Document.parseHTMLUnsafe;
-    if (typeof parseUnsafe === 'function') {
-      Object.defineProperty(Document, 'parseHTMLUnsafe', {
-        configurable: false, writable: false,
-        value: function (...args) { if (args.some(isRules)) refuse(); return parseUnsafe.apply(this, args); },
-      });
-    }
-  } catch (e) {}
+  }
 })();
-"""
+""" % json.dumps(list(DISABLED_CAPABILITIES))
 TOOLS_DISABLED = "browser tools are disabled on this server"
 
 # Schemes a frame may legitimately carry without a network fetch of its own.
@@ -206,7 +139,6 @@ class Session:
     redirect_blocked: bool = False
     websocket_guard_installed: bool = False
     capability_guard_installed: bool = False
-    capability_blocked: bool = False
     blocked_requests: int = 0
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closing: bool = False
@@ -474,9 +406,6 @@ class BrowserUseBridge:
 
         async def on_paused(event: dict[str, Any]) -> None:
             request_id = event.get("requestId")
-            if "responseStatusCode" in event or "responseErrorReason" in event:
-                await self._document_response(cdp, session, event)
-                return
             # Validate the URL Chromium itself resolved (request stage), not a header we
             # re-parse: this is what the connection will actually go to.
             url = (event.get("request") or {}).get("url", "")
@@ -502,49 +431,12 @@ class BrowserUseBridge:
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
         cdp.on("Fetch.requestPaused", dispatch)
-        await cdp.send("Fetch.enable", {"patterns": [
-            {"urlPattern": "*", "requestStage": "Request"},
-            # WP-002b: documents are also inspected at the response stage (speculation rules).
-            {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"},
-        ]})
+        await cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
         # Flat auto-attach so popups, OOPIFs, workers and service workers inherit the guard.
         await cdp.send("Target.setAutoAttach",
                        {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True})
         session.redirect_guard = cdp
         session.redirect_guard_active = True
-
-    async def _document_response(self, cdp, session: Session, event: dict[str, Any]) -> None:
-        """WP-002b: speculation rules make Chromium prefetch/prerender URLs from the browser
-        process, outside the Fetch request stage (reproduced: GET reached an internal host,
-        and neither Page.setPrerenderingAllowed nor a data-saver override stopped it). A
-        document that declares them (Speculation-Rules header or a speculationrules script)
-        is refused before Chromium parses it. Any error fails the document closed."""
-        request_id = event.get("requestId")
-        status = event.get("responseStatusCode")
-        try:
-            headers = {str(h.get("name", "")).lower() for h in event.get("responseHeaders") or []}
-            declares = "speculation-rules" in headers
-            if not declares and isinstance(status, int) and not 300 <= status < 400:
-                body = await cdp.send("Fetch.getResponseBody", {"requestId": request_id})
-                raw = body.get("body") or ""
-                data = base64.b64decode(raw) if body.get("base64Encoded") else raw.encode("utf-8", "replace")
-                declares = b"speculationrules" in data.lower()
-        except Exception:
-            # Bodiless responses (204/304, errors) cannot carry inline rules; anything else
-            # that cannot be inspected fails closed.
-            declares = status not in (204, 304) and event.get("responseErrorReason") is None
-        if declares:
-            session.blocked_requests += 1
-            session.capability_blocked = True
-            await self._fetch_fail(cdp, request_id)
-            return
-        try:
-            await cdp.send("Fetch.continueResponse", {"requestId": request_id})
-        except Exception:
-            try:
-                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
-            except Exception:
-                pass
 
     async def _arm_capability_guard(self, session: Session) -> None:
         if session.capability_guard_installed or session.context is None:
@@ -642,7 +534,6 @@ class BrowserUseBridge:
         """Run one navigation with the redirect guard armed, then fail closed if needed."""
         self._require_guard(session)
         session.redirect_blocked = False
-        session.capability_blocked = False
         try:
             response = await action()
         except PlaywrightError:
@@ -650,10 +541,6 @@ class BrowserUseBridge:
                 session.redirect_blocked = False
                 await self._quarantine(session, page)
                 raise UnsafeURL(REDIRECT_BLOCKED) from None
-            if session.capability_blocked:
-                session.capability_blocked = False
-                await self._quarantine(session, page)
-                raise UnsafeURL(CAPABILITY_BLOCKED) from None
             raise
         await self._after_navigation(session, page)
         return response

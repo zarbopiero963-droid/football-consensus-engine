@@ -130,9 +130,7 @@ def test_reconnect_reinstalls_navigation_guard_and_drops_old_connection(monkeypa
     new_browser.new_browser_cdp_session.assert_awaited_once_with()
     # WP-002: every request type is paused at the request stage (no resourceType filter).
     cdp.send.assert_any_await("Fetch.enable", {"patterns": [
-        {"urlPattern": "*", "requestStage": "Request"},
-        # WP-002b (declared change): documents are also inspected at the response stage.
-        {"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"}]})
+        {"urlPattern": "*", "requestStage": "Request"}]})
     assert session.redirect_guard_active is True
     context.route_web_socket.assert_awaited_once()  # WP-002 WebSocket guard
     assert session.websocket_guard_installed is True

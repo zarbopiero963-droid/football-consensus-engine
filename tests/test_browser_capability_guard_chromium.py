@@ -1,18 +1,21 @@
 """FCB-WP-002b — browser capabilities outside the CDP request guard, locked with REAL Chromium.
 
-Reproduced on main 25a1d8e (both provider paths) and fixed fail-closed:
-- a WebSocket opened INSIDE a dedicated or shared worker reached an internal host (the Fetch
-  request stage and route_web_socket only cover page contexts) -> Worker, SharedWorker,
-  RTCPeerConnection and WebTransport are removed from every realm by an init script;
-- speculation-rules prefetch/prerender sent GET requests to an internal host from the
-  browser process (no CDP Fetch pause; Page.setPrerenderingAllowed and a data-saver override
-  did not stop it) -> documents declaring speculation rules (Speculation-Rules header or a
-  speculationrules script in the body) are refused at the response stage, and every DOM path
-  that can set a script's type to speculationrules at runtime throws.
+Reproduced on main 25a1d8e on both provider paths, then fixed fail-closed: a WebSocket or
+WebSocketStream opened INSIDE a dedicated or shared worker reached an internal host. The
+Fetch request stage and route_web_socket only cover page contexts. Worker, SharedWorker,
+RTCPeerConnection, RTCDataChannel, WebTransport and WebSocketStream are now undefined in
+every realm through a context init script.
 
-Offline only: 127.0.0.2 plays the public site, 127.0.0.1 the internal service, which records
-every TCP connection and its first request line. The validator is wrapped to classify exactly
-that pair like the real one does.
+NOT mitigated, and kept honest as a strict xfail:
+- speculation-rules prefetch/prerender sends browser-process GET requests that CDP Fetch never
+  pauses;
+- Page.setPrerenderingAllowed, a data-saver override and Chromium launch flags did not stop it;
+- text/DOM filtering was bypassed (character references, split writes, blob: documents).
+
+It needs an egress proxy that validates resolved IPs. The browser stays behind the kill switch.
+
+The tests run offline only. 127.0.0.2 plays the public site and 127.0.0.1 the internal service,
+which records every TCP connection with its first request line.
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from bridge import browser_use, session_leases
-from bridge.browser_use import CAPABILITY_BLOCKED, BrowserUseBridge, Session
+from bridge.browser_use import BrowserUseBridge, Session
 from bridge.security import UnsafeURL
 
 playwright_api = pytest.importorskip("playwright.async_api")
@@ -46,6 +49,9 @@ WORKER_PAGES = {
     "late_iframe_worker": f"<script>const f=document.createElement('iframe');document.body.appendChild(f);try{{new f.contentWindow.Worker({WS_BLOB})}}catch(e){{}}</script>",
     "srcdoc_worker": "<iframe srcdoc=\"<script>try{new Worker(URL.createObjectURL(new Blob([&quot;new WebSocket('ws://INT/')&quot;])))}catch(e){}</script>\"></iframe>",
     "popup_worker": f"<script>const w=window.open('about:blank');try{{new w.Worker({WS_BLOB})}}catch(e){{}}</script>",
+    "websocketstream": "<script>try{new WebSocketStream('ws://INT/wss')}catch(e){}</script>",
+    "worker_websocketstream": "<script>try{new Worker(URL.createObjectURL(new Blob([\"new WebSocketStream('ws://INT/')\"])))}catch(e){}</script>",
+    "blob_document_worker": "<script>const html='<script>try{new Worker(URL.createObjectURL(new Blob([\\\"new WebSocket(\\'ws://INT/\\')\\\"])))}catch(e){}<'+'/script>';const f=document.createElement('iframe');f.src=URL.createObjectURL(new Blob([html],{type:'text/html'}));document.body.appendChild(f)</script>",
 }
 DYNAMIC_RULES = {
     "dyn_type": f"<script>const s=document.createElement('script');try{{s.type={T}}}catch(e){{}};s.textContent={RULES};document.head.appendChild(s)</script>",
@@ -126,7 +132,6 @@ class _Servers:
 
 POSITIVE = {
     "normal": "<script>document.title='scripts-run'</script>",
-    "mentions_rules_in_text": "",
 }
 
 
@@ -237,20 +242,18 @@ def _visit(servers, provider, names, settle=2.0):
 
 @pytest.mark.parametrize("provider", sorted(PROVIDERS))
 def test_worker_websockets_never_reach_internal(servers, provider):
-    _visit(servers, provider, list(WORKER_PAGES))
+    results = _visit(servers, provider, list(WORKER_PAGES))
     assert servers.lines == []
+    # Not vacuous: every page really loaded (no refusal), so the sockets were attempted and blocked.
+    assert all(error is None for error, _ in results.values()), results
 
 
-@pytest.mark.parametrize("provider", sorted(PROVIDERS))
-def test_static_speculation_rules_are_refused_and_never_fetched(servers, provider):
-    results = _visit(servers, provider, list(STATIC_RULES))
-    assert servers.lines == []
-    assert all(error == CAPABILITY_BLOCKED for error, _ in results.values()), results
-
-
-@pytest.mark.parametrize("provider", sorted(PROVIDERS))
-def test_runtime_speculation_rules_are_blocked_on_every_dom_path(servers, provider):
-    _visit(servers, provider, list(DYNAMIC_RULES))
+@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): speculation-rules "
+                   "prefetch/prerender is issued by the browser process and cannot be blocked over CDP; "
+                   "needs an egress proxy. Browser stays behind the kill switch. A pass here means the "
+                   "residual is gone: update the registry and remove the xfail.")
+def test_speculation_rules_residual_is_still_open(servers):
+    _visit(servers, "local", ["static_inline"])
     assert servers.lines == []
 
 
@@ -265,9 +268,12 @@ def test_positive_controls(servers, provider):
                 title = await session.page.title()
                 probe = await session.page.evaluate("""() => {
                     const out = {};
-                    for (const n of ['Worker', 'SharedWorker', 'RTCPeerConnection', 'WebTransport']) {
-                        try { void globalThis[n]; out[n] = 'available'; } catch (e) { out[n] = 'disabled'; }
+                    for (const n of ['Worker', 'SharedWorker', 'RTCPeerConnection', 'WebTransport', 'WebSocketStream']) {
+                        // Ordinary feature detection must not throw.
+                        out[n] = (typeof globalThis[n] === 'undefined' && !globalThis[n]) ? 'disabled' : 'available';
                     }
+                    try { globalThis.Worker = function () {}; } catch (e) {}
+                    out.redefined = typeof globalThis.Worker;
                     out.fetch = typeof fetch; out.websocket = typeof WebSocket;
                     return out;
                 }""")
@@ -277,7 +283,8 @@ def test_positive_controls(servers, provider):
     result, title, probe = asyncio.run(scenario())
     assert result["final_url"].startswith(f"http://{PUB}") and title == "scripts-run"
     assert probe == {"Worker": "disabled", "SharedWorker": "disabled", "RTCPeerConnection": "disabled",
-                     "WebTransport": "disabled", "fetch": "function", "websocket": "function"}
+                     "WebTransport": "disabled", "WebSocketStream": "disabled", "redefined": "undefined",
+                     "fetch": "function", "websocket": "function"}
     assert servers.lines == []
 
 
