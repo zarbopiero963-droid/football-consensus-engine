@@ -23,7 +23,7 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 | 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **PARTIAL** (PR #172: worker WS/WebSocketStream fixed fail-closed on both paths; sandboxed-srcdoc WebSocket/WebSocketStream/workers on the remote path fixed by a browser-enforced document CSP; `fec0::/10` fixed. OPEN, need an egress proxy (WP-024): speculation-rules prefetch/prerender, WebRTC TURN/STUN and WebTransport from a sandboxed srcdoc on the remote path, DNS rebinding) | 002 | merge; re-enabling Browser = owner |
 | 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **DONE (code)** (#167, `df76738`, deployed); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
 | 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision — **DONE (code)** (#168, `43c7926`; option A: bridge/signer series split) | — | merge |
-| 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production`, diagnose then apply — **DONE_CODE / NO-GO / BLOCKED_OWNER**. Historical diagnose #41710920087 passed on 2026-11-03, but current Render logs still show `UndefinedTable` and MCP 503. D01 requires a fresh preflight; D02 requires `verify-full` with the authentic Aiven CA; D03 requires compatible least-privilege roles. No apply before the protected Environment approval and exact confirmation phrase. | 001, 002 (stop-gap), 004, 008, 009 | **D01 owner-gated apply**; Environment approval and confirmation remain mandatory |
+| 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production`, diagnose then apply — **DONE_CODE / BLOCKED_OWNER / SEQUENCE_UNDER_TECHNICAL_EVALUATION**. Historical diagnose #41710920087 passed on 2026-11-03, but current Render logs still show `UndefinedTable` and MCP 503. D02 (`verify-full`) and D03 (least privilege) remain mandatory for final certification; their chronological precedence over the schema apply is not presumed. Compare path A (schema first, hardening after) with path B (hardening first) using isolated PostgreSQL 18 evidence. No apply before the owner approves the definitive workflow, protected Environment and exact confirmation phrase. | 001, 002 (stop-gap), 004; sequencing with 008/009 TBD by evidence | **D01 owner-gated apply**; no production credentials/roles/config changes without owner approval |
 | 6 | FCB-WP-006 | P1 | `/healthz` and startup report schema readiness — **PRODUCTION_VERIFIED** (#171, `25a1d8e`); production correctly reported `EMPTY`. This does not certify WP-005 or MCP operation. | 004 | — |
 | 7 | FCB-WP-007 | P1 | OAuth: fixed error codes and DB-unavailable handling; authorization code, token, refresh and DCR persistence; real PostgreSQL regression tests and rollback | 004, 005 | **D08 auth-critical merge → owner** |
 | 8 | FCB-WP-008 | P1 | Database TLS `verify-full` with the authentic Aiven project CA in runtime and workflows; hostname/chain/certificate verification and fail-closed negative tests | authenticated CA source | **D02 approved development; production CA/secret config → owner** |
@@ -202,9 +202,9 @@ See the table above. Each of these packages follows the same template: gap and e
 
 | Decision | Scope | Development/test | Merge/apply/production gate |
 |---|---|---|---|
-| D01 | defaultdb bridge 0001–0008 | preflight and workflow verification allowed | apply only through protected Environment after explicit approval and confirmation; no signer migration |
-| D02 | Aiven TLS | verify-full implementation and negative tests approved | authentic CA and production secret/config owner-gated |
-| D03 | PostgreSQL roles | SQL/runbook/tests approved | create roles and distribute credentials owner-gated |
+| D01 | defaultdb bridge 0001–0008 | preflight, isolated PG18 tests and A/B sequencing analysis allowed | apply only through the owner-approved definitive workflow, protected Environment and exact confirmation; no signer migration |
+| D02 | Aiven TLS | verify-full implementation and negative tests approved; mandatory for final certification | authentic CA and production secret/config owner-gated; chronological order relative to WP-005 decided from A/B evidence |
+| D03 | PostgreSQL roles | SQL/runbook/tests approved; mandatory for final certification | create roles and distribute credentials owner-gated; chronological order relative to WP-005 decided from A/B evidence |
 | D04 | API-FOOTBALL live read-only | approved within existing budget after coordinator/credentials work | live run only when shared coordinator and dedicated credentials are verified; no plan upgrade |
 | D05 | Browser Use cloud | feasibility checks only | disabled; re-enable owner-gated |
 | D06 | Cloak/proxy WP-024 | isolated zero-cost prototype approved | production/cost/infra/re-enable owner-gated |
@@ -218,3 +218,12 @@ See the table above. Each of these packages follows the same template: gap and e
 | D14 | autonomy | ordinary non-sensitive SAFE PRs | sensitive or mixed PR uses the strictest owner gate |
 
 **Invariant current status:** Browser cloud OFF; Cloak production OFF; SX Bet real trading OFF; defaultdb apply owner-gated. A skipped/xfail/infra error is never PASS.
+
+## Owner clarification — WP-005 / D01–D03 (2026-11-06)
+
+D02 and D03 are not weakened or removed, but they are **not automatic chronological prerequisites** to the bridge 0001–0008 apply. Before requesting an apply decision, compare:
+
+- **Path A — schema first:** use the already tested owner-gated workflow with its current encrypted TLS/role model, then migrate to `verify-full` and dedicated roles.
+- **Path B — hardening first:** prepare and validate `verify-full` plus dedicated roles, then restore the bridge schema with the hardened identity and trust configuration.
+
+For both paths the technical decision must include dependencies, ownership/permissions, Render and workflow compatibility, isolated PostgreSQL 18 tests, backup/rollback, intermediate-failure consequences and required workflow changes. The recommendation must be an evidence-backed GO/NO-GO. No plaintext TLS, no disabled certificate verification on the chosen path, no production credential/role/config mutation and no `defaultdb` apply without owner approval.
