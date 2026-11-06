@@ -20,6 +20,9 @@ The runtime tables must be owned by the role that runs the restore. Today the ap
 Workflow logs of a public repository are public. The workflow prints only fixed categories, counts, migration names and checksums, never the URI, host, user or password.
 
 ## Owner steps
+
+Before requesting an apply decision, complete the Path A / Path B technical comparison and publish an evidence-backed GO/NO-GO recommendation in [`FCB_PR_WORKPACKAGES.md`](../FCB_PR_WORKPACKAGES.md). The owner must then approve the definitive workflow; this requirement does not presume which path wins.
+
 1. **Create the GitHub Environment `aiven-production`:** Settings → Environments → New environment.
    - Add **Required reviewers**: the owner.
    - Optionally restrict deployment branches to `main`.
@@ -85,6 +88,9 @@ The restore also refuses when:
 
 ## WP-005 owner checklist (diagnose → apply → verify)
 Values below were read from Aiven read-only on 2026-11-03. Re-check them before the run.
+
+- [ ] Before requesting an apply decision, complete the Path A / Path B comparison and publish the evidence-backed GO/NO-GO in [`FCB_PR_WORKPACKAGES.md`](../FCB_PR_WORKPACKAGES.md).
+- [ ] Confirm that the owner approved the definitive workflow selected from that comparison.
 
 ### 1. Backups (before any write)
 - [ ] Aiven Console → `piero-1` → **Backups**:
