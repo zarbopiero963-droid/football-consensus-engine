@@ -1,6 +1,8 @@
-# FCB — Operational work packages (Phase A, mandate FCB-TOTAL-RECONCILIATION-CERTIFICATION-20261102)
+# FCB — Operational work packages
 
-Master issue: #130. Baseline: `main` = `342fed64682d8e775bb097d202953618a2ac2d7b`.
+Active mandate: `FCB-OWNER-FINAL-COMPLETION-20261106` (D01–D14 RATIFIED). Previous reconciliation mandate: `FCB-TOTAL-RECONCILIATION-CERTIFICATION-20261102`.
+
+Master issue: #130. Current verified baseline: `main` = `7f9ee53c295aa459384378bae39e60fb7ec578df` (2026-11-06). Render deploy `dep-dbl63tp5efls73cmo1u0` is live on that SHA. Production MCP is not healthy: current logs show `UndefinedTable` and authenticated `POST /mcp` responses with 503.
 
 **Rules for every package:**
 - one application PR active at a time;
@@ -21,26 +23,26 @@ The detailed evidence for each gap is in `areas/*.md` and in `FCB_CAPABILITY_MAT
 | 2b | FCB-WP-002b | P0 | Browser SSRF residuals: WebSocket opened inside dedicated/shared workers (**P0**), speculation-rules prefetch/prerender (**P1**), WebRTC/WebTransport (**P2**), `fec0::/10` + verdict-cache TOCTOU window (**P3**); Browser Use cloud limits, egress/proxy policy, positive tests for legitimate public features; fail-closed block of every uncertified capability — **PARTIAL** (PR #172: worker WS/WebSocketStream fixed fail-closed on both paths; sandboxed-srcdoc WebSocket/WebSocketStream/workers on the remote path fixed by a browser-enforced document CSP; `fec0::/10` fixed. OPEN, need an egress proxy (WP-024): speculation-rules prefetch/prerender, WebRTC TURN/STUN and WebTransport from a sandboxed srcdoc on the remote path, DNS rebinding) | 002 | merge; re-enabling Browser = owner |
 | 3 | FCB-WP-003 | P0 (§2.4) | API-FOOTBALL live scripts through the PostgreSQL coordinator and circuit breaker — **DONE (code)** (#167, `df76738`, deployed); live runs need the owner-created secret `APIFOOTBALL_COORDINATOR_DATABASE_URL` in environment `api-football-live` | — | live runs; coordinator secret = owner |
 | 4 | FCB-WP-004 | P1 (blocks 005) | Versioned migration for the runtime-only tables (`api_football_quota_*` ×3, `oauth_claude_dcr_clients`) and the 0008 numbering decision — **DONE (code)** (#168, `43c7926`; option A: bridge/signer series split) | — | merge |
-| 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production` (required reviewer: owner), diagnose then apply — **DONE_CODE / BLOCKED_OWNER** (#169, `2068f6d`; workflow + runbook `areas/defaultdb_restore_runbook.md`; environment, secret and run by the owner; not PRODUCTION_VERIFIED until defaultdb, OAuth and MCP are verified) | 001, 002 (or stop-gap), 004 | **separate authorization**, Environment/secret by the owner |
-| 6 | FCB-WP-006 | P1 | `/healthz` and startup report schema readiness (`schema_migrations`, required tables) — **IN REVIEW** (PR for WP-006; also the WP-005 owner checklist) | 004 | merge |
-| 7 | FCB-WP-007 | P1 | OAuth: fixed 503 on storage failure for `/oauth/token` and `/oauth/authorize`; store integration tests on PostgreSQL (code, token, refresh, DCR) | 004 | auth change → owner |
-| 8 | FCB-WP-008 | P1 | Database TLS `verify-full` with the Aiven project CA (runtime and workflows) | CA supplied by the owner | secrets/config → owner |
-| 9 | FCB-WP-009 | P1 | Least-privilege PostgreSQL roles (`fcb_migrator`, `fcb_app`, `fcb_signer`) | 004, 005 | credentials → owner |
+| 5 | FCB-WP-005 | P0 (production down) | Restore `defaultdb`: workflow gated by GitHub Environment `aiven-production`, diagnose then apply — **DONE_CODE / BLOCKED_OWNER / SEQUENCE_UNDER_TECHNICAL_EVALUATION**. Historical diagnose #41710920087 passed on 2026-11-03, but current Render logs still show `UndefinedTable` and MCP 503. D02 (`verify-full`) and D03 (least privilege) remain mandatory for final certification; their chronological precedence over the schema apply is not presumed. Compare path A (schema first, hardening after) with path B (hardening first) using isolated PostgreSQL 18 evidence. No apply before the owner approves the definitive workflow, protected Environment and exact confirmation phrase. | 001, 002 (stop-gap), 004; sequencing with 008/009 TBD by evidence | **D01 owner-gated apply**; no production credentials/roles/config changes without owner approval |
+| 6 | FCB-WP-006 | P1 | `/healthz` and startup report schema readiness — **PRODUCTION_VERIFIED** (#171, `25a1d8e`); production correctly reported `EMPTY`. This does not certify WP-005 or MCP operation. | 004 | — |
+| 7 | FCB-WP-007 | P1 | OAuth: fixed error codes and DB-unavailable handling; authorization code, token, refresh and DCR persistence; real PostgreSQL regression tests and rollback | 004, 005 | **D08 auth-critical merge → owner** |
+| 8 | FCB-WP-008 | P1 | Database TLS `verify-full` with the authentic Aiven project CA in runtime and workflows; hostname/chain/certificate verification and fail-closed negative tests | authenticated CA source | **D02 approved development; production CA/secret config → owner** |
+| 9 | FCB-WP-009 | P1 | Least-privilege PostgreSQL roles (`fcb_migrator`, `fcb_app`, `fcb_signer`), revocation of excess grants and runtime compatibility tests | 004 | **D03 approved preparation; role creation/production credentials → owner** |
 | 10 | FCB-WP-010 | P1 | Browser: DNS pinning for Cloak, no cdpUrl in tracebacks/logs, fixed error codes, CGNAT `is_global` | 002 | merge |
 | 11 | FCB-WP-011 | P1 | SX Bet: archive the sanitized evidence of the read-only audit in `evidence/sxbet/`, bound to the SHA (artifact expires 2026-12-01) — **DONE_TESTED** (#170, `738e7da`) | — | — |
-| 12 | FCB-WP-012 | P1 | Signer: port the 3 ledger fixes (FILLED→SETTLED after purge, late fill on FILLED, absence dedupe) from `test/sxbet-e2e-simulated-engine` | — | **owner merge (§2.6)** |
-| 13 | FCB-WP-013 | P1 | Signer service: passkey revocation, rate limit, persistent ledger/exposure across restarts | 012 | **owner merge (§2.6)** |
+| 12 | FCB-WP-012 | P1 | Signer development/test only: ledger fixes, deduplication, settlement, late fills, persistence and recovery; no live credentials, sender or funds | — | **D11 owner merge (§2.6)** |
+| 13 | FCB-WP-013 | P1 | Signer service development/test only: passkey revocation, rate limit, persistent ledger/exposure across restarts, simulated KMS and reconciliation | 012 | **D11 owner merge (§2.6)** |
 | 14 | FCB-WP-014 | P1 | API-FOOTBALL: one source of truth for documentation status (contracts/registry/catalog/sources/health), stored capture and hash | — | — |
 | 15 | FCB-WP-015 | P1 | Real MCP-client certification on the current SHA: API-FOOTBALL (page ≥2, the 36 new parameters, odds manifest), SX Bet read-only through the PostgreSQL coordinator, Browser smoke per provider | 001, 002, 003, 005 | live quota/costs → owner |
 | 16 | FCB-WP-016 | P2 | API-FOOTBALL: fixed codes (429/401/circuit/queue timeout) preserved in the MCP output | — | — |
 | 17 | FCB-WP-017 | P2 | Browser: offline tests for the 19 untested tools, atomic Cloak capacity, HTML/screenshot caps, `stop_all` without raw text | 002 | — |
-| 18 | FCB-WP-018 | P2 | Browser: sessions bound to the OAuth subject (migration) | 004, 007 | auth/schema → owner |
+| 18 | FCB-WP-018 | P2 | Sessions bound to the OAuth subject; negative cross-user tests and real PostgreSQL regression | 004, 007 | **D08 auth/schema → owner** |
 | 19 | FCB-WP-019 | P2 | CI on PostgreSQL 18 and a post-deploy workflow (SHA, `/healthz`, 401, tool count) | 005 | — |
-| 20 | FCB-WP-020 | P2 | Derived Europe/Rome time with the raw value kept (§2.3) | — | **product decision** |
-| 21 | FCB-WP-021 | P2 | Remove out-of-scope modules from `bridge/api_football/` (`capabilities`, `indicators`, `gap_matrix`, `registry_import`) | — | **owner decision** |
-| 22 | FCB-WP-022 | P3 | Docs (README still says Neon), OAuth revocation endpoint, refresh-token reuse detection, consent password throttling | 007 | auth → owner |
-| 23 | FCB-WP-023 | BLOCKED | Signer: wire KMS DIGEST and the Toronto profile into `core`/`gateway`; testnet | 012, 013, legal | **legal + owner** |
-| 24 | FCB-WP-024 | P1 | Browser egress proxy, fail closed: resolve DNS in the proxy, refuse non-public resolved IPs, block UDP/QUIC; real tests on both providers. Closes the WP-002b OPEN rows (speculation rules, WebRTC/WebTransport from unguarded frames, DNS rebinding) | 002b | **new cost/infra → owner** |
+| 20 | FCB-WP-020 | P2 | UTC and original timestamps preserved; Europe/Rome derived with DST, ambiguous time and offset tests; reversible/documented transforms — **APPROVED TO DEVELOP (D09)** | — | ordinary SAFE merge |
+| 21 | FCB-WP-021 | P2 | Remove only demonstrably inactive out-of-scope modules after import/runtime/tool-registry/public-API analysis, regression tests and rollback — **APPROVED WITH TESTS (D10)** | — | ordinary SAFE merge; destructive/data removal remains owner-gated |
+| 22 | FCB-WP-022 | P3 | Docs correction plus OAuth revocation, refresh-token reuse detection and consent throttling; fixed codes and rollback | 007 | **D08 OAuth merge → owner** |
+| 23 | FCB-WP-023 | BLOCKED | Prepare non-operative signer components only: simulated KMS and testnet only when legally/technically authorized. Real trading remains OFF. | 012, 013, legal | **D11/D12 legal + owner; no live finance** |
+| 24 | FCB-WP-024 | P1 | **APPROVED PROTOTYPE ISOLATED, ZERO COST (D06):** mandatory proxy/DNS, resolved-IP validation and pinning, reject non-public IPs, no DIRECT fallback, UDP/QUIC control, real Chromium RED/GREEN for WebSocket/WebRTC/WebTransport/speculation, DNS rebinding, recovery and proxy-down. Browser Use cloud feasibility only; production stays disabled. | 002b | prototype approved; any cost, production infra or re-enable → owner |
 
 **Count:** 3 P0 security/governance packages (001, 002, 003), plus 1 P0 production package (005) that depends on them; 11 P1; 6 P2; 1 P3; 1 BLOCKED.
 
@@ -195,3 +197,33 @@ See the table above. Each of these packages follows the same template: gap and e
   - Browser Use cloud: only if its API accepts a custom egress proxy and UDP blocking. Not verified; if it cannot, Browser Use stays disabled for untrusted pages.
 - **Tests:** every OPEN row of WP-002b turns from strict xfail into GREEN on both providers, in both Chromium profiles, plus positive public navigation.
 - **Gate:** new infrastructure and possible cost, so the owner decides. Until it is done, `BROWSER_TOOLS_ENABLED=false` and `CLOAKBROWSER_ENABLED=false` stay in production.
+
+## Owner gate matrix — mandate FCB-OWNER-FINAL-COMPLETION-20261106
+
+| Decision | Scope | Development/test | Merge/apply/production gate |
+|---|---|---|---|
+| D01 | defaultdb bridge 0001–0008 | preflight, isolated PG18 tests and A/B sequencing analysis allowed | apply only through the owner-approved definitive workflow, protected Environment and exact confirmation; no signer migration |
+| D02 | Aiven TLS | verify-full implementation and negative tests approved; mandatory for final certification | authentic CA and production secret/config owner-gated; chronological order relative to WP-005 decided from A/B evidence |
+| D03 | PostgreSQL roles | SQL/runbook/tests approved; mandatory for final certification | create roles and distribute credentials owner-gated; chronological order relative to WP-005 decided from A/B evidence |
+| D04 | API-FOOTBALL live read-only | approved within existing budget after coordinator/credentials work | live run only when shared coordinator and dedicated credentials are verified; no plan upgrade |
+| D05 | Browser Use cloud | feasibility checks only | disabled; re-enable owner-gated |
+| D06 | Cloak/proxy WP-024 | isolated zero-cost prototype approved | production/cost/infra/re-enable owner-gated |
+| D07 | Costs | analysis/proposal only | every new cost owner-gated |
+| D08 | OAuth/session | development/review approved | auth-critical merge and production config owner-gated |
+| D09 | Europe/Rome | approved | ordinary SAFE merge |
+| D10 | legacy removal | approved with dependency/regression evidence | ordinary SAFE merge unless destructive/data scope |
+| D11 | signer | development, simulation and tests only | signer merge owner-gated; no real credentials/funds |
+| D12 | real SX Bet | prohibited | separate future mandate required |
+| D13 | 122-tool certification | controlled testing approved | disabled Browser tools = BLOCKED; no budget overrun |
+| D14 | autonomy | ordinary non-sensitive SAFE PRs | sensitive or mixed PR uses the strictest owner gate |
+
+**Invariant current status:** Browser cloud OFF; Cloak production OFF; SX Bet real trading OFF; defaultdb apply owner-gated. A skipped/xfail/infra error is never PASS.
+
+## Owner clarification — WP-005 / D01–D03 (2026-11-06)
+
+D02 and D03 are not weakened or removed, but they are **not automatic chronological prerequisites** to the bridge 0001–0008 apply. Before requesting an apply decision, compare:
+
+- **Path A — schema first:** use the already tested owner-gated workflow with its current encrypted TLS/role model, then migrate to `verify-full` and dedicated roles.
+- **Path B — hardening first:** prepare and validate `verify-full` plus dedicated roles, then restore the bridge schema with the hardened identity and trust configuration.
+
+For both paths the technical decision must include dependencies, ownership/permissions, Render and workflow compatibility, isolated PostgreSQL 18 tests, backup/rollback, intermediate-failure consequences and required workflow changes. The recommendation must be an evidence-backed GO/NO-GO. No plaintext TLS, no disabled certificate verification on the chosen path, no production credential/role/config mutation and no `defaultdb` apply without owner approval.
