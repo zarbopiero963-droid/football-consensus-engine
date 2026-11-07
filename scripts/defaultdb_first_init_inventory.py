@@ -97,10 +97,15 @@ def collect_inventory(dsn: str, *, schema: str = "public", source_sha: str = "UN
                    WHERE nspname NOT LIKE 'pg_temp%' AND nspname NOT LIKE 'pg_toast_temp%'
                    ORDER BY nspname"""
             ).fetchall()]
-            unexpected_schemas = [
-                name for name in schemas
-                if name not in {"public", "pg_catalog", "information_schema", "pg_toast", "_avnadmin_monitor"}
-            ]
+            expected_schemas = {
+                schema,
+                "public",
+                "pg_catalog",
+                "information_schema",
+                "pg_toast",
+                "_avnadmin_monitor",
+            }
+            unexpected_schemas = [name for name in schemas if name not in expected_schemas]
 
             relations = conn.execute(
                 """SELECT c.relname, c.relkind
