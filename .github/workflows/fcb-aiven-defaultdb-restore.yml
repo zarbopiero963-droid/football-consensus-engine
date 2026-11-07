@@ -297,6 +297,19 @@ jobs:
             *) echo "::error::restore refused by precheck state $state"; exit 1 ;;
           esac
 
+      - name: Sanitized first-install inventory (read-only, no row contents)
+        if: ${{ inputs.mode == 'diagnose' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          report="$(python scripts/defaultdb_first_init_inventory.py)"
+          printf '%s\n' "FIRST_INIT_INVENTORY=$report"
+          state="$(python -c 'import json,sys; print(json.load(sys.stdin)["precheck_state"])' <<<"$report")"
+          verdict="$(python -c 'import json,sys; print(str(json.load(sys.stdin)["first_time_initialization_proven"]).lower())' <<<"$report")"
+          echo "## Sanitized inventory: precheck_state=$state first_time_initialization_proven=$verdict" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Diagnose mode - stop before any write
         if: ${{ inputs.mode != 'apply' }}
         run: |
