@@ -33,6 +33,7 @@ def test_empty_database_inventory_proves_first_initialization_without_writes(sch
     report = collect_inventory(os.environ["TEST_DATABASE_URL"], schema=schema, source_sha="test-sha")
     assert report["transaction_read_only"] is True
     assert report["precheck_state"] == "EMPTY"
+    assert report["unexpected_schemas"] == []
     assert report["objects"] == []
     assert report["row_counts"] == {}
     assert report["first_time_initialization_proven"] is True
