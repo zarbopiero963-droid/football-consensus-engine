@@ -103,7 +103,9 @@ def _assert_final_security(dbname: str):
         conn.execute("SET ROLE fcb_app")
         conn.execute("INSERT INTO oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) "
                      "VALUES ('ab','https://example.invalid/cb',now()+interval '1 hour')")
-        assert conn.execute("SELECT count(*) FROM oauth_claude_dcr_clients").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT count(*) FROM oauth_claude_dcr_clients WHERE client_id_hash='ab'"
+        ).fetchone()[0] == 1
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("CREATE TABLE forbidden(id integer)")
         conn.rollback()
@@ -135,6 +137,12 @@ def _assert_final_security(dbname: str):
         assert oauth_store.valid_claude_dcr_client(
             client_id, "https://claude.ai/api/mcp/auth_callback"
         )
+        with app_connect() as conn:
+            conn.execute(
+                "DELETE FROM oauth_claude_dcr_clients WHERE client_id_hash=%s",
+                (oauth_store.digest(client_id),),
+            )
+            conn.commit()
     finally:
         oauth_store._conn = original_conn
 
