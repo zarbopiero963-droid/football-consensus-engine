@@ -6,9 +6,10 @@ name: FCB Aiven defaultdb restore (owner-gated)
 #      the job itself; an auto-created unprotected environment is refused). The repository is
 #      public, where required reviewers are available on every GitHub plan; the job is started
 #      and re-run only by the repository owner (github.triggering_actor), a second gate;
-#   2. the secret FCB_DEFAULTDB_URL exists only in that environment (owner-created);
+#   2. the secrets FCB_DEFAULTDB_URL, FCB_AIVEN_CA_PEM and FCB_AIVEN_CA_SHA256 exist only
+#      in that environment (owner-created from the authenticated Aiven project CA);
 #   3. mode=apply AND the exact confirmation phrase; default mode=diagnose never writes;
-#   4. pinned target (host/port hashes, database name), PostgreSQL 18, TLS;
+#   4. pinned target (host/port hashes, database name), PostgreSQL 18, TLS verify-full;
 #   5. a read-only precheck state that allows it (EMPTY, RUNTIME_ONLY, BRIDGE_0001_0007,
 #      BRIDGE_0001_0008), re-checked inside the apply step right before writing;
 #   6. one transaction with an in-session target guard; second run must be a no-op.
@@ -99,14 +100,36 @@ jobs:
             *) echo "::error::unknown mode"; exit 1 ;;
           esac
 
-      - name: Fail closed if the secret is missing
+      - name: Fail closed if a protected input is missing
         env:
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
         run: |
           set -euo pipefail
           if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then
             echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1
           fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || {
+            echo "::error::Aiven CA checksum mismatch"; exit 1;
+          }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+          echo "Aiven CA parsed and matched the protected SHA-256" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-python@v5
         with:
@@ -191,12 +214,12 @@ jobs:
           forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
           if forbidden & {k.lower() for k in q}:
               sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
-          mode = q.get('sslmode', ['require'])[0]
-          if mode not in ('require', 'verify-ca', 'verify-full'):
-              sys.exit('::error::sslmode must be require, verify-ca or verify-full')
+          mode = q.get('sslmode', [None])[0]
+          if mode != 'verify-full' or len(q.get('sslmode', [])) != 1:
+              sys.exit('::error::sslmode must be verify-full')
           PY
           # urlsplit silently drops spaces/newlines/tabs that libpq keeps (e.g. a final newline
-          # after "sslmode=require" makes libpq fail before connecting): reject them explicitly.
+          # after "sslmode=verify-full" makes libpq fail before connecting): reject it explicitly.
           python -I -S scripts/aiven_pg18_diag.py check-raw
           # Fail-closed target policy before any connection: pinned host, exact database,
           # port from the pinned config (empty/absent URI port) or equal to it (explicit).
@@ -214,7 +237,7 @@ jobs:
           # Overrides any database/role search_path setting; pg_catalog stays implicitly first.
           PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
-          PGSSLMODE: require
+          PGSSLMODE: verify-full
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
@@ -285,7 +308,7 @@ jobs:
         env:
           PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
           FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
-          PGSSLMODE: require
+          PGSSLMODE: verify-full
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql

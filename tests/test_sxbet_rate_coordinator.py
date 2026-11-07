@@ -340,6 +340,9 @@ class FakeConn:
     def fetchone(self):
         return self.rows.pop(0)
 
+    def fetchall(self):
+        return []
+
     def commit(self):
         self.log.append(("COMMIT",))
 
@@ -351,12 +354,11 @@ def test_postgres_reservation_is_serialized_and_stores_only_hashes():
     plan = rl.build_plan(network="mainnet", api_key=KEY, max_rpm=60, path="/sports", auth=False)
     run(coordinator.acquire(plan))
     statements = [entry[0] for entry in log]
-    # Schema DDL is its own transaction, under its own lock, before the reservation lock.
-    first_commit = statements.index("COMMIT")
-    assert any("CREATE TABLE IF NOT EXISTS sxbet_rate_attempts" in s for s in statements[:first_commit])
-    assert not any("pg_advisory_xact_lock" in s and entry[1] == (rl._RATE_LOCK_ID,)
-                   for s, entry in zip(statements[:first_commit], log[:first_commit]))
-    reservation = log[first_commit + 1:]
+    # Runtime performs a read-only migrated-schema check before reservation.
+    first_close = statements.index("CLOSE")
+    assert any("to_regclass" in s for s in statements[:first_close])
+    assert not any(s.startswith("CREATE ") for s in statements)
+    reservation = log[first_close + 1:]
     lock_at = next(i for i, e in enumerate(reservation) if len(e) > 1 and e[1] == (rl._RATE_LOCK_ID,))
     first_read = next(i for i, e in enumerate(reservation) if e[0].startswith(("SELECT", "DELETE", "INSERT"))
                       and "advisory" not in e[0])

@@ -120,19 +120,11 @@ _DCR_TTL_DAYS = 730
 def register_claude_dcr_client(redirect_uri: str) -> str:
     """Register an opaque public client, restricted at authorization to Claude's callback.
 
-    This bootstraps one isolated OAuth table without altering existing credentials
-    or the canonical schema_migrations ledger. All writes are transactional.
+    The table is provisioned only by the bridge migration series. Runtime never
+    performs DDL, so the application identity can remain least-privileged.
     """
     client_id = _DCR_PREFIX + secrets.token_urlsafe(24)
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """CREATE TABLE IF NOT EXISTS oauth_claude_dcr_clients (
-               client_id_hash TEXT PRIMARY KEY,
-               redirect_uri TEXT NOT NULL,
-               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-               expires_at TIMESTAMPTZ NOT NULL
-            )"""
-        )
         cur.execute(
             "DELETE FROM oauth_claude_dcr_clients WHERE expires_at <= NOW()"
         )

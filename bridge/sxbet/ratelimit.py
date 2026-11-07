@@ -201,7 +201,8 @@ class LocalRateLimiter:
             self._cooldowns[plan.cooldown_key] = max(until, self._cooldowns.get(plan.cooldown_key, until))
 
 
-# Runtime copy of sql/migrations/bridge/0007_sxbet_rate_limits.sql (the source of truth).
+# Migration SQL mirror retained for contract tests and restore fixtures only.
+# Runtime validates the migrated tables and never executes this DDL.
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS sxbet_rate_attempts (
     attempt_id TEXT PRIMARY KEY,
@@ -218,6 +219,8 @@ ON sxbet_rate_attempts(created_at)""",
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 )""",
 )
+
+_REQUIRED_TABLES = ("sxbet_rate_attempts", "sxbet_rate_cooldowns")
 
 _SCHEMA_LOCK_ID = 0x5358425343484D41  # "SXBSCHMA": schema DDL only, never nested in the rate lock
 _RATE_LOCK_ID = 0x5358425241544531  # "SXBRATE1": serializes every SX Bet reservation
@@ -243,7 +246,7 @@ class PostgresRateCoordinator:
         self._schema_guard = threading.Lock()
 
     def _ensure_schema(self) -> None:
-        # DDL never overlaps the reservation lock (deadlock lesson from api_football quota).
+        # Runtime never performs DDL. Bridge migrations provision these tables.
         if self._schema_ready:
             return
         with self._schema_guard:
@@ -251,10 +254,15 @@ class PostgresRateCoordinator:
                 return
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
-                    for statement in _SCHEMA:
-                        cur.execute(statement)
-                conn.commit()
+                    cur.execute(
+                        "SELECT name FROM unnest(%s::text[]) AS name "
+                        "WHERE to_regclass('public.' || name) IS NULL",
+                        (list(_REQUIRED_TABLES),),
+                    )
+                    missing = [row["name"] if isinstance(row, dict) else row[0]
+                               for row in cur.fetchall()]
+                    if missing:
+                        raise RuntimeError("SXRATE_SCHEMA_NOT_READY")
             self._schema_ready = True
 
     async def prepare(self) -> None:

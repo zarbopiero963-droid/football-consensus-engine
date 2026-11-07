@@ -203,3 +203,13 @@ def test_psql_steps_force_the_search_path_and_the_target_check_step_does_not():
         assert step["env"]["PGOPTIONS"] == "-c search_path=public -c quote_all_identifiers=off", name
     mask = STEPS[_index(lambda s: s.get("name") == "Mask connection details and enforce TLS")]
     assert "PGOPTIONS" not in mask.get("env", {})  # the target check refuses redirecting libpq env
+
+
+def test_production_restore_requires_verify_full_and_authenticated_ca():
+    text = WF_PATH.read_text(encoding="utf-8")
+    assert "FCB_AIVEN_CA_PEM" in text
+    assert "FCB_AIVEN_CA_SHA256" in text
+    assert "PGSSLMODE: verify-full" in text
+    assert "PGSSLROOTCERT" in text
+    assert "sslmode must be verify-full" in text
+    assert "sslmode=require" not in text

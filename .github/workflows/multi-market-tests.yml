@@ -113,3 +113,18 @@ jobs:
           assert major == 18, major
           PY
       - run: pytest -q tests/integration
+
+  postgres-18-tls-adversarial:
+    # WP-005/008: real TLS handshakes against throwaway PostgreSQL 18. The generated
+    # certificates are test-only; they are not presented as the authentic Aiven CA.
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: PostgreSQL 18 verify-full adversarial harness
+        run: python scripts/wp005_tls_postgres18_harness.py

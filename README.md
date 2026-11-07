@@ -53,6 +53,7 @@ Lo schema `tools/list` espone tutti i 140 parametri di query della documentazion
 | Variabile | Uso |
 |---|---|
 | `MCP_PUBLIC_HOST`, `MCP_OAUTH_PASSWORD`, `DATABASE_URL` | host pubblico, OAuth, PostgreSQL |
+| `FCB_DATABASE_TLS_VERIFY_FULL`, `PGSSLROOTCERT` | gate runtime D02: rifiuta DSN senza `sslmode=verify-full` o CA assente quando attivo |
 | `BROWSER_USE_API_KEY`, `BROWSER_STOP_LOCK_TIMEOUT_SECONDS`, `BROWSER_USE_EXPOSE_LIVE_URL` (default spento) | Browser Use |
 | `CLOAKBROWSER_ENABLED`, `CLOAKBROWSER_HEADLESS`, `CLOAKBROWSER_HUMANIZE`, `CLOAKBROWSER_MAX_LOCAL_SESSIONS`, `CLOAKBROWSER_PROXY_URL` | CloakBrowser |
 | `APIFOOTBALL_ENABLED`, `APIFOOTBALL_LIVE_AUTHORIZED`, `APIFOOTBALL_API_KEY` | API-FOOTBALL (entrambi i flag sono necessari per le chiamate reali) |
