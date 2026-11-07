@@ -17,17 +17,34 @@ BEGIN
         SELECT c.relkind, c.oid::regclass AS qualified_name
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'S', 'v', 'm')
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
     LOOP
-        IF obj.relkind = 'S' THEN
-            EXECUTE format('ALTER SEQUENCE %s OWNER TO fcb_migrator', obj.qualified_name);
-        ELSIF obj.relkind = 'v' THEN
+        IF obj.relkind = 'v' THEN
             EXECUTE format('ALTER VIEW %s OWNER TO fcb_migrator', obj.qualified_name);
         ELSIF obj.relkind = 'm' THEN
             EXECUTE format('ALTER MATERIALIZED VIEW %s OWNER TO fcb_migrator', obj.qualified_name);
         ELSE
             EXECUTE format('ALTER TABLE %s OWNER TO fcb_migrator', obj.qualified_name);
         END IF;
+    END LOOP;
+
+    -- PostgreSQL rejects ALTER SEQUENCE OWNER for SERIAL/IDENTITY sequences
+    -- linked to a table. ALTER TABLE above already transfers those sequences.
+    -- Transfer only independent sequences here.
+    FOR obj IN
+        SELECT c.oid::regclass AS qualified_name
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'S'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype IN ('a', 'i')
+          )
+    LOOP
+        EXECUTE format('ALTER SEQUENCE %s OWNER TO fcb_migrator', obj.qualified_name);
     END LOOP;
 
     FOR obj IN
