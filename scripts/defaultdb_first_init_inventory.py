@@ -34,7 +34,11 @@ def _expected_bridge_tables() -> set[str]:
 
 
 def _scalar(conn: psycopg.Connection[Any], query: str, params: tuple[Any, ...] = ()) -> Any:
-    return conn.execute(query, params).fetchone()[0]
+    # Passing even an empty tuple makes psycopg parse every '%' in a raw SQL
+    # file as a client-side placeholder.  The audited precheck legitimately
+    # contains LIKE patterns, so omit the params argument when there are none.
+    cursor = conn.execute(query, params) if params else conn.execute(query)
+    return cursor.fetchone()[0]
 
 
 def _precheck_state(conn: psycopg.Connection[Any]) -> str:
