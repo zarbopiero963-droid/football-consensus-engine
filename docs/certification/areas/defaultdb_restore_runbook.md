@@ -21,14 +21,20 @@ Workflow logs of a public repository are public. The workflow prints only fixed 
 
 ## Owner steps
 
-Before requesting an apply decision, complete the Path A / Path B technical comparison and publish an evidence-backed GO/NO-GO recommendation in [`FCB_PR_WORKPACKAGES.md`](../FCB_PR_WORKPACKAGES.md). The owner must then approve the definitive workflow; this requirement does not presume which path wins.
+The reproducible Path A / Path B comparison and current verdict are in
+[`wp005_ab_decision.md`](wp005_ab_decision.md). The selected workflow must be green on its
+exact SHA before any production run.
 
 1. **Create the GitHub Environment `aiven-production`:** Settings → Environments → New environment.
    - Add **Required reviewers**: the owner.
    - Optionally restrict deployment branches to `main`.
    - The job checks this through the API and refuses to run if the environment has no required reviewer. An environment that GitHub auto-creates without protection is therefore refused.
-2. **Add the secret `FCB_DEFAULTDB_URL` inside that environment only**, not as a repository secret.
-   - Value: the Aiven URI of `defaultdb`, with `sslmode=require` or stronger, the pinned host and port `14274`, and the path `/defaultdb`.
+2. **Add the protected inputs inside that environment only**, not as repository secrets.
+   - `FCB_DEFAULTDB_URL`: the Aiven URI of `defaultdb`, with exactly
+     `sslmode=verify-full`, the pinned host and port `14274`, and path `/defaultdb`.
+   - `FCB_AIVEN_CA_PEM`: the authentic project CA acquired from the authenticated Aiven
+     console/API, never a generated or third-party certificate.
+   - `FCB_AIVEN_CA_SHA256`: SHA-256 independently calculated from those exact CA bytes.
    - The target check refuses any other host, port, database, query parameter or whitespace.
    - Least privilege (WP-009): a dedicated migrator role is preferable to `avnadmin`. Until WP-009 exists, the owner decides which credential to use.
 3. **Run `mode=diagnose`.** It is read-only and prints:
@@ -106,7 +112,10 @@ Values below were read from Aiven read-only on 2026-11-03. Re-check them before 
 
 ### 3. GitHub gates
 - [ ] Create the environment `aiven-production` with **Required reviewers: owner**. Optionally restrict deployment branches to `main`.
-- [ ] Add the **environment secret** `FCB_DEFAULTDB_URL` there: `sslmode=require` (or stronger), the pinned host, port `14274`, path `/defaultdb`.
+- [ ] Add protected `FCB_DEFAULTDB_URL` with exactly `sslmode=verify-full`, pinned host,
+  port `14274`, and path `/defaultdb`.
+- [ ] Add authentic `FCB_AIVEN_CA_PEM` and independently calculated
+  `FCB_AIVEN_CA_SHA256`; the workflow must parse the certificate and match the checksum.
 
 ### 4. Diagnose (read-only)
 - [ ] Run the workflow with `mode=diagnose`, from `main`, as the owner.
