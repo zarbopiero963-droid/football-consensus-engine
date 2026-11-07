@@ -108,7 +108,10 @@ def _assert_final_security(dbname: str):
         conn.rollback()
         conn.execute("SET ROLE fcb_signer")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("SELECT * FROM oauth_access_tokens")
+            # Qualify the relation so this proves denial by the schema ACL. An
+            # unqualified lookup is intentionally hidden as UndefinedTable when
+            # the signer has no USAGE on public.
+            conn.execute("SELECT * FROM public.oauth_access_tokens")
 
 
 def test_path_a_schema_then_hardening(ab_cluster):
