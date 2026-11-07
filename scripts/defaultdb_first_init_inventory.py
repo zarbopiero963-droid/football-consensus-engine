@@ -74,7 +74,10 @@ def collect_inventory(dsn: str, *, schema: str = "public", source_sha: str = "UN
 
     # autocommit is used only so BEGIN READ ONLY is the first transaction command.
     with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute(sql.SQL("SET search_path TO {}, pg_catalog").format(sql.Identifier(schema)))
+        # Keep pg_catalog implicit: PostgreSQL prepends it to current_schemas(true).
+        # Listing it explicitly after the target schema would make the target resolve first
+        # and the existing fail-closed precheck would (correctly) reject the session.
+        conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
         conn.execute("BEGIN TRANSACTION READ ONLY")
         try:
             if _scalar(conn, "SELECT current_setting('transaction_read_only')") != "on":
