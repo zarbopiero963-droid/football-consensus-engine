@@ -213,3 +213,15 @@ def test_production_restore_requires_verify_full_and_authenticated_ca():
     assert "PGSSLROOTCERT" in text
     assert "sslmode must be verify-full" in text
     assert "sslmode=require" not in text
+
+
+def test_diagnose_emits_a_sanitized_read_only_inventory_in_the_downloadable_log():
+    step = STEPS[_index(lambda s: s.get("name", "").startswith("Sanitized first-install inventory"))]
+    assert step["if"] == "${{ inputs.mode == 'diagnose' }}"
+    assert step["env"]["FCB_DEFAULTDB_URL"] == "${{ secrets.FCB_DEFAULTDB_URL }}"
+    assert step["env"]["PGSSLMODE"] == "verify-full"
+    run = step["run"]
+    assert "scripts/defaultdb_first_init_inventory.py" in run
+    assert "FIRST_INIT_INVENTORY=" in run
+    assert "GITHUB_STEP_SUMMARY" in run
+    assert "apply" not in run.lower()
