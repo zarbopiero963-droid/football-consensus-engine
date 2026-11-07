@@ -89,6 +89,11 @@ def _fingerprint(dbname: str) -> str:
 
 
 def _assert_final_security(dbname: str):
+    def app_connect():
+        conn = psycopg.connect(_dsn(dbname))
+        conn.execute("SET ROLE fcb_app")
+        return conn
+
     with psycopg.connect(_dsn(dbname)) as conn:
         owners = conn.execute("""SELECT DISTINCT r.rolname FROM pg_class c
             JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner
@@ -112,6 +117,26 @@ def _assert_final_security(dbname: str):
             # unqualified lookup is intentionally hidden as UndefinedTable when
             # the signer has no USAGE on public.
             conn.execute("SELECT * FROM public.oauth_access_tokens")
+
+    # Exercise the actual runtime readiness and both shared coordinators using
+    # the least-privileged identity. These checks are read-only and must not DDL.
+    from bridge import schema_readiness, oauth_store
+    from bridge.api_football.quota import PostgresQuota, QuotaLimits
+    from bridge.sxbet.ratelimit import PostgresRateCoordinator
+
+    assert schema_readiness.evaluate(app_connect)["state"] == "READY"
+    PostgresQuota(QuotaLimits(8, 80, 1), connect=app_connect)._ensure_schema()
+    PostgresRateCoordinator(connect=app_connect)._ensure_schema()
+
+    original_conn = oauth_store._conn
+    oauth_store._conn = app_connect
+    try:
+        client_id = oauth_store.register_claude_dcr_client("https://claude.ai/api/mcp/auth_callback")
+        assert oauth_store.valid_claude_dcr_client(
+            client_id, "https://claude.ai/api/mcp/auth_callback"
+        )
+    finally:
+        oauth_store._conn = original_conn
 
 
 def test_path_a_schema_then_hardening(ab_cluster):

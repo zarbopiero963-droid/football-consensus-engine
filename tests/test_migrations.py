@@ -135,15 +135,14 @@ def test_bridge_series_keeps_0001_0007_bytes_and_adds_runtime_tables():
         assert word not in code, word
 
 
-def test_runtime_ddl_is_contained_verbatim_in_the_migration():
+def test_schema_contract_is_migration_owned_and_runtime_has_no_oauth_ddl():
     from bridge.api_football.quota import _SCHEMA
     sql=migrations.load_migrations()[7].sql
     for statement in _SCHEMA:
         assert statement + ';' in sql
     oauth=Path('bridge/oauth_store.py').read_text()
-    block=oauth[oauth.index('CREATE TABLE IF NOT EXISTS oauth_claude_dcr_clients'):]
-    block=block[:block.index(')"""')+1]
-    assert block + ';' in sql
+    assert 'CREATE TABLE IF NOT EXISTS oauth_claude_dcr_clients' not in oauth
+    assert 'CREATE TABLE IF NOT EXISTS oauth_claude_dcr_clients' in sql
 
 
 def test_bridge_and_signer_series_never_mix():

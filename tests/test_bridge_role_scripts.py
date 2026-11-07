@@ -24,6 +24,7 @@ def test_app_has_explicit_runtime_allowlist_and_no_schema_create():
         "api_football_quota_attempts", "sxbet_rate_attempts", "sxbet_rate_cooldowns",
     ):
         assert table in FINALIZE
+    assert "GRANT SELECT ON TABLE schema_migrations TO fcb_app" in FINALIZE
 
 
 def test_signer_is_explicitly_revoked_and_never_granted():

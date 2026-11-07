@@ -60,6 +60,8 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC, fcb_app, fcb_signer;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, fcb_app, fcb_signer;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, fcb_app, fcb_signer;
 
+GRANT SELECT ON TABLE schema_migrations TO fcb_app;
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     oauth_authorization_codes,
     oauth_access_tokens,

@@ -42,6 +42,8 @@ class QuotaLease:
     key_hash: str
 
 
+# Migration SQL mirror retained for schema-contract tests and restore-state
+# fixtures only. Runtime must never execute these statements.
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS api_football_quota_counters (
          api_key_hash TEXT NOT NULL,
@@ -64,6 +66,12 @@ _SCHEMA = (
        )""",
     """CREATE INDEX IF NOT EXISTS idx_api_football_attempt_recent
        ON api_football_quota_attempts(api_key_hash, created_at)""",
+)
+
+_REQUIRED_TABLES = (
+    "api_football_quota_counters",
+    "api_football_quota_leases",
+    "api_football_quota_attempts",
 )
 
 
@@ -116,9 +124,8 @@ class PostgresQuota:
         self._schema_guard = threading.Lock()
 
     def _ensure_schema(self) -> None:
-        # SQL DDL and quota row locks must NEVER overlap. Running DDL inside
-        # an active per-key advisory lock caused a real PostgreSQL deadlock in
-        # multi-worker CI; separate the two lock domains transactionally.
+        # Runtime never performs DDL. Bridge migrations provision these tables;
+        # this check fails closed while preserving least privilege.
         if self._schema_ready:
             return
         with self._schema_guard:
@@ -126,10 +133,15 @@ class PostgresQuota:
                 return
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_INIT_LOCK_ID,))
-                    for statement in _SCHEMA:
-                        cur.execute(statement)
-                conn.commit()
+                    cur.execute(
+                        "SELECT name FROM unnest(%s::text[]) AS name "
+                        "WHERE to_regclass('public.' || name) IS NULL",
+                        (list(_REQUIRED_TABLES),),
+                    )
+                    missing = [row["name"] if isinstance(row, dict) else row[0]
+                               for row in cur.fetchall()]
+                    if missing:
+                        raise RuntimeError("APIFOOTBALL_QUOTA_SCHEMA_NOT_READY")
             self._schema_ready = True
 
     def _reserve(self, secret: str) -> QuotaLease:
