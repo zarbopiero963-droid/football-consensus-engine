@@ -114,7 +114,8 @@ def test_workflow_wires_diagnostics_and_never_prints_raw_psql_stderr():
     wf = WORKFLOW.read_text()
     assert "scripts/aiven_pg18_diag.py check-raw" in wf
     assert "scripts/aiven_pg18_diag.py probe" in wf
-    assert wf.count("scripts/aiven_pg18_diag.py sanitize") == 2
+    # precheck q(), the read-only state evidence query (review of #178) and the apply sp()
+    assert wf.count("scripts/aiven_pg18_diag.py sanitize") == 3
     # every psql invocation with the secret redirects stderr to a temp file
     lines = [ln for ln in wf.splitlines() if '"$PSQL" "$FCB_PG18_TEST_URL"' in ln]
     assert lines and all('2>"$err"' in ln for ln in lines)
@@ -477,8 +478,69 @@ def test_workflow_requires_verify_full_with_the_authenticated_ca():
     assert "mode != 'verify-full'" in mask and "require', 'verify-ca'" not in mask
 
 
-def test_workflow_diagnose_accepts_only_the_exact_recorded_0001_0007_series():
+def _expected_rows():
+    import hashlib
+    rows = []
+    for f in sorted((ROOT / "sql" / "migrations" / "bridge").glob("000[1-7]_*.sql")):
+        rows.append(f"{int(f.name[:4])}={f.name}={hashlib.sha256(f.read_bytes()).hexdigest()}")
+    return rows
+
+
+def _evidence(rows, counts=None):
+    from scripts import pg18_state
+    return "\n".join([*(counts or pg18_state.EXPECTED_COUNTS), *rows]) + "\n"
+
+
+def test_state_accepts_only_the_exact_recorded_0001_0007_series():
+    """Review of #178 P2-1/P2-2: behaviour, not strings. RED cases are the reviewer's mutations."""
+    from scripts import pg18_state
+    rows = _expected_rows()
+    files = "\n".join(rows)
+    assert len(rows) == 7
+    assert pg18_state.classify(_evidence(rows), files) == "BRIDGE_0001_0007"
+    # The forged single row: the whole expected tail packed into one sha256 column.
+    forged = [rows[0].rsplit("=", 1)[0] + "=" + rows[0].rsplit("=", 1)[1] + " " + " ".join(rows[1:])]
+    counts_one = [*pg18_state.EXPECTED_COUNTS[:6], "schema_migrations_rows=1"]
+    assert pg18_state.classify(_evidence(forged, counts_one), files) != "BRIDGE_0001_0007"
+    assert pg18_state.classify(_evidence(forged), files) != "BRIDGE_0001_0007"
+    changed = rows[:3] + [rows[3][:-1] + ("0" if rows[3][-1] != "0" else "1")] + rows[4:]
+    assert pg18_state.classify(_evidence(changed), files) == "MIGRATION_ROWS_DIFFER"
+    extra = rows + ["8=0008_runtime_tables.sql=" + "a" * 64]
+    assert pg18_state.classify(_evidence(extra), files) == "MIGRATION_ROWS_MALFORMED"
+    missing = rows[:6]
+    assert pg18_state.classify(_evidence(missing), files) == "MIGRATION_ROWS_MALFORMED"
+    more_tables = ["tables=30", *pg18_state.EXPECTED_COUNTS[1:]]
+    assert pg18_state.classify(_evidence(rows, more_tables), files) == "OBJECT_COUNTS_DIFFER"
+    assert pg18_state.classify("", files) == "OBJECT_COUNTS_DIFFER"
+    no_sha = [r.rsplit("=", 1)[0] for r in rows]
+    assert pg18_state.classify(_evidence(no_sha), files) == "MIGRATION_ROWS_MALFORMED"
+
+
+def test_state_counts_match_the_apply_step_and_the_cli_fails_closed(tmp_path):
+    from scripts import pg18_state
     text = WORKFLOW.read_text()
-    assert "sql/migrations/bridge/000[1-7]_*.sql" in text
-    assert 'if [ "$recorded" != "${files% }" ]; then' in text
-    assert "is not the recorded bridge 0001-0007 series" in text
+    expected = " ".join(pg18_state.EXPECTED_COUNTS)
+    assert f"printf '%s\\n' {expected})" in text  # apply step verifies the very same counts
+    ev, fl = tmp_path / "e", tmp_path / "f"
+    ev.write_text(_evidence(_expected_rows())); fl.write_text("\n".join(_expected_rows()))
+    assert pg18_state.main(["x", str(ev), str(fl)]) == 0
+    ev.write_text("tables=29\n")
+    assert pg18_state.main(["x", str(ev), str(fl)]) == 1
+    assert pg18_state.main(["x"]) == 2
+
+
+def test_workflow_state_gates_apply_and_diagnose_exactly():
+    import yaml
+    wf = yaml.safe_load(WORKFLOW.read_text())
+    steps = {s.get("name", ""): s for s in wf["jobs"]["pg18-test"]["steps"]}
+    pre = steps["Prechecks (database, PostgreSQL 18, TLS verify-full, state)"]["run"]
+    assert "state=EMPTY\n" in pre and 'state="$verdict"' in pre
+    assert 'python -I -S scripts/pg18_state.py "$evidence" "$expected_rows"' in pre
+    assert 'if [ "$tracked" != "t" ]; then' in pre
+    # Only two assignments of the state, and only the script's verdict marks a non-empty DB.
+    assert pre.count("state=") == 2
+    apply = steps["Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify"]
+    assert apply["if"] == "${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}"
+    diag = steps["Diagnose mode or already-migrated database - stop before any write"]
+    assert diag["if"] == "${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}"
+    assert "${{" not in diag["run"] and diag["env"] == {"MODE": "${{ inputs.mode }}"}

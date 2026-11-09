@@ -244,17 +244,26 @@ jobs:
           state=EMPTY
           if [ "$objects" != "0" ] || [ "$funcs" != "0" ]; then
             # Not empty: accepted (read-only) only when it is exactly the bridge 0001-0007 series
-            # this workflow applies, with the recorded names and checksums equal to the repo files.
+            # this workflow applies: the same object counts the apply step verifies, and one
+            # schema_migrations row per repo file with equal version, name and checksum
+            # (scripts/pg18_state.py; a forged single row or extra objects are refused).
             tracked="$(q "select to_regclass('public.schema_migrations') is not null")"
-            recorded=""
-            if [ "$tracked" = "t" ]; then
-              recorded="$(q "select string_agg(version::text || '=' || name || '=' || sha256, ' ' order by version) from schema_migrations")"
+            if [ "$tracked" != "t" ]; then
+              echo "::error::database is not empty and has no schema_migrations (relations=$objects functions=$funcs); refusing to run"; exit 1
             fi
-            files="$(for f in sql/migrations/bridge/000[1-7]_*.sql; do n="$(basename "$f")"; printf '%s=%s=%s ' "$((10#${n:0:4}))" "$n" "$(sha256sum "$f" | cut -d' ' -f1)"; done)"
-            if [ "$recorded" != "${files% }" ]; then
-              echo "::error::database is not empty and is not the recorded bridge 0001-0007 series (relations=$objects functions=$funcs); refusing to run"; exit 1
+            evidence="$RUNNER_TEMP/pg18_evidence.txt"; expected_rows="$RUNNER_TEMP/pg18_expected.txt"
+            err="$(mktemp)"
+            if ! "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql >"$evidence" 2>"$err"; then
+              echo "::error::read-only schema evidence query failed ($(classify "$err"))"
+              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")"
+              rm -f "$err"; exit 1
             fi
-            state=BRIDGE_0001_0007
+            rm -f "$err"
+            for f in sql/migrations/bridge/000[1-7]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done >"$expected_rows"
+            if ! verdict="$(python -I -S scripts/pg18_state.py "$evidence" "$expected_rows")"; then
+              echo "::error::database is not empty and is not the recorded bridge 0001-0007 series ($verdict; relations=$objects functions=$funcs); refusing to run"; exit 1
+            fi
+            state="$verdict"
           fi
           echo "PG18_TEST_STATE=$state" >> "$GITHUB_ENV"
           {
@@ -267,8 +276,14 @@ jobs:
 
       - name: Diagnose mode or already-migrated database - stop before any write
         if: ${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}
+        env:
+          MODE: ${{ inputs.mode }}
         run: |
-          echo "## Mode: ${{ inputs.mode }}, state: $PG18_TEST_STATE - the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          echo "## Mode: $MODE, state: $PG18_TEST_STATE - the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MODE" = "apply" ]; then
+            echo "::warning::mode=apply requested but the database is already migrated ($PG18_TEST_STATE): nothing was applied"
+          fi
           echo "no database writes: apply runs only with mode=apply on an EMPTY database"
 
       - name: Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify
