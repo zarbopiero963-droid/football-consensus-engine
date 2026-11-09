@@ -4,17 +4,27 @@
 -- workflow forces search_path at connect time: objects or operators planted in public cannot
 -- shadow anything here (CVE-2018-1058 pattern). Temporary schemas are excluded by an anchored
 -- regex (LIKE 'pg_temp%' would also match 'pgxtemp'). Aiven's _avnadmin_monitor is excluded only
--- when a superuser other than the connecting role owns it.
+-- when it is owned by Aiven's own `_avnadmin_monitor` role (or a superuser), never by the
+-- connecting role, the connecting role is not a member of the owner and cannot CREATE in it
+-- (observed on Aiven piero-1: owner `_avnadmin_monitor`, not a superuser; avnadmin is neither
+-- member nor has CREATE/USAGE).
+-- Residual (documented): on a cluster WITHOUT an `_avnadmin_monitor` role, a non-superuser owner
+-- with CREATEROLE could create that role via an intermediary, plant objects owned by it and then
+-- drop the intermediary, hiding them. Not exploitable on the Aiven target, where the role exists
+-- cluster-wide and avnadmin has no ADMIN/SET/CREATE on it (verified read-only).
 -- The apply step re-runs this same query inside its own transaction (sum must be exactly 0).
 WITH me AS (
   SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER
 ), user_ns AS (
   SELECT n.oid, n.nspname FROM pg_catalog.pg_namespace n
+  JOIN pg_catalog.pg_roles r_owner ON r_owner.oid OPERATOR(pg_catalog.=) n.nspowner
   WHERE n.nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['pg_catalog', 'information_schema', 'pg_toast']::pg_catalog.name[])
     AND n.nspname OPERATOR(pg_catalog.!~) '^pg_(toast_)?temp_[0-9]+$'::pg_catalog.text
     AND NOT (n.nspname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name
              AND n.nspowner OPERATOR(pg_catalog.<>) (SELECT me.oid FROM me)
-             AND (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.oid OPERATOR(pg_catalog.=) n.nspowner))
+             AND (r_owner.rolsuper OR r_owner.rolname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name)
+             AND NOT pg_catalog.pg_has_role(SESSION_USER, n.nspowner, 'MEMBER')
+             AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE'))
 )
 SELECT k, v FROM (
   SELECT 1 AS o, 'relations' AS k, pg_catalog.count(*) AS v

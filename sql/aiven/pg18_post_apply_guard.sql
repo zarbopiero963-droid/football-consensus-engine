@@ -13,11 +13,14 @@ DECLARE
 BEGIN
   WITH user_ns AS (
     SELECT n.oid, n.nspname FROM pg_catalog.pg_namespace n
+    JOIN pg_catalog.pg_roles r_owner ON r_owner.oid OPERATOR(pg_catalog.=) n.nspowner
     WHERE n.nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['pg_catalog', 'information_schema', 'pg_toast']::pg_catalog.name[])
       AND n.nspname OPERATOR(pg_catalog.!~) '^pg_(toast_)?temp_[0-9]+$'::pg_catalog.text
       AND NOT (n.nspname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name
                AND n.nspowner OPERATOR(pg_catalog.<>) me_role
-               AND (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.oid OPERATOR(pg_catalog.=) n.nspowner))
+               AND (r_owner.rolsuper OR r_owner.rolname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name)
+               AND NOT pg_catalog.pg_has_role(SESSION_USER, n.nspowner, 'MEMBER')
+               AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE'))
   )
   SELECT
       (SELECT pg_catalog.count(*) FROM user_ns n WHERE n.nspname OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name)
