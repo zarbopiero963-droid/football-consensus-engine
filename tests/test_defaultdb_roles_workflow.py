@@ -25,10 +25,10 @@ JOB = WF["jobs"]["roles"]
 STEPS = JOB["steps"]
 CONFIRM = "APPLY WP-009 ROLES TO defaultdb"
 TX_FILES = ("roles_apply_guard.sql", "upsert_bridge_roles.sql", "prepare_bridge_roles.sql",
-            "finalize_bridge_privileges.sql", "assert_bridge_counts.sql", "assert_bridge_roles.sql")
+            "finalize_bridge_privileges.sql", "roles_post_checks.sql", "assert_bridge_roles.sql")
 NEW_SQL = ("roles_apply_guard.sql", "upsert_bridge_roles.sql", "assert_bridge_roles.sql",
            "verify_bridge_roles.sql", "diagnose_bridge_roles.sql", "prepare_bridge_roles.sql",
-           "finalize_bridge_privileges.sql")
+           "finalize_bridge_privileges.sql", "roles_post_checks.sql")
 PASSWORD_SECRETS = ("FCB_APP_DB_PASSWORD", "FCB_MIGRATOR_DB_PASSWORD")
 
 
@@ -131,7 +131,8 @@ def test_one_transaction_runs_the_files_in_the_tested_order_twice_with_evidence_
     assert 'test "$roles_after" = "HARDENED"' in run
     assert "login-check --require-tls" in run
     # Re-check right before writing: BRIDGE_0001_0008, or an already hardened model.
-    assert 'if [ "$roles_before" != "HARDENED" ] && [ "$before" != "BRIDGE_0001_0008" ]' in run
+    assert ('if [ "$roles_before" != "HARDENED" ] && { [ "$before" != "BRIDGE_0001_0008" ] '
+            '|| [ "$roles_before" != "ROLES_ABSENT" ]; }; then') in run
 
 
 def test_every_sql_file_the_workflow_runs_is_pinned_by_sha256():
@@ -162,8 +163,9 @@ def test_role_passwords_reach_only_apply_steps_and_never_a_command_line():
             assert f"${name}" not in run and f"${{{name}" not in run, step["name"]
     apply = _step("Apply roles")["run"]
     for var in ("app_verifier", "migrator_verifier"):
-        assert f'echo "::add-mask::${var}"' in apply
         assert f'{var}="$(python -I -S scripts/fcb_db_roles.py verifier ' in apply
+        # Never written to stdout, not even as a mask command (owner requirement).
+        assert not re.search(rf"(echo|printf)[^\n]*\${{?{var}", apply), var
     # Verifiers go to psql only through its environment (\getenv), never via -v or argv.
     assert 'FCB_APP_DB_VERIFIER="$app_verifier" FCB_MIGRATOR_DB_VERIFIER="$migrator_verifier"' in apply
     assert "-v fcb_app_verifier" not in apply and "verifier=" not in apply.replace("_verifier=", "")
@@ -200,7 +202,7 @@ def test_upsert_reads_verifiers_from_the_environment_and_embeds_no_credential():
 
 @pytest.mark.parametrize("name", NEW_SQL)
 def test_role_sql_never_drops_or_changes_data(name):
-    sql = _sql_only((AIVEN / name).read_text()).upper()
+    sql = re.sub(r"'[^']*'", "''", _sql_only((AIVEN / name).read_text())).upper()  # literals are data
     for word in ("DROP ", "TRUNCATE", "REASSIGN OWNED", "DELETE FROM", "UPDATE ", "INSERT ", "COPY ",
                  "ALTER ROLE AVNADMIN", "SET ROLE", "SECURITY DEFINER", "CREATE TABLE", "CREATE FUNCTION"):
         assert word not in sql, (name, word)
@@ -322,3 +324,44 @@ def test_the_model_asserts_the_exact_membership_inventory_and_no_escalation_path
     assert "false, true, true, (SELECT sess.oid FROM sess)" in verify
     diagnose = (AIVEN / "diagnose_bridge_roles.sql").read_text()
     assert "'membership '" in diagnose and "'effective '" in diagnose and "' grantor='" in diagnose
+
+
+def test_login_check_runs_isolated_with_hash_pinned_dependencies():
+    run = _step("Apply roles")["run"]
+    assert "python -I scripts/fcb_db_roles.py login-check --require-tls" in run and "PYTHONPATH" not in run
+    pins = _step("Verify the pinned SHA-256")["run"]
+    assert "pip install --quiet --require-hashes --no-deps -r scripts/fcb_db_roles_requirements.txt" in pins
+    req = (ROOT / "scripts" / "fcb_db_roles_requirements.txt").read_text()
+    for pkg in ("psycopg==3.3.6", "psycopg-binary==3.3.6", "typing-extensions=="):
+        block = req.split(pkg, 1)[1].split("\n\n", 1)[0]
+        assert re.search(r"--hash=sha256:[0-9a-f]{64}", block.split("\n", 2)[1]), pkg
+
+
+def test_every_administrative_session_outside_the_apply_transaction_is_read_only():
+    """After hardening the administrator must not read bridge tables read-write (planted code)."""
+    report = _step("Prechecks and roles report")
+    assert "default_transaction_read_only=on" in report["env"]["PGOPTIONS"]
+    run = _step("Apply roles")["run"]
+    assert 'ro() { PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" sp' in run
+    for line in run.splitlines():
+        if "$(sp " in line or "$(ro " in line:
+            assert "$(ro " in line, line  # every captured query outside `run` is read-only
+
+
+def test_model_pins_the_same_routines_and_triggers_as_the_restore_precheck():
+    pre = (AIVEN / "defaultdb_precheck.sql").read_text()
+    verify = (AIVEN / "verify_bridge_roles.sql").read_text()
+    for start, end in (("bridge_functions(sig) AS (VALUES", "\n)"), ("bridge_triggers(sig) AS (VALUES", "\n)")):
+        block = pre[pre.index(start):pre.index(end, pre.index(start)) + 2]
+        assert block in verify, start
+    for code in ("routine_set", "trigger_set", "relation_hooks", "foreign_objects", "role_settings"):
+        assert f"'{code}'" in verify
+
+
+def test_re_run_path_reads_no_bridge_table_as_the_administrator():
+    guard = (AIVEN / "roles_apply_guard.sql").read_text()
+    first, rerun = guard.split("\\if :fcb_first_run", 1)[1].split("\\else", 1)
+    assert "FROM public.schema_migrations" in first and "public." not in _sql_only(rerun).replace("'public'", "")
+    assert "FCB_ROLES_RERUN_NOT_HARDENED" in rerun and "\\ir verify_bridge_roles.sql" in rerun
+    post = (AIVEN / "roles_post_checks.sql").read_text()
+    assert "\\if :fcb_first_run\n\\ir assert_bridge_counts.sql\n\\endif" in post

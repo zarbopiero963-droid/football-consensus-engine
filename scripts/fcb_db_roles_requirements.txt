@@ -1,0 +1,11 @@
+# FCB-WP-009: the only third-party code the roles workflow runs while role passwords are in its
+# environment (scripts/fcb_db_roles.py login-check). Installed with
+#   python -m pip install --require-hashes --no-deps -r scripts/fcb_db_roles_requirements.txt
+# Hashes from PyPI (CPython 3.12, Linux x86_64 wheels); any other file is refused by pip.
+psycopg==3.3.6 \
+    --hash=sha256:a1db9f7148b06a28606767efaca51fa6f9398c5c0a3810519be69d7000bdb631
+psycopg-binary==3.3.6 \
+    --hash=sha256:1679a1cb93fbe5a6d1fd58d82cbddcc6fcb8c61446ba7cae6eb2a7b19bc585de \
+    --hash=sha256:f21d057f3e5f5491067e5b292498073b73847d48799b099803fef100775fcc52
+typing-extensions==4.15.0 \
+    --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548

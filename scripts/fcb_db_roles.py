@@ -12,7 +12,7 @@ Subcommands (secrets are always read from the environment, never from argv):
                          print sql/aiven/fingerprint_bridge_structure.sql, derived from
                          fingerprint_bridge_schema.sql (tests check the committed file equals it)
   login-check [--require-tls]
-                         log in as fcb_app and fcb_migrator (same host/port/database/TLS settings
+                         (run with `python -I`; psycopg from scripts/fcb_db_roles_requirements.txt) log in as fcb_app and fcb_migrator (same host/port/database/TLS settings
                          as $FCB_DEFAULTDB_URL, other user and password) and check, read-only,
                          what each identity can and cannot do (needs psycopg and the repository)
 """
@@ -173,6 +173,11 @@ def _check_role(role: str, env, require_tls: bool) -> str:
         migrations = conn.execute("SELECT pg_catalog.count(*) FROM public.schema_migrations").fetchone()[0]
         create_denied = _denied(conn, "CREATE TABLE public.fcb_wp009_login_probe (i integer)")
         if role == "fcb_app":
+            # Runs under `python -I` (no PYTHONPATH, no user site, no script dir on sys.path):
+            # the repository root is added explicitly, nothing else.
+            root = str(Path(__file__).resolve().parents[1])
+            if root not in sys.path:
+                sys.path.insert(0, root)
             from bridge import schema_readiness
 
             def app_connect():

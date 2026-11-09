@@ -23,7 +23,16 @@
 --   routines   no non-owner EXECUTE (PUBLIC revoked);
 --   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, nothing for PUBLIC/fcb_signer
 --              (grants held by the schema owner or the session identity are not judged);
---   database   neither fcb_app nor fcb_signer may CREATE (schemas) in the database;
+--   database   no bridge role may CREATE (schemas) in the database;
+--   settings   no per-role setting (ALTER ROLE ... SET) for any bridge role;
+--   code       the routines in public are exactly the 4 pinned bridge functions (name, arguments,
+--              return type, language, SECURITY INVOKER, no SET, md5 of the body) and the
+--              non-internal triggers exactly the 9 pinned bridge triggers (same lists as
+--              defaultdb_precheck.sql): fcb_migrator cannot plant code that would run as the
+--              administrator when it writes to the bridge (rollback DSN); no rule, policy, RLS,
+--              inheritance, view, matview, foreign or partitioned table, enabled event trigger;
+--              and no type (other than the tables' row/array types), operator, operator class or
+--              family, collation, conversion, text-search object, extension or cast in public;
 --   defaults   no default privilege grants anything to a role other than its owner, and
 --              fcb_migrator's GLOBAL functions default revokes PUBLIC EXECUTE (an IN SCHEMA
 --              revoke cannot remove the built-in PUBLIC EXECUTE).
@@ -85,67 +94,143 @@ expected_inventory(roleid, member, admin_option, inherit_option, set_option, gra
     UNION ALL SELECT (SELECT mig.oid FROM mig), (SELECT sess.oid FROM sess), false, true, true, (SELECT sess.oid FROM sess)
 ),
 identities AS (SELECT rl.oid FROM rl UNION SELECT sess.oid FROM sess),
+-- Pinned bridge routines and triggers: byte-identical copies of the lists in
+-- sql/aiven/defaultdb_precheck.sql (tests/test_defaultdb_roles_workflow.py checks it).
+bridge_functions(sig) AS (VALUES
+    ('canonical_alias_revision_guard||trigger|plpgsql|false|-|70c78d2f97f2966f7611a87dfb58f946'),
+    ('canonical_reject_mutation||trigger|plpgsql|false|-|1ed4bc2ff6613135008b8adc6211fd3f'),
+    ('seal_evaluation_protocol||trigger|plpgsql|false|-|7377c626fd29b2fd4ef38c13d35bb323'),
+    ('seal_pilot_row||trigger|plpgsql|false|-|fe277f0013ff9ac7ff637742361dbca4')
+),
+bridge_triggers(sig) AS (VALUES
+    ('canonical_alias_versions|canonical_alias_version_insert|canonical_alias_revision_guard|7'),
+    ('canonical_alias_versions|canonical_aliases_immutable|canonical_reject_mutation|58'),
+    ('canonical_entities|canonical_entities_immutable|canonical_reject_mutation|58'),
+    ('evaluation_protocols|evaluation_protocols_no_truncate|seal_evaluation_protocol|34'),
+    ('evaluation_protocols|evaluation_protocols_seal|seal_evaluation_protocol|31'),
+    ('source_pilot_predictions|source_pilot_predictions_no_truncate|seal_pilot_row|34'),
+    ('source_pilot_predictions|source_pilot_predictions_seal|seal_pilot_row|31'),
+    ('source_pilot_runs|source_pilot_runs_no_truncate|seal_pilot_row|34'),
+    ('source_pilot_runs|source_pilot_runs_seal|seal_pilot_row|31')
+),
 checks(code, bad) AS (
-    SELECT 'roles_missing'::pg_catalog.text, (SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.<>) 3::pg_catalog.int8
-    UNION ALL SELECT 'role_attributes', EXISTS (SELECT 1 FROM rl WHERE rl.rolsuper OR rl.rolcreaterole OR rl.rolcreatedb
-                                                                   OR rl.rolreplication OR rl.rolbypassrls)
-    UNION ALL SELECT 'role_login', EXISTS (SELECT 1 FROM rl WHERE rl.rolcanlogin OPERATOR(pg_catalog.<>)
-                                           (rl.rolname OPERATOR(pg_catalog.<>) 'fcb_signer'::pg_catalog.name))
-    UNION ALL SELECT 'role_member_of_other_role', EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN rl ON rl.oid OPERATOR(pg_catalog.=) m.member)
-    UNION ALL SELECT 'unexpected_migrator_member', EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
-        WHERE m.roleid OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig) AND m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess))
-    UNION ALL SELECT 'session_lacks_migrator_privileges', (SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
-        AND NOT pg_catalog.pg_has_role(SESSION_USER, (SELECT mig.oid FROM mig), 'USAGE')
-    UNION ALL SELECT 'unexpected_app_or_signer_member', EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+    SELECT 'roles_missing'::pg_catalog.text, ((SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.<>) 3::pg_catalog.int8)
+    UNION ALL SELECT 'role_attributes', (EXISTS (SELECT 1 FROM rl WHERE rl.rolsuper OR rl.rolcreaterole OR rl.rolcreatedb
+        OR rl.rolreplication OR rl.rolbypassrls))
+    UNION ALL SELECT 'role_login', (EXISTS (SELECT 1 FROM rl WHERE rl.rolcanlogin OPERATOR(pg_catalog.<>)
+        (rl.rolname OPERATOR(pg_catalog.<>) 'fcb_signer'::pg_catalog.name)))
+    UNION ALL SELECT 'role_member_of_other_role', (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN rl ON rl.oid OPERATOR(pg_catalog.=) m.member))
+    UNION ALL SELECT 'unexpected_migrator_member', (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+        WHERE m.roleid OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig) AND m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess)))
+    UNION ALL SELECT 'session_lacks_migrator_privileges', ((SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
+        AND NOT pg_catalog.pg_has_role(SESSION_USER, (SELECT mig.oid FROM mig), 'USAGE'))
+    UNION ALL SELECT 'unexpected_app_or_signer_member', (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
         WHERE m.roleid OPERATOR(pg_catalog.=) ANY (ARRAY[(SELECT app.oid FROM app), (SELECT sgn.oid FROM sgn)])
-          AND (m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess) OR m.inherit_option OR m.set_option))
-    UNION ALL SELECT 'membership_inventory', EXISTS (
+        AND (m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess) OR m.inherit_option OR m.set_option)))
+    UNION ALL SELECT 'membership_inventory', (EXISTS (
         SELECT i.roleid, i.member, i.admin_option, i.inherit_option, i.set_option, i.grantor FROM inventory i
         EXCEPT SELECT e.roleid, e.member, e.admin_option, e.inherit_option, e.set_option, e.grantor FROM expected_inventory e)
         OR EXISTS (
         SELECT e.roleid, e.member, e.admin_option, e.inherit_option, e.set_option, e.grantor FROM expected_inventory e
-        EXCEPT SELECT i.roleid, i.member, i.admin_option, i.inherit_option, i.set_option, i.grantor FROM inventory i)
-    UNION ALL SELECT 'escalation_path', EXISTS (
+        EXCEPT SELECT i.roleid, i.member, i.admin_option, i.inherit_option, i.set_option, i.grantor FROM inventory i))
+    UNION ALL SELECT 'escalation_path', (EXISTS (
         SELECT 1 FROM rl, identities t
-        WHERE rl.oid OPERATOR(pg_catalog.<>) t.oid AND pg_catalog.pg_has_role(rl.oid, t.oid, 'MEMBER'))
-    UNION ALL SELECT 'owner_not_migrator',
-        EXISTS (SELECT 1 FROM rels c WHERE c.relowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
+        WHERE rl.oid OPERATOR(pg_catalog.<>) t.oid AND pg_catalog.pg_has_role(rl.oid, t.oid, 'MEMBER')))
+    UNION ALL SELECT 'owner_not_migrator', (EXISTS (SELECT 1 FROM rels c WHERE c.relowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace
-                   WHERE p.proowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
+        WHERE p.proowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN ns ON ns.oid OPERATOR(pg_catalog.=) t.typnamespace
-                   WHERE t.typowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
-    UNION ALL SELECT 'unexpected_relation_grant', EXISTS (
+        WHERE t.typowner IS DISTINCT FROM (SELECT mig.oid FROM mig)))
+    UNION ALL SELECT 'unexpected_relation_grant', (EXISTS (
         SELECT g.relname, g.grantee, g.priv FROM rel_grants g
-        EXCEPT SELECT e.relname, e.grantee, e.priv FROM expected_grants e)
-    UNION ALL SELECT 'missing_runtime_grant', EXISTS (
+        EXCEPT SELECT e.relname, e.grantee, e.priv FROM expected_grants e))
+    UNION ALL SELECT 'missing_runtime_grant', (EXISTS (
         SELECT e.relname, e.grantee, e.priv FROM expected_grants e
-        EXCEPT SELECT g.relname, g.grantee, g.priv FROM rel_grants g)
-    UNION ALL SELECT 'column_grant', EXISTS (SELECT 1 FROM rels c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid
-                                             WHERE a.attacl IS NOT NULL)
-    UNION ALL SELECT 'routine_grant', EXISTS (
+        EXCEPT SELECT g.relname, g.grantee, g.priv FROM rel_grants g))
+    UNION ALL SELECT 'column_grant', (EXISTS (SELECT 1 FROM rels c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid
+        WHERE a.attacl IS NOT NULL))
+    UNION ALL SELECT 'routine_grant', (EXISTS (
         SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace,
         LATERAL pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f'::pg_catalog."char", p.proowner))) a
-        WHERE a.grantee OPERATOR(pg_catalog.<>) p.proowner)
-    UNION ALL SELECT 'schema_acl', EXISTS (
+        WHERE a.grantee OPERATOR(pg_catalog.<>) p.proowner))
+    UNION ALL SELECT 'schema_acl', (EXISTS (
         SELECT g.grantee, g.priv FROM schema_grants g EXCEPT SELECT e.grantee, e.priv FROM expected_schema_grants e)
-        OR EXISTS (SELECT e.grantee, e.priv FROM expected_schema_grants e EXCEPT SELECT g.grantee, g.priv FROM schema_grants g)
-    UNION ALL SELECT 'signer_schema_usage', (SELECT pg_catalog.count(*) FROM sgn) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
-        AND pg_catalog.has_schema_privilege((SELECT sgn.oid FROM sgn), 'public', 'USAGE')
-    UNION ALL SELECT 'app_schema_create', (SELECT pg_catalog.count(*) FROM app) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
-        AND pg_catalog.has_schema_privilege((SELECT app.oid FROM app), 'public', 'CREATE')
-    UNION ALL SELECT 'database_create', EXISTS (SELECT 1 FROM rl
-        WHERE rl.rolname OPERATOR(pg_catalog.<>) 'fcb_migrator'::pg_catalog.name
-          AND pg_catalog.has_database_privilege(rl.oid, pg_catalog.current_database(), 'CREATE'))
-    UNION ALL SELECT 'default_acl_grant', EXISTS (
+        OR EXISTS (SELECT e.grantee, e.priv FROM expected_schema_grants e EXCEPT SELECT g.grantee, g.priv FROM schema_grants g))
+    UNION ALL SELECT 'signer_schema_usage', ((SELECT pg_catalog.count(*) FROM sgn) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
+        AND pg_catalog.has_schema_privilege((SELECT sgn.oid FROM sgn), 'public', 'USAGE'))
+    UNION ALL SELECT 'app_schema_create', ((SELECT pg_catalog.count(*) FROM app) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
+        AND pg_catalog.has_schema_privilege((SELECT app.oid FROM app), 'public', 'CREATE'))
+    UNION ALL SELECT 'database_create', (EXISTS (SELECT 1 FROM rl
+        WHERE pg_catalog.has_database_privilege(rl.oid, pg_catalog.current_database(), 'CREATE')))
+    UNION ALL SELECT 'default_acl_grant', (EXISTS (
         SELECT 1 FROM pg_catalog.pg_default_acl d, LATERAL pg_catalog.aclexplode(d.defaclacl) a
-        WHERE a.grantee OPERATOR(pg_catalog.<>) d.defaclrole)
-    UNION ALL SELECT 'default_function_revoke_missing', (SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
+        WHERE a.grantee OPERATOR(pg_catalog.<>) d.defaclrole))
+    UNION ALL SELECT 'default_function_revoke_missing', ((SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
         AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d
-                        WHERE d.defaclrole OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig)
-                          AND d.defaclnamespace OPERATOR(pg_catalog.=) 0::pg_catalog.oid
-                          AND d.defaclobjtype OPERATOR(pg_catalog.=) 'f'::pg_catalog."char"
-                          AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(d.defaclacl) a
-                                          WHERE a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid))
+        WHERE d.defaclrole OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig)
+        AND d.defaclnamespace OPERATOR(pg_catalog.=) 0::pg_catalog.oid
+        AND d.defaclobjtype OPERATOR(pg_catalog.=) 'f'::pg_catalog."char"
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(d.defaclacl) a
+        WHERE a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid)))
+    UNION ALL SELECT 'role_settings', (EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting rs
+        WHERE rs.setrole OPERATOR(pg_catalog.=) ANY (ARRAY(SELECT rl.oid FROM rl))))
+    UNION ALL SELECT 'routine_set', ((SELECT pg_catalog.count(*) FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace)
+            OPERATOR(pg_catalog.<>) (SELECT pg_catalog.count(*) FROM bridge_functions)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace
+            JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang
+            WHERE p.prokind OPERATOR(pg_catalog.<>) 'f'::pg_catalog."char" OR p.prosecdef OR p.proconfig IS NOT NULL
+               OR NOT EXISTS (SELECT 1 FROM bridge_functions b WHERE b.sig OPERATOR(pg_catalog.=) (
+                    p.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_identity_arguments(p.oid) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) pg_catalog.format_type(p.prorettype, NULL::pg_catalog.int4) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) l.lanname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) p.prosecdef::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) COALESCE(p.proconfig::pg_catalog.text, '-'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) pg_catalog.md5(p.prosrc)))))
+    UNION ALL SELECT 'trigger_set', ((SELECT pg_catalog.count(*) FROM pg_catalog.pg_trigger tg JOIN rels c ON c.oid OPERATOR(pg_catalog.=) tg.tgrelid
+            WHERE NOT tg.tgisinternal) OPERATOR(pg_catalog.<>) (SELECT pg_catalog.count(*) FROM bridge_triggers)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_trigger tg JOIN rels c ON c.oid OPERATOR(pg_catalog.=) tg.tgrelid
+            JOIN pg_catalog.pg_proc f ON f.oid OPERATOR(pg_catalog.=) tg.tgfoid
+            WHERE NOT tg.tgisinternal AND (
+                f.pronamespace OPERATOR(pg_catalog.<>) (SELECT ns.oid FROM ns)
+                OR tg.tgenabled OPERATOR(pg_catalog.<>) 'O'::pg_catalog."char"
+                OR tg.tgnargs OPERATOR(pg_catalog.<>) 0::pg_catalog.int2
+                OR tg.tgattr::pg_catalog.text OPERATOR(pg_catalog.<>) ''::pg_catalog.text
+                OR tg.tgqual IS NOT NULL
+                OR tg.tgconstraint OPERATOR(pg_catalog.<>) 0::pg_catalog.oid
+                OR tg.tgoldtable IS NOT NULL OR tg.tgnewtable IS NOT NULL
+                OR NOT EXISTS (SELECT 1 FROM bridge_triggers b WHERE b.sig OPERATOR(pg_catalog.=) (
+                    c.relname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) tg.tgname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) f.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                    OPERATOR(pg_catalog.||) tg.tgtype::pg_catalog.text)))))
+    UNION ALL SELECT 'foreign_objects', (EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN ns ON ns.oid OPERATOR(pg_catalog.=) t.typnamespace
+            WHERE NOT EXISTS (SELECT 1 FROM rels c JOIN pg_catalog.pg_type rt ON rt.oid OPERATOR(pg_catalog.=) (
+                    SELECT x.reltype FROM pg_catalog.pg_class x WHERE x.oid OPERATOR(pg_catalog.=) c.oid)
+                WHERE rt.oid OPERATOR(pg_catalog.=) t.oid OR rt.typarray OPERATOR(pg_catalog.=) t.oid))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_operator o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.oprnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_opclass o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.opcnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_opfamily o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.opfnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_collation o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.collnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_conversion o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.connamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_ts_config o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.cfgnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_ts_dict o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.dictnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_ts_parser o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.prsnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_ts_template o JOIN ns ON ns.oid OPERATOR(pg_catalog.=) o.tmplnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_extension x JOIN ns ON ns.oid OPERATOR(pg_catalog.=) x.extnamespace)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_cast k
+            WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace
+                          WHERE p.oid OPERATOR(pg_catalog.=) k.castfunc)
+               OR EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN ns ON ns.oid OPERATOR(pg_catalog.=) t.typnamespace
+                          WHERE t.oid OPERATOR(pg_catalog.=) k.castsource OR t.oid OPERATOR(pg_catalog.=) k.casttarget)))
+    UNION ALL SELECT 'relation_hooks', (EXISTS (SELECT 1 FROM pg_catalog.pg_rewrite rw JOIN rels c ON c.oid OPERATOR(pg_catalog.=) rw.ev_class)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_policy pol JOIN rels c ON c.oid OPERATOR(pg_catalog.=) pol.polrelid)
+        OR EXISTS (SELECT 1 FROM rels c WHERE c.relkind OPERATOR(pg_catalog.<>) ALL (ARRAY['r', 'S', 'i', 't']::pg_catalog."char"[]))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN rels r ON r.oid OPERATOR(pg_catalog.=) c.oid
+                   WHERE c.relrowsecurity OR c.relforcerowsecurity)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_inherits ih JOIN rels c
+                   ON c.oid OPERATOR(pg_catalog.=) ih.inhrelid OR c.oid OPERATOR(pg_catalog.=) ih.inhparent)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger et WHERE et.evtenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog."char"))
 )
 SELECT CASE
     WHEN (SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.=) 0::pg_catalog.int8 THEN 'ROLES_ABSENT'::pg_catalog.text
