@@ -171,8 +171,8 @@ def test_the_real_aiven_monitor_schema_is_excluded(db):
         assert _occupancy(owner_dsn) == "EMPTY"
 
 
-MONITOR_VARIANTS = ["other_owner", "session_member", "session_member_noinherit", "session_create",
-                    "session_owner", "superuser_other_name"]
+MONITOR_VARIANTS = ["other_owner", "session_member", "session_member_noinherit", "session_admin_only",
+                    "session_create", "session_owner", "superuser_other_name"]
 
 
 @contextlib.contextmanager
@@ -196,6 +196,11 @@ def _hiding_place(name, dsn, role, variant):
         # Membership without inherited privileges: has_schema_privilege(CREATE) is false, yet the
         # session can SET ROLE and create objects there. Only the pg_has_role(MEMBER) clause sees it.
         extra.append(sql.SQL("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE")
+                     .format(sql.Identifier("_avnadmin_monitor"), sql.Identifier(role)))
+    if variant == "session_admin_only":
+        # The membership PG16 gives a CREATEROLE user on a role it creates: ADMIN only. The session
+        # could re-grant itself SET and plant objects; pg_has_role(MEMBER) must still see it.
+        extra.append(sql.SQL("GRANT {} TO {} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE")
                      .format(sql.Identifier("_avnadmin_monitor"), sql.Identifier(role)))
     if variant == "session_create":
         extra.append(sql.SQL("GRANT CREATE ON SCHEMA _avnadmin_monitor TO {}").format(sql.Identifier(role)))
