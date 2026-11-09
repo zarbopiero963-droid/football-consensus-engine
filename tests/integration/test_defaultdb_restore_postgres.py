@@ -979,6 +979,16 @@ def test_role_setting_for_every_role_is_refused(owned):
      "WITH (connect = false, slot_name = NONE, enabled = false)"],
 ])
 def test_empty_requires_every_occupancy_category_to_be_zero(schema, ddl):
+    # Prepared transactions and logical slots need server settings the standard CI PostgreSQL
+    # does not enable (max_prepared_transactions = 0, wal_level = replica): skip there, run where
+    # the server allows them (verified locally with both enabled).
+    with psycopg.connect(schema.dsn) as conn:
+        if any("PREPARE TRANSACTION" in d for d in ddl) and int(
+                conn.execute("SHOW max_prepared_transactions").fetchone()[0]) == 0:
+            pytest.skip("max_prepared_transactions = 0 on this server")
+        if any("logical_replication_slot" in d for d in ddl) and \
+                conn.execute("SHOW wal_level").fetchone()[0] != "logical":
+            pytest.skip("wal_level is not logical on this server")
     u = uuid.uuid4().hex[:8]
     _exec(schema.dsn, *[d.format(u=u) for d in ddl])
     assert _state(schema) == "REFUSE_UNTRACKED_OBJECTS"
