@@ -348,11 +348,16 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/mcp"):
             auth = request.headers.get("authorization", "")
-            token = auth[7:] if auth.startswith("Bearer ") else ""
+            scheme, _, token = auth.partition(" ")
+            # RFC 7235: the auth scheme is case-insensitive.
+            token = token.strip() if scheme.lower() == "bearer" else ""
             valid = False
             if token:
                 try:
-                    valid = oauth_store.valid_access_token(token, oauth.resource_url(), oauth.SCOPE)
+                    # WP-007: off the event loop, so a slow database never stalls /healthz or
+                    # other requests; the store call itself is bounded by connect/statement timeouts.
+                    valid = await asyncio.to_thread(
+                        oauth_store.valid_access_token, token, oauth.resource_url(), oauth.SCOPE)
                 except Exception:
                     return JSONResponse({"detail": "authorization backend unavailable"}, status_code=503)
             if not valid:

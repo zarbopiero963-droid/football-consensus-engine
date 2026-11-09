@@ -261,7 +261,7 @@ def test_authorize_get_valid_claude_and_chatgpt_still_show_consent(monkeypatch, 
             "response_type": "code",
             "scope": "browser:use offline_access",
             "resource": oauth.resource_url(),
-            "code_challenge": "challenge",
+            "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",  # RFC 7636 S256 shape (WP-022a validation)
             "code_challenge_method": "S256",
             "state": "state",
         }
@@ -426,7 +426,7 @@ def test_claude_dcr_valid_authorization_even_when_cimd_fetch_blocked(monkeypatch
         "response_type": "code",
         "scope": "browser:use",
         "resource": oauth.resource_url(),
-        "code_challenge": "challenge",
+        "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",  # RFC 7636 S256 shape (WP-022a validation)
         "code_challenge_method": "S256",
         "state": "state",
     })
@@ -444,7 +444,7 @@ def test_claude_dcr_unknown_client_or_redirect_never_gets_consent(monkeypatch):
         "response_type": "code",
         "scope": "browser:use",
         "resource": oauth.resource_url(),
-        "code_challenge": "challenge",
+        "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",  # RFC 7636 S256 shape (WP-022a validation)
         "code_challenge_method": "S256",
         "state": "state",
     }
@@ -471,8 +471,17 @@ def test_claude_dcr_code_and_pkce_remain_bound_after_consent(monkeypatch):
         code_rows[code] = kw
 
     monkeypatch.setattr(oauth.oauth_store, "save_code", save_code)
-    monkeypatch.setattr(oauth.oauth_store, "consume_code", lambda code: code_rows.pop(code, None))
-    monkeypatch.setattr(oauth, "_token_payload", lambda cid, resource, scope: {"access_token": "TEST_ACCESS", "scope": scope, "token_type": "Bearer"})
+
+    def exchange_code(code, *, client_id, redirect_uri, verifier_matches, access, refresh):
+        # In-memory twin of the atomic store call (WP-007): the code is burned on any outcome.
+        row = code_rows.pop(code, None)
+        if (not row or client_id != captured.setdefault("cid", client_id) or row["redirect_uri"] != redirect_uri
+                or not verifier_matches(row["code_challenge"])):
+            return None
+        captured["access"] = access
+        return {"resource": row["resource"], "scope": row["scope"]}
+
+    monkeypatch.setattr(oauth.oauth_store, "exchange_code", exchange_code)
 
     form = {
         "client_id": client_id,
@@ -519,7 +528,8 @@ def test_claude_dcr_code_and_pkce_remain_bound_after_consent(monkeypatch):
         "code": code2, "redirect_uri": CLAUDE_REDIRECT, "code_verifier": verifier,
     })))
     assert good.status_code == 200
-    assert json.loads(good.body)["access_token"] == "TEST_ACCESS"
+    assert json.loads(good.body)["access_token"] == captured["access"]
+    assert good.headers["cache-control"] == "no-store"
 
 
 def test_dcr_storage_id_format_is_unforgeable_by_guesswork():
@@ -529,30 +539,5 @@ def test_dcr_storage_id_format_is_unforgeable_by_guesswork():
     assert not oauth_store._DCR_ID_PATTERN.fullmatch("fcbdcr1_" + "!" * 32)
 
 
-
-def test_dcr_postgres_registration_round_trip_when_database_available():
-    import os
-    import pytest
-    from bridge import oauth_store
-
-    if not os.getenv("DATABASE_URL"):
-        pytest.skip("PostgreSQL test requires the dedicated CI DATABASE_URL")
-    client_id = oauth_store.register_claude_dcr_client(CLAUDE_REDIRECT)
-    assert client_id.startswith("fcbdcr1_")
-    assert oauth_store.valid_claude_dcr_client(client_id, CLAUDE_REDIRECT)
-    assert not oauth_store.valid_claude_dcr_client(client_id, "https://attacker.example/callback")
-    assert not oauth_store.valid_claude_dcr_client("fcbdcr1_" + "z" * 32, CLAUDE_REDIRECT)
-    with oauth_store._conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT client_id_hash FROM oauth_claude_dcr_clients WHERE client_id_hash=%s",
-            (oauth_store.digest(client_id),),
-        )
-        row = cur.fetchone()
-        assert row is not None
-        assert row["client_id_hash"] != client_id
-        cur.execute(
-            "DELETE FROM oauth_claude_dcr_clients WHERE client_id_hash=%s",
-            (oauth_store.digest(client_id),),
-        )
-        conn.commit()
-    assert not oauth_store.valid_claude_dcr_client(client_id, CLAUDE_REDIRECT)
+# The PostgreSQL DCR round trip moved to tests/integration/test_oauth_store_postgres.py (G-18):
+# here it needed DATABASE_URL, which no CI job sets, so it was skipped in every run.

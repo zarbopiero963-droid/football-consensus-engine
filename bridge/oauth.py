@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -7,6 +8,7 @@ import html
 import json
 import logging
 import os
+import re
 import time
 import secrets
 from urllib.parse import urlencode, urlparse
@@ -15,7 +17,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from bridge import oauth_store
+from bridge import oauth_store, oauth_throttle
 
 SCOPE = "browser:use"
 OFFLINE = "offline_access"
@@ -26,6 +28,36 @@ _DCR_PREFIX = "fcbdcr1_"
 _DCR_MAX_JSON_BYTES = 8192
 _CIMD_MAX_BYTES = 64 * 1024
 LOG = logging.getLogger(__name__)
+# RFC 7636: verifier = 43-128 unreserved characters; S256 challenge = 43 base64url characters.
+_PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+_PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+# RFC 6749 §5.1: token responses (and anything carrying codes or tokens) are never cached.
+NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+# The consent page carries the authorization password: never framed, never cached, no referrer.
+CONSENT_HEADERS = {**NO_STORE, "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+                   "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                              "form-action 'self'; frame-ancestors 'none'"}
+
+
+class StorageUnavailable(Exception):
+    """The OAuth database could not be reached or timed out (fixed code, no detail)."""
+
+
+def _unavailable(stage: str) -> JSONResponse:
+    # WP-007: fixed code; the exception text, DSN and host never reach the client or the log.
+    LOG.error("oauth_storage_error stage=%s", stage)
+    return JSONResponse({"error": "temporarily_unavailable"}, status_code=503,
+                        headers={**NO_STORE, "Retry-After": "5"})
+
+
+def _throttled(retry_after: int) -> JSONResponse:
+    return JSONResponse({"error": "slow_down"}, status_code=429,
+                        headers={**NO_STORE, "Retry-After": str(retry_after)})
+
+
+async def _store(fn, *args, **kwargs):
+    """Run a synchronous storage call off the event loop (WP-007: never block /healthz or /mcp)."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 def public_base() -> str:
@@ -214,7 +246,15 @@ async def register_claude_client(request: Request):
     """Claude.ai DCR fallback for cloud-side CIMD/Cloudflare HTTP 403.
 
     Registration never returns an OAuth secret; this is a public PKCE client.
+    Every attempt counts against a per-address and a global window (G-12): the endpoint is
+    unauthenticated and each success writes a row.
     """
+    address = oauth_throttle.client_address(request)
+    wait = oauth_throttle.REGISTRATIONS.retry_after(address)
+    if wait:
+        _reject("", "registration", "throttled")
+        return _throttled(wait)
+    oauth_throttle.REGISTRATIONS.record(address)
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
     chunks = []
@@ -232,10 +272,9 @@ async def register_claude_client(request: Request):
         _reject("", "registration", "invalid_claude_client_metadata")
         return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
     try:
-        client_id = oauth_store.register_claude_dcr_client(CLAUDE_CALLBACK)
+        client_id = await _store(oauth_store.register_claude_dcr_client, CLAUDE_CALLBACK)
     except Exception:
-        LOG.error("oauth_registration_error reason=storage_unavailable")
-        return JSONResponse({"error": "server_error"}, status_code=503)
+        return _unavailable("registration")
     return JSONResponse(
         {
             "client_id": client_id,
@@ -257,9 +296,10 @@ async def _valid_oauth_client(client_id: str, redirect_uri: str) -> bool:
         if redirect_uri != CLAUDE_CALLBACK:
             return _reject(client_id, "registration", "invalid_claude_callback")
         try:
-            result = oauth_store.valid_claude_dcr_client(client_id, redirect_uri)
+            result = await _store(oauth_store.valid_claude_dcr_client, client_id, redirect_uri)
         except Exception:
-            return _reject(client_id, "registration", "registration_storage_error")
+            # WP-007: a storage outage is a server condition (503), not a client error (400).
+            raise StorageUnavailable() from None
         if not result:
             return _reject(client_id, "registration", "unknown_or_expired_client_id")
         return True
@@ -296,7 +336,16 @@ def _authorization_request_failure(p: dict[str, str]) -> str | None:
         return "resource_mismatch"
     if SCOPE not in set(p["scope"].split()):
         return "required_scope_missing"
+    if not _PKCE_CHALLENGE.fullmatch(p["code_challenge"]):
+        return "invalid_code_challenge"
     return None
+
+
+def _granted_scope(requested: str) -> str:
+    """Only the scopes this server defines are granted and stored; unknown ones are dropped."""
+    known = (SCOPE, OFFLINE)
+    asked = set(requested.split())
+    return " ".join(s for s in known if s in asked)
 
 
 async def authorize_get(request: Request):
@@ -305,7 +354,11 @@ async def authorize_get(request: Request):
     if failure is not None:
         _reject(p["client_id"], "authorize_get", failure)
         return JSONResponse({"error": "invalid_request"}, status_code=400)
-    if not await _valid_oauth_client(p["client_id"], p["redirect_uri"]):
+    try:
+        client_ok = await _valid_oauth_client(p["client_id"], p["redirect_uri"])
+    except StorageUnavailable:
+        return _unavailable("authorize_get")
+    if not client_ok:
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     hidden = "".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
@@ -319,7 +372,7 @@ async def authorize_get(request: Request):
       <input type="password" name="password" required autofocus><br><br>
       <button type="submit">Autorizza</button>
     </form></body></html>"""
-    return HTMLResponse(body)
+    return HTMLResponse(body, headers=CONSENT_HEADERS)
 
 
 async def authorize_post(request: Request):
@@ -328,65 +381,94 @@ async def authorize_post(request: Request):
         "client_id","redirect_uri","response_type","scope","state",
         "code_challenge","code_challenge_method","resource"
     )}
+    # G-03 / WP-022a: throttle BEFORE comparing, so a locked-out source learns nothing, not even
+    # with the right password; only failures are counted.
+    address = oauth_throttle.client_address(request)
+    wait = oauth_throttle.CONSENT_FAILURES.retry_after(address)
+    if wait:
+        _reject(p["client_id"], "authorize_post", "consent_throttled")
+        return _throttled(wait)
     expected = os.environ.get("MCP_OAUTH_PASSWORD", "")
     supplied = str(form.get("password", ""))
-    if not expected or not hmac.compare_digest(supplied, expected):
-        return HTMLResponse("Password non valida", status_code=401)
+    if not expected or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+        oauth_throttle.CONSENT_FAILURES.record(address)
+        _reject(p["client_id"], "authorize_post", "consent_password_invalid")
+        return HTMLResponse("Password non valida", status_code=401, headers=CONSENT_HEADERS)
     failure = _authorization_request_failure(p)
     if failure is not None:
         _reject(p["client_id"], "authorize_post", failure)
         return JSONResponse({"error": "invalid_request"}, status_code=400)
-    if not await _valid_oauth_client(p["client_id"], p["redirect_uri"]):
+    try:
+        client_ok = await _valid_oauth_client(p["client_id"], p["redirect_uri"])
+    except StorageUnavailable:
+        return _unavailable("authorize_post")
+    if not client_ok:
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     code = secrets.token_urlsafe(32)
-    oauth_store.save_code(
-        code,
-        client_id=p["client_id"],
-        redirect_uri=p["redirect_uri"],
-        code_challenge=p["code_challenge"],
-        resource=p["resource"],
-        scope=p["scope"],
-    )
+    try:
+        await _store(
+            oauth_store.save_code,
+            code,
+            client_id=p["client_id"],
+            redirect_uri=p["redirect_uri"],
+            code_challenge=p["code_challenge"],
+            resource=p["resource"],
+            scope=_granted_scope(p["scope"]),
+        )
+    except Exception:
+        return _unavailable("save_code")
     query = {"code": code, "iss": issuer()}
     if p["state"]:
         query["state"] = p["state"]
     return RedirectResponse(p["redirect_uri"] + "?" + urlencode(query), status_code=302)
 
 
-def _token_payload(client_id: str, resource: str, scope: str):
-    access = secrets.token_urlsafe(32)
-    refresh = secrets.token_urlsafe(48)
-    oauth_store.save_access_token(access, client_id=client_id, resource=resource, scope=scope)
-    oauth_store.save_refresh_token(refresh, client_id=client_id, resource=resource, scope=scope)
-    return {
+def _token_response(access: str, refresh: str, scope: str) -> JSONResponse:
+    return JSONResponse({
         "access_token": access,
         "token_type": "Bearer",
         "expires_in": 3600,
         "refresh_token": refresh,
         "scope": scope,
-    }
+    }, headers=NO_STORE)
+
+
+def _invalid_grant() -> JSONResponse:
+    return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=NO_STORE)
 
 
 async def token_endpoint(request: Request):
     form = await request.form()
     grant = str(form.get("grant_type", ""))
     client_id = str(form.get("client_id", ""))
+    access = secrets.token_urlsafe(32)
+    refresh = secrets.token_urlsafe(48)
     if grant == "authorization_code":
         code = str(form.get("code", ""))
         redirect_uri = str(form.get("redirect_uri", ""))
         verifier = str(form.get("code_verifier", ""))
-        row = oauth_store.consume_code(code)
+        if not _PKCE_VERIFIER.fullmatch(verifier):
+            # RFC 7636 §4.1; also rules out non-ASCII input before hashing.
+            return _invalid_grant()
+        challenge = _pkce_s256(verifier)
+        try:
+            row = await _store(
+                oauth_store.exchange_code, code, client_id=client_id, redirect_uri=redirect_uri,
+                verifier_matches=lambda stored: hmac.compare_digest(challenge, stored),
+                access=access, refresh=refresh)
+        except Exception:
+            return _unavailable("token_code")
         if not row:
-            return JSONResponse({"error":"invalid_grant"}, status_code=400)
-        if row["client_id"] != client_id or row["redirect_uri"] != redirect_uri:
-            return JSONResponse({"error":"invalid_grant"}, status_code=400)
-        if not hmac.compare_digest(_pkce_s256(verifier), row["code_challenge"]):
-            return JSONResponse({"error":"invalid_grant"}, status_code=400)
-        return JSONResponse(_token_payload(client_id, row["resource"], row["scope"]))
+            return _invalid_grant()
+        return _token_response(access, refresh, row["scope"])
     if grant == "refresh_token":
-        refresh = str(form.get("refresh_token", ""))
-        row = oauth_store.rotate_refresh_token(refresh)
-        if not row or row["client_id"] != client_id:
-            return JSONResponse({"error":"invalid_grant"}, status_code=400)
-        return JSONResponse(_token_payload(client_id, row["resource"], row["scope"]))
-    return JSONResponse({"error":"unsupported_grant_type"}, status_code=400)
+        presented = str(form.get("refresh_token", ""))
+        try:
+            row = await _store(oauth_store.refresh_and_issue, presented, client_id=client_id,
+                               access=access, refresh=refresh)
+        except Exception:
+            return _unavailable("token_refresh")
+        if not row:
+            return _invalid_grant()
+        return _token_response(access, refresh, row["scope"])
+    return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=NO_STORE)
