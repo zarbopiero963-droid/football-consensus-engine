@@ -541,7 +541,7 @@ def test_occupancy_is_empty_only_when_every_category_is_zero(tmp_path):
     """Review of #178 (second round), P1 + mutation W1: any single user object makes it NOT_EMPTY."""
     from scripts import pg18_state
     assert pg18_state.occupancy(_occ()) == "EMPTY"
-    for key in ("relations", "functions", "types", "other_objects"):
+    for key in ("relations", "functions", "types", "other_objects", "default_privileges", "database_settings"):
         assert pg18_state.occupancy(_occ(**{key: 1})) == "NOT_EMPTY", key
     assert pg18_state.occupancy(_occ(relations=3, unexpected_schemas=1)) == "UNEXPECTED_SCHEMAS"
     assert pg18_state.occupancy(_occ(unexpected_schemas=1)) == "UNEXPECTED_SCHEMAS"
@@ -595,6 +595,14 @@ def test_workflow_state_gates_apply_and_diagnose_exactly():
     assert apply["if"] == "${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}"
     assert apply["env"]["PGOPTIONS"] == "-c search_path=public"
     assert "(pg_catalog.current_schemas(true))[1] <> 'pg_catalog'" in apply["run"]
+    assert "CURRENT_USER <> SESSION_USER" in apply["run"]
+    alines = [l.strip() for l in apply["run"].splitlines()]
+    # Third review P2-1: the first apply re-checks emptiness in its own transaction.
+    assert ('first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$GUARD_EMPTY" -f "$SCRIPT" >/dev/null; }'
+            in alines)
+    assert 'first_run; first="$(verify)"' in alines and alines.count("first_run; first=\"$(verify)\"") == 1
+    assert [l for l in alines if l.startswith("OCC=")] == [
+        'OCC="$(grep -v \'^[[:space:]]*--\' sql/aiven/pg18_occupancy.sql | sed \'s/;[[:space:]]*$//\')"']
     diag = steps["Diagnose mode or already-migrated database - stop before any write"]
     assert diag["if"] == "${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}"
     assert "${{" not in diag["run"] and diag["env"] == {"MODE": "${{ inputs.mode }}"}

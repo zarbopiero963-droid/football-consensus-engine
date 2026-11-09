@@ -27,7 +27,8 @@ import sys
 EXPECTED_COUNTS = ["tables=29", "functions=4", "triggers=9", "indexes=54",
                    "constraints_information_schema=307", "constraints_pg_constraint=61",
                    "schema_migrations_rows=7"]
-OCCUPANCY_KEYS = ["relations", "functions", "types", "other_objects", "unexpected_schemas"]
+OCCUPANCY_KEYS = ["relations", "functions", "types", "other_objects", "default_privileges",
+                  "database_settings", "unexpected_schemas"]
 ROW_RE = re.compile(r"^([1-7])=(000[1-7]_[a-z0-9_]+\.sql)=([0-9a-f]{64})$")
 
 

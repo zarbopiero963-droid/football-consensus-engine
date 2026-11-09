@@ -85,10 +85,69 @@ def test_a_fresh_database_is_empty(db):
     (["CREATE TYPE public.c AS (a int)"], "NOT_EMPTY"),
     (["CREATE COLLATION public.coll (provider = libc, locale = 'C')"], "NOT_EMPTY"),
     (["CREATE TEXT SEARCH CONFIGURATION public.ts (COPY = pg_catalog.simple)"], "NOT_EMPTY"),
+    (["CREATE TEXT SEARCH DICTIONARY public.d (TEMPLATE = pg_catalog.simple)"], "NOT_EMPTY"),
+    (["CREATE FUNCTION public.eq(int, int) RETURNS bool LANGUAGE sql AS 'select $1 = $2'",
+      "CREATE OPERATOR public.=== (LEFTARG = int, RIGHTARG = int, FUNCTION = public.eq)"], "NOT_EMPTY"),
+    (["CREATE CONVERSION public.cv FOR 'LATIN1' TO 'UTF8' FROM pg_catalog.iso8859_1_to_utf8"], "NOT_EMPTY"),
+    (["CREATE EXTENSION pgcrypto"], "NOT_EMPTY"),
+    (["SELECT pg_catalog.lo_create(0)"], "NOT_EMPTY"),
+    (["CREATE PUBLICATION pub"], "NOT_EMPTY"),
+    (["ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO PUBLIC"], "NOT_EMPTY"),
+    (["ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"], "NOT_EMPTY"),
+    (["CREATE SCHEMA _avnadmin_monitor", "CREATE TABLE _avnadmin_monitor.hidden(id int)"], "UNEXPECTED_SCHEMAS"),
 ])
 def test_any_user_object_or_schema_is_never_empty(db, ddl, expected):
     _exec(db[1], *ddl)
     assert _occupancy(db[1]) == expected
+
+
+def test_database_settings_count_except_search_path(db):
+    name, dsn = db
+    _exec(dsn, sql.SQL("ALTER DATABASE {} SET search_path = public, pg_catalog").format(sql.Identifier(name)))
+    assert _occupancy(dsn) == "EMPTY"  # overridden by the workflow's startup option
+    _exec(dsn, sql.SQL("ALTER DATABASE {} SET check_function_bodies = off").format(sql.Identifier(name)))
+    assert _occupancy(dsn) == "NOT_EMPTY"
+
+
+def test_aiven_monitor_schema_is_excluded_only_when_another_role_owns_it(db):
+    name, dsn = db
+    role = "avn_mon_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)),
+          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)))
+    try:
+        assert _occupancy(dsn) == "EMPTY"
+    finally:
+        _exec(dsn, "DROP SCHEMA _avnadmin_monitor CASCADE", sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def _guard_empty() -> str:
+    """GUARD_EMPTY exactly as the workflow's apply step builds it (evaluated by bash)."""
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "fcb-aiven-pg18-test.yml").read_text())
+    run = next(s["run"] for s in wf["jobs"]["pg18-test"]["steps"]
+               if s.get("name", "").startswith("Apply 0001-0007"))
+    lines = [l for l in run.splitlines() if l.strip().startswith(("OCC=", "GUARD_EMPTY="))]
+    assert len(lines) == 2
+    proc = subprocess.run(["bash", "-c", "set -euo pipefail\n" + "\n".join(lines) + '\nprintf %s "$GUARD_EMPTY"'],
+                          cwd=ROOT, capture_output=True, text=True, check=True)
+    return proc.stdout
+
+
+def test_the_apply_transaction_rechecks_emptiness_and_writes_nothing_on_a_race(db):
+    """Review of #178 (third round) P2-1: an object planted after the precheck aborts the apply."""
+    name, dsn = db
+    guard = _guard_empty()
+    _exec(dsn, "CREATE TABLE public.planted(id int)")
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+    proc = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-c", guard,
+                           "-f", str(AIVEN / "aiven_migrations_0001_0007.sql")],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode != 0 and "FCB_DATABASE_NOT_EMPTY" in proc.stderr
+    tables = _psql(dsn, "-c", "select count(*) from pg_catalog.pg_tables where schemaname = 'public'")
+    assert tables.strip() == "1"  # only the planted table: nothing from the migrations committed
+    _exec(dsn, "DROP TABLE public.planted")
+    _psql(dsn, "-q", "-1", "-c", guard, "-f", str(AIVEN / "aiven_migrations_0001_0007.sql"))
+    assert _occupancy(dsn) == "NOT_EMPTY"
 
 
 def test_catalog_shadowing_through_search_path_is_defeated(db):

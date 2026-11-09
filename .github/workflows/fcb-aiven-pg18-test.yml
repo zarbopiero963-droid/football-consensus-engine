@@ -309,7 +309,12 @@ jobs:
           PSQL=/usr/lib/postgresql/18/bin/psql
           # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
           # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
-          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() <> '$EXPECTED_DB' OR (pg_catalog.current_schemas(true))[1] <> 'pg_catalog' OR pg_catalog.current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid = pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() <> '$EXPECTED_DB' OR (pg_catalog.current_schemas(true))[1] <> 'pg_catalog' OR CURRENT_USER <> SESSION_USER OR pg_catalog.current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid = pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          # The EMPTY precheck ran on earlier connections: the FIRST apply re-runs the very same
+          # occupancy query inside its own transaction and aborts unless every count is still 0
+          # (review of #178: precheck/apply race). The second, idempotency run skips it.
+          OCC="$(grep -v '^[[:space:]]*--' sql/aiven/pg18_occupancy.sql | sed 's/;[[:space:]]*$//')"
+          GUARD_EMPTY="DO \$empty\$ BEGIN IF (SELECT pg_catalog.sum(q.v) FROM ( $OCC ) q) <> 0 THEN RAISE EXCEPTION 'FCB_DATABASE_NOT_EMPTY'; END IF; END \$empty\$"
           # psql stderr is captured and printed only in sanitized form (no host/IP/credentials).
           sp() {
             local err rc=0
@@ -321,9 +326,10 @@ jobs:
             fi
             rm -f "$err"; return "$rc"
           }
+          first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$GUARD_EMPTY" -f "$SCRIPT" >/dev/null; }
           run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
           verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
-          run;    first="$(verify)"
+          first_run; first="$(verify)"
           applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
           run;    second="$(verify)"
           applied2="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
