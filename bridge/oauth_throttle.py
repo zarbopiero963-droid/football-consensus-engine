@@ -107,9 +107,10 @@ def client_address(request) -> str:
     On Render the path is client -> Cloudflare -> Render proxy -> app, and X-Forwarded-For
     reads "<client>, <Cloudflare edge>": its LAST hop is a shared Cloudflare edge address, not
     the client (review of #177, P1). Cloudflare sets CF-Connecting-IP itself, overwriting any
-    client-sent value, so it is used first. Without it, the FIRST X-Forwarded-For hop is used:
-    it is client-controlled, which can only split an attacker across keys (the global window
-    still bounds them) and never merges unrelated users into one shared bucket.
+    client-sent value, so it is used first. Without it, the FIRST X-Forwarded-For hop is used.
+    Caveat: if a request ever reached the app without passing through Cloudflare, both headers
+    would be client-chosen, so an attacker could pick any key, including the owner's address,
+    and lock that key. The global window bounds all of this either way.
     """
     cf = request.headers.get("cf-connecting-ip", "").strip()
     if cf:

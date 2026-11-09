@@ -17,7 +17,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_oauth_throttle():
     """The OAuth limiters are process-global; start every test from a clean window."""
-    from bridge import oauth_throttle
+    from bridge import oauth, oauth_throttle
     oauth_throttle.reset_all()
+    oauth.reset_bearer_cache()
     yield
     oauth_throttle.reset_all()
+    oauth.reset_bearer_cache()

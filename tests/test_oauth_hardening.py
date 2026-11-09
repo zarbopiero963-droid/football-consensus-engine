@@ -287,28 +287,94 @@ def test_malformed_bearers_never_touch_the_database(monkeypatch):
     assert calls == []
 
 
-def test_storage_concurrency_is_capped_and_fails_fast(monkeypatch):
-    """Review of #177 P2: at most STORE_CONCURRENCY storage calls in flight; more get an
-    immediate 503 instead of opening more connections against Aiven's 15."""
+def test_storage_concurrency_is_capped_waits_briefly_then_fails_closed(monkeypatch):
+    """At most STORE_CONCURRENCY calls run at once; a further call waits up to
+    STORE_WAIT_SECONDS for a slot, then gets StorageBusy (fixed 503)."""
+    monkeypatch.setattr(oauth, "STORE_WAIT_SECONDS", 0.3)
     gate = threading.Event()
-    started = []
+    running = []
+    peak = []
 
     def slow(*_a, **_k):
-        started.append(1)
+        running.append(1)
+        peak.append(len(running))
         gate.wait(5)
+        running.pop()
         return False
 
     async def scenario():
         tasks = [asyncio.create_task(oauth._store(slow)) for _ in range(oauth.STORE_CONCURRENCY)]
         await asyncio.sleep(0.2)
         with pytest.raises(oauth.StorageBusy):
-            await oauth._store(slow)
+            await oauth._store(slow)            # all slots busy beyond the bounded wait
         gate.set()
         await asyncio.gather(*tasks)
         assert await oauth._store(lambda: "ok") == "ok"   # slots released
 
     asyncio.run(scenario())
-    assert len(started) == oauth.STORE_CONCURRENCY
+    assert max(peak) == oauth.STORE_CONCURRENCY
+
+
+def test_ordinary_concurrent_clients_are_served_not_refused(monkeypatch):
+    """Review of #177 P1: 8 parallel valid requests with a 0.3 s DB check must all pass auth."""
+    import bridge.server as srv
+    good = "V" * 43
+    calls = []
+
+    def check(token, *_a):
+        calls.append(1)
+        time.sleep(0.3)
+        return token == good
+
+    monkeypatch.setattr(srv.oauth_store, "valid_access_token", check)
+    client = TestClient(srv.app, raise_server_exceptions=False)
+    statuses = []
+
+    def one():
+        statuses.append(client.post("/mcp/", headers={"Authorization": f"Bearer {good}"}, json={}).status_code)
+
+    threads = [threading.Thread(target=one) for _ in range(8)]
+    for t in threads: t.start()
+    for t in threads: t.join(20)
+    assert len(statuses) == 8 and 401 not in statuses and 503 not in statuses
+
+
+def test_valid_bearers_are_cached_briefly_and_invalid_ones_never(monkeypatch):
+    calls = []
+
+    def check(token, *_a):
+        calls.append(token)
+        return token == "A" * 43
+
+    monkeypatch.setattr(oauth_store, "valid_access_token", check)
+
+    async def scenario():
+        assert await oauth.bearer_valid("A" * 43) and await oauth.bearer_valid("A" * 43)
+        assert not await oauth.bearer_valid("B" * 43) and not await oauth.bearer_valid("B" * 43)
+
+    asyncio.run(scenario())
+    assert calls.count("A" * 43) == 1          # positive result cached
+    assert calls.count("B" * 43) == 2          # negative result never cached
+    assert all(len(k) == 64 for k in oauth._bearer_cache)   # only digests are kept
+
+
+def test_the_bearer_cache_expires_and_is_bounded(monkeypatch):
+    monkeypatch.setattr(oauth_store, "valid_access_token", lambda *a: True)
+    monkeypatch.setattr(oauth, "BEARER_CACHE_MAX", 3)
+    clock = [1000.0]
+    monkeypatch.setattr(oauth.time, "monotonic", lambda: clock[0])
+
+    async def scenario():
+        for c in "CDEFG":
+            await oauth.bearer_valid(c * 43)
+        assert len(oauth._bearer_cache) <= 3
+        clock[0] += oauth.BEARER_CACHE_SECONDS + 1
+        calls = []
+        monkeypatch.setattr(oauth_store, "valid_access_token", lambda *a: calls.append(1) or True)
+        await oauth.bearer_valid("G" * 43)
+        assert calls == [1]                      # expired entry re-checked against the store
+
+    asyncio.run(scenario())
 
 
 def test_a_saturated_store_returns_the_fixed_503(valid_client, monkeypatch):

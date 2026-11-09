@@ -62,25 +62,65 @@ def _throttled(retry_after: int) -> JSONResponse:
 
 
 # At most this many OAuth storage calls run at once (each opens its own connection). Aiven
-# piero-1 allows 15 connections in total, shared with the coordinators, leases and workflows;
-# without this cap, concurrent unauthenticated requests could fill them (review of #177, P2).
+# piero-1 allows 15 connections in total, shared with the coordinators, leases and workflows.
+# A call waits up to STORE_WAIT_SECONDS for a slot (ordinary client concurrency must not see
+# 503s, review of #177), then fails closed with a fixed 503. The slot is taken and released
+# INSIDE the worker thread, so a cancelled request cannot free it while its query still runs.
 STORE_CONCURRENCY = 4
+STORE_WAIT_SECONDS = 3.0
 _STORE_SLOTS = threading.BoundedSemaphore(STORE_CONCURRENCY)
 
 
 class StorageBusy(Exception):
-    """All storage slots are in use: fail fast (fixed 503) instead of queueing connections."""
+    """No storage slot became free in time: fixed 503 instead of piling up connections."""
+
+
+def _with_slot(fn, *args, **kwargs):
+    if not _STORE_SLOTS.acquire(timeout=STORE_WAIT_SECONDS):
+        raise StorageBusy()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _STORE_SLOTS.release()
 
 
 async def _store(fn, *args, **kwargs):
     """Run a synchronous storage call off the event loop (WP-007: never block /healthz or /mcp),
-    with at most STORE_CONCURRENCY in flight; when saturated, raise StorageBusy immediately."""
-    if not _STORE_SLOTS.acquire(blocking=False):
-        raise StorageBusy()
-    try:
-        return await asyncio.to_thread(fn, *args, **kwargs)
-    finally:
-        _STORE_SLOTS.release()
+    with at most STORE_CONCURRENCY connections in flight."""
+    return await asyncio.to_thread(_with_slot, fn, *args, **kwargs)
+
+
+# Positive-only cache of validated bearer tokens (key: SHA-256 of the token, never the token).
+# A valid client's repeated /mcp requests then cost no database round trip. Bounded size and
+# a short TTL; a revoked or expired token stays accepted for at most BEARER_CACHE_SECONDS.
+BEARER_CACHE_SECONDS = 60.0
+BEARER_CACHE_MAX = 256
+_bearer_cache: dict[str, float] = {}
+_bearer_lock = threading.Lock()
+
+
+async def bearer_valid(token: str) -> bool:
+    key = hashlib.sha256(token.encode("ascii")).hexdigest()
+    now = time.monotonic()
+    with _bearer_lock:
+        until = _bearer_cache.get(key)
+        if until is not None and until > now:
+            return True
+        _bearer_cache.pop(key, None)
+    valid = await _store(oauth_store.valid_access_token, token, resource_url(), SCOPE)
+    if valid:
+        with _bearer_lock:
+            if len(_bearer_cache) >= BEARER_CACHE_MAX:
+                for k in [k for k, v in _bearer_cache.items() if v <= now] or list(_bearer_cache)[:1]:
+                    _bearer_cache.pop(k, None)
+            _bearer_cache[key] = now + BEARER_CACHE_SECONDS
+    return valid
+
+
+def reset_bearer_cache() -> None:
+    """Test isolation only."""
+    with _bearer_lock:
+        _bearer_cache.clear()
 
 
 def public_base() -> str:

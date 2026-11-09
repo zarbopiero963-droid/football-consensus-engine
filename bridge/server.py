@@ -358,8 +358,7 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
                 try:
                     # WP-007: off the event loop and capped, so neither a slow database nor a flood
                     # of random bearers can stall /healthz or exhaust Aiven's 15 connections.
-                    valid = await oauth._store(
-                        oauth_store.valid_access_token, token, oauth.resource_url(), oauth.SCOPE)
+                    valid = await oauth.bearer_valid(token)
                 except Exception:
                     logging.getLogger(__name__).error("oauth_storage_error stage=bearer_check")
                     return JSONResponse({"detail": "authorization backend unavailable"}, status_code=503)
