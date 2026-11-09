@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -37,6 +38,12 @@ SCRIPT = textwrap.dedent(r'''
     srv.bridge.prepare_cloak_runtime = noop
     srv.bridge.reaper_loop = idle
     srv.bridge.stop_all = stop_all
+
+    import logging
+    # The starlette TestClient (test transport only, not the production stdlib client) logs every
+    # request URL via httpx; silence just those loggers so stderr reflects the client under test.
+    for _name in ("httpx", "httpx2", "httpcore"):
+        logging.getLogger(_name).setLevel(logging.WARNING)
 
     MODE = os.environ["E2E_TEST_MODE"]
     st = srv.oauth_store
@@ -131,6 +138,8 @@ SCRIPT = textwrap.dedent(r'''
         tamper = {"sxbet_live": ("sxbet_health", {"available_modes": {"READ_ONLY": "AVAILABLE",
                                                                     "SIMULATION": "AVAILABLE",
                                                                     "LIVE_TRADING": "AVAILABLE"}}),
+                  "sxbet_mode": ("sxbet_health", {"mode": "LIVE_TRADING"}),
+                  "sxbet_write_tools": ("sxbet_health", {"write_tools": ["sxbet_place_order"]}),
                   "apifootball_network": ("apifootball_health", {"network_calls_made": 1})}.get(MODE)
         if tamper and tamper[0] == name and getattr(result, "structured_content", None) is not None:
             data = {**result.structured_content, **tamper[1]}
@@ -164,6 +173,8 @@ SCRIPT = textwrap.dedent(r'''
         argv = ["--output", out_path]
         if os.environ.get("E2E_EXPECTED_COMMIT"):
             argv += ["--expected-commit", os.environ["E2E_EXPECTED_COMMIT"]]
+        for _name in ("httpx", "httpx2", "httpcore"):  # after lifespan logging setup
+            logging.getLogger(_name).setLevel(logging.WARNING)
         rc = e2e.main(argv, client=c, sleep=lambda s: None)
     print("RESULT_JSON=" + json.dumps({"rc": rc, "issued": issued, "server_tools_called": server_tools_called}))
 ''')
@@ -185,8 +196,11 @@ def _run(tmp_path, mode="normal", github_actions=False, extra_env=None):
     res = json.loads(line[len("RESULT_JSON="):])
     # Review of #179, P2-3: nothing secret on stderr either (logging, tracebacks).
     issued = res["issued"]
-    assert PASSWORD not in proc.stderr
-    assert not any(v in proc.stderr for v in issued), "a runtime secret reached stderr"
+    # Re-review of #179: log handlers (e.g. Rich) wrap and pad long values, so also check the
+    # whitespace-stripped stream.
+    flat_err = re.sub(r"\s+", "", proc.stderr)
+    assert PASSWORD not in proc.stderr and PASSWORD not in flat_err
+    assert not any(v in proc.stderr or v in flat_err for v in issued), "a runtime secret reached stderr"
     return res, out.read_text(encoding="utf-8"), proc.stdout
 
 
@@ -241,6 +255,10 @@ def test_full_flow_passes_and_the_report_holds_no_secret(tmp_path):
     ("sxbet_live", None, "tools_call_sxbet_health_read_only"),
     ("apifootball_network", None, "tools_call_apifootball_health_no_provider_call"),
     ("tools_count_mismatch", None, "mcp_tools_list_matches_healthz"),
+    ("sxbet_mode", None, "tools_call_sxbet_health_read_only"),
+    ("sxbet_write_tools", None, "tools_call_sxbet_health_read_only"),
+    ("normal", {"RENDER_GIT_COMMIT": "abcdef1", "E2E_EXPECTED_COMMIT": "abcdef1" + "0" * 33},
+     "deployed_commit_is_main_head"),
 ])
 def test_each_server_regression_fails_the_run_at_its_own_check(tmp_path, mode, extra_env, failed):
     """RED controls (review: checks that could be made vacuous); none leaks into the report."""
@@ -417,3 +435,17 @@ def test_server_values_are_masked_only_when_url_safe():
         with pytest.raises(e2e.Fail, match="unexpected_secret_format"):
             run.secret(bad)
     assert masked == ["abc-DEF_123.~"] and "x\n::warning::pwned" in run.sensitive
+
+
+
+def test_the_e2e_client_has_no_logging_or_traceback_channel():
+    """Re-review of #179: nothing in the client can write a code or token to stderr through the
+    logging/traceback machinery (only fixed lines are printed)."""
+    import ast
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "mcp_e2e_render.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    imported |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    assert not imported & {"logging", "traceback", "pprint", "warnings"}, imported
+    assert "print_exc" not in src and "stderr" not in src
