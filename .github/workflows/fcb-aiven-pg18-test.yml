@@ -71,6 +71,26 @@ jobs:
             echo "::error::secret FCB_PG18_TEST_URL is not set"; exit 1
           fi
 
+      - name: Materialize and authenticate the Aiven project CA (D02 verify-full)
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::FCB_AIVEN_CA_PEM / FCB_AIVEN_CA_SHA256 missing in environment aiven-pg18-test"; exit 1
+          fi
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || {
+            echo "::error::Aiven CA checksum mismatch"; exit 1;
+          }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+          echo "Aiven CA parsed and matched the protected SHA-256" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -149,9 +169,10 @@ jobs:
           forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
           if forbidden & {k.lower() for k in q}:
               sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
-          mode = q.get('sslmode', ['require'])[0]
-          if mode not in ('require', 'verify-ca', 'verify-full'):
-              sys.exit('::error::sslmode must be require, verify-ca or verify-full')
+          # D02: certificate chain AND hostname are verified against the authenticated project CA.
+          mode = q.get('sslmode', [None])[0]
+          if mode != 'verify-full' or len(q.get('sslmode', [])) != 1:
+              sys.exit('::error::sslmode must be verify-full')
           PY
           # urlsplit silently drops spaces/newlines/tabs that libpq keeps (e.g. a final newline
           # after "sslmode=require" makes libpq fail before connecting): reject them explicitly.
@@ -167,10 +188,10 @@ jobs:
           set -euo pipefail
           python -I -S scripts/aiven_pg18_diag.py probe | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Prechecks (database, PostgreSQL 18, TLS, empty schema)
+      - name: Prechecks (database, PostgreSQL 18, TLS verify-full, state)
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
-          PGSSLMODE: require
+          PGSSLMODE: verify-full
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
@@ -220,29 +241,42 @@ jobs:
           if [ "$schemas" != "0" ]; then
             echo "::error::unexpected non-system schemas present ($schemas); refusing to run"; exit 1
           fi
+          state=EMPTY
           if [ "$objects" != "0" ] || [ "$funcs" != "0" ]; then
-            echo "::error::database is not empty (relations=$objects functions=$funcs); refusing to run"; exit 1
+            # Not empty: accepted (read-only) only when it is exactly the bridge 0001-0007 series
+            # this workflow applies, with the recorded names and checksums equal to the repo files.
+            tracked="$(q "select to_regclass('public.schema_migrations') is not null")"
+            recorded=""
+            if [ "$tracked" = "t" ]; then
+              recorded="$(q "select string_agg(version::text || '=' || name || '=' || sha256, ' ' order by version) from schema_migrations")"
+            fi
+            files="$(for f in sql/migrations/bridge/000[1-7]_*.sql; do n="$(basename "$f")"; printf '%s=%s=%s ' "$((10#${n:0:4}))" "$n" "$(sha256sum "$f" | cut -d' ' -f1)"; done)"
+            if [ "$recorded" != "${files% }" ]; then
+              echo "::error::database is not empty and is not the recorded bridge 0001-0007 series (relations=$objects functions=$funcs); refusing to run"; exit 1
+            fi
+            state=BRIDGE_0001_0007
           fi
+          echo "PG18_TEST_STATE=$state" >> "$GITHUB_ENV"
           {
             echo "## Prechecks: PASS"
             echo "- current_database: $db"
             echo "- server_version_num: $ver"
-            echo "- TLS: $tls"
-            echo "- pre-existing relations/functions: 0/0"
+            echo "- TLS: $tls (verify-full)"
+            echo "- state: $state (relations=$objects functions=$funcs)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Diagnose mode - stop before any write
-        if: ${{ inputs.mode != 'apply' }}
+      - name: Diagnose mode or already-migrated database - stop before any write
+        if: ${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}
         run: |
-          echo "## Mode: diagnose - prechecks only, the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
-          echo "diagnose mode: apply step skipped, no database writes"
+          echo "## Mode: ${{ inputs.mode }}, state: $PG18_TEST_STATE - the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
+          echo "no database writes: apply runs only with mode=apply on an EMPTY database"
 
       - name: Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify
         # Writes only with an explicit mode=apply; any other value (including empty) skips it.
-        if: ${{ inputs.mode == 'apply' }}
+        if: ${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
-          PGSSLMODE: require
+          PGSSLMODE: verify-full
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql

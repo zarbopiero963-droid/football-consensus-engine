@@ -233,7 +233,9 @@ def test_workflow_writes_only_with_explicit_apply_mode():
     writers = [s for s in steps if '-f "$SCRIPT"' in s.get("run", "")]
     assert writers, "apply step not found"
     for s in writers:
-        assert s.get("if") == "${{ inputs.mode == 'apply' }}"
+        # Declared change (D02 PR): apply also requires a prechecked EMPTY database; an already
+        # migrated 0001-0007 database is reported by diagnose and never written again.
+        assert s.get("if") == "${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}"
     # every step before the apply step that uses the secret is read-only (no -f script, no -1)
     for s in steps[: steps.index(writers[0])]:
         assert '-f "$SCRIPT"' not in s.get("run", "")
@@ -408,7 +410,7 @@ def test_workflow_target_policy_wiring():
     assert names.index("Mask connection details and enforce TLS") < first_connect
     for s in job["steps"]:
         if "$PSQL" in s.get("run", ""):
-            assert s["env"].get("PGSSLMODE") == "require"
+            assert s["env"].get("PGSSLMODE") == "verify-full"  # D02 (declared change from require)
 
 
 _LIBPQ_ACCEPTED = [
@@ -458,3 +460,25 @@ def test_differential_attacks_libpq_would_follow_are_rejected(uri):
                   or bool({"hostaddr", "service"} & set(d)))
     assert redirected, "attack sample no longer redirects libpq; update the sample"
     assert diag.target_check(uri, _tenv())[0] is False
+
+
+def test_workflow_requires_verify_full_with_the_authenticated_ca():
+    """D02: the PG18 test workflow verifies chain and hostname against the protected project CA."""
+    import yaml
+    wf = yaml.safe_load(WORKFLOW.read_text())
+    steps = wf["jobs"]["pg18-test"]["steps"]
+    names = [s.get("name", "") for s in steps]
+    ca = names.index("Materialize and authenticate the Aiven project CA (D02 verify-full)")
+    first_connect = min(i for i, s in enumerate(steps) if "$PSQL" in s.get("run", ""))
+    assert ca < first_connect
+    run = steps[ca]["run"]
+    assert 'test "$actual" = "$FCB_AIVEN_CA_SHA256"' in run and "PGSSLROOTCERT=$ca" in run
+    mask = steps[names.index("Mask connection details and enforce TLS")]["run"]
+    assert "mode != 'verify-full'" in mask and "require', 'verify-ca'" not in mask
+
+
+def test_workflow_diagnose_accepts_only_the_exact_recorded_0001_0007_series():
+    text = WORKFLOW.read_text()
+    assert "sql/migrations/bridge/000[1-7]_*.sql" in text
+    assert 'if [ "$recorded" != "${files% }" ]; then' in text
+    assert "is not the recorded bridge 0001-0007 series" in text
