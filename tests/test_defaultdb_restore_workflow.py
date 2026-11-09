@@ -77,9 +77,18 @@ def test_protection_gate_fails_closed(tmp_path, body, rc):
     assert out.stdout == ""
 
 
-def test_protection_gate_passes_with_a_required_reviewer(tmp_path):
-    out = _gate(tmp_path, '{"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User"}]}]}')
+def test_protection_gate_passes_with_a_required_reviewer_and_a_branch_policy(tmp_path):
+    # G-02 (declared behaviour change): a deployment-branch policy is now required as well;
+    # the missing/wide-policy refusals are covered in tests/test_workflow_secret_policy.py.
+    out = _gate(tmp_path, '{"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User"}]}],'
+                          '"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true},'
+                          '"total_count":1,"branch_policies":[{"name":"main","type":"branch"}]}')
     assert out.returncode == 0 and out.stdout.strip() == "1"
+
+
+def test_protection_gate_refuses_a_reviewer_without_a_branch_policy(tmp_path):
+    out = _gate(tmp_path, '{"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User"}]}]}')
+    assert out.returncode != 0 and out.stdout == ""
 
 
 def test_apply_runs_guard_script_and_count_assertion_in_one_transaction():

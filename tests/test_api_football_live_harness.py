@@ -283,12 +283,16 @@ def test_live_workflows_require_the_coordinator_before_any_live_step(name):
     assert set(on) == {"workflow_dispatch"}  # manual only
     (job,) = wf["jobs"].values()
     assert job["environment"] == "api-football-live"
-    assert job["env"]["DATABASE_URL"] == "${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}"
+    # G-02 (declared test change): the coordinator DSN is no longer exposed at job level; each
+    # step that needs it receives it explicitly, after the trusted-dispatch/environment gate.
+    assert "DATABASE_URL" not in (job.get("env") or {})
+    dsn = "${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}"
     steps = job["steps"]
     pre = next(i for i, s in enumerate(steps) if "COORDINATOR_DATABASE_REQUIRED" in s.get("run", ""))
     live = next(i for i, s in enumerate(steps) if "scripts/api_football_" in s.get("run", "")
                 and "evidence_log_transport" not in s.get("run", ""))
     assert pre < live
+    assert steps[pre]["env"]["DATABASE_URL"] == dsn and steps[live]["env"]["DATABASE_URL"] == dsn
     assert "echo \"$DATABASE_URL" not in steps[pre]["run"] and "set -x" not in steps[pre]["run"]
 
 

@@ -36,6 +36,8 @@ concurrency:
 
 jobs:
   restore:
+    # G-02: second layer; the environment (required reviewer + branch main) is the control.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: aiven-production
@@ -80,8 +82,10 @@ jobs:
           GIT_REF: ${{ github.ref }}
           ACTOR: ${{ github.actor }}
           REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
           # Only the reviewed workflow on main may restore production.
           if [ "$GIT_REF" != "refs/heads/main" ]; then
             echo "::error::the defaultdb restore runs only from main"; exit 1

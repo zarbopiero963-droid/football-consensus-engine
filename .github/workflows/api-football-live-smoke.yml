@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: api-football-live-smoke
   cancel-in-progress: false
@@ -10,24 +11,43 @@ jobs:
   live:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    # G-02: this job receives a production database DSN (shared quota coordinator).
+    if: github.ref == 'refs/heads/main'
     environment: api-football-live
     env:
       PYTHONPATH: .
       APIFOOTBALL_ENABLED: 'true'
       APIFOOTBALL_LIVE_AUTHORIZED: 'true'
-      APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
       # WP-003: shared PostgreSQL quota coordinator (CLAUDE.md §2.4). Configured by the owner
       # in the api-football-live environment; without it the job fails closed before any call.
       # APIFOOTBALL_MAX_* below are checked against the key's SHARED counters (runtime + every
       # workflow, same UTC day/minute), not against this job alone: a job is refused once the
       # key's shared day total reaches its APIFOOTBALL_MAX_DAILY_REQUESTS. Raising it = owner.
-      DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
+      # Secrets (API key, coordinator DSN) are given only to the steps that need them,
+      # after the G-02 gate step below.
       APIFOOTBALL_MAX_DAILY_REQUESTS: '4'
       APIFOOTBALL_MAX_RPM: '4'
       APIFOOTBALL_MAX_CONCURRENCY: '1'
     steps:
       - name: Checkout exact workflow branch
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require a protected environment and a trusted dispatch (G-02), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          # Fails closed on any API/JSON error, a missing reviewer or a missing main-only branch policy.
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" api-football-live)"
+          echo "## Gate: environment api-football-live protected (required reviewers: $reviewers), owner dispatch from main" >> "$GITHUB_STEP_SUMMARY"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -35,6 +55,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Explicit secret preflight (no value output)
+        env:
+          APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+          DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
         shell: bash
         run: |
           if [ -z "$APIFOOTBALL_API_KEY" ]; then
@@ -42,6 +65,9 @@ jobs:
             exit 1
           fi
       - name: Coordinator database preflight (fail closed, no value output)
+        env:
+          APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+          DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
         shell: bash
         run: |
           if [ -z "${DATABASE_URL// /}" ]; then
@@ -49,6 +75,9 @@ jobs:
             exit 1
           fi
       - name: Bounded four-request live provider test
+        env:
+          APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+          DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
         run: python scripts/api_football_live_smoke.py --authorize-live-test --output /tmp/api_football_live_smoke.json
       - name: Publish sanitized evidence in Actions summary
         if: always()

@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: fcb-aiven-pg18-test
@@ -20,6 +21,11 @@ concurrency:
 
 jobs:
   pg18-test:
+    # G-02: the database credential lives ONLY in the protected environment aiven-pg18-test
+    # (required reviewer + deployment branch main). The `if:` and the gate step below are
+    # further layers; the environment configuration is the access control.
+    if: github.ref == 'refs/heads/main'
+    environment: aiven-pg18-test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -39,6 +45,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Require a protected environment and a trusted dispatch (G-02), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          # Fails closed on any API/JSON error, a missing reviewer or a missing main-only branch policy.
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-pg18-test)"
+          echo "## Gate: environment aiven-pg18-test protected (required reviewers: $reviewers), owner dispatch from main" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail closed if the secret is missing
         env:
