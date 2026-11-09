@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -523,24 +524,77 @@ def test_state_counts_match_the_apply_step_and_the_cli_fails_closed(tmp_path):
     assert f"printf '%s\\n' {expected})" in text  # apply step verifies the very same counts
     ev, fl = tmp_path / "e", tmp_path / "f"
     ev.write_text(_evidence(_expected_rows())); fl.write_text("\n".join(_expected_rows()))
-    assert pg18_state.main(["x", str(ev), str(fl)]) == 0
+    assert pg18_state.main(["x", "migrated", str(ev), str(fl)]) == 0
     ev.write_text("tables=29\n")
-    assert pg18_state.main(["x", str(ev), str(fl)]) == 1
-    assert pg18_state.main(["x"]) == 2
+    assert pg18_state.main(["x", "migrated", str(ev), str(fl)]) == 1
+    assert pg18_state.main(["x"]) == 2 and pg18_state.main(["x", str(ev), str(fl)]) == 2
+
+
+def _occ(**over):
+    from scripts import pg18_state
+    counts = dict.fromkeys(pg18_state.OCCUPANCY_KEYS, 0)
+    counts.update(over)
+    return "\n".join(f"{k}={v}" for k, v in counts.items()) + "\n"
+
+
+def test_occupancy_is_empty_only_when_every_category_is_zero(tmp_path):
+    """Review of #178 (second round), P1 + mutation W1: any single user object makes it NOT_EMPTY."""
+    from scripts import pg18_state
+    assert pg18_state.occupancy(_occ()) == "EMPTY"
+    for key in ("relations", "functions", "types", "other_objects"):
+        assert pg18_state.occupancy(_occ(**{key: 1})) == "NOT_EMPTY", key
+    assert pg18_state.occupancy(_occ(relations=3, unexpected_schemas=1)) == "UNEXPECTED_SCHEMAS"
+    assert pg18_state.occupancy(_occ(unexpected_schemas=1)) == "UNEXPECTED_SCHEMAS"
+    for bad in ("", "relations=0\n", _occ().replace("types", "typos"), _occ().replace("=0", "=", 1),
+                _occ().replace("relations=0", "relations=-1"), _occ().replace("relations=0", "relations=٠"),
+                _occ() + "extra=0\n"):
+        assert pg18_state.occupancy(bad) == "OCCUPANCY_EVIDENCE_MALFORMED", bad
+    f = tmp_path / "o"
+    f.write_text(_occ()); assert pg18_state.main(["x", "occupancy", str(f)]) == 0
+    f.write_text(_occ(types=2)); assert pg18_state.main(["x", "occupancy", str(f)]) == 0
+    f.write_text(_occ(unexpected_schemas=1)); assert pg18_state.main(["x", "occupancy", str(f)]) == 1
+
+
+def test_evidence_sql_has_no_like_wildcards_and_qualifies_every_catalog():
+    """Review of #178, P1 (LIKE 'pg_temp%' matched 'pgxtemp') and P2 (search_path shadowing)."""
+    for name in ("pg18_occupancy.sql", "verify_schema.sql"):
+        text = (ROOT / "sql" / "aiven" / name).read_text()
+        body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("--"))
+        assert " like " not in body.lower(), name
+        unqualified = [r for r in re.findall(r"(?<![\w.'(])(pg_[a-z_]+)\b(?!\.)", body)]
+        assert unqualified == [], f"{name}: unqualified catalog references {unqualified}"
+        assert re.search(r"(?<![\w.])count\(", body) is None, name
+        assert re.search(r"(?<![\w.])schema_migrations\b", body) is None, name
+    occ = (ROOT / "sql" / "aiven" / "pg18_occupancy.sql").read_text()
+    assert "'^pg_(toast_)?temp_[0-9]+$'" in occ
 
 
 def test_workflow_state_gates_apply_and_diagnose_exactly():
+    """Mutations W2/W5/W7 of the second review are pinned by exact lines."""
     import yaml
     wf = yaml.safe_load(WORKFLOW.read_text())
     steps = {s.get("name", ""): s for s in wf["jobs"]["pg18-test"]["steps"]}
-    pre = steps["Prechecks (database, PostgreSQL 18, TLS verify-full, state)"]["run"]
-    assert "state=EMPTY\n" in pre and 'state="$verdict"' in pre
-    assert 'python -I -S scripts/pg18_state.py "$evidence" "$expected_rows"' in pre
-    assert 'if [ "$tracked" != "t" ]; then' in pre
-    # Only two assignments of the state, and only the script's verdict marks a non-empty DB.
-    assert pre.count("state=") == 2
+    pre_step = steps["Prechecks (database, PostgreSQL 18, TLS verify-full, state)"]
+    lines = [l.strip() for l in pre_step["run"].splitlines()]
+    assert lines[0] == "set -euo pipefail"
+    # The ONLY write to GITHUB_ENV, and the only two ways the state is assigned.
+    assert [l for l in lines if "GITHUB_ENV" in l] == ['echo "PG18_TEST_STATE=$state" >> "$GITHUB_ENV"']
+    assert [l for l in lines if re.match(r"^state=", l)] == ["state=EMPTY", 'state="$verdict"']
+    occ_if = 'if ! occupancy="$(python -I -S scripts/pg18_state.py occupancy "$occ")"; then'
+    assert lines[lines.index(occ_if) + 1].endswith("exit 1")
+    empty_if = 'if [ "$occupancy" = "EMPTY" ]; then'
+    assert lines[lines.index(empty_if) + 1] == "state=EMPTY"
+    mig_if = 'if ! verdict="$(python -I -S scripts/pg18_state.py migrated "$evidence" "$expected_rows")"; then'
+    assert lines[lines.index(mig_if) + 1].endswith("exit 1")
+    assert 'qf sql/aiven/pg18_occupancy.sql "$occ"' in lines and 'qf sql/aiven/verify_schema.sql "$evidence"' in lines
+    assert ("""if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f "$1" >"$2" 2>"$err"; then"""
+            in lines)
+    assert pre_step["env"]["PGOPTIONS"] == "-c search_path=public"
+    assert 'test "$path1" = "pg_catalog" || { echo "::error::pg_catalog is not first in search_path"; exit 1; }' in lines
     apply = steps["Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify"]
     assert apply["if"] == "${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}"
+    assert apply["env"]["PGOPTIONS"] == "-c search_path=public"
+    assert "(pg_catalog.current_schemas(true))[1] <> 'pg_catalog'" in apply["run"]
     diag = steps["Diagnose mode or already-migrated database - stop before any write"]
     assert diag["if"] == "${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}"
     assert "${{" not in diag["run"] and diag["env"] == {"MODE": "${{ inputs.mode }}"}

@@ -192,6 +192,9 @@ jobs:
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
           PGSSLMODE: verify-full
+          # Startup option: overrides any role/database search_path default, and pg_catalog stays
+          # implicitly FIRST, so objects in public cannot shadow catalogs (review of #178, P2).
+          PGOPTIONS: -c search_path=public
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
@@ -232,36 +235,44 @@ jobs:
           ssl="$(q 'select ssl from pg_stat_ssl where pid = pg_backend_pid()')"
           test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
           tls="$(q 'select version || $$ $$ || cipher from pg_stat_ssl where pid = pg_backend_pid()')"
-          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
-          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema','_avnadmin_monitor')")"
-          # Aiven installs its own monitoring schema (_avnadmin_monitor, owned by postgres) in every
-          # database; it is excluded by exact name only. Any other non-system schema besides public
-          # makes the precheck fail.
-          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
-          if [ "$schemas" != "0" ]; then
-            echo "::error::unexpected non-system schemas present ($schemas); refusing to run"; exit 1
+          path1="$(q 'select (pg_catalog.current_schemas(true))[1]')"
+          test "$path1" = "pg_catalog" || { echo "::error::pg_catalog is not first in search_path"; exit 1; }
+          # qf FILE OUT: run a read-only evidence file (psql -A -t -F '='); stderr only sanitized.
+          qf() {
+            local err
+            err="$(mktemp)"
+            if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f "$1" >"$2" 2>"$err"; then
+              rm -f "$err"
+            else
+              echo "::error::read-only evidence query failed ($(classify "$err"))" >&2
+              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          # Occupancy (relations, functions, types, other objects, schemas) is decided by
+          # scripts/pg18_state.py. EMPTY - the only state that lets apply run - requires every
+          # category to be 0. Aiven's _avnadmin_monitor schema is excluded by exact name only.
+          occ="$RUNNER_TEMP/pg18_occupancy.txt"
+          qf sql/aiven/pg18_occupancy.sql "$occ"
+          counts="$(tr '\n' ' ' <"$occ")"
+          if ! occupancy="$(python -I -S scripts/pg18_state.py occupancy "$occ")"; then
+            echo "::error::database refused ($occupancy; $counts)"; exit 1
           fi
-          state=EMPTY
-          if [ "$objects" != "0" ] || [ "$funcs" != "0" ]; then
-            # Not empty: accepted (read-only) only when it is exactly the bridge 0001-0007 series
-            # this workflow applies: the same object counts the apply step verifies, and one
-            # schema_migrations row per repo file with equal version, name and checksum
-            # (scripts/pg18_state.py; a forged single row or extra objects are refused).
-            tracked="$(q "select to_regclass('public.schema_migrations') is not null")"
+          if [ "$occupancy" = "EMPTY" ]; then
+            state=EMPTY
+          else
+            # Not empty: accepted (read-only, never applied to) only when it matches the bridge
+            # 0001-0007 series: the object counts the apply step verifies and one schema_migrations
+            # row per repo file with equal version, name and checksum (consistency evidence).
+            tracked="$(q "select pg_catalog.to_regclass('public.schema_migrations') is not null")"
             if [ "$tracked" != "t" ]; then
-              echo "::error::database is not empty and has no schema_migrations (relations=$objects functions=$funcs); refusing to run"; exit 1
+              echo "::error::database is not empty and has no schema_migrations ($counts); refusing to run"; exit 1
             fi
             evidence="$RUNNER_TEMP/pg18_evidence.txt"; expected_rows="$RUNNER_TEMP/pg18_expected.txt"
-            err="$(mktemp)"
-            if ! "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql >"$evidence" 2>"$err"; then
-              echo "::error::read-only schema evidence query failed ($(classify "$err"))"
-              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")"
-              rm -f "$err"; exit 1
-            fi
-            rm -f "$err"
+            qf sql/aiven/verify_schema.sql "$evidence"
             for f in sql/migrations/bridge/000[1-7]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done >"$expected_rows"
-            if ! verdict="$(python -I -S scripts/pg18_state.py "$evidence" "$expected_rows")"; then
-              echo "::error::database is not empty and is not the recorded bridge 0001-0007 series ($verdict; relations=$objects functions=$funcs); refusing to run"; exit 1
+            if ! verdict="$(python -I -S scripts/pg18_state.py migrated "$evidence" "$expected_rows")"; then
+              echo "::error::database is not empty and is not the recorded bridge 0001-0007 series ($verdict; $counts); refusing to run"; exit 1
             fi
             state="$verdict"
           fi
@@ -271,7 +282,7 @@ jobs:
             echo "- current_database: $db"
             echo "- server_version_num: $ver"
             echo "- TLS: $tls (verify-full)"
-            echo "- state: $state (relations=$objects functions=$funcs)"
+            echo "- state: $state ($counts)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Diagnose mode or already-migrated database - stop before any write
@@ -292,12 +303,13 @@ jobs:
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
           PGSSLMODE: verify-full
+          PGOPTIONS: -c search_path=public
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
           # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
           # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
-          GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() <> '$EXPECTED_DB' OR (pg_catalog.current_schemas(true))[1] <> 'pg_catalog' OR pg_catalog.current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid = pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
           # psql stderr is captured and printed only in sanitized form (no host/IP/credentials).
           sp() {
             local err rc=0
