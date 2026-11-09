@@ -3,6 +3,12 @@
 
 The report contains catalog metadata and row counts only.  It never selects table
 contents and never prints the DSN, role name, host, token, or other credentials.
+
+Audit hardening: every catalog relation, function and operator is schema-qualified; temporary
+schemas are excluded by an anchored regex and `_avnadmin_monitor` only in Aiven's real shape
+(the excluded names are listed); the EMPTY proof also requires every category of
+sql/aiven/pg18_occupancy.sql to be zero; row counts never execute row-security policies or
+foreign-data wrappers (such tables are reported UNKNOWN) and never descend into child tables.
 """
 from __future__ import annotations
 
@@ -48,15 +54,45 @@ def _precheck_state(conn: psycopg.Connection[Any]) -> str:
     return str(state)
 
 
+# Same predicate as sql/aiven/pg18_occupancy.sql and the restore guards.
+_SCHEMAS = """
+SELECT n.nspname::pg_catalog.text,
+       n.nspname OPERATOR(pg_catalog.~) '^pg_(toast_)?temp_[0-9]+$'::pg_catalog.text
+       OR (n.nspname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name
+           AND n.nspowner OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r
+                                                  WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER)
+           AND (r_owner.rolsuper OR r_owner.rolname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name)
+           AND NOT pg_catalog.pg_has_role(SESSION_USER, n.nspowner, 'MEMBER')
+           AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE')) AS excluded
+FROM pg_catalog.pg_namespace n
+JOIN pg_catalog.pg_roles r_owner ON r_owner.oid OPERATOR(pg_catalog.=) n.nspowner
+ORDER BY n.nspname
+"""
+
+
+def _occupancy(conn: psycopg.Connection[Any]) -> dict[str, int]:
+    text = (AIVEN / "pg18_occupancy.sql").read_text(encoding="utf-8")
+    return {str(k): int(v) for k, v in conn.execute(text).fetchall()}
+
+
 def _count_or_unknown(
-    conn: psycopg.Connection[Any], schema: str, table: str
+    conn: psycopg.Connection[Any], schema: str, table: str, *, row_security: bool, foreign: bool
 ) -> int | str:
-    """Count one table while preserving the outer read-only transaction on ACL errors."""
+    """Count one table while preserving the outer read-only transaction on ACL errors.
+
+    A table with row-level security would execute its policies (arbitrary functions) and a
+    foreign table its wrapper: both are reported UNKNOWN instead of counted (audit F8).  ONLY
+    keeps the scan away from inheritance children, which are listed and counted on their own.
+    """
+    if foreign:
+        return "UNKNOWN_FOREIGN_TABLE"
+    if row_security:
+        return "UNKNOWN_ROW_SECURITY"
     conn.execute("SAVEPOINT inventory_count")
     try:
         count = int(_scalar(
             conn,
-            sql.SQL("SELECT count(*) FROM {}.{}").format(
+            sql.SQL("SELECT pg_catalog.count(*) FROM ONLY {}.{}").format(
                 sql.Identifier(schema), sql.Identifier(table)
             ),
         ))
@@ -80,38 +116,38 @@ def collect_inventory(dsn: str, *, schema: str = "public", source_sha: str = "UN
         conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
         conn.execute("BEGIN TRANSACTION READ ONLY")
         try:
-            if _scalar(conn, "SELECT current_setting('transaction_read_only')") != "on":
+            if _scalar(conn, "SELECT pg_catalog.current_setting('transaction_read_only')") != "on":
                 raise RuntimeError("read-only transaction was not enforced")
 
-            database = str(_scalar(conn, "SELECT current_database()"))
-            version_num = int(_scalar(conn, "SELECT current_setting('server_version_num')"))
-            database_size = int(_scalar(conn, "SELECT pg_database_size(current_database())"))
+            database = str(_scalar(conn, "SELECT pg_catalog.current_database()"))
+            version_num = int(_scalar(conn, "SELECT pg_catalog.current_setting('server_version_num')"))
+            database_size = int(_scalar(conn, "SELECT pg_catalog.pg_database_size(pg_catalog.current_database())"))
             connections = int(_scalar(
                 conn,
-                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()",
+                "SELECT pg_catalog.count(*) FROM pg_catalog.pg_stat_activity a "
+                "WHERE a.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()",
             ))
             state = _precheck_state(conn)
+            occupancy = _occupancy(conn)
 
-            schemas = [r[0] for r in conn.execute(
-                """SELECT nspname FROM pg_namespace
-                   WHERE nspname NOT LIKE 'pg_temp%' AND nspname NOT LIKE 'pg_toast_temp%'
-                   ORDER BY nspname"""
-            ).fetchall()]
+            schema_rows = [(str(name), bool(excluded)) for name, excluded in conn.execute(_SCHEMAS).fetchall()]
+            schemas = [name for name, excluded in schema_rows if not excluded]
+            excluded_schemas = [name for name, excluded in schema_rows if excluded]
             expected_schemas = {
                 schema,
                 "public",
                 "pg_catalog",
                 "information_schema",
                 "pg_toast",
-                "_avnadmin_monitor",
             }
             unexpected_schemas = [name for name in schemas if name not in expected_schemas]
 
             relations = conn.execute(
-                """SELECT c.relname, c.relkind
-                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                   WHERE n.nspname = %s
-                     AND c.relkind IN ('r','p','v','m','S','f')
+                """SELECT c.relname, c.relkind, c.relrowsecurity OR c.relforcerowsecurity
+                   FROM pg_catalog.pg_class c
+                   JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+                   WHERE n.nspname OPERATOR(pg_catalog.=) %s::pg_catalog.text::pg_catalog.name
+                     AND c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r','p','v','m','S','f']::pg_catalog."char"[])
                    ORDER BY c.relkind, c.relname""",
                 (schema,),
             ).fetchall()
@@ -121,41 +157,49 @@ def collect_inventory(dsn: str, *, schema: str = "public", source_sha: str = "UN
             }
             objects = [
                 {"name": str(name), "kind": relation_kinds[str(kind)]}
-                for name, kind in relations
+                for name, kind, _ in relations
             ]
-            table_names = [str(name) for name, kind in relations if kind in ("r", "p", "f")]
+            tables = {str(name): (str(kind), bool(rls)) for name, kind, rls in relations if kind in ("r", "p", "f")}
+            table_names = list(tables)
             row_counts: dict[str, int | str] = {}
-            for table in table_names:
-                row_counts[table] = _count_or_unknown(conn, schema, table)
+            for table, (kind, rls) in tables.items():
+                row_counts[table] = _count_or_unknown(conn, schema, table, row_security=rls, foreign=kind == "f")
 
             functions = [r[0] for r in conn.execute(
-                """SELECT p.proname FROM pg_proc p
-                   JOIN pg_namespace n ON n.oid = p.pronamespace
-                   WHERE n.nspname = %s ORDER BY p.proname""",
+                """SELECT p.proname FROM pg_catalog.pg_proc p
+                   JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+                   WHERE n.nspname OPERATOR(pg_catalog.=) %s::pg_catalog.text::pg_catalog.name ORDER BY p.proname""",
                 (schema,),
             ).fetchall()]
             triggers = [r[0] for r in conn.execute(
-                """SELECT t.tgname FROM pg_trigger t
-                   JOIN pg_class c ON c.oid = t.tgrelid
-                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                   WHERE n.nspname = %s AND NOT t.tgisinternal ORDER BY t.tgname""",
+                """SELECT t.tgname FROM pg_catalog.pg_trigger t
+                   JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.tgrelid
+                   JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+                   WHERE n.nspname OPERATOR(pg_catalog.=) %s::pg_catalog.text::pg_catalog.name
+                     AND NOT t.tgisinternal ORDER BY t.tgname""",
                 (schema,),
             ).fetchall()]
             indexes = [r[0] for r in conn.execute(
-                """SELECT c.relname FROM pg_class c
-                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                   WHERE n.nspname = %s AND c.relkind IN ('i','I') ORDER BY c.relname""",
+                """SELECT c.relname FROM pg_catalog.pg_class c
+                   JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+                   WHERE n.nspname OPERATOR(pg_catalog.=) %s::pg_catalog.text::pg_catalog.name
+                     AND c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['i','I']::pg_catalog."char"[])
+                   ORDER BY c.relname""",
                 (schema,),
             ).fetchall()]
 
             migration_rows: list[dict[str, Any]] | str
-            if "schema_migrations" in table_names:
+            if "schema_migrations" in tables and tables["schema_migrations"][0] == "f":
+                migration_rows = "UNKNOWN_FOREIGN_TABLE"
+            elif "schema_migrations" in tables and tables["schema_migrations"][1]:
+                migration_rows = "UNKNOWN_ROW_SECURITY"
+            elif "schema_migrations" in tables:
                 conn.execute("SAVEPOINT inventory_migrations")
                 try:
                     migration_rows = [
                         {"version": int(v), "name": str(n), "sha256": str(h)}
                         for v, n, h in conn.execute(
-                            sql.SQL("SELECT version, name, sha256 FROM {}.schema_migrations ORDER BY version").format(
+                            sql.SQL("SELECT m.version, m.name, m.sha256 FROM ONLY {}.schema_migrations m ORDER BY m.version").format(
                                 sql.Identifier(schema)
                             )
                         ).fetchall()
@@ -184,6 +228,8 @@ def collect_inventory(dsn: str, *, schema: str = "public", source_sha: str = "UN
                 and not unexpected_schemas
                 and not unknown_counts
                 and total_rows == 0
+                and bool(occupancy)
+                and not any(occupancy.values())
             )
 
             report = {
@@ -197,7 +243,9 @@ def collect_inventory(dsn: str, *, schema: str = "public", source_sha: str = "UN
                 "database_size_bytes": database_size,
                 "database_connections": connections,
                 "schemas": schemas,
+                "excluded_schemas": excluded_schemas,
                 "unexpected_schemas": unexpected_schemas,
+                "occupancy": occupancy,
                 "objects": objects,
                 "functions": functions,
                 "triggers": triggers,

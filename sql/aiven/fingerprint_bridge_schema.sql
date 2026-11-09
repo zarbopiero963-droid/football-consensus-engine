@@ -1,49 +1,90 @@
--- FCB-WP-005: read-only catalog fingerprint of the CURRENT schema after the restore.
+-- FCB-WP-005: read-only catalog fingerprint of the schema public after the restore.
 -- One line per object property, schema name stripped, sorted; md5 of the whole text is
 -- compared inside the restore transaction with the value pinned in the workflow (PG18),
 -- so any tampered or extra object (functions, triggers and their enabled state, privileges,
 -- columns, constraints, indexes, rules/views, policies, types) aborts before commit.
+-- Every catalog relation, function and operator is schema-qualified (audit F3): the output is
+-- the same as before the qualification, and objects planted in public cannot change it.
 -- Data rows are never read; schema_migrations contents are verified separately.
-WITH s AS (SELECT current_schema() AS n),
-c AS (SELECT cl.* FROM pg_class cl JOIN pg_namespace n ON n.oid = cl.relnamespace, s WHERE n.nspname = s.n),
+WITH s AS (SELECT 'public'::pg_catalog.text AS n),
+me AS (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER),
+c AS (SELECT cl.* FROM pg_catalog.pg_class cl JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) cl.relnamespace, s
+      WHERE n.nspname OPERATOR(pg_catalog.=) s.n::pg_catalog.name),
 lines(x) AS (
-    SELECT 'rel ' || relname || ' ' || relkind::text || ' ' || relpersistence::text || ' acl=' || COALESCE(relacl::text, '-')
-        || ' opt=' || COALESCE(reloptions::text, '-') || ' rls=' || relrowsecurity || ' ri=' || relreplident::text
-        || ' own=' || (relowner = (SELECT oid FROM pg_roles WHERE rolname = current_user))
-    FROM c WHERE relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'i', 'I', 'c')
+    SELECT 'rel '::pg_catalog.text OPERATOR(pg_catalog.||) c.relname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) c.relkind::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) c.relpersistence::pg_catalog.text OPERATOR(pg_catalog.||) ' acl='::pg_catalog.text
+        OPERATOR(pg_catalog.||) COALESCE(c.relacl::pg_catalog.text, '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' opt='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(c.reloptions::pg_catalog.text, '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' rls='::pg_catalog.text OPERATOR(pg_catalog.||) c.relrowsecurity::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' ri='::pg_catalog.text OPERATOR(pg_catalog.||) c.relreplident::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' own='::pg_catalog.text
+        OPERATOR(pg_catalog.||) (c.relowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))::pg_catalog.text
+    FROM c WHERE c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r', 'p', 'v', 'm', 'S', 'f', 'i', 'I', 'c']::pg_catalog."char"[])
     UNION ALL
-    SELECT 'col ' || c.relname || '.' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
-        || ' coll=' || COALESCE((SELECT cn.nspname || '.' || co.collname FROM pg_collation co
-                                 JOIN pg_namespace cn ON cn.oid = co.collnamespace WHERE co.oid = a.attcollation), '-')
-        || ' nn=' || a.attnotnull || ' def=' || COALESCE(pg_get_expr(d.adbin, d.adrelid), '-')
-        || ' acl=' || COALESCE(a.attacl::text, '-') || ' id=' || a.attidentity::text || ' gen=' || a.attgenerated::text
-    FROM c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-    LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
-    WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+    SELECT 'col '::pg_catalog.text OPERATOR(pg_catalog.||) c.relname::pg_catalog.text OPERATOR(pg_catalog.||) '.'::pg_catalog.text
+        OPERATOR(pg_catalog.||) a.attname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) pg_catalog.format_type(a.atttypid, a.atttypmod)
+        OPERATOR(pg_catalog.||) ' coll='::pg_catalog.text
+        OPERATOR(pg_catalog.||) COALESCE((SELECT cn.nspname::pg_catalog.text OPERATOR(pg_catalog.||) '.'::pg_catalog.text
+                                                 OPERATOR(pg_catalog.||) co.collname::pg_catalog.text
+                                          FROM pg_catalog.pg_collation co
+                                          JOIN pg_catalog.pg_namespace cn ON cn.oid OPERATOR(pg_catalog.=) co.collnamespace
+                                          WHERE co.oid OPERATOR(pg_catalog.=) a.attcollation), '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' nn='::pg_catalog.text OPERATOR(pg_catalog.||) a.attnotnull::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' def='::pg_catalog.text
+        OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_expr(d.adbin, d.adrelid), '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' acl='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(a.attacl::pg_catalog.text, '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' id='::pg_catalog.text OPERATOR(pg_catalog.||) a.attidentity::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' gen='::pg_catalog.text OPERATOR(pg_catalog.||) a.attgenerated::pg_catalog.text
+    FROM c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid
+        AND a.attnum OPERATOR(pg_catalog.>) 0::pg_catalog.int2 AND NOT a.attisdropped
+    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid OPERATOR(pg_catalog.=) c.oid AND d.adnum OPERATOR(pg_catalog.=) a.attnum
+    WHERE c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r', 'p', 'v', 'm', 'f']::pg_catalog."char"[])
     UNION ALL
-    SELECT 'con ' || c.relname || ' ' || k.conname || ' ' || k.contype::text || ' ' || pg_get_constraintdef(k.oid)
-        || ' valid=' || k.convalidated
-    FROM c JOIN pg_constraint k ON k.conrelid = c.oid
+    SELECT 'con '::pg_catalog.text OPERATOR(pg_catalog.||) c.relname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) k.conname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) k.contype::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) pg_catalog.pg_get_constraintdef(k.oid)
+        OPERATOR(pg_catalog.||) ' valid='::pg_catalog.text OPERATOR(pg_catalog.||) k.convalidated::pg_catalog.text
+    FROM c JOIN pg_catalog.pg_constraint k ON k.conrelid OPERATOR(pg_catalog.=) c.oid
     UNION ALL
-    SELECT 'idx ' || pg_get_indexdef(i.indexrelid) || ' valid=' || i.indisvalid || ' ready=' || i.indisready
-    FROM c JOIN pg_index i ON i.indrelid = c.oid
+    SELECT 'idx '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_indexdef(i.indexrelid)
+        OPERATOR(pg_catalog.||) ' valid='::pg_catalog.text OPERATOR(pg_catalog.||) i.indisvalid::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' ready='::pg_catalog.text OPERATOR(pg_catalog.||) i.indisready::pg_catalog.text
+    FROM c JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) c.oid
     UNION ALL
-    SELECT 'trg ' || pg_get_triggerdef(t.oid) || ' enabled=' || t.tgenabled::text
-    FROM c JOIN pg_trigger t ON t.tgrelid = c.oid WHERE NOT t.tgisinternal
+    SELECT 'trg '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_triggerdef(t.oid)
+        OPERATOR(pg_catalog.||) ' enabled='::pg_catalog.text OPERATOR(pg_catalog.||) t.tgenabled::pg_catalog.text
+    FROM c JOIN pg_catalog.pg_trigger t ON t.tgrelid OPERATOR(pg_catalog.=) c.oid WHERE NOT t.tgisinternal
     UNION ALL
-    SELECT 'rul ' || c.relname || ' ' || r.rulename || ' ' || pg_get_ruledef(r.oid) || ' enabled=' || r.ev_enabled::text
-    FROM c JOIN pg_rewrite r ON r.ev_class = c.oid
+    SELECT 'rul '::pg_catalog.text OPERATOR(pg_catalog.||) c.relname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) r.rulename::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) pg_catalog.pg_get_ruledef(r.oid)
+        OPERATOR(pg_catalog.||) ' enabled='::pg_catalog.text OPERATOR(pg_catalog.||) r.ev_enabled::pg_catalog.text
+    FROM c JOIN pg_catalog.pg_rewrite r ON r.ev_class OPERATOR(pg_catalog.=) c.oid
     UNION ALL
-    SELECT 'pol ' || c.relname || ' ' || p.polname || ' ' || p.polcmd::text || ' ' || COALESCE(pg_get_expr(p.polqual, p.polrelid), '-')
-    FROM c JOIN pg_policy p ON p.polrelid = c.oid
+    SELECT 'pol '::pg_catalog.text OPERATOR(pg_catalog.||) c.relname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) p.polname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) p.polcmd::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_expr(p.polqual, p.polrelid), '-'::pg_catalog.text)
+    FROM c JOIN pg_catalog.pg_policy p ON p.polrelid OPERATOR(pg_catalog.=) c.oid
     UNION ALL
-    SELECT 'fun ' || pg_get_functiondef(p.oid) || ' acl=' || COALESCE(p.proacl::text, '-')
-        || ' own=' || (p.proowner = (SELECT oid FROM pg_roles WHERE rolname = current_user))
-    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace, s WHERE n.nspname = s.n AND p.prokind IN ('f', 'p')
+    SELECT 'fun '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_functiondef(p.oid)
+        OPERATOR(pg_catalog.||) ' acl='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(p.proacl::pg_catalog.text, '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' own='::pg_catalog.text
+        OPERATOR(pg_catalog.||) (p.proowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))::pg_catalog.text
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace, s
+    WHERE n.nspname OPERATOR(pg_catalog.=) s.n::pg_catalog.name
+      AND p.prokind OPERATOR(pg_catalog.=) ANY (ARRAY['f', 'p']::pg_catalog."char"[])
     UNION ALL
-    SELECT 'typ ' || t.typname || ' ' || t.typtype::text
-    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace, s
-    WHERE n.nspname = s.n AND t.typtype IN ('e', 'd', 'r', 'm', 'b')
+    SELECT 'typ '::pg_catalog.text OPERATOR(pg_catalog.||) t.typname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+        OPERATOR(pg_catalog.||) t.typtype::pg_catalog.text
+    FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) t.typnamespace, s
+    WHERE n.nspname OPERATOR(pg_catalog.=) s.n::pg_catalog.name
+      AND t.typtype OPERATOR(pg_catalog.=) ANY (ARRAY['e', 'd', 'r', 'm', 'b']::pg_catalog."char"[])
 )
-SELECT md5(string_agg(replace(x, (SELECT n FROM s) || '.', ''), E'\n' ORDER BY replace(x, (SELECT n FROM s) || '.', '')))
-FROM lines;
+SELECT pg_catalog.md5(pg_catalog.string_agg(
+    pg_catalog.replace(l.x, (SELECT s.n FROM s) OPERATOR(pg_catalog.||) '.'::pg_catalog.text, ''::pg_catalog.text), E'\n'::pg_catalog.text
+    ORDER BY pg_catalog.replace(l.x, (SELECT s.n FROM s) OPERATOR(pg_catalog.||) '.'::pg_catalog.text, ''::pg_catalog.text)))
+FROM lines l;
