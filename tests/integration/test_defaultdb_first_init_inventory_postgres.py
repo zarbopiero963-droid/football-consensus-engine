@@ -112,8 +112,10 @@ def test_lookalike_temp_schema_is_reported_and_blocks_the_proof(isolated_databas
     assert report["first_time_initialization_proven"] is False
 
 
-@pytest.mark.parametrize("aiven_shape", [True, False])
-def test_avnadmin_monitor_is_excluded_only_in_aivens_shape_and_listed(isolated_database, aiven_shape):
+@pytest.mark.parametrize("aiven_shape,grant", [(True, None), (False, None),
+                                               (False, "WITH INHERIT FALSE, SET TRUE"),
+                                               (False, "WITH ADMIN TRUE, INHERIT FALSE, SET FALSE")])
+def test_avnadmin_monitor_is_excluded_only_in_aivens_shape_and_listed(isolated_database, aiven_shape, grant):
     created = False
     with psycopg.connect(isolated_database, autocommit=True) as conn:
         if conn.execute("SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '_avnadmin_monitor'").fetchone() is None:
@@ -121,10 +123,12 @@ def test_avnadmin_monitor_is_excluded_only_in_aivens_shape_and_listed(isolated_d
             created = True
     try:
         with _owner(isolated_database) as (role, owner_dsn):
-            schema_owner = "_avnadmin_monitor" if aiven_shape else role
+            schema_owner = "_avnadmin_monitor" if aiven_shape or grant else role
             _exec(isolated_database,
                   sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(schema_owner)),
                   "CREATE FUNCTION _avnadmin_monitor.probe() RETURNS int LANGUAGE sql AS 'select 1'")
+            if grant:  # a membership without inherited CREATE: only pg_has_role(MEMBER) sees it
+                _exec(isolated_database, sql.SQL("GRANT _avnadmin_monitor TO {} " + grant).format(sql.Identifier(role)))
             report = collect_inventory(owner_dsn)
             if aiven_shape:
                 assert report["excluded_schemas"] == ["_avnadmin_monitor"]
@@ -135,6 +139,8 @@ def test_avnadmin_monitor_is_excluded_only_in_aivens_shape_and_listed(isolated_d
                 assert report["unexpected_schemas"] == ["_avnadmin_monitor"]
                 assert report["first_time_initialization_proven"] is False
             _exec(isolated_database, "DROP SCHEMA _avnadmin_monitor CASCADE")
+            if grant:
+                _exec(isolated_database, sql.SQL("REVOKE _avnadmin_monitor FROM {}").format(sql.Identifier(role)))
     finally:
         if created:
             _exec(isolated_database, "DROP ROLE _avnadmin_monitor")

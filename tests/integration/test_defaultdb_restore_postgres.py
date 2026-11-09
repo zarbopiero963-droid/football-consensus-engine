@@ -716,12 +716,19 @@ def test_lookalike_temp_schemas_are_refused_everywhere(owned, name):
     assert _nothing_written(owner)
 
 
-@pytest.mark.parametrize("variant", ["session_owner", "other_owner", "session_member", "session_create"])
+@pytest.mark.parametrize("variant", ["session_owner", "other_owner", "session_member", "session_member_noinherit",
+                                     "session_admin_only", "session_create"])
 def test_avnadmin_monitor_is_excluded_only_in_aivens_real_shape(owned, variant):
     db, owner = owned
     owner_name = {"session_owner": owner.role, "other_owner": "avn_helper_" + uuid.uuid4().hex[:6]}.get(
         variant, "_avnadmin_monitor")
     extra = {"session_member": [SQL("GRANT _avnadmin_monitor TO {}").format(Identifier(owner.role))],
+             # membership without inherited privileges (no CREATE seen), or ADMIN only: the session
+             # can still SET ROLE / re-grant itself into the owner; only pg_has_role(MEMBER) sees it
+             "session_member_noinherit": [SQL("GRANT _avnadmin_monitor TO {} WITH INHERIT FALSE, SET TRUE")
+                                          .format(Identifier(owner.role))],
+             "session_admin_only": [SQL("GRANT _avnadmin_monitor TO {} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE")
+                                    .format(Identifier(owner.role))],
              "session_create": [SQL("GRANT CREATE ON SCHEMA _avnadmin_monitor TO {}").format(Identifier(owner.role))]
              }.get(variant, [])
     with _monitor_schema(db, owner_name, *extra):
@@ -732,7 +739,7 @@ def test_avnadmin_monitor_is_excluded_only_in_aivens_real_shape(owned, variant):
             rc, _, err = _workflow_tx(owner)
             assert rc != 0 and _nothing_written(owner)
         finally:
-            if variant == "session_member":
+            if variant.startswith("session_member") or variant == "session_admin_only":
                 _exec(db.dsn, SQL("REVOKE _avnadmin_monitor FROM {}").format(Identifier(owner.role)))
 
 
