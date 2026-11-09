@@ -341,6 +341,10 @@ POST_GUARD_PLANTS.update({
     "lookalike_temp_schema": ["CREATE SCHEMA evil_temp", "CREATE TABLE evil_temp.loot(x int)"],
     "pgxtemp_schema": ["CREATE SCHEMA pgxtemp", "CREATE TABLE pgxtemp.loot(x int)"],
     "db_setting_s": ["ALTER DATABASE {db} SET statement_timeout = '5min'"],
+    # Delta review of 4356350: unanchored-regex variants are not equivalent mutants.
+    "suffix_temp_schema": ["CREATE SCHEMA evil_pg_temp_1", "CREATE TABLE evil_pg_temp_1.loot(x int)"],
+    "search_path_prefixed_guc": ["ALTER DATABASE {db} SET \"search_path.x\" = '1'"],
+    "search_path_in_value": ["ALTER DATABASE {db} SET application_name = 'search_path'"],
 })
 
 
