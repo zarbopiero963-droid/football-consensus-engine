@@ -282,8 +282,13 @@ async def _remote_session(p):
 PROVIDERS = {"local": _local_session, "remote": _remote_session}
 
 
-def _visit(servers, provider, names, settle=2.0):
-    """Open each page in a fresh session; return {name: (error or None, title, internal lines)}."""
+def _visit(servers, provider, names, settle=2.0, await_leak=0.0):
+    """Open each page in a fresh session; return {name: (error or None, title, internal lines)}.
+
+    `await_leak` (RED controls only): keep the page open up to that many seconds until its
+    vector reaches the internal listener, so a slow runner cannot attribute the leak to the
+    next page or miss it (the earlier fixed settle made the RED control flaky under load).
+    GREEN tests never pass it: they assert that nothing arrives within the settle window."""
     async def scenario():
         out = {}
         async with playwright_api.async_playwright() as p:
@@ -297,6 +302,9 @@ def _visit(servers, provider, names, settle=2.0):
                     except UnsafeURL as exc:
                         error = str(exc)
                     await asyncio.sleep(settle)
+                    deadline = time.monotonic() + await_leak
+                    while len(servers.lines) == before and time.monotonic() < deadline:
+                        await asyncio.sleep(0.2)
                     title = await session.page.title() if session.page else ""
                     out[name] = (error, title, servers.lines[before:])
                 finally:
@@ -327,7 +335,7 @@ def test_worker_websockets_never_reach_internal(servers, provider):
 def test_control_every_worker_vector_leaks_without_the_guards(servers, provider, monkeypatch):
     """Review P2: not vacuous. With both layers off every vector reaches the internal host."""
     _guards_off(monkeypatch, init_script=True, csp=True)
-    results = _visit(servers, provider, list(WORKER_PAGES))
+    results = _visit(servers, provider, list(WORKER_PAGES), await_leak=8.0)
     expected = {name: True for name in WORKER_PAGES}
     if provider == "remote":
         # Full Chrome's popup blocker refuses window.open without a user gesture (window.open
@@ -341,7 +349,7 @@ def test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path(ser
     """Review P0 RED: init script ON, document CSP OFF -> a sandboxed srcdoc frame on the remote
     (Browser Use / CDP) path still reaches the internal host. Only the CSP closes it."""
     _guards_off(monkeypatch, init_script=False, csp=True)
-    results = _visit(servers, "remote", list(SANDBOX_PAGES))
+    results = _visit(servers, "remote", list(SANDBOX_PAGES), await_leak=8.0)
     assert {name: bool(lines) for name, (_, _, lines) in results.items()} == {name: True for name in SANDBOX_PAGES}
 
 
