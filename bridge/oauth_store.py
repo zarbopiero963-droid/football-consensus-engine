@@ -161,19 +161,21 @@ def refresh_and_issue(token: str, *, client_id: str, access: str, refresh: str,
         return {"resource": row["resource"], "scope": row["scope"]}
 
 
-def valid_access_token(token: str, resource: str, required_scope: str) -> bool:
+def valid_access_token(token: str, resource: str, required_scope: str) -> datetime | None:
+    """The token's expiry when it is valid for `resource` and `required_scope`, else None
+    (truthy/falsy, so callers that only need a yes/no keep working)."""
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT scope FROM oauth_access_tokens
+            """SELECT scope, expires_at FROM oauth_access_tokens
                WHERE token_hash=%s AND revoked_at IS NULL AND expires_at>NOW()
                  AND resource=%s""",
             (digest(token), resource),
         )
         row = cur.fetchone()
     if not row:
-        return False
+        return None
     scopes = set((row["scope"] or "").split())
-    return required_scope in scopes
+    return row["expires_at"] if required_scope in scopes else None
 
 
 def rotate_refresh_token(token: str) -> dict[str, Any] | None:

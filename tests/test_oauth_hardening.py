@@ -287,13 +287,12 @@ def test_malformed_bearers_never_touch_the_database(monkeypatch):
     assert calls == []
 
 
-def test_storage_concurrency_is_capped_waits_briefly_then_fails_closed(monkeypatch):
-    """At most STORE_CONCURRENCY calls run at once; a further call waits up to
-    STORE_WAIT_SECONDS for a slot, then gets StorageBusy (fixed 503)."""
+def test_storage_runs_at_most_n_at_once_and_a_late_start_fails_closed(monkeypatch):
+    """At most STORE_CONCURRENCY calls run at once on the dedicated pool; a queued call that
+    cannot start within STORE_WAIT_SECONDS raises StorageBusy (fixed 503)."""
     monkeypatch.setattr(oauth, "STORE_WAIT_SECONDS", 0.3)
     gate = threading.Event()
-    running = []
-    peak = []
+    running, peak = [], []
 
     def slow(*_a, **_k):
         running.append(1)
@@ -305,14 +304,58 @@ def test_storage_concurrency_is_capped_waits_briefly_then_fails_closed(monkeypat
     async def scenario():
         tasks = [asyncio.create_task(oauth._store(slow)) for _ in range(oauth.STORE_CONCURRENCY)]
         await asyncio.sleep(0.2)
-        with pytest.raises(oauth.StorageBusy):
-            await oauth._store(slow)            # all slots busy beyond the bounded wait
+        late = asyncio.create_task(oauth._store(slow))   # queued behind the busy workers
+        await asyncio.sleep(0.5)
         gate.set()
         await asyncio.gather(*tasks)
-        assert await oauth._store(lambda: "ok") == "ok"   # slots released
+        with pytest.raises(oauth.StorageBusy):
+            await late
+        assert await oauth._store(lambda: "ok") == "ok"
 
     asyncio.run(scenario())
     assert max(peak) == oauth.STORE_CONCURRENCY
+
+
+def test_a_bearer_flood_does_not_starve_the_shared_executor(monkeypatch):
+    """Review of #177 P2: waiting OAuth calls must not hold default-executor threads, which the
+    SSRF check, leases and quota coordinators also use."""
+    import bridge.server as srv
+    monkeypatch.setattr(srv.oauth_store, "valid_access_token", lambda *a: time.sleep(0.5) or None)
+
+    async def scenario():
+        flood = [asyncio.create_task(oauth.bearer_valid(f"{i:043d}")) for i in range(40)]
+        await asyncio.sleep(0.1)
+        start = time.monotonic()
+        await asyncio.to_thread(lambda: None)        # an unrelated default-executor task
+        elapsed = time.monotonic() - start
+        await asyncio.gather(*flood, return_exceptions=True)
+        return elapsed
+
+    assert asyncio.run(scenario()) < 0.5
+
+
+def test_the_queue_is_bounded(monkeypatch):
+    monkeypatch.setattr(oauth, "STORE_QUEUE_MAX", 0)
+    gate = threading.Event()
+
+    async def scenario():
+        busy = [asyncio.create_task(oauth._store(lambda: gate.wait(5))) for _ in range(oauth.STORE_CONCURRENCY)]
+        await asyncio.sleep(0.1)
+        with pytest.raises(oauth.StorageBusy):
+            await oauth._store(lambda: "never")       # no queue room: refused at once
+        gate.set()
+        await asyncio.gather(*busy)
+
+    asyncio.run(scenario())
+
+
+def test_the_cache_never_outlives_the_token(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    soon = datetime.now(timezone.utc) + timedelta(seconds=5)
+    monkeypatch.setattr(oauth_store, "valid_access_token", lambda *a: soon)
+    asyncio.run(oauth.bearer_valid("E" * 43))
+    (until,) = oauth._bearer_cache.values()
+    assert until - time.monotonic() <= 5.5
 
 
 def test_ordinary_concurrent_clients_are_served_not_refused(monkeypatch):

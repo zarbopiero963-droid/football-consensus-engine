@@ -12,6 +12,8 @@ import re
 import time
 import secrets
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -61,33 +63,45 @@ def _throttled(retry_after: int) -> JSONResponse:
                         headers={**NO_STORE, "Retry-After": str(retry_after)})
 
 
-# At most this many OAuth storage calls run at once (each opens its own connection). Aiven
-# piero-1 allows 15 connections in total, shared with the coordinators, leases and workflows.
-# A call waits up to STORE_WAIT_SECONDS for a slot (ordinary client concurrency must not see
-# 503s, review of #177), then fails closed with a fixed 503. The slot is taken and released
-# INSIDE the worker thread, so a cancelled request cannot free it while its query still runs.
+# OAuth storage runs on its OWN small thread pool (review of #177): at most STORE_CONCURRENCY
+# connections against Aiven piero-1 (15 in total, shared with coordinators, leases and
+# workflows), and queued calls hold NO thread, so a flood of unauthenticated requests cannot
+# starve the default executor used by the SSRF check, leases and quota coordinators.
+# A queued call that cannot START within STORE_WAIT_SECONDS is dropped (fixed 503), and at most
+# STORE_QUEUE_MAX calls may wait; beyond that the request fails closed immediately.
 STORE_CONCURRENCY = 4
 STORE_WAIT_SECONDS = 3.0
-_STORE_SLOTS = threading.BoundedSemaphore(STORE_CONCURRENCY)
+STORE_QUEUE_MAX = 32
+_STORE_POOL = ThreadPoolExecutor(max_workers=STORE_CONCURRENCY, thread_name_prefix="oauth-store")
+_store_pending = 0
+_store_pending_lock = threading.Lock()
 
 
 class StorageBusy(Exception):
-    """No storage slot became free in time: fixed 503 instead of piling up connections."""
-
-
-def _with_slot(fn, *args, **kwargs):
-    if not _STORE_SLOTS.acquire(timeout=STORE_WAIT_SECONDS):
-        raise StorageBusy()
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        _STORE_SLOTS.release()
+    """No storage worker became free in time: fixed 503 instead of piling up connections."""
 
 
 async def _store(fn, *args, **kwargs):
-    """Run a synchronous storage call off the event loop (WP-007: never block /healthz or /mcp),
-    with at most STORE_CONCURRENCY connections in flight."""
-    return await asyncio.to_thread(_with_slot, fn, *args, **kwargs)
+    """Run a synchronous storage call off the event loop (WP-007: never block /healthz or /mcp)
+    on the dedicated OAuth pool."""
+    global _store_pending
+    with _store_pending_lock:
+        if _store_pending >= STORE_CONCURRENCY + STORE_QUEUE_MAX:
+            raise StorageBusy()
+        _store_pending += 1
+    submitted = time.monotonic()
+    deadline = STORE_WAIT_SECONDS
+
+    def run():
+        if time.monotonic() - submitted > deadline:
+            raise StorageBusy()
+        return fn(*args, **kwargs)
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(_STORE_POOL, run)
+    finally:
+        with _store_pending_lock:
+            _store_pending -= 1
 
 
 # Positive-only cache of validated bearer tokens (key: SHA-256 of the token, never the token).
@@ -107,14 +121,20 @@ async def bearer_valid(token: str) -> bool:
         if until is not None and until > now:
             return True
         _bearer_cache.pop(key, None)
-    valid = await _store(oauth_store.valid_access_token, token, resource_url(), SCOPE)
-    if valid:
+    result = await _store(oauth_store.valid_access_token, token, resource_url(), SCOPE)
+    if not result:
+        return False
+    ttl = BEARER_CACHE_SECONDS
+    if isinstance(result, datetime):
+        # Never cache past the token's own expiry (review of #177, P3).
+        ttl = min(ttl, (result - datetime.now(timezone.utc)).total_seconds())
+    if ttl > 0:
         with _bearer_lock:
             if len(_bearer_cache) >= BEARER_CACHE_MAX:
                 for k in [k for k, v in _bearer_cache.items() if v <= now] or list(_bearer_cache)[:1]:
                     _bearer_cache.pop(k, None)
-            _bearer_cache[key] = now + BEARER_CACHE_SECONDS
-    return valid
+            _bearer_cache[key] = now + ttl
+    return True
 
 
 def reset_bearer_cache() -> None:
