@@ -8,6 +8,10 @@
 -- connecting role, the connecting role is not a member of the owner and cannot CREATE in it
 -- (observed on Aiven piero-1: owner `_avnadmin_monitor`, not a superuser; avnadmin is neither
 -- member nor has CREATE/USAGE).
+-- Residual (documented): on a cluster WITHOUT an `_avnadmin_monitor` role, a non-superuser owner
+-- with CREATEROLE could create that role via an intermediary, plant objects owned by it and then
+-- drop the intermediary, hiding them. Not exploitable on the Aiven target, where the role exists
+-- cluster-wide and avnadmin has no ADMIN/SET/CREATE on it (verified read-only).
 -- The apply step re-runs this same query inside its own transaction (sum must be exactly 0).
 WITH me AS (
   SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER

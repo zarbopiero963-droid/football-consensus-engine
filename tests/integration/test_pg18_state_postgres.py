@@ -171,21 +171,57 @@ def test_the_real_aiven_monitor_schema_is_excluded(db):
         assert _occupancy(owner_dsn) == "EMPTY"
 
 
-@pytest.mark.parametrize("variant", ["other_owner", "session_member", "session_create", "session_owner"])
+MONITOR_VARIANTS = ["other_owner", "session_member", "session_member_noinherit", "session_create",
+                    "session_owner", "superuser_other_name"]
+
+
+@contextlib.contextmanager
+def _hiding_place(name, dsn, role, variant):
+    """Plant one non-excluded variant of a monitor-like schema (each must be counted)."""
+    if variant == "superuser_other_name":
+        su = "avn_su_" + uuid.uuid4().hex[:6]
+        _exec(dsn, sql.SQL("CREATE ROLE {} SUPERUSER").format(sql.Identifier(su)),
+              sql.SQL("CREATE SCHEMA evil AUTHORIZATION {}").format(sql.Identifier(su)),
+              "CREATE TABLE evil.loot(x int)")
+        try:
+            yield
+        finally:
+            _exec(dsn, "DROP SCHEMA evil CASCADE", sql.SQL("DROP ROLE {}").format(sql.Identifier(su)))
+        return
+    owner = {"other_owner": "avn_helper_" + uuid.uuid4().hex[:6], "session_owner": role}.get(variant, "_avnadmin_monitor")
+    extra = []
+    if variant == "session_member":
+        extra.append(sql.SQL("GRANT {} TO {}").format(sql.Identifier("_avnadmin_monitor"), sql.Identifier(role)))
+    if variant == "session_member_noinherit":
+        # Membership without inherited privileges: has_schema_privilege(CREATE) is false, yet the
+        # session can SET ROLE and create objects there. Only the pg_has_role(MEMBER) clause sees it.
+        extra.append(sql.SQL("GRANT {} TO {} WITH INHERIT FALSE, SET TRUE")
+                     .format(sql.Identifier("_avnadmin_monitor"), sql.Identifier(role)))
+    if variant == "session_create":
+        extra.append(sql.SQL("GRANT CREATE ON SCHEMA _avnadmin_monitor TO {}").format(sql.Identifier(role)))
+    with _monitor_schema(dsn, owner, *extra):
+        yield
+
+
+@pytest.mark.parametrize("variant", MONITOR_VARIANTS)
 def test_the_monitor_schema_is_not_a_hiding_place(db, variant):
-    """Only the exact Aiven shape is excluded: another owner name, a session that is a member of the
-    owner, a session with CREATE on the schema, or a session-owned schema all count."""
+    """Only the exact Aiven shape is excluded. Each variant is counted by the EMPTY gate AND refused
+    by the post-apply guard (review of #180: both SQL files, every clause)."""
     name, dsn = db
-    with _owner_session(name, dsn) as (role, owner_dsn):
-        owner = {"other_owner": "avn_helper_" + uuid.uuid4().hex[:6],
-                 "session_owner": role}.get(variant, "_avnadmin_monitor")
-        extra = []
-        if variant == "session_member":
-            extra.append(sql.SQL("GRANT {} TO {}").format(sql.Identifier("_avnadmin_monitor"), sql.Identifier(role)))
-        if variant == "session_create":
-            extra.append(sql.SQL("GRANT CREATE ON SCHEMA _avnadmin_monitor TO {}").format(sql.Identifier(role)))
-        with _monitor_schema(dsn, owner, *extra):
-            assert _occupancy(owner_dsn) == "UNEXPECTED_SCHEMAS", variant
+    with _owner_session(name, dsn) as (role, owner_dsn), _hiding_place(name, dsn, role, variant):
+        assert _occupancy(owner_dsn) == "UNEXPECTED_SCHEMAS", variant
+        proc = _post_guard_apply(owner_dsn)
+        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr, variant
+        assert not _migrated(dsn)
+
+
+def test_the_post_apply_guard_accepts_the_real_aiven_monitor_shape(db):
+    """The same exclusion in the post-guard: an apply next to Aiven's real monitor schema commits."""
+    name, dsn = db
+    with _monitor_schema(dsn, "_avnadmin_monitor"), _owner_session(name, dsn) as (role, owner_dsn):
+        proc = _post_guard_apply(owner_dsn)
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert _migrated(dsn)
 
 
 def test_occupancy_runs_as_a_non_superuser_database_owner(db):
