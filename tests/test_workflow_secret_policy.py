@@ -23,10 +23,11 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+WORKFLOWS = sorted([*(ROOT / ".github" / "workflows").glob("*.yml"),
+                    *(ROOT / ".github" / "workflows").glob("*.yaml")])  # GitHub runs both
 EXPR_RE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
-NAME_DOT_RE = re.compile(r"\bsecrets\.([A-Za-z0-9_]+)")
-NAME_IDX_RE = re.compile(r"""\bsecrets\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]""")
+NAME_DOT_RE = re.compile(r"\bsecrets\.([A-Za-z0-9_]+)", re.I)
+NAME_IDX_RE = re.compile(r"""\bsecrets\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]""", re.I)
 WHOLE = "<ALL_SECRETS>"      # toJSON(secrets), secrets[expr], secrets: inherit, ...
 # Default-closed classification (review of #176): every secret is treated as a privileged
 # database credential unless it is on this explicit list of non-database secrets.
@@ -34,7 +35,7 @@ NON_DB_SECRETS = {"APIFOOTBALL_API_KEY", "SXBET_API_KEY", "FCB_AIVEN_CA_PEM", "F
 ALLOWED_SECRET_TRIGGERS = {"workflow_dispatch"}
 GATE_ENV = "scripts/require_protected_environment.sh"
 GATE_DISPATCH = "scripts/require_owner_main_dispatch.sh"
-UNCONDITIONAL = ("always()", "failure()", "cancelled()")
+STATUS_FN_RE = re.compile(r"\b(always|failure|cancelled|success)\s*\(", re.I)
 
 
 def _load(path):
@@ -59,11 +60,12 @@ def _secrets(obj) -> set[str]:
     """Every secret an object can reach, from any expression form; WHOLE when unbounded."""
     found: set[str] = set()
     for expr in EXPR_RE.findall(yaml.safe_dump(obj, width=10**9)):
-        if not re.search(r"\bsecrets\b", expr):
+        # Expression contexts are case-insensitive in GitHub Actions (SECRETS.X, toJSON(Secrets)).
+        if not re.search(r"\bsecrets\b", expr, re.I):
             continue
-        names = set(NAME_DOT_RE.findall(expr)) | set(NAME_IDX_RE.findall(expr))
-        bare = re.sub(r"""\bsecrets(\.[A-Za-z0-9_]+|\[\s*['"][A-Za-z0-9_]+['"]\s*\])""", "", expr)
-        if re.search(r"\bsecrets\b", bare):
+        names = {n.upper() for n in (*NAME_DOT_RE.findall(expr), *NAME_IDX_RE.findall(expr))}
+        bare = re.sub(r"""\bsecrets(\.[A-Za-z0-9_]+|\[\s*['"][A-Za-z0-9_]+['"]\s*\])""", "", expr, flags=re.I)
+        if re.search(r"\bsecrets\b", bare, re.I):
             names.add(WHOLE)
         found |= names
     if _inherits(obj):
@@ -94,6 +96,8 @@ def test_secret_detection_sees_every_expression_form():
     ]}
     assert _secrets(job) == {"FCB_PG18_TEST_URL", "OTHER_URL", WHOLE}
     assert _secrets({"uses": "./.github/workflows/x.yml", "secrets": "inherit"}) == {WHOLE}
+    assert _secrets({"env": {"A": "${{ SECRETS.fcb_pg18_test_url }}", "B": "${{ toJSON(Secrets) }}"}}) \
+        == {"FCB_PG18_TEST_URL", WHOLE}
     assert _privileged({"POSTGRES_URL"}) and _privileged({WHOLE}) and not _privileged({"SXBET_API_KEY"})
 
 
@@ -136,13 +140,27 @@ def _gate_lines(step) -> list[str]:
     return [line.strip() for line in str(step.get("run", "")).splitlines() if line.strip()]
 
 
+GATE_LINE_RE = re.compile(
+    r'^(bash scripts/require_owner_main_dispatch\.sh'
+    r'|reviewers="\$\(bash scripts/require_protected_environment\.sh "\$REPO" [A-Za-z0-9_-]+\)")$')
+
+
 def _is_strict_gate(step, needle: str) -> bool:
     """A gate counts only if it cannot be skipped or neutralised: no `if:`, no
-    continue-on-error, `set -euo pipefail` first, and the exact gate command with no `||`."""
-    lines = _gate_lines(step)
-    if not lines or lines[0] != "set -euo pipefail" or "if" in step or step.get("continue-on-error"):
+    continue-on-error, no `shell:`/`working-directory:` override, `set -euo pipefail` first,
+    and the gate command inside the LEADING block of gate commands (comments aside): nothing
+    else can run before it, so `exit 0`, `|| true` or any other command first disqualifies it."""
+    if any(k in step for k in ("if", "continue-on-error", "shell", "working-directory")):
         return False
-    return any(needle == line for line in lines)
+    lines = [line for line in _gate_lines(step) if not line.startswith("#")]
+    if len(lines) < 2 or lines[0] != "set -euo pipefail":
+        return False
+    leading = []
+    for line in lines[1:]:
+        if not GATE_LINE_RE.fullmatch(line):
+            break
+        leading.append(line)
+    return needle in leading
 
 
 @pytest.mark.parametrize("item", _db_jobs(), ids=lambda t: f"{t[0].name}:{t[2]}")
@@ -164,9 +182,13 @@ def test_database_secrets_only_after_both_gates_and_only_at_step_level(item):
         if _privileged(names):
             assert gates_done == {"dispatch", "environment"}, \
                 f"{path.name}:{job_id}: step {step.get('name')!r} gets a privileged secret before the gates"
+            # GitHub adds an implicit success() only when an `if:` names NO status function; any
+            # status function (always(), failure(), cancelled(), even `!success() || true`) can
+            # re-enable the step after a failed gate, so none is allowed here.
             cond = str(step.get("if", ""))
-            assert not any(u in cond for u in UNCONDITIONAL), \
-                f"{path.name}:{job_id}: step {step.get('name')!r} would run after a failed gate"
+            assert not STATUS_FN_RE.search(cond), \
+                f"{path.name}:{job_id}: step {step.get('name')!r} could run after a failed gate"
+            assert not step.get("continue-on-error"), f"{path.name}:{job_id}: {step.get('name')!r}"
     assert gates_done == {"dispatch", "environment"}, f"{path.name}:{job_id}: gates missing"
 
 
@@ -178,6 +200,9 @@ def test_a_neutralised_gate_is_not_a_gate():
         {**good, "if": "always()"},
         {"run": "set -euo pipefail\nbash scripts/require_owner_main_dispatch.sh || true\n"},
         {"run": "bash scripts/require_owner_main_dispatch.sh\n"},
+        {**good, "shell": 'bash -c "true {0}"'},
+        {**good, "working-directory": "/tmp"},
+        {"run": "set -euo pipefail\nexit 0\nbash scripts/require_owner_main_dispatch.sh\n"},
     ):
         assert not _is_strict_gate(bad, "bash scripts/require_owner_main_dispatch.sh"), bad
 
