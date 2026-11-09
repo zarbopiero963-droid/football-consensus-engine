@@ -23,8 +23,8 @@ SELECT k, v FROM (
     FROM pg_catalog.pg_proc p JOIN user_ns n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
   UNION ALL SELECT 3, 'types', pg_catalog.count(*)
     FROM pg_catalog.pg_type t JOIN user_ns n ON n.oid OPERATOR(pg_catalog.=) t.typnamespace
-    WHERE t.typrelid OPERATOR(pg_catalog.=) 0::pg_catalog.oid
-      AND t.typcategory OPERATOR(pg_catalog.<>) 'A'::pg_catalog.char
+    -- every type, including row and array types: over-counting is safe, and a domain over an
+    -- array type has typcategory 'A' (sixth review of #178)
   UNION ALL SELECT 4, 'other_objects', (
       (SELECT pg_catalog.count(*) FROM pg_catalog.pg_collation x JOIN user_ns n ON n.oid OPERATOR(pg_catalog.=) x.collnamespace)
       OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_operator x JOIN user_ns n ON n.oid OPERATOR(pg_catalog.=) x.oprnamespace)

@@ -87,6 +87,7 @@ def test_a_fresh_database_is_empty(db):
     (["CREATE FUNCTION public.f() RETURNS int LANGUAGE sql AS 'select 1'"], "NOT_EMPTY"),
     (["CREATE TYPE public.e AS ENUM ('a')"], "NOT_EMPTY"),
     (["CREATE DOMAIN public.d AS int"], "NOT_EMPTY"),
+    (["CREATE DOMAIN public.arrdom AS int[] CHECK (VALUE IS NOT NULL)"], "NOT_EMPTY"),
     (["CREATE TYPE public.c AS (a int)"], "NOT_EMPTY"),
     (["CREATE COLLATION public.coll (provider = libc, locale = 'C')"], "NOT_EMPTY"),
     (["CREATE TEXT SEARCH CONFIGURATION public.ts (COPY = pg_catalog.simple)"], "NOT_EMPTY"),
@@ -306,3 +307,68 @@ def test_the_applied_0001_0007_series_is_recognised_and_survives_shadowing(db, t
     # A forged single row is refused even when every count matches.
     forged = "\n".join(evidence.splitlines()[:7] + [_expected_rows().replace("\n", " ")])
     assert pg18_state.classify(forged, _expected_rows()) != "BRIDGE_0001_0007"
+
+
+
+POST_GUARD_PLANTS = {
+    "function": ["CREATE FUNCTION public.planted() RETURNS int LANGUAGE sql AS 'select 1'"],
+    "schema": ["CREATE SCHEMA planted"],
+    "default_acl": ["ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"],
+    "db_setting": ["ALTER DATABASE {db} SET work_mem = '8MB'"],
+    "large_object": ["SELECT pg_catalog.lo_create(0)"],
+    "enum": ["CREATE TYPE public.planted_e AS ENUM ('a')"],
+    "array_domain": ["CREATE DOMAIN public.planted_d AS int[]"],
+    "sequence": ["CREATE SEQUENCE public.planted_s"],
+    "operator": ["CREATE FUNCTION public.eq2(int, int) RETURNS bool LANGUAGE sql AS 'select $1 = $2'",
+                 "CREATE OPERATOR public.=== (LEFTARG = int, RIGHTARG = int, FUNCTION = public.eq2)"],
+    "publication": ["CREATE PUBLICATION planted_pub"],
+    "subscription": ["CREATE SUBSCRIPTION planted_sub CONNECTION 'host=127.0.0.1 port=1 dbname=x' PUBLICATION p "
+                     "WITH (connect = false, slot_name = NONE, enabled = false)"],
+}
+
+
+@pytest.mark.parametrize("kind", sorted(POST_GUARD_PLANTS))
+def test_the_post_apply_guard_refuses_every_foreign_object_kind(db, kind):
+    """Sixth review P2-2: every term of pg18_post_apply_guard.sql is exercised on its own."""
+    name, dsn = db
+    _exec(dsn, *[sql.SQL(q.replace("{db}", "{}")).format(sql.Identifier(name)) if "{db}" in q else q
+                 for q in POST_GUARD_PLANTS[kind]])
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+    proc = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1",
+                           "-f", str(AIVEN / "aiven_migrations_0001_0007.sql"),
+                           "-f", str(AIVEN / "pg18_post_apply_guard.sql")],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr, kind
+    assert not _migrated(dsn)
+
+
+def _setting(dsn, name):
+    return _psql(dsn, "-c", f"show {name}").strip()
+
+
+def test_a_prepared_transaction_blocks_empty(db):
+    name, dsn = db
+    if int(_setting(dsn, "max_prepared_transactions")) == 0:
+        pytest.skip("max_prepared_transactions = 0 on this server")
+    gid = "planted_" + uuid.uuid4().hex[:8]
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("BEGIN")
+        conn.execute("CREATE TABLE public.in_doubt(x int)")
+        conn.execute(sql.SQL("PREPARE TRANSACTION {}").format(sql.Literal(gid)))
+    try:
+        assert _occupancy(dsn) == "NOT_EMPTY"
+    finally:
+        _exec(dsn, sql.SQL("ROLLBACK PREPARED {}").format(sql.Literal(gid)))
+
+
+def test_a_logical_replication_slot_blocks_empty(db):
+    name, dsn = db
+    if _setting(dsn, "wal_level") != "logical":
+        pytest.skip("wal_level is not logical on this server")
+    slot = "planted_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("SELECT pg_catalog.pg_create_logical_replication_slot({}, 'test_decoding')")
+          .format(sql.Literal(slot)))
+    try:
+        assert _occupancy(dsn) == "NOT_EMPTY"
+    finally:
+        _exec(dsn, sql.SQL("SELECT pg_catalog.pg_drop_replication_slot({})").format(sql.Literal(slot)))

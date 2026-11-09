@@ -557,7 +557,7 @@ def test_occupancy_is_empty_only_when_every_category_is_zero(tmp_path):
 
 def test_evidence_sql_has_no_like_wildcards_and_qualifies_every_catalog():
     """Review of #178, P1 (LIKE 'pg_temp%' matched 'pgxtemp') and P2 (search_path shadowing)."""
-    for name in ("pg18_occupancy.sql", "verify_schema.sql"):
+    for name in ("pg18_occupancy.sql", "verify_schema.sql", "pg18_post_apply_guard.sql"):
         text = (ROOT / "sql" / "aiven" / name).read_text()
         body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("--"))
         assert " like " not in body.lower(), name
@@ -593,11 +593,14 @@ def test_workflow_state_gates_apply_and_diagnose_exactly():
     assert 'qf sql/aiven/pg18_occupancy.sql "$occ"' in lines and 'qf sql/aiven/verify_schema.sql "$evidence"' in lines
     assert ("""if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f "$1" >"$2" 2>"$err"; then"""
             in lines)
-    assert pre_step["env"]["PGOPTIONS"] == "-c search_path=public"
+    assert pre_step["env"]["PGOPTIONS"] == "-c search_path=public -c default_transaction_read_only=on"
     assert 'test "$path1" = "pg_catalog" || { echo "::error::pg_catalog is not first in search_path"; exit 1; }' in lines
     apply = steps["Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify"]
     assert apply["if"] == "${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}"
-    assert apply["env"]["PGOPTIONS"] == "-c search_path=public"
+    assert apply["env"]["PGOPTIONS"] == "-c search_path=public -c lock_timeout=120s"
+    # Sixth review: the idempotency run is still ONE transaction with the target guard.
+    assert 'run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }' in [
+        l.strip() for l in apply["run"].splitlines()]
     assert "(pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name" in apply["run"]
     assert "CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER" in apply["run"]
     # Round 4 P1-1: no unqualified comparison operator in the guards (CVE-2018-1058 pattern).

@@ -194,7 +194,8 @@ jobs:
           PGSSLMODE: verify-full
           # Startup option: overrides any role/database search_path default, and pg_catalog stays
           # implicitly FIRST, so objects in public cannot shadow catalogs (review of #178, P2).
-          PGOPTIONS: -c search_path=public
+          # Read-only sessions: nothing a planted view or function does can write (sixth review).
+          PGOPTIONS: -c search_path=public -c default_transaction_read_only=on
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
@@ -303,7 +304,8 @@ jobs:
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
           PGSSLMODE: verify-full
-          PGOPTIONS: -c search_path=public
+          # lock_timeout: a session holding the migration's advisory lock cannot stall the run.
+          PGOPTIONS: -c search_path=public -c lock_timeout=120s
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
@@ -336,9 +338,9 @@ jobs:
           run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
           verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
           first_run; first="$(verify)"
-          applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          applied1="$(sp -X -A -t -c 'select pg_catalog.string_agg(applied_at::pg_catalog.text, $$,$$ order by version) from public.schema_migrations')"
           run;    second="$(verify)"
-          applied2="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          applied2="$(sp -X -A -t -c 'select pg_catalog.string_agg(applied_at::pg_catalog.text, $$,$$ order by version) from public.schema_migrations')"
           test "$first" = "$second" || { echo "::error::second run changed the schema evidence"; exit 1; }
           test "$applied1" = "$applied2" || { echo "::error::second run re-applied migrations"; exit 1; }
           expected="$(printf '%s\n' tables=29 functions=4 triggers=9 indexes=54 constraints_information_schema=307 constraints_pg_constraint=61 schema_migrations_rows=7)"
