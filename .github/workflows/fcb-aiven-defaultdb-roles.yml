@@ -21,7 +21,8 @@ name: FCB Aiven defaultdb roles (WP-009, owner-gated)
 #      roles model is already HARDENED (idempotent re-run); anything else refuses;
 #   6. ONE transaction: target guard, in-transaction state/owner/migration guard under the
 #      bridge advisory lock, roles, prepare, finalize, object-count assertion, model assertion;
-#      run twice, the second run must leave the same evidence; then both new identities log in
+#      run twice, the second run must leave the same evidence (roles report, schema evidence and the
+#      structure fingerprint; owners and ACLs change by design); then both new identities log in
 #      over verify-full and are checked read-only.
 # Passwords never reach a command line or a log: they are turned into SCRAM-SHA-256 verifiers
 # on the runner (masked) and psql reads those from its environment (\getenv). psql stderr is
@@ -62,16 +63,22 @@ jobs:
       # SHA-256 of every SQL file the roles transaction and its checks run (tests/test_defaultdb_roles_workflow.py).
       EXPECTED_SQL_SHA256: |
         sql/aiven/roles_apply_guard.sql=c2258cc1b334c337d07acbad8aed84dde3d294255e901844a6fbfe2c8a7c30fb
-        sql/aiven/upsert_bridge_roles.sql=5b46cf955041f8d68eeae87fa2e49888abb9c71664f941f95aee204bb3580fe3
+        sql/aiven/upsert_bridge_roles.sql=d9fcf9a9a3a06945eb30ba9e3456c0d9da8ebdf40be943a213092f81e71ab405
         sql/aiven/prepare_bridge_roles.sql=150c7895f9245d5dca4ba1981310ad8bef782c9ec232ce06a2d66792671a6d0f
         sql/aiven/finalize_bridge_privileges.sql=faaa227c309fbe210e929d82bd1227ab34ba26c3146b521e3837b27b8e8c3476
         sql/aiven/assert_bridge_counts.sql=aee4b5378ce4c0ecfd55b6d3461b02cba87cbb0c119afe2e2fc65f6dd450b0b2
         sql/aiven/assert_bridge_roles.sql=74556c7c095b55d3e928b42f24de949b03c595c3f8cada25dc937249e0da3a3c
-        sql/aiven/verify_bridge_roles.sql=d6ef28ea14cd00cd171ce422658f7a509112a3a5f8927697c4be661cfd39dfb8
-        sql/aiven/diagnose_bridge_roles.sql=5deb36a3e2ea8a2af78744bb974a28224fa479a596a396b2df5b198a41feed5f
+        sql/aiven/verify_bridge_roles.sql=31c7480f567a233fef8c243890a32e2ac47e8e8081861195b713df2ea8852bfa
+        sql/aiven/diagnose_bridge_roles.sql=dacd6365005dad24874ce300a100e788415db0c016bfc79a6f8f3b020c703405
         sql/aiven/verify_bridge_schema.sql=fd063c1d7fee80616647f3f98a42693bbf4a7c77691846d89a8df590e14deb24
         sql/aiven/defaultdb_precheck.sql=d3291db3e7d6cc75ba9e40f34c86f44241f4c883f22d2098d5abfde274311d6d
         sql/aiven/defaultdb_precheck_tracked.sql=e20c845d49a8af61d12975d7756f51a806a8833ffe09b7ef500106143ee5b493
+        sql/aiven/fingerprint_bridge_schema.sql=9a04f81ac3fa6a24fb72f0e2e911b76a4c3b33bdeb6f12c8347b674767e36ba8
+        sql/aiven/fingerprint_bridge_structure.sql=995ba192e5c8c93b70b484d71f110a3b955a8e1b6b3298db74d6eed557ec092c
+      # The restore's pinned catalog fingerprint (PostgreSQL 18): a first apply requires the database to
+      # carry exactly it. Owners and ACLs then change BY DESIGN; fingerprint_bridge_structure.sql (the
+      # same fingerprint without the owner/ACL fields) must be identical before and after.
+      EXPECTED_FINGERPRINT: 'b825ab11029502140b038ce6d3add670'
       # Same pinned object counts as the restore (PostgreSQL 18); they must hold after the roles change.
       EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
       PGCONNECT_TIMEOUT: '15'
@@ -180,7 +187,7 @@ jobs:
             test "$actual" = "$sha" || { echo "::error::$f differs from its pinned SHA-256"; exit 1; }
             n=$((n + 1))
           done <<< "$EXPECTED_SQL_SHA256"
-          test "$n" -eq 11 || { echo "::error::expected 11 pinned SQL files, found $n"; exit 1; }
+          test "$n" -eq 13 || { echo "::error::expected 13 pinned SQL files, found $n"; exit 1; }
           if grep -Eq 'signer_ledger_anchors|signer_ledger_writer_leases|signer_schema_migrations' \
                sql/aiven/upsert_bridge_roles.sql sql/aiven/prepare_bridge_roles.sql sql/aiven/finalize_bridge_privileges.sql; then
             echo "::error::signer content found in a roles script"; exit 1
@@ -333,6 +340,12 @@ jobs:
           migrator_verifier="$(python -I -S scripts/fcb_db_roles.py verifier FCB_MIGRATOR_DB_PASSWORD)"
           echo "::add-mask::$migrator_verifier"
           schema_before="$(ro -F '=' -f sql/aiven/verify_bridge_schema.sql)"
+          structure_before="$(ro -f sql/aiven/fingerprint_bridge_structure.sql)"
+          if [ "$roles_before" != "HARDENED" ]; then
+            # First apply: the database is exactly the restored bridge (owners and ACLs included).
+            full_before="$(ro -f sql/aiven/fingerprint_bridge_schema.sql)"
+            test "$full_before" = "$EXPECTED_FINGERPRINT" || { echo "::error::catalog fingerprint is not the restored one"; exit 1; }
+          fi
           # ONE transaction: target guard, state/owner/migration guard under the bridge advisory
           # lock, roles, prepare, finalize, object counts, final model. Any failure aborts it.
           run() { FCB_APP_DB_VERIFIER="$app_verifier" FCB_MIGRATOR_DB_VERIFIER="$migrator_verifier" \
@@ -343,6 +356,8 @@ jobs:
           test "$first" = "$second" || { echo "::error::second run changed the roles evidence"; exit 1; }
           schema_after="$(ro -F '=' -f sql/aiven/verify_bridge_schema.sql)"
           test "$schema_before" = "$schema_after" || { echo "::error::schema evidence changed"; exit 1; }
+          structure_after="$(ro -f sql/aiven/fingerprint_bridge_structure.sql)"
+          test "$structure_before" = "$structure_after" || { echo "::error::bridge structure fingerprint changed"; exit 1; }
           counts="$(printf '%s\n' "$schema_after" | head -n 7 | paste -sd' ')"
           test "$counts" = "$EXPECTED_COUNTS" || { echo "::error::object counts differ from expected"; exit 1; }
           roles_after="$(ro -f sql/aiven/verify_bridge_roles.sql)"
@@ -350,7 +365,7 @@ jobs:
           # Both new identities log in over verify-full and are checked read-only (rolled back probes).
           PYTHONPATH="$GITHUB_WORKSPACE" python scripts/fcb_db_roles.py login-check --require-tls | tee -a "$GITHUB_STEP_SUMMARY"
           {
-            echo "## Roles: PASS (state before: $before / $roles_before; run 2 no-op; model after: $roles_after; schema evidence unchanged)"
+            echo "## Roles: PASS (state before: $before / $roles_before; run 2 no-op; model after: $roles_after; schema evidence and structure fingerprint $structure_after unchanged; owners/ACLs changed by design)"
             echo '```'
             printf '%s\n' "$second"
             echo '```'

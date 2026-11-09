@@ -12,6 +12,7 @@ kind(oid, label) AS (
            CASE WHEN r.oid OPERATOR(pg_catalog.=) (SELECT sess.oid FROM sess) THEN 'session'::pg_catalog.text
                 WHEN r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer', 'pg_database_owner']::pg_catalog.name[])
                     THEN r.rolname::pg_catalog.text
+                WHEN r.oid OPERATOR(pg_catalog.=) 10::pg_catalog.oid THEN 'bootstrap'::pg_catalog.text
                 ELSE 'other'::pg_catalog.text END
     FROM pg_catalog.pg_roles r
     UNION ALL SELECT 0::pg_catalog.oid, 'PUBLIC'::pg_catalog.text
@@ -37,9 +38,11 @@ lines(o, line) AS (
                   OPERATOR(pg_catalog.||) ' members=' OPERATOR(pg_catalog.||) COALESCE((SELECT pg_catalog.string_agg(
                       k.label OPERATOR(pg_catalog.||) '(admin=' OPERATOR(pg_catalog.||) m.admin_option::pg_catalog.text
                       OPERATOR(pg_catalog.||) ',inherit=' OPERATOR(pg_catalog.||) m.inherit_option::pg_catalog.text
-                      OPERATOR(pg_catalog.||) ',set=' OPERATOR(pg_catalog.||) m.set_option::pg_catalog.text OPERATOR(pg_catalog.||) ')',
-                      ';'::pg_catalog.text ORDER BY k.label, m.admin_option, m.inherit_option, m.set_option)
+                      OPERATOR(pg_catalog.||) ',set=' OPERATOR(pg_catalog.||) m.set_option::pg_catalog.text
+                      OPERATOR(pg_catalog.||) ',grantor=' OPERATOR(pg_catalog.||) g.label OPERATOR(pg_catalog.||) ')',
+                      ';'::pg_catalog.text ORDER BY k.label, m.admin_option, m.inherit_option, m.set_option, g.label)
                       FROM pg_catalog.pg_auth_members m JOIN kind k ON k.oid OPERATOR(pg_catalog.=) m.member
+                      JOIN kind g ON g.oid OPERATOR(pg_catalog.=) m.grantor
                       WHERE m.roleid OPERATOR(pg_catalog.=) r.oid), '-'::pg_catalog.text)
                   OPERATOR(pg_catalog.||) ' db_connect=' OPERATOR(pg_catalog.||)
                       pg_catalog.has_database_privilege(r.oid, pg_catalog.current_database(), 'CONNECT')::pg_catalog.text
@@ -49,6 +52,28 @@ lines(o, line) AS (
                       pg_catalog.has_database_privilege(r.oid, pg_catalog.current_database(), 'TEMPORARY')::pg_catalog.text
                   FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) n.rolname), 'exists=false')
     FROM pg_catalog.unnest(ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.name[]) AS n(rolname)
+    -- Membership inventory: every pg_auth_members row that involves a bridge role, with its
+    -- three options and its grantor (WP-009: the exact expected set is asserted by
+    -- verify_bridge_roles.sql), then the EFFECTIVE reach between the identities.
+    UNION ALL SELECT 15, 'membership ' OPERATOR(pg_catalog.||) kr.label OPERATOR(pg_catalog.||) ' <- ' OPERATOR(pg_catalog.||) km.label
+        OPERATOR(pg_catalog.||) ' admin=' OPERATOR(pg_catalog.||) m.admin_option::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' inherit=' OPERATOR(pg_catalog.||) m.inherit_option::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' set=' OPERATOR(pg_catalog.||) m.set_option::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' grantor=' OPERATOR(pg_catalog.||) kg.label
+    FROM pg_catalog.pg_auth_members m
+    JOIN kind kr ON kr.oid OPERATOR(pg_catalog.=) m.roleid
+    JOIN kind km ON km.oid OPERATOR(pg_catalog.=) m.member
+    JOIN kind kg ON kg.oid OPERATOR(pg_catalog.=) m.grantor
+    WHERE kr.label OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
+       OR km.label OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
+    UNION ALL SELECT 16, 'effective ' OPERATOR(pg_catalog.||) f.label OPERATOR(pg_catalog.||) ' -> ' OPERATOR(pg_catalog.||) t.label
+        OPERATOR(pg_catalog.||) ' member=' OPERATOR(pg_catalog.||) pg_catalog.pg_has_role(f.oid, t.oid, 'MEMBER')::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' inherits_privileges=' OPERATOR(pg_catalog.||) pg_catalog.pg_has_role(f.oid, t.oid, 'USAGE')::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' can_set_role=' OPERATOR(pg_catalog.||) pg_catalog.pg_has_role(f.oid, t.oid, 'SET')::pg_catalog.text
+    FROM kind f, kind t
+    WHERE f.label OPERATOR(pg_catalog.=) ANY (ARRAY['session', 'fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
+      AND t.label OPERATOR(pg_catalog.=) ANY (ARRAY['session', 'fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
+      AND f.oid OPERATOR(pg_catalog.<>) t.oid
     UNION ALL SELECT 20, 'owners relations ' OPERATOR(pg_catalog.||) COALESCE((SELECT pg_catalog.string_agg(x.label OPERATOR(pg_catalog.||) '='
         OPERATOR(pg_catalog.||) x.n::pg_catalog.text, ' '::pg_catalog.text ORDER BY x.label) FROM (
             SELECT k.label, pg_catalog.count(*) AS n FROM pg_catalog.pg_class c JOIN ns ON ns.oid OPERATOR(pg_catalog.=) c.relnamespace

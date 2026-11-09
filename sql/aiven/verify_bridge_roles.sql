@@ -11,6 +11,12 @@
 --              the only member of fcb_migrator is the session (administrative) identity, with
 --              INHERIT (rollback: the previous runtime DSN keeps working); fcb_app and fcb_signer
 --              have no member except their creator's implicit ADMIN-only grant;
+--              exact membership inventory (pg_auth_members rows involving a bridge role):
+--                fcb_app      <- session  ADMIN only            grantor bootstrap superuser (implicit)
+--                fcb_signer   <- session  ADMIN only            grantor bootstrap superuser (implicit)
+--                fcb_migrator <- session  ADMIN only            grantor bootstrap superuser (implicit)
+--                fcb_migrator <- session  INHERIT + SET, no ADMIN, grantor session (explicit)
+--              and no bridge role can reach (MEMBER) another bridge role or the session;
 --   ownership  every relation, routine and type in public is owned by fcb_migrator;
 --   tables     the only non-owner privileges in public are the runtime allowlist of fcb_app
 --              (finalize_bridge_privileges.sql); no column privilege; no PUBLIC or signer grant;
@@ -66,6 +72,19 @@ expected_schema_grants(grantee, priv) AS (
     UNION ALL SELECT (SELECT mig.oid FROM mig), 'CREATE'::pg_catalog.text
     UNION ALL SELECT (SELECT app.oid FROM app), 'USAGE'::pg_catalog.text
 ),
+inventory AS (
+    SELECT m.roleid, m.member, m.admin_option, m.inherit_option, m.set_option, m.grantor
+    FROM pg_catalog.pg_auth_members m
+    WHERE m.roleid OPERATOR(pg_catalog.=) ANY (ARRAY(SELECT rl.oid FROM rl))
+       OR m.member OPERATOR(pg_catalog.=) ANY (ARRAY(SELECT rl.oid FROM rl))
+),
+expected_inventory(roleid, member, admin_option, inherit_option, set_option, grantor) AS (
+    SELECT (SELECT app.oid FROM app), (SELECT sess.oid FROM sess), true, false, false, 10::pg_catalog.oid
+    UNION ALL SELECT (SELECT sgn.oid FROM sgn), (SELECT sess.oid FROM sess), true, false, false, 10::pg_catalog.oid
+    UNION ALL SELECT (SELECT mig.oid FROM mig), (SELECT sess.oid FROM sess), true, false, false, 10::pg_catalog.oid
+    UNION ALL SELECT (SELECT mig.oid FROM mig), (SELECT sess.oid FROM sess), false, true, true, (SELECT sess.oid FROM sess)
+),
+identities AS (SELECT rl.oid FROM rl UNION SELECT sess.oid FROM sess),
 checks(code, bad) AS (
     SELECT 'roles_missing'::pg_catalog.text, (SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.<>) 3::pg_catalog.int8
     UNION ALL SELECT 'role_attributes', EXISTS (SELECT 1 FROM rl WHERE rl.rolsuper OR rl.rolcreaterole OR rl.rolcreatedb
@@ -80,6 +99,15 @@ checks(code, bad) AS (
     UNION ALL SELECT 'unexpected_app_or_signer_member', EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
         WHERE m.roleid OPERATOR(pg_catalog.=) ANY (ARRAY[(SELECT app.oid FROM app), (SELECT sgn.oid FROM sgn)])
           AND (m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess) OR m.inherit_option OR m.set_option))
+    UNION ALL SELECT 'membership_inventory', EXISTS (
+        SELECT i.roleid, i.member, i.admin_option, i.inherit_option, i.set_option, i.grantor FROM inventory i
+        EXCEPT SELECT e.roleid, e.member, e.admin_option, e.inherit_option, e.set_option, e.grantor FROM expected_inventory e)
+        OR EXISTS (
+        SELECT e.roleid, e.member, e.admin_option, e.inherit_option, e.set_option, e.grantor FROM expected_inventory e
+        EXCEPT SELECT i.roleid, i.member, i.admin_option, i.inherit_option, i.set_option, i.grantor FROM inventory i)
+    UNION ALL SELECT 'escalation_path', EXISTS (
+        SELECT 1 FROM rl, identities t
+        WHERE rl.oid OPERATOR(pg_catalog.<>) t.oid AND pg_catalog.pg_has_role(rl.oid, t.oid, 'MEMBER'))
     UNION ALL SELECT 'owner_not_migrator',
         EXISTS (SELECT 1 FROM rels c WHERE c.relowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace

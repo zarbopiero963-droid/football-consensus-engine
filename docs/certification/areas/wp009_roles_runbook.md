@@ -12,11 +12,16 @@ Workflow: `.github/workflows/fcb-aiven-defaultdb-roles.yml`. It is manual-only, 
 |---|---|---|
 | target guard | `$GUARD` in the workflow (byte-identical to the restore's) | database `defaultdb`, PostgreSQL 18, TLS session, `search_path=public`, no SET ROLE, no unexpected schema or setting |
 | state guard | `sql/aiven/roles_apply_guard.sql` | bridge advisory lock; `schema_migrations` = repository 0001–0008 (name + SHA-256); every object in `public` owned by the administrative identity or `fcb_migrator`; no signer series |
-| roles | `sql/aiven/upsert_bridge_roles.sql` | creates the roles if absent; `fcb_migrator` LOGIN, `fcb_app` LOGIN (passwords from the Environment secrets, as SCRAM-SHA-256 verifiers), `fcb_signer` NOLOGIN without password; gives the administrative identity SET + INHERIT membership in `fcb_migrator` |
+| roles | `sql/aiven/upsert_bridge_roles.sql` | `SET LOCAL createrole_self_grant = ''` (Aiven's server value is `inherit,set`; see below), then creates the roles if absent; `fcb_migrator` LOGIN, `fcb_app` LOGIN (passwords from the Environment secrets, as SCRAM-SHA-256 verifiers), `fcb_signer` NOLOGIN without password; gives the administrative identity SET + INHERIT membership in `fcb_migrator` |
 | prepare | `sql/aiven/prepare_bridge_roles.sql` | `public`: no PUBLIC access; `fcb_migrator` USAGE+CREATE; `fcb_app` USAGE; `fcb_migrator` default privileges grant nothing to PUBLIC |
 | finalize | `sql/aiven/finalize_bridge_privileges.sql` | all 33 bridge tables, their sequences and the 4 functions become `fcb_migrator`-owned; all non-owner privileges revoked; `fcb_app` gets only the runtime allowlist |
 | counts | `sql/aiven/assert_bridge_counts.sql` | object counts still `tables=33 functions=4 triggers=9 indexes=60 …` |
 | model | `sql/aiven/assert_bridge_roles.sql` | `sql/aiven/verify_bridge_roles.sql` must say `HARDENED` |
+
+**Ownership and ACLs change by design.** The bridge objects move from `avnadmin` to `fcb_migrator`, and the ACLs become the allowlist. So the restore's full catalog fingerprint (`b825ab11…`, which encodes owner and ACL) changes.
+- A first apply requires the database to carry exactly that fingerprint beforehand.
+- `sql/aiven/fingerprint_bridge_structure.sql` is the same fingerprint without the relation/routine owner and ACL fields. It must be identical before and after.
+- The second run must leave everything, owners and ACLs included, unchanged.
 
 It never creates, drops or alters a table, column, index, constraint, row or migration, never drops a role, and never changes the administrative identity's own attributes or password. After the transaction it compares the schema evidence (`verify_bridge_schema.sql`) before and after (must be identical), then logs in as `fcb_app` and `fcb_migrator` over `verify-full` and checks, inside rolled-back transactions, what each identity can and cannot do.
 
@@ -60,14 +65,35 @@ Add two secrets:
 
 Actions → *FCB Aiven defaultdb roles (WP-009, owner-gated)* → Run workflow from `main`, `mode=diagnose`, then approve the `aiven-production` deployment.
 
-Every session of this mode runs with `default_transaction_read_only=on`. Expected job summary:
+Every session of this mode runs with `default_transaction_read_only=on`. Expected job summary, matching the read-only facts verified on `defaultdb` on 2026-11-09:
 
-- `Restore precheck state: BRIDGE_0001_0008` and `Roles model: ROLES_ABSENT`;
-- `session_superuser=false`, `session_createrole=true`;
-- `session_has_public_owner_privileges=true`. If it is false, `avnadmin` cannot grant on schema `public`: **stop** and report it;
-- `createrole_self_grant=-`. Any other value adds memberships that the model refuses: **stop** and report it;
-- `role fcb_* exists=false` for all three;
-- `owners relations session=…` only. If any other owner appears, the apply refuses.
+```
+## Restore precheck state: BRIDGE_0001_0008
+## Roles model: ROLES_ABSENT
+session_superuser=false
+session_createrole=true
+database_owner=session
+public_schema_owner=pg_database_owner
+session_has_public_owner_privileges=true
+createrole_self_grant=inherit,set
+role fcb_app exists=false
+role fcb_migrator exists=false
+role fcb_signer exists=false
+owners relations session=34
+owners routines session=4
+schema_public_acl PUBLIC:USAGE pg_database_owner:CREATE pg_database_owner:USAGE
+routine_non_owner_grants=4
+default_acl none
+ROLES_ABSENT
+```
+
+- `createrole_self_grant=inherit,set` is **expected** on Aiven (server level). Left on, it would make `avnadmin` an INHERIT+SET member of every role it creates, so it could silently act as `fcb_app` and `fcb_signer`. The apply transaction switches it off with `SET LOCAL createrole_self_grant = ''`. That applies only inside the transaction (source `session`, not a database or role setting), and the transaction checks it is off before any `CREATE ROLE`. The final model check still refuses any INHERIT/SET membership in `fcb_app` or `fcb_signer`.
+- Before the first apply there are no `membership …` and no `effective …` lines, because no bridge role exists.
+- **Stop and report** if any of these differs:
+  - `session_has_public_owner_privileges` is false (`avnadmin` could not grant on `public`);
+  - any `role fcb_*` line shows `exists=true` before the first apply. Roles created by hand on Aiven carry the automatic INHERIT+SET grant and are refused (`unexpected_app_or_signer_member`);
+  - `owners …` shows anything but `session`;
+  - `default_acl` is not `none`.
 
 If the job fails, nothing was written. Report the failing step and its fixed error code (`FCB_…`).
 
@@ -77,9 +103,33 @@ Same workflow, `mode=apply`, `confirm` exactly `APPLY WP-009 ROLES TO defaultdb`
 
 Expected summary:
 
-- `Roles: PASS (state before: BRIDGE_0001_0008 / ROLES_ABSENT; run 2 no-op; model after: HARDENED; schema evidence unchanged)`;
+- `Roles: PASS (state before: BRIDGE_0001_0008 / ROLES_ABSENT; run 2 no-op; model after: HARDENED; schema evidence and structure fingerprint <md5> unchanged; owners/ACLs changed by design)`;
 - `login fcb_app: tls=True schema_migrations_rows=8 readiness=READY create_denied=True legacy_read_denied=True`;
 - `login fcb_migrator: tls=True schema_migrations_rows=8 can_create=True`. The migrator's CREATE probe is rolled back.
+- In the final report:
+  - `createrole_self_grant=inherit,set` (unchanged server setting);
+  - the exact membership inventory. Anything else fails the apply (`membership_inventory`):
+    ```
+    membership fcb_app <- session admin=true inherit=false set=false grantor=bootstrap
+    membership fcb_migrator <- session admin=false inherit=true set=true grantor=session
+    membership fcb_migrator <- session admin=true inherit=false set=false grantor=bootstrap
+    membership fcb_signer <- session admin=true inherit=false set=false grantor=bootstrap
+    ```
+    - The three `grantor=bootstrap` rows are PostgreSQL's automatic ADMIN-only grant to the creating role. `createrole_self_grant` was switched off, so they carry neither INHERIT nor SET.
+    - The one `grantor=session` row is the explicit INHERIT+SET grant. It lets `avnadmin` hand over ownership, and it keeps rollback working;
+  - the effective reach, where only the session reaches `fcb_migrator`:
+    ```
+    effective session -> fcb_migrator member=true inherits_privileges=true can_set_role=true
+    effective session -> fcb_app member=true inherits_privileges=false can_set_role=false
+    effective session -> fcb_signer member=true inherits_privileges=false can_set_role=false
+    ```
+    All 9 `effective fcb_* -> …` lines are `member=false inherits_privileges=false can_set_role=false`;
+  - `owners relations fcb_migrator=34`, `owners routines fcb_migrator=4` (34 = 33 tables + 1 sequence);
+  - `schema_public_acl fcb_app:USAGE fcb_migrator:CREATE fcb_migrator:USAGE pg_database_owner:CREATE pg_database_owner:USAGE`;
+  - the 11 `grant fcb_app …` lines;
+  - `routine_non_owner_grants=0`;
+  - `default_acl fcb_migrator:f:all_schemas:grantees=0`;
+  - `HARDENED`.
 
 Any failure before COMMIT leaves nothing behind. A re-run is safe: it is accepted when the model is already `HARDENED`, and it re-sets both passwords from the secrets (same values, new salt).
 
@@ -110,7 +160,8 @@ Any failure before COMMIT leaves nothing behind. A re-run is safe: it is accepte
 ## 6. Rollback
 
 - Set Render `DATABASE_URL` back to the previous `avnadmin` DSN (step 4.1) and save.
-  - This works because `avnadmin` keeps SET + INHERIT membership in `fcb_migrator`, which owns the bridge (tested: readiness READY and OAuth writes as the administrator after hardening).
+  - This works because `avnadmin` keeps SET + INHERIT membership in `fcb_migrator`, which owns the bridge.
+  - Tested: the real app with the administrator DSN after hardening reaches `/healthz` READY and completes DCR, consent, code exchange, refresh, MCP `initialize` and `tools/list`.
 - The roles stay. They are additive and harmless: `fcb_app` and `fcb_migrator` are simply unused, and `fcb_signer` cannot log in.
 - Do **not** drop roles or reassign ownership as part of a rollback. Undoing the ownership/privilege model is a separate owner decision that needs its own reviewed SQL.
 
@@ -151,7 +202,16 @@ Between steps 2 and 3, new Render connections fail, so do it in a quiet moment.
 - **Temporary tables.** `fcb_app` can still create temporary tables (PostgreSQL's database-level PUBLIC `TEMPORARY`). They are session-local and cannot touch the bridge. Revoking PUBLIC `TEMPORARY` on `defaultdb` is a database-wide change and is left to the owner.
 - **Unused DML privileges** in the allowlist (see the table above). Narrowing them is optional.
 - **`avnadmin` remains a powerful network-reachable credential.** Aiven `ip_filter` is `0.0.0.0/0` and termination protection is off (audit P1-3/P1-4). WP-009 removes it from the runtime but does not restrict the network.
-- **Aiven specifics unverified until diagnose:** public schema ownership, `createrole_self_grant`, and whether `avnadmin` can grant on `public`. Diagnose reports each. Apply fails closed on surprises.
-- **Local evidence ran on PostgreSQL 16 only.** CI runs the same integration tests on PostgreSQL 16 and 18. The PG18 object counts in the workflow are the restore's pinned values.
+- **Aiven shape.** Verified read-only on 2026-11-09:
+  - `createrole_self_grant=inherit,set`;
+  - `public` owned by `pg_database_owner`, and `avnadmin` a member of it;
+  - database owned by `avnadmin`;
+  - no role or database settings;
+  - a single owner for every `public` object.
+
+  The local evidence ran on a cluster started with the same `createrole_self_grant` and the same ownership shape. Anything else that differs in production fails closed at apply.
+- **Server log.** If the transaction fails at `ALTER ROLE … PASSWORD`, Aiven's server log may record the statement, including the SCRAM verifier (never the plaintext).
+- **Self password change.** `fcb_app` and `fcb_migrator` can change their own password (`ALTER ROLE CURRENT_USER PASSWORD`), as any PostgreSQL login can. Whoever holds the runtime DSN could lock the service out, but could not gain privileges.
+- **Evidence:** local runs on PostgreSQL 16.15 and PostgreSQL 18.6 (PGDG), each with `createrole_self_grant=inherit,set` set server-wide. The tests also set it per session, so the CI PostgreSQL 16 and 18 jobs exercise the Aiven shape.
 
 This runbook prepares WP-009. It does not certify it. WP-009 becomes PRODUCTION_VERIFIED only after steps 2–5 pass in production and are recorded on #130.

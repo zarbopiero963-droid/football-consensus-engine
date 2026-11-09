@@ -39,6 +39,20 @@ BEGIN
         RAISE EXCEPTION 'FCB_ROLE_VERIFIER_INVALID';
     END IF;
 END $fcbverifiers$;
+-- Aiven runs with createrole_self_grant = 'inherit,set' (server level, verified read-only on
+-- defaultdb): every role avnadmin creates would also be granted to avnadmin WITH INHERIT and
+-- SET, so the administrative identity would silently act as fcb_app and fcb_signer. Turn it
+-- off for this transaction only (user-settable GUC, source 'session', so the target guard's
+-- database/user-settings check is unaffected) and prove it before any CREATE ROLE. The only
+-- membership the model then allows is the explicit one granted at the end of this file;
+-- verify_bridge_roles.sql refuses any INHERIT/SET membership in fcb_app or fcb_signer.
+SET LOCAL createrole_self_grant = '';
+DO $fcbselfgrant$
+BEGIN
+    IF pg_catalog.current_setting('createrole_self_grant') OPERATOR(pg_catalog.<>) ''::pg_catalog.text THEN
+        RAISE EXCEPTION 'FCB_ROLES_SELF_GRANT_NOT_DISABLED';
+    END IF;
+END $fcbselfgrant$;
 DO $fcbcreate$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_migrator'::pg_catalog.name) THEN

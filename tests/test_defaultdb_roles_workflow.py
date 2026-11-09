@@ -188,6 +188,10 @@ def test_upsert_reads_verifiers_from_the_environment_and_embeds_no_credential():
     assert not re.search(r"PASSWORD\s+'", text), "literal password"
     assert "SCRAM-SHA-256$4096:" not in text.replace("^SCRAM-SHA-256\\$4096:", "")
     assert "GRANT fcb_migrator TO CURRENT_USER WITH INHERIT TRUE, SET TRUE;" in text
+    # Aiven's server-level createrole_self_grant='inherit,set' is disabled before any CREATE ROLE.
+    code = _sql_only(text)
+    assert code.index("SET LOCAL createrole_self_grant = '';") < code.index("CREATE ROLE")
+    assert "FCB_ROLES_SELF_GRANT_NOT_DISABLED" in text
     for forbidden in ("SUPERUSER", "CREATEDB", "CREATEROLE", "REPLICATION", "BYPASSRLS", "TO fcb_signer"):
         assert forbidden not in _sql_only(text).replace("NOLOGIN", ""), forbidden
 
@@ -206,7 +210,7 @@ def test_role_sql_never_drops_or_changes_data(name):
 def test_role_sql_is_catalog_qualified(name):
     sql = _sql_only((AIVEN / name).read_text())
     sql = re.sub(r"'[^']*'", "''", sql)  # string literals (incl. table names) are not references
-    sql = re.sub(r"(?m)^\s*SET LOCAL search_path = public;$", "", sql)  # a GUC assignment, not an operator
+    sql = re.sub(r"(?m)^\s*SET LOCAL [a-z_]+ = [^;]*;$", "", sql)  # GUC assignments, not operators
     for match in re.finditer(r"(?<![\w.])(pg_[a-z_]+|current_setting|set_config|format|unnest|aclexplode|"
                              r"acldefault|count|string_agg|has_[a-z_]+_privilege)\s*(?=[\s(,)]|$)", sql):
         token = match.group(1)
@@ -283,3 +287,38 @@ def test_sanitize_redacts_uri_parts_passwords_verifiers_and_statement_echo(tmp_p
     # The FCB_ code of an in-transaction guard is kept unless its line carries a secret.
     out = helper.sanitize("ERROR:  FCB_ROLES_OWNER_GUARD_FAILED\nCONTEXT: PL/pgSQL", env)
     assert "FCB_ROLES_OWNER_GUARD_FAILED" in out
+
+
+# ---------------------------------------------------------------- fingerprints and memberships
+
+def test_structure_fingerprint_is_the_restore_fingerprint_without_owner_and_acl_fields():
+    helper = _helper()
+    full = (AIVEN / "fingerprint_bridge_schema.sql").read_text(encoding="utf-8")
+    committed = (AIVEN / "fingerprint_bridge_structure.sql").read_text(encoding="utf-8")
+    assert committed == helper.structure_fingerprint_sql(full), "regenerate: python scripts/fcb_db_roles.py structure-fingerprint-sql"
+    body = committed.split("WITH s AS", 1)[1]
+    for gone in ("c.relacl", "c.relowner", "p.proacl", "p.proowner"):
+        assert gone not in body, gone
+    assert "a.attacl" in body  # column privileges are still fingerprinted (must stay NULL)
+
+
+def test_first_apply_requires_the_restored_fingerprint_and_structure_must_not_change():
+    restore_env = yaml.safe_load(RESTORE_PATH.read_text(encoding="utf-8"))["jobs"]["restore"]["env"]
+    assert JOB["env"]["EXPECTED_FINGERPRINT"] == restore_env["EXPECTED_FINGERPRINT"]
+    run = _step("Apply roles")["run"]
+    assert 'test "$full_before" = "$EXPECTED_FINGERPRINT"' in run
+    assert 'test "$structure_before" = "$structure_after"' in run
+    assert run.index("structure_before=") < run.index("run;    first=") < run.index("structure_after=")
+
+
+def test_the_model_asserts_the_exact_membership_inventory_and_no_escalation_path():
+    verify = (AIVEN / "verify_bridge_roles.sql").read_text()
+    for code in ("membership_inventory", "escalation_path", "unexpected_app_or_signer_member",
+                 "unexpected_migrator_member", "role_member_of_other_role"):
+        assert f"'{code}'" in verify
+    # The four expected rows: implicit ADMIN-only grants from the bootstrap superuser (oid 10),
+    # and the one explicit INHERIT+SET grant to the session, by the session.
+    assert verify.count("true, false, false, 10::pg_catalog.oid") == 3
+    assert "false, true, true, (SELECT sess.oid FROM sess)" in verify
+    diagnose = (AIVEN / "diagnose_bridge_roles.sql").read_text()
+    assert "'membership '" in diagnose and "'effective '" in diagnose and "' grantor='" in diagnose
