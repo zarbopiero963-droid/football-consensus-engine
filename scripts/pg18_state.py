@@ -18,6 +18,13 @@ proof of exact schema identity: object kinds the counts do not cover (views, seq
 are not compared, and schema_migrations rows can be written by anyone with write access.
 
 Prints BRIDGE_0001_0007 and exits 0, or prints a fixed refusal code and exits 1. Stdlib only.
+
+Threat-model limit of the EMPTY gate (reviews of #178): the precheck, an in-transaction re-check
+taken under the migration's advisory lock, and sql/aiven/pg18_post_apply_guard.sql (every user
+object must carry the apply transaction's xmin) narrow a concurrent same-role writer but cannot
+exclude it: code such a writer plants after the re-check can run inside the apply transaction
+with the same privileges. The test database has a single administrative role, so such a writer
+already controls the database.
 """
 from __future__ import annotations
 

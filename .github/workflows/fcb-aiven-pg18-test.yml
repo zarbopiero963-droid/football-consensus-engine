@@ -309,12 +309,12 @@ jobs:
           PSQL=/usr/lib/postgresql/18/bin/psql
           # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
           # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
-          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() <> '$EXPECTED_DB' OR (pg_catalog.current_schemas(true))[1] <> 'pg_catalog' OR CURRENT_USER <> SESSION_USER OR pg_catalog.current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid = pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
           # The EMPTY precheck ran on earlier connections: the FIRST apply re-runs the very same
           # occupancy query inside its own transaction and aborts unless every count is still 0
           # (review of #178: precheck/apply race). The second, idempotency run skips it.
           OCC="$(grep -v '^[[:space:]]*--' sql/aiven/pg18_occupancy.sql | sed 's/;[[:space:]]*$//')"
-          GUARD_EMPTY="DO \$empty\$ BEGIN IF (SELECT pg_catalog.sum(q.v) FROM ( $OCC ) q) <> 0 THEN RAISE EXCEPTION 'FCB_DATABASE_NOT_EMPTY'; END IF; END \$empty\$"
+          GUARD_EMPTY="DO \$empty\$ BEGIN IF COALESCE((SELECT pg_catalog.sum(q.v) FROM ( $OCC ) q), 1::pg_catalog.numeric) OPERATOR(pg_catalog.<>) 0::pg_catalog.numeric THEN RAISE EXCEPTION 'FCB_DATABASE_NOT_EMPTY'; END IF; END \$empty\$"
           # psql stderr is captured and printed only in sanitized form (no host/IP/credentials).
           sp() {
             local err rc=0
@@ -326,7 +326,13 @@ jobs:
             fi
             rm -f "$err"; return "$rc"
           }
-          first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$GUARD_EMPTY" -f "$SCRIPT" >/dev/null; }
+          # First apply, one transaction: target guard; the migration's own advisory lock taken
+          # BEFORE the emptiness re-check (so nobody can hold it to stall us after the check);
+          # emptiness re-check; migrations; then every user object must carry THIS transaction's
+          # xmin (pg18_post_apply_guard.sql), else nothing is committed. Residual: an object a
+          # concurrent session commits after the post-guard statement and before COMMIT.
+          LOCK="SELECT pg_catalog.pg_advisory_xact_lock(460244120)"
+          first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$LOCK" -c "$GUARD_EMPTY" -f "$SCRIPT" -f sql/aiven/pg18_post_apply_guard.sql >/dev/null; }
           run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
           verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
           first_run; first="$(verify)"

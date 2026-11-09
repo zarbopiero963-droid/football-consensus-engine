@@ -594,12 +594,17 @@ def test_workflow_state_gates_apply_and_diagnose_exactly():
     apply = steps["Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify"]
     assert apply["if"] == "${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}"
     assert apply["env"]["PGOPTIONS"] == "-c search_path=public"
-    assert "(pg_catalog.current_schemas(true))[1] <> 'pg_catalog'" in apply["run"]
-    assert "CURRENT_USER <> SESSION_USER" in apply["run"]
+    assert "(pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name" in apply["run"]
+    assert "CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER" in apply["run"]
+    # Round 4 P1-1: no unqualified comparison operator in the guards (CVE-2018-1058 pattern).
+    for line in [l for l in apply["run"].splitlines() if l.strip().startswith(("GUARD=", "GUARD_EMPTY="))]:
+        assert re.search(r"(?<!OPERATOR\(pg_catalog\.)(<>|<=|>=|(?<![<>!])=(?!>)| < | > )", line.split("BEGIN", 1)[1]) is None, line
     alines = [l.strip() for l in apply["run"].splitlines()]
     # Third review P2-1: the first apply re-checks emptiness in its own transaction.
-    assert ('first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$GUARD_EMPTY" -f "$SCRIPT" >/dev/null; }'
-            in alines)
+    assert ('first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$LOCK" -c "$GUARD_EMPTY" -f "$SCRIPT" '
+            '-f sql/aiven/pg18_post_apply_guard.sql >/dev/null; }' in alines)
+    assert 'LOCK="SELECT pg_catalog.pg_advisory_xact_lock(460244120)"' in alines
+    assert "SELECT pg_advisory_xact_lock(460244120);" in (ROOT / "sql/aiven/aiven_migrations_0001_0007.sql").read_text()
     assert 'first_run; first="$(verify)"' in alines and alines.count("first_run; first=\"$(verify)\"") == 1
     assert [l for l in alines if l.startswith("OCC=")] == [
         'OCC="$(grep -v \'^[[:space:]]*--\' sql/aiven/pg18_occupancy.sql | sed \'s/;[[:space:]]*$//\')"']

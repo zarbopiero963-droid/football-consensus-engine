@@ -109,15 +109,29 @@ def test_database_settings_count_except_search_path(db):
     assert _occupancy(dsn) == "NOT_EMPTY"
 
 
-def test_aiven_monitor_schema_is_excluded_only_when_another_role_owns_it(db):
+@pytest.mark.parametrize("superuser,expected", [(True, "EMPTY"), (False, "UNEXPECTED_SCHEMAS")])
+def test_aiven_monitor_schema_is_excluded_only_when_another_superuser_owns_it(db, superuser, expected):
+    """Round 4 P3-a: a non-superuser helper role cannot hide objects in `_avnadmin_monitor`."""
     name, dsn = db
     role = "avn_mon_" + uuid.uuid4().hex[:8]
-    _exec(dsn, sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)),
-          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)))
+    _exec(dsn, sql.SQL("CREATE ROLE {} " + ("SUPERUSER" if superuser else "")).format(sql.Identifier(role)),
+          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)),
+          "CREATE TABLE _avnadmin_monitor.hidden(id int)")
     try:
-        assert _occupancy(dsn) == "EMPTY"
+        assert _occupancy(dsn) == expected
     finally:
         _exec(dsn, "DROP SCHEMA _avnadmin_monitor CASCADE", sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_role_wide_settings_of_the_connecting_role_count(db):
+    """Round 4 P3-b: ALTER ROLE <self> SET ... (not search_path) applies to the workflow session."""
+    name, dsn = db
+    _exec(dsn, "ALTER ROLE CURRENT_USER SET transform_null_equals = on")
+    try:
+        assert _occupancy(dsn) == "NOT_EMPTY"
+    finally:
+        _exec(dsn, "ALTER ROLE CURRENT_USER RESET transform_null_equals")
+    assert _occupancy(dsn) == "EMPTY"
 
 
 def _guard_empty() -> str:
@@ -131,6 +145,89 @@ def _guard_empty() -> str:
     proc = subprocess.run(["bash", "-c", "set -euo pipefail\n" + "\n".join(lines) + '\nprintf %s "$GUARD_EMPTY"'],
                           cwd=ROOT, capture_output=True, text=True, check=True)
     return proc.stdout
+
+
+def _workflow_var(var: str) -> str:
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "fcb-aiven-pg18-test.yml").read_text())
+    run = next(s["run"] for s in wf["jobs"]["pg18-test"]["steps"]
+               if s.get("name", "").startswith("Apply 0001-0007"))
+    line = next(l for l in run.splitlines() if l.strip().startswith(var + "="))
+    return subprocess.run(["bash", "-c", line + f'\nprintf %s "${var}"'], cwd=ROOT,
+                          capture_output=True, text=True, check=True).stdout
+
+
+def _first_apply(dsn):
+    """The workflow's first apply minus the TLS/PG18 target GUARD (the local server has neither):
+    same transaction, advisory lock, emptiness re-check, migrations, post-apply guard."""
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+    return subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1",
+                           "-c", _workflow_var("LOCK"), "-c", _guard_empty(),
+                           "-f", str(AIVEN / "aiven_migrations_0001_0007.sql"),
+                           "-f", str(AIVEN / "pg18_post_apply_guard.sql")],
+                          env=env, capture_output=True, text=True, timeout=120)
+
+
+def _migrated(dsn) -> bool:
+    return _psql(dsn, "-c", "select pg_catalog.to_regclass('public.schema_migrations') is not null").strip() == "t"
+
+
+def test_the_first_apply_commits_on_a_truly_empty_database(db):
+    proc = _first_apply(db[1])
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert _migrated(db[1]) and _occupancy(db[1]) == "NOT_EMPTY"
+
+
+def test_a_planted_comparison_operator_cannot_defeat_the_emptiness_recheck(db):
+    """Round 4 P1-1 (CVE-2018-1058 pattern): public.<>(numeric, integer) returning false."""
+    _exec(db[1], "CREATE TABLE public.loot(x int)",
+          "CREATE FUNCTION public.ne(numeric, integer) RETURNS boolean LANGUAGE sql IMMUTABLE AS 'select false'",
+          "CREATE OPERATOR public.<> (LEFTARG = numeric, RIGHTARG = integer, FUNCTION = public.ne)",
+          "CREATE FUNCTION public.ne8(bigint, bigint) RETURNS boolean LANGUAGE sql IMMUTABLE AS 'select false'",
+          "CREATE OPERATOR public.<> (LEFTARG = bigint, RIGHTARG = bigint, FUNCTION = public.ne8)")
+    proc = _first_apply(db[1])
+    assert proc.returncode != 0 and "FCB_DATABASE_NOT_EMPTY" in proc.stderr
+    assert not _migrated(db[1])
+
+
+def test_holding_the_advisory_lock_to_plant_objects_after_the_check_fails_the_apply(db):
+    """Round 4 P1-2: the lock is taken BEFORE the re-check, so planting while we wait is seen."""
+    import threading
+    import time
+    dsn = db[1]
+    locked = threading.Event()
+
+    def attacker():
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SELECT pg_catalog.pg_advisory_lock(460244120)")
+            locked.set()
+            time.sleep(3)
+            conn.execute("CREATE SCHEMA evil")
+            conn.execute("CREATE TABLE evil.loot(x int)")
+            conn.execute("SELECT pg_catalog.pg_advisory_unlock(460244120)")
+
+    t = threading.Thread(target=attacker)
+    t.start()
+    assert locked.wait(10)
+    proc = _first_apply(dsn)
+    t.join()
+    assert proc.returncode != 0
+    assert "FCB_DATABASE_NOT_EMPTY" in proc.stderr or "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+    assert not _migrated(dsn)
+
+
+def test_the_post_apply_guard_refuses_objects_this_transaction_did_not_create(db):
+    """Round 4 P1-2, second half: a pre-existing table that IF NOT EXISTS would silently skip, or
+    any object committed concurrently, is not this transaction's: nothing is committed."""
+    dsn = db[1]
+    _exec(dsn, "CREATE TABLE public.decision_requests_shadow(x int)")
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+    proc = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1",
+                           "-f", str(AIVEN / "aiven_migrations_0001_0007.sql"),
+                           "-f", str(AIVEN / "pg18_post_apply_guard.sql")],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+    assert not _migrated(dsn)
 
 
 def test_the_apply_transaction_rechecks_emptiness_and_writes_nothing_on_a_race(db):
