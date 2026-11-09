@@ -54,10 +54,12 @@ exact SHA before any production run.
 ## Precheck states
 | State | Meaning | Allowed |
 |---|---|---|
-| `EMPTY` | no object in `public` | yes |
+| `EMPTY` | no object or type in `public`, and no extension (except `plpgsql`), large object, subscription, prepared transaction or replication slot of this database | yes |
 | `RUNTIME_ONLY` | only the tables the running code creates itself (SX Bet rate coordinator, API-FOOTBALL quota coordinator, OAuth DCR), each **exactly** as the code creates it: columns, types, NOT NULL, defaults and constraints identical; indexes a subset; no rule, trigger, policy, RLS or inheritance | yes, data preserved |
 | `REFUSE_RUNTIME_TABLE_DRIFT` | a runtime-named table that differs, checked in every state (tracked or not): definition, collation, UNLOGGED, reloptions, replica identity, privileges, owner other than the restoring role, RLS, rules, triggers, policies, inheritance, identity or generated columns. It would be skipped by `IF NOT EXISTS` and certified | no |
-| `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, or a database/role `search_path` setting exists | no |
+| `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, the current schema is not `public`, or a database/role `search_path` setting exists | no |
+| `REFUSE_UNSAFE_SETTINGS` | any other setting of this database (any role), of the session role, or of every role (`ALTER ROLE ALL`), e.g. `role` | no |
+| `REFUSE_UNEXPECTED_SCHEMAS` | a non-system schema other than `public`; temporary schemas are matched by the anchored regex `^pg_(toast_)?temp_[0-9]+$`, and `_avnadmin_monitor` is ignored only in Aiven's real shape (owned by the `_avnadmin_monitor` role or a superuser, not by the session role, which is neither a member of the owner nor has CREATE on it) | no |
 | `REFUSE_EVENT_TRIGGERS` | an enabled event trigger exists; it would act on the restore's own DDL | no |
 | `REFUSE_DEFAULT_PRIVILEGES` | `ALTER DEFAULT PRIVILEGES` entries exist; they would grant on the new tables | no |
 | `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
@@ -68,6 +70,10 @@ exact SHA before any production run.
 | `REFUSE_SIGNER_SERIES_PRESENT` | signer tracking found in `public` | no |
 
 `REFUSE_UNTRACKED_OBJECTS` also covers operators, operator classes and families, collations, conversions, text-search objects, extensions, aggregates, window functions and procedures in `public`, plus any publication. 0001–0008 create plain functions only.
+
+In every state, tracked ones included (audit of 2026-11-09, F2), `REFUSE_UNTRACKED_OBJECTS` also covers: a function that is not one of the four pinned bridge trigger functions (name, arguments, return type, language, SECURITY, configuration and md5 of the body); a trigger that is not one of the nine pinned bridge triggers (enabled, no arguments, columns or WHEN); a type that is not the row or array type of a relation; and any rule, policy, RLS flag or inheritance on any relation of `public`.
+
+Inside the restore transaction (audit F2–F7): every guard and evidence query is schema-qualified; the guard, the count assertion and the post guard first re-check the session (search path exactly `public`, `CURRENT_USER = SESSION_USER`, no database/role setting, no unexpected schema) and then pin `search_path` again; the advisory lock is `pg_catalog.pg_advisory_xact_lock(460244120::bigint)`; a `BRIDGE_0001_0008` database must already carry the pinned fingerprint before the script runs; after an `EMPTY` prior state every object must carry the restore transaction's xmin.
 
 **Documented residuals:**
 - These are not fingerprinted, but they are not created or made worse by the restore: extended statistics, comments, and column STORAGE/attoptions on non-runtime tables.
@@ -80,7 +86,8 @@ The restore also refuses when:
 - the server is not PostgreSQL 18;
 - the connection is not TLS;
 - the current schema is not `public`;
-- any non-system schema exists other than `public` and Aiven's `_avnadmin_monitor`.
+- any non-system schema exists other than `public` and Aiven's `_avnadmin_monitor` in its real shape;
+- `CURRENT_USER` differs from `SESSION_USER`, `search_path` is not exactly `public`, or a database/role setting other than `search_path` applies to the session.
 
 ## After a successful restore
 - `/mcp` with a real token is no longer 503.
