@@ -45,7 +45,7 @@ jobs:
       - name: Browser SSRF suites (profile native)
         env:
           FCB_CHROMIUM_PROFILE: native
-        run: pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py
+        run: pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py tests/test_oauth_consent_redirect_chromium.py
 
   decision-postgres:
     runs-on: ubuntu-latest

@@ -99,3 +99,24 @@ def test_sxbet_secret_is_only_used_by_the_environment_scoped_audit_job():
     assert users == [WORKFLOW.name]
     job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["certify"]
     assert job["environment"] == "sxbet-live-readonly" and job["if"] == "github.ref == 'refs/heads/main'"
+
+
+
+def test_certification_harness_token_passes_the_mcp_bearer_format_check(monkeypatch):
+    """Review of #177: /mcp refuses bearers not shaped like issued tokens before any storage
+    call; the certification harness's local token must pass that check, else every live
+    certification call would get 401 (a false negative)."""
+    import bridge.server as srv
+    from bridge import oauth
+    assert oauth.ISSUED_TOKEN_RE.fullmatch(cert.CI_LOCAL_TEST_TOKEN)
+    for attr in ("prepare_cloak_runtime", "reaper_loop", "stop_all"):
+        monkeypatch.setattr(srv.bridge, attr, getattr(srv.bridge, attr))
+    monkeypatch.setattr(srv.oauth_store, "valid_access_token", srv.oauth_store.valid_access_token)
+    for key in ("SXBET_ENABLED", "SXBET_NETWORK", "SXBET_MAX_RPM", "SXBET_API_KEY", "DATABASE_URL"):
+        monkeypatch.setenv(key, "")
+    from starlette.testclient import TestClient
+    srv2, _client, headers = cert._mcp_harness("LOCAL_TEST_ONLY_KEY")
+    # No lifespan here: anything but 401 means the bearer got past the middleware.
+    client = TestClient(srv2.app, base_url="https://" + srv2.public_host, raise_server_exceptions=False)
+    r = client.post("/mcp/", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert r.status_code != 401

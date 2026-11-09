@@ -348,12 +348,19 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/mcp"):
             auth = request.headers.get("authorization", "")
-            token = auth[7:] if auth.startswith("Bearer ") else ""
+            scheme, _, token = auth.partition(" ")
+            # RFC 7235: the auth scheme is case-insensitive.
+            token = token.strip() if scheme.lower() == "bearer" else ""
             valid = False
-            if token:
+            # Tokens this server issues are secrets.token_urlsafe(32): 43 base64url characters.
+            # Anything else is refused without touching the database (review of #177, P2).
+            if token and oauth.ISSUED_TOKEN_RE.fullmatch(token):
                 try:
-                    valid = oauth_store.valid_access_token(token, oauth.resource_url(), oauth.SCOPE)
+                    # WP-007: off the event loop and capped, so neither a slow database nor a flood
+                    # of random bearers can stall /healthz or exhaust Aiven's 15 connections.
+                    valid = await oauth.bearer_valid(token)
                 except Exception:
+                    logging.getLogger(__name__).error("oauth_storage_error stage=bearer_check")
                     return JSONResponse({"detail": "authorization backend unavailable"}, status_code=503)
             if not valid:
                 metadata = oauth.public_base() + "/.well-known/oauth-protected-resource"

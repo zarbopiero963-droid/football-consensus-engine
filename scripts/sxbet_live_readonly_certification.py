@@ -118,6 +118,9 @@ class Recorder:
         self.rows.append({"test": name, "kind": kind, "outcome": outcome, **info})
 
 
+CI_LOCAL_TEST_TOKEN = "CI_LOCAL_TEST_TOKEN_" + "x" * 23  # 43 chars, local only
+
+
 def _mcp_harness(api_key: str):
     os.environ.update({"SXBET_ENABLED": "true", "SXBET_NETWORK": "mainnet", "SXBET_MAX_RPM": "30",
                        "SXBET_API_KEY": api_key})
@@ -137,10 +140,12 @@ def _mcp_harness(api_key: str):
     srv.bridge.prepare_cloak_runtime = noop
     srv.bridge.reaper_loop = idle
     srv.bridge.stop_all = stop_all
-    srv.oauth_store.valid_access_token = lambda token, resource, scope: token == "CI_LOCAL_TEST_TOKEN"
+    # The /mcp middleware refuses bearers that do not have the issued format (43 base64url
+    # characters) before any storage call, so the local test token must have that shape.
+    srv.oauth_store.valid_access_token = lambda token, resource, scope: token == CI_LOCAL_TEST_TOKEN
     host = srv.public_host
     headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
-               "Host": host, "Authorization": "Bearer CI_LOCAL_TEST_TOKEN"}
+               "Host": host, "Authorization": "Bearer " + CI_LOCAL_TEST_TOKEN}
     return srv, TestClient(srv.app, base_url="https://" + host), headers
 
 

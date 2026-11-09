@@ -14,8 +14,17 @@ from psycopg.rows import dict_row
 from app.db import database_url
 
 
+# WP-007: bounded storage calls. Note: the `options` keyword replaces any `options=` inside
+# DATABASE_URL (psycopg gives keywords precedence); the Aiven URI carries none today. A slow or unreachable database must surface as a fast,
+# fixed 503 at the endpoint, never as a request hung for libpq's default (~130 s).
+CONNECT_TIMEOUT_SECONDS = 5
+STATEMENT_TIMEOUT_MS = 5000
+
+
 def _conn():
-    return psycopg.connect(database_url(), row_factory=dict_row)
+    return psycopg.connect(database_url(), row_factory=dict_row,
+                           connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                           options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
 
 
 def now():
@@ -81,19 +90,92 @@ def save_refresh_token(token: str, *, client_id: str, resource: str, scope: str,
     return exp
 
 
-def valid_access_token(token: str, resource: str, required_scope: str) -> bool:
+def _insert_pair(cur, *, access: str, refresh: str, client_id: str, resource: str, scope: str,
+                 access_minutes: int, refresh_days: int) -> None:
+    cur.execute(
+        """INSERT INTO oauth_access_tokens (token_hash,client_id,resource,scope,expires_at)
+           VALUES (%s,%s,%s,%s,%s)""",
+        (digest(access), client_id, resource, scope, now() + timedelta(minutes=access_minutes)),
+    )
+    cur.execute(
+        """INSERT INTO oauth_refresh_tokens (token_hash,client_id,resource,scope,expires_at)
+           VALUES (%s,%s,%s,%s,%s)""",
+        (digest(refresh), client_id, resource, scope, now() + timedelta(days=refresh_days)),
+    )
+
+
+def exchange_code(code: str, *, client_id: str, redirect_uri: str, verifier_matches,
+                  access: str, refresh: str, access_minutes: int = 60,
+                  refresh_days: int = 30) -> dict[str, Any] | None:
+    """Consume an authorization code and issue the token pair in ONE transaction (WP-007).
+
+    The presented code is burned even when its binding fails (single use): the consumption is
+    committed and None is returned. On success both tokens are stored with the consumption, so
+    a storage failure part-way can no longer leave a burned code with an orphan access token.
+    `verifier_matches(code_challenge) -> bool` performs the PKCE check in constant time.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT scope FROM oauth_access_tokens
+            """UPDATE oauth_authorization_codes
+               SET used_at=NOW()
+               WHERE code_hash=%s AND used_at IS NULL AND expires_at>NOW()
+               RETURNING *""",
+            (digest(code),),
+        )
+        row = cur.fetchone()
+        if (not row or row["client_id"] != client_id or row["redirect_uri"] != redirect_uri
+                or not verifier_matches(row["code_challenge"])):
+            conn.commit()
+            return None
+        _insert_pair(cur, access=access, refresh=refresh, client_id=client_id,
+                     resource=row["resource"], scope=row["scope"],
+                     access_minutes=access_minutes, refresh_days=refresh_days)
+        conn.commit()
+        return {"resource": row["resource"], "scope": row["scope"]}
+
+
+def refresh_and_issue(token: str, *, client_id: str, access: str, refresh: str,
+                      access_minutes: int = 60, refresh_days: int = 30) -> dict[str, Any] | None:
+    """Rotate a refresh token and issue the new pair in ONE transaction (WP-007).
+
+    Only the client the token was issued to can rotate it (a wrong client_id no longer burns
+    someone else's token). On any storage failure nothing is committed: the old refresh token
+    stays valid, so the client is never locked out by a half-done rotation.
+    """
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE oauth_refresh_tokens
+               SET revoked_at=NOW()
+               WHERE token_hash=%s AND client_id=%s AND revoked_at IS NULL AND expires_at>NOW()
+               RETURNING *""",
+            (digest(token), client_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.commit()
+            return None
+        _insert_pair(cur, access=access, refresh=refresh, client_id=client_id,
+                     resource=row["resource"], scope=row["scope"],
+                     access_minutes=access_minutes, refresh_days=refresh_days)
+        conn.commit()
+        return {"resource": row["resource"], "scope": row["scope"]}
+
+
+def valid_access_token(token: str, resource: str, required_scope: str) -> datetime | None:
+    """The token's expiry when it is valid for `resource` and `required_scope`, else None
+    (truthy/falsy, so callers that only need a yes/no keep working)."""
+    with _conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT scope, expires_at FROM oauth_access_tokens
                WHERE token_hash=%s AND revoked_at IS NULL AND expires_at>NOW()
                  AND resource=%s""",
             (digest(token), resource),
         )
         row = cur.fetchone()
     if not row:
-        return False
+        return None
     scopes = set((row["scope"] or "").split())
-    return required_scope in scopes
+    return row["expires_at"] if required_scope in scopes else None
 
 
 def rotate_refresh_token(token: str) -> dict[str, Any] | None:

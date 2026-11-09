@@ -78,10 +78,10 @@ SCRIPT = textwrap.dedent(r'''
     srv.bridge.prepare_cloak_runtime = noop
     srv.bridge.reaper_loop = idle
     srv.bridge.stop_all = stop_all
-    srv.oauth_store.valid_access_token = lambda token, resource, scope: token == "TEST_TOKEN_ONLY"
+    srv.oauth_store.valid_access_token = lambda token, resource, scope: token == "TEST_TOKEN_ONLY_xxxxxxxxxxxxxxxxxxxxxxxxxxx"
     host = srv.public_host
     auth = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
-            "Host": host, "Authorization": "Bearer TEST_TOKEN_ONLY"}
+            "Host": host, "Authorization": "Bearer TEST_TOKEN_ONLY_xxxxxxxxxxxxxxxxxxxxxxxxxxx"}
     with TestClient(srv.app, base_url="https://" + host) as c:
         r = c.post("/mcp/", headers=auth, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         tools = r.json()["result"]["tools"]
