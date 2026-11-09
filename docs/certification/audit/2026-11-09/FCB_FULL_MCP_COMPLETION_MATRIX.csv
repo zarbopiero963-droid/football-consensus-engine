@@ -1,0 +1,61 @@
+ID,Componente,Requisito,Stato,Prova,Blocco,Gravità,Azione,Responsabile
+A-01,MCP core / DB,Schema bridge 0001–0008 su defaultdb,PRODUCTION_VERIFIED,"run 42399341274 (apply, idempotente, 33 tabelle, checksum) + /healthz schema_state=READY + query read-only (8 migration, signer assente)",—,—,Registrare l'apply su #130 (oggi assente),Codex
+A-02,MCP core / OAuth,"Discovery AS + protected resource, 401 con resource_metadata",PASS_REAL,GET live 200; POST /mcp 401 con WWW-Authenticate (2026-11-09),—,—,—,—
+A-03,MCP core / OAuth,Flusso completo DCR/CIMD → authorize → token → /mcp,PASS_OFFLINE,"probe su PostgreSQL 16 reale locale (A_mcp_oauth.md §1); produzione: 0 righe oauth_*, nessuna richiesta /oauth/* dal 2026-11-07",Ri-autorizzazione connettori (login owner),P0,Test E2E con client reali Claude.ai e ChatGPT (A_mcp_oauth.md §4),Owner + verificatore indipendente
+A-04,MCP core / protocollo,"initialize, tools/list (122), tools/call",PASS_OFFLINE,probe + test_mcp_offline_protocol_e2e; nessuna chiamata autenticata in produzione dal 2026-11-07,A-03,P0,Incluso nel test E2E reale,Owner + verificatore
+A-05,MCP core / OAuth,Password consenso protetta da brute force,FAIL,"60 tentativi in 0,19 s, tutti 401, nessun limite (oauth.py:331-334)",—,P1,WP-022a: throttling persistente in PostgreSQL + 429 fisso,Codex (merge owner D08)
+A-06,MCP core / OAuth,"Errori DB → codici fissi 503, timeout di connessione",FAIL,/oauth/token e authorize POST → 500 grezzo; DCR storage error → 400; nessun connect_timeout (oauth_store.py:17),—,P1,WP-007,Codex (merge owner D08)
+A-07,MCP core / disponibilità,I/O DB non bloccante sull'event loop,FAIL,"Bearer casuale → connessione sincrona sul loop; /healthz bloccato 3,0 s (E F-04, F P1-1)",—,P1,to_thread/async + pool + timeout (in WP-007),Codex
+A-08,MCP core / infrastruttura,Servizio stabile dopo restart/deploy,IMPLEMENTED_UNVERIFIED,"Render piano free, spin-down, healthCheckPath vuoto, nessun test di restart con token",Costo (D07) per piano a pagamento,P2,Decisione owner sul piano; test di restart nel test E2E,Owner
+B-01,API-FOOTBALL,"40 contratti + 2 tool, 142/142 parametri esposti",PASS_OFFLINE,"402 test passati; parità schema 40/40 (C_apifootball.md, B_tools.md)",Docs ufficiali dietro Cloudflare: DOCS_UNVERIFIED,—,—,—
+B-02,API-FOOTBALL,Chiamate reali sul codice distribuito tramite coordinatore,NOT_TESTED,"Ultime prove reali 2026-10-25/31, fuori coordinatore e fuori MCP; api_football_quota_counters = 0 righe",A-03; secret coordinatore = DB runtime (owner),P1,Piano reale da 16 chiamate (C_apifootball.md §4),Codex + owner
+B-03,API-FOOTBALL,Codici di errore distinti (401/429/5xx/breaker),FAIL,Tutti collassati in PROVIDER_REQUEST_FAILED (tools.py:170-180),—,P1,WP-016,Codex
+B-04,API-FOOTBALL,"Contabilità quote corretta (network_calls_made, quota in body 200)",FAIL,"C F-02, F-05 riprodotti",—,P2,Correggere in WP-016,Codex
+B-05,API-FOOTBALL,Risposte oltre il cap con identificativi di recupero,FAIL,"C F-03, F-04 (manifest odds senza bookmaker/bet id)",—,P2,Manifest con id per tutti gli endpoint,Codex
+B-06,API-FOOTBALL,UTC + Europe/Rome derivato (D09),NOT_IMPLEMENTED,nessun zoneinfo/Europe/Rome in bridge/,—,P2,WP-020,Codex
+B-07,SX Bet,"46 tool read-only/simulazione, nessuna scrittura, LIVE non attivabile",PASS_OFFLINE,736 test; nessun percorso LIVE da argomenti MCP/env (D_sxbet_signer.md §3),—,—,—,—
+B-08,SX Bet,Chiamate reali sul codice distribuito con coordinatore PostgreSQL,NOT_TESTED,"Prova run 41320538088 (2026-11-01, LOCAL_PROCESS); sxbet_rate_attempts = 0 in produzione",A-03,P1,Nuova run read-only su main via produzione (WP-011 refresh),Owner (dispatch) + Codex
+B-09,Browser,Kill switch effettivo in produzione,PASS_REAL,"/healthz browser_tools_enabled=false, cloak_enabled=false; 26/34 tool bloccati, 8 lifecycle inerti (E §2)",—,—,—,—
+B-10,Browser,Kill switch fail-closed,FAIL,valore non riconosciuto/vuoto → tool ABILITATI (browser_use.py:91-93),—,P2,Default spento; solo true/1/yes/on abilita,Codex
+B-11,Tutti,Codici fissi del bridge visibili al client,FAIL,TOOLS_DISABLED/REDIRECT_BLOCKED arrivano come 'Error executing tool'; SDK mcp non pinnato,—,P2,ToolError con codice fisso; pin mcp,Codex (WP-010)
+B-12,Tutti,Certificazione dei tool sullo SHA distribuito (D13),NOT_TESTED,0/122 certificati su a8fb228 (FCB_TOOL_INVENTORY_a8fb228.csv),A-03,P1,WP-015,Codex + owner
+B-13,Sicurezza / CI,Secret DB di produzione non leggibile da branch,FAIL,FCB_PG18_TEST_URL in job senza environment; unico utente Aiven = avnadmin (fcb-aiven-pg18-test.yml:22-45),—,P1,Spostare in environment protetto main-only; ruolo dedicato; ruotare avnadmin,Owner (secret) + Codex (workflow)
+B-14,Sicurezza / DB,TLS verify-full nel runtime (D02),UNKNOWN,"Opt-in FCB_DATABASE_TLS_VERIFY_FULL, default spento; impostazione Render non verificabile",Config Render (owner),P1,WP-008 produzione: flag + CA + DSN verify-full,Owner
+B-15,Sicurezza / DB,Ruoli least privilege (D03),NOT_IMPLEMENTED (produzione),Solo avnadmin; 33 tabelle di avnadmin; script testati senza workflow,Credenziali (owner),P1,WP-009: workflow owner-gated + switch DSN,Owner + Codex
+B-16,Sicurezza / DB,Protezione servizio Aiven,FAIL,termination_protection=false; ip_filter 0.0.0.0/0,—,P2,Owner: attivare termination protection (gratis); valutare ip_filter,Owner
+B-17,Recovery,Recovery provata,NOT_TESTED,"Backup giornalieri presenti (ultimo 2026-11-08 21:11); nessun drill, nessun dump logico",Fork a pagamento (D07),P1,Decisione owner: dump logico gratuito o drill a pagamento,Owner
+B-18,OAuth,"Riuso refresh, revoca, durata assoluta, DCR limitata, scope/subject",NOT_IMPLEMENTED,A_mcp_oauth.md F-P2-1..7,—,P2,WP-022 (resto) + WP-018,Codex (merge owner)
+B-19,CI,Test OAuth su PostgreSQL in CI,FAIL,"Test DCR PG richiede DATABASE_URL, CI imposta TEST_DATABASE_URL → sempre skip",—,P2,Spostare in tests/integration (in WP-007),Codex
+B-20,Browser,cdpUrl mai nei log (CLAUDE.md §2.1),FAIL (latente),"Errore connect_over_cdp contiene l'URL wss://, loggato dall'SDK (E F-06); oggi irraggiungibile col kill switch",—,P1 alla riattivazione,WP-010,Codex
+C-01,Browser,"Residui SSRF (speculation, WebRTC/WebTransport remoto, DNS rebinding)",OPEN,6 strict xfail (WP-002b),"WP-024 (proxy), D05",P1,Prototipo WP-024 a costo zero (D06),Codex
+C-02,Signer,Firma autonoma conforme alla decisione owner 2026-11-06,CONFLICT,Codice e CLAUDE.md/AGENTS.md §2.6 richiedono approvazione per ordine e flag LIVE ≤24h (D F-0),Emendamento governance (owner),P1,Emendamento §2.6 + nuova WP signer autonomo,"Owner, poi Codex"
+C-03,Signer,Limiti di rischio per autonomia,FAIL,Rischio non autenticato (F-1); perdite abbinate non regolate ignorate: 3×5 USDC firmati con limite 5 (R3),C-02,P1 (futuro),Nella nuova WP signer,Codex (merge owner)
+C-04,Signer,Ledger senza stati bloccati,FAIL,"R1, R7 (fix su branch non mergiato), R2 nuovo",—,P2,WP-012,Codex (merge owner)
+C-05,Signer,"KMS, kill switch, riconciliazione continua",NOT_IMPLEMENTED,"Solo su branch non mergiati / assenti (D F-6, F-7)",C-02,P2,WP-013 ri-scopata senza passkey,Codex (merge owner)
+C-06,Signer,Rimozione riferimenti passkey,NOT_STARTED,"Elenco in D_sxbet_signer.md §6 (docs, commenti, output MCP)",—,P3,PR docs + output MCP,Codex
+C-07,SX Bet reale,Abilitazione operativa,BLOCKED,D12 LIVE OFF; legale/giurisdizione,Owner/legale,—,Nessuna azione tecnica finché non autorizzato,Owner
+WP-001,Work package,Browser SSRF classe A,DONE_TESTED,#165 a642f3f; Chromium reale; browser spento → mai esercitato live,Riattivazione browser (owner),,vedi roadmap,Owner + Codex
+WP-002,Work package,Browser SSRF classe B,PARTIAL,#166 fbd8cd2; residui spostati in 002b,"WP-002b, WP-024",,vedi roadmap,Codex
+WP-002b,Work package,Residui SSRF,PARTIAL,#172 7f9ee53; 6 strict xfail aperti,WP-024,,vedi roadmap,Codex
+WP-003,Work package,API-FOOTBALL live via coordinatore,DONE_TESTED (codice),#167 df76738; 0 righe nei contatori di produzione,Secret coordinatore = DB runtime; run reale,,vedi roadmap,Codex
+WP-004,Work package,Migration versionate,PRODUCTION_VERIFIED,#168 43c7926; migration 1..8 in produzione,—,,vedi roadmap,Codex
+WP-005,Work package,Inizializzazione defaultdb,PARTIAL — RESTORED_NOT_VERIFIED,apply run 42399341274; verifica OAuth/MCP post-apply mai eseguita; non registrato su #130,Test E2E client reale (A-03/A-04),P0,vedi roadmap,Codex
+WP-006,Work package,Schema readiness,PRODUCTION_VERIFIED,#171; /healthz READY,—,,vedi roadmap,Codex
+WP-007,Work package,OAuth errori DB/persistenza,NOT_STARTED,"A-06, A-07, B-19",—,P1,vedi roadmap,Codex
+WP-008,Work package,TLS verify-full,PARTIAL,workflow verify-full PRODUCTION_VERIFIED; runtime UNKNOWN,Config Render owner,P1,vedi roadmap,Owner + Codex
+WP-009,Work package,Ruoli least privilege,DONE_TESTED (codice) / BLOCKED_OWNER,#174; ruoli assenti in produzione,Credenziali owner + workflow,P1,vedi roadmap,Owner + Codex
+WP-010,Work package,"Browser: cdpUrl, codici fissi, DNS pinning",NOT_STARTED,"B-11, B-20",—,,vedi roadmap,Codex
+WP-011,Work package,Archivio evidenza SX Bet,DONE_TESTED,#170 738e7da; prova del 2026-11-01,— (refresh in WP-015),,vedi roadmap,Codex
+WP-012,Work package,Signer ledger,PARTIAL,persistenza/dedupe fatti; R1/R2/R7/R3 aperti,Merge owner,,vedi roadmap,Owner + Codex
+WP-013,Work package,Servizio signer,NOT_STARTED (testo obsoleto: passkey),D §5,Ri-scoping owner,,vedi roadmap,Owner + Codex
+WP-014,Work package,API-FOOTBALL fonte unica stato docs,NOT_STARTED,C F-10,—,,vedi roadmap,Codex
+WP-015,Work package,Certificazione 122 tool con client reali,NOT_STARTED,0/122 su a8fb228,A-03,P1,vedi roadmap,Codex
+WP-016,Work package,API-FOOTBALL codici fissi,NOT_STARTED,B-03,—,P1,vedi roadmap,Codex
+WP-017,Work package,"Browser: test 19 tool, cap, stop_all",NOT_STARTED,18 tool senza test di chiamata; stop_all str(exc),—,,vedi roadmap,Codex
+WP-018,Work package,Sessioni legate al subject OAuth,NOT_STARTED,nessun subject,Decisione owner sul subject,,vedi roadmap,Owner + Codex
+WP-019,Work package,CI PG18 + workflow post-deploy,PARTIAL,job postgres-18 presente; post-deploy assente; nessuna CI su push main,—,,vedi roadmap,Codex
+WP-020,Work package,Europe/Rome,NOT_STARTED,B-06,—,,vedi roadmap,Codex
+WP-021,Work package,Rimozione moduli fuori scope,NOT_STARTED,moduli e tabelle legacy presenti,Owner per parti distruttive,,vedi roadmap,Owner + Codex
+WP-022,Work package,OAuth revoca/riuso/throttling,NOT_STARTED,"A-05, B-18",Merge owner,P1,vedi roadmap,Owner + Codex
+WP-023,Work package,Signer non operativo/testnet,BLOCKED,legale; KMS/Toronto solo su branch,Owner/legale,,vedi roadmap,Owner + Codex
+WP-024,Work package,Proxy egress,NOT_STARTED,prototipo approvato D06,—,,vedi roadmap,Codex
