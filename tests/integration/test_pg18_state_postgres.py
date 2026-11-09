@@ -120,18 +120,72 @@ def test_database_settings_count_except_search_path(db):
     assert _occupancy(dsn) == "NOT_EMPTY"
 
 
-@pytest.mark.parametrize("superuser,expected", [(True, "EMPTY"), (False, "UNEXPECTED_SCHEMAS")])
-def test_aiven_monitor_schema_is_excluded_only_when_another_superuser_owns_it(db, superuser, expected):
-    """Round 4 P3-a: a non-superuser helper role cannot hide objects in `_avnadmin_monitor`."""
-    name, dsn = db
-    role = "avn_mon_" + uuid.uuid4().hex[:8]
-    _exec(dsn, sql.SQL("CREATE ROLE {} " + ("SUPERUSER" if superuser else "")).format(sql.Identifier(role)),
-          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)),
-          "CREATE TABLE _avnadmin_monitor.hidden(id int)")
+import contextlib
+
+
+@contextlib.contextmanager
+def _owner_session(name, dsn):
+    """A non-superuser LOGIN role that owns the test database, like Aiven's avnadmin."""
+    role = "occ_owner_" + uuid.uuid4().hex[:8]
+    password = uuid.uuid4().hex  # CI authenticates with passwords; local clusters may trust
+    _exec(dsn, sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(role), sql.Literal(password)),
+          sql.SQL("ALTER DATABASE {} OWNER TO {}").format(sql.Identifier(name), sql.Identifier(role)))
+    params = psycopg.conninfo.conninfo_to_dict(dsn)
+    params["user"], params["password"] = role, password
     try:
-        assert _occupancy(dsn) == expected
+        yield role, psycopg.conninfo.make_conninfo(**params)
     finally:
-        _exec(dsn, "DROP SCHEMA _avnadmin_monitor CASCADE", sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+        _exec(dsn, sql.SQL("ALTER DATABASE {} OWNER TO CURRENT_USER").format(sql.Identifier(name)),
+              sql.SQL("REASSIGN OWNED BY {} TO CURRENT_USER").format(sql.Identifier(role)),
+              sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)),
+              sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+@contextlib.contextmanager
+def _monitor_schema(dsn, owner_name, *extra):
+    """`_avnadmin_monitor` owned by `owner_name` (created if missing, dropped after)."""
+    created = False
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if conn.execute("SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = %s", (owner_name,)).fetchone() is None:
+            conn.execute(sql.SQL("CREATE ROLE {}").format(sql.Identifier(owner_name)))
+            created = True
+        conn.execute(sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(owner_name)))
+        conn.execute("CREATE FUNCTION _avnadmin_monitor.probe() RETURNS int LANGUAGE sql AS 'select 1'")
+        for q in extra:
+            conn.execute(q)
+    try:
+        yield
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("DROP SCHEMA IF EXISTS _avnadmin_monitor CASCADE")
+            if created:
+                conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(owner_name)))
+
+
+def test_the_real_aiven_monitor_schema_is_excluded(db):
+    """Observed on Aiven piero-1 (run 42677900843 refused UNEXPECTED_SCHEMAS): `_avnadmin_monitor`
+    is owned by Aiven's NON-superuser role `_avnadmin_monitor`; avnadmin is not a member and has no
+    CREATE on it. That exact shape must read EMPTY for a non-superuser database owner."""
+    name, dsn = db
+    with _monitor_schema(dsn, "_avnadmin_monitor"), _owner_session(name, dsn) as (role, owner_dsn):
+        assert _occupancy(owner_dsn) == "EMPTY"
+
+
+@pytest.mark.parametrize("variant", ["other_owner", "session_member", "session_create", "session_owner"])
+def test_the_monitor_schema_is_not_a_hiding_place(db, variant):
+    """Only the exact Aiven shape is excluded: another owner name, a session that is a member of the
+    owner, a session with CREATE on the schema, or a session-owned schema all count."""
+    name, dsn = db
+    with _owner_session(name, dsn) as (role, owner_dsn):
+        owner = {"other_owner": "avn_helper_" + uuid.uuid4().hex[:6],
+                 "session_owner": role}.get(variant, "_avnadmin_monitor")
+        extra = []
+        if variant == "session_member":
+            extra.append(sql.SQL("GRANT {} TO {}").format(sql.Identifier("_avnadmin_monitor"), sql.Identifier(role)))
+        if variant == "session_create":
+            extra.append(sql.SQL("GRANT CREATE ON SCHEMA _avnadmin_monitor TO {}").format(sql.Identifier(role)))
+        with _monitor_schema(dsn, owner, *extra):
+            assert _occupancy(owner_dsn) == "UNEXPECTED_SCHEMAS", variant
 
 
 def test_occupancy_runs_as_a_non_superuser_database_owner(db):
@@ -405,21 +459,19 @@ def _post_guard_apply(dsn):
 
 
 def test_an_extension_whose_objects_sit_outside_user_schemas_is_caught_by_the_extension_term(db):
-    """Seventh review: pgcrypto installed into a superuser-owned `_avnadmin_monitor` (excluded
-    schema) leaves only the pg_extension row: both the EMPTY gate and the post-guard must see it."""
+    """Seventh review: pgcrypto installed into the excluded Aiven-shaped `_avnadmin_monitor` leaves
+    only the pg_extension row; both the EMPTY gate and the post-guard (as the non-superuser owner)
+    must see it."""
     name, dsn = db
-    role = "avn_ext_" + uuid.uuid4().hex[:8]
-    _exec(dsn, sql.SQL("CREATE ROLE {} SUPERUSER").format(sql.Identifier(role)),
-          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)),
-          "CREATE EXTENSION pgcrypto SCHEMA _avnadmin_monitor")
-    try:
-        assert _occupancy(dsn) == "NOT_EMPTY"
-        proc = _post_guard_apply(dsn)
-        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
-        assert not _migrated(dsn)
-    finally:
-        _exec(dsn, "DROP EXTENSION pgcrypto", "DROP SCHEMA _avnadmin_monitor CASCADE",
-              sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+    with _monitor_schema(dsn, "_avnadmin_monitor", "CREATE EXTENSION pgcrypto SCHEMA _avnadmin_monitor"), \
+            _owner_session(name, dsn) as (role, owner_dsn):
+        try:
+            assert _occupancy(owner_dsn) == "NOT_EMPTY"
+            proc = _post_guard_apply(owner_dsn)
+            assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+            assert not _migrated(dsn)
+        finally:
+            _exec(dsn, "DROP EXTENSION IF EXISTS pgcrypto")
 
 
 def test_the_post_apply_guard_sees_a_prepared_transaction(db):

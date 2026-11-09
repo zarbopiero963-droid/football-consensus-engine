@@ -253,7 +253,9 @@ jobs:
           }
           # Occupancy (relations, functions, types, other objects, schemas) is decided by
           # scripts/pg18_state.py. EMPTY - the only state that lets apply run - requires every
-          # category to be 0. Aiven's _avnadmin_monitor schema is excluded by exact name only.
+          # category to be 0. Aiven's _avnadmin_monitor schema is excluded only in its exact Aiven
+          # shape (owner role `_avnadmin_monitor` or a superuser; the session neither owns, is a member
+          # of the owner, nor can CREATE in it), see sql/aiven/pg18_occupancy.sql.
           occ="$RUNNER_TEMP/pg18_occupancy.txt"
           qf sql/aiven/pg18_occupancy.sql "$occ"
           counts="$(tr '\n' ' ' <"$occ")"
