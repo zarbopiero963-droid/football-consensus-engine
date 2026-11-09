@@ -57,10 +57,11 @@ SCRIPT = textwrap.dedent(r'''
         row = codes.get(code)
         if not row or row["used"]:
             return None
-        if MODE != "code_not_burned":
+        if MODE not in ("code_not_burned", "code_reusable"):
             row["used"] = True
         verifier_ok = MODE == "verifier_ignored" or verifier_matches(row["code_challenge"])
         if row["client_id"] != client_id or row["redirect_uri"] != redirect_uri or not verifier_ok:
+            row["used"] = True if MODE == "code_reusable" else row["used"]
             return None
         pair(access, refresh, {"client_id": client_id, "resource": row["resource"], "scope": row["scope"]})
         return {"resource": row["resource"], "scope": row["scope"]}
@@ -74,8 +75,11 @@ SCRIPT = textwrap.dedent(r'''
             row["revoked"] = True
             pair(access, refresh, row)
             return {"resource": row["resource"], "scope": row["scope"]}
-        if not row or row["client_id"] != client_id or row["revoked"]:
+        if not row or (row["client_id"] != client_id and MODE != "refresh_any_client") or row["revoked"]:
             return None
+        if MODE == "refresh_any_client" and row["client_id"] != client_id:
+            pair(access, refresh, row)  # accepted for a foreign client, owner's token NOT burned
+            return {"resource": row["resource"], "scope": row["scope"]}
         if MODE != "reusable_refresh":
             row["revoked"] = True
         pair(access, refresh, row)
@@ -89,7 +93,53 @@ SCRIPT = textwrap.dedent(r'''
     st.refresh_and_issue = rotate
     st.valid_access_token = lambda t, res, scope: (
         "2099-01-01" if MODE == "any_bearer" or (t in access and access[t]["resource"] == res
-                                                 and scope in access[t]["scope"].split()) else None)
+                                                 and scope in access[t]["scope"].split())
+        or (MODE == "refresh_as_bearer" and t in refresh)
+        or (MODE == "malformed_bearer" and t == "not-an-issued-token") else None)
+
+    import re as _re
+    if MODE in ("refresh_as_bearer", "malformed_bearer"):
+        srv.oauth.ISSUED_TOKEN_RE = _re.compile(r"^.+$")
+    if MODE == "dcr_foreign_accepted":
+        srv.oauth._claude_dcr_registration_valid = lambda data: True
+    if MODE == "weak_consent_headers":
+        srv.oauth.CONSENT_HEADERS = {**srv.oauth.NO_STORE, "X-Frame-Options": "DENY"}
+    if MODE in ("redirect_other_target", "redirect_wrong_state", "redirect_wrong_iss"):
+        _Redirect = srv.oauth.RedirectResponse
+        def _tampered(url, status_code=302, **kw):
+            if MODE == "redirect_other_target":
+                url = url.replace("https://claude.ai/", "https://claude.ai.evil.example/", 1)
+            elif MODE == "redirect_wrong_state":
+                url = _re.sub(r"state=[^&]+", "state=other", url)
+            else:
+                url = _re.sub(r"iss=[^&]+", "iss=https%3A%2F%2Fevil.example", url)
+            return _Redirect(url, status_code=status_code, **kw)
+        srv.oauth.RedirectResponse = _tampered
+    if MODE == "tools_count_mismatch":
+        _counts = srv._tool_registry_counts
+        async def _more():
+            total, by = await _counts()
+            return total + 1, by
+        srv._tool_registry_counts = _more
+
+    # Server-side record of every tools/call the bridge actually executed (review of #179, P2-1).
+    server_tools_called = []
+    _call_tool = srv.mcp.call_tool
+    async def _recording_call_tool(name, arguments, context=None):
+        server_tools_called.append(name)
+        result = await _call_tool(name, arguments, context)
+        tamper = {"sxbet_live": ("sxbet_health", {"available_modes": {"READ_ONLY": "AVAILABLE",
+                                                                    "SIMULATION": "AVAILABLE",
+                                                                    "LIVE_TRADING": "AVAILABLE"}}),
+                  "apifootball_network": ("apifootball_health", {"network_calls_made": 1})}.get(MODE)
+        if tamper and tamper[0] == name and getattr(result, "structured_content", None) is not None:
+            data = {**result.structured_content, **tamper[1]}
+            result.structured_content = data
+            for item in result.content or []:
+                if getattr(item, "text", None):
+                    item.text = json.dumps(data)
+        return result
+    srv.mcp.call_tool = _recording_call_tool
 
     if MODE == "wrong_password_accepted":
         import hmac as _hmac
@@ -115,7 +165,7 @@ SCRIPT = textwrap.dedent(r'''
         if os.environ.get("E2E_EXPECTED_COMMIT"):
             argv += ["--expected-commit", os.environ["E2E_EXPECTED_COMMIT"]]
         rc = e2e.main(argv, client=c, sleep=lambda s: None)
-    print("RESULT_JSON=" + json.dumps({"rc": rc, "issued": issued}))
+    print("RESULT_JSON=" + json.dumps({"rc": rc, "issued": issued, "server_tools_called": server_tools_called}))
 ''')
 
 
@@ -133,6 +183,10 @@ def _run(tmp_path, mode="normal", github_actions=False, extra_env=None):
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT_JSON=")), None)
     assert line, proc.stdout[-3000:] + proc.stderr[-3000:]
     res = json.loads(line[len("RESULT_JSON="):])
+    # Review of #179, P2-3: nothing secret on stderr either (logging, tracebacks).
+    issued = res["issued"]
+    assert PASSWORD not in proc.stderr
+    assert not any(v in proc.stderr for v in issued), "a runtime secret reached stderr"
     return res, out.read_text(encoding="utf-8"), proc.stdout
 
 
@@ -150,7 +204,10 @@ def test_full_flow_passes_and_the_report_holds_no_secret(tmp_path):
                  "refresh_rotation_200", "refresh_replay_refused", "refresh_token_is_not_a_bearer",
                  "refreshed_access_token_works"):
         assert must in passed, must
-    assert report["facts"]["tools_listed"] > 0 and report["write_operations_attempted"] == 0
+    assert report["facts"]["tools_listed"] > 0 and report["provider_or_order_calls_attempted"] == 0
+    # Review of #179, P2-1: what the SERVER executed, not what the client says it called.
+    assert sorted(res["server_tools_called"]) == ["apifootball_health", "sxbet_health"]
+    assert sorted(report["tools_called"]) == ["apifootball_health", "sxbet_health"]
     # Nothing secret in the report; every runtime secret was masked for the Actions log.
     assert PASSWORD not in report_text and PASSWORD not in stdout
     assert res["issued"]
@@ -171,6 +228,19 @@ def test_full_flow_passes_and_the_report_holds_no_secret(tmp_path):
     ("any_bearer", None, "mcp_unknown_wellformed_bearer_401"),
     ("normal", {"BROWSER_TOOLS_ENABLED": "true"}, "browser_and_cloak_off"),
     ("normal", {"RENDER_GIT_COMMIT": "a" * 40, "E2E_EXPECTED_COMMIT": "b" * 40}, "deployed_commit_is_main_head"),
+    # Review of #179, P2-2: one RED control per remaining core check.
+    ("code_reusable", None, "token_code_replay_refused"),
+    ("refresh_any_client", None, "refresh_wrong_client_refused"),
+    ("refresh_as_bearer", None, "refresh_token_is_not_a_bearer"),
+    ("malformed_bearer", None, "mcp_malformed_bearer_401"),
+    ("dcr_foreign_accepted", None, "dcr_foreign_redirect_refused"),
+    ("weak_consent_headers", None, "consent_page_headers"),
+    ("redirect_other_target", None, "authorize_redirect_target_is_registered_callback"),
+    ("redirect_wrong_state", None, "authorize_redirect_state_and_iss"),
+    ("redirect_wrong_iss", None, "authorize_redirect_state_and_iss"),
+    ("sxbet_live", None, "tools_call_sxbet_health_read_only"),
+    ("apifootball_network", None, "tools_call_apifootball_health_no_provider_call"),
+    ("tools_count_mismatch", None, "mcp_tools_list_matches_healthz"),
 ])
 def test_each_server_regression_fails_the_run_at_its_own_check(tmp_path, mode, extra_env, failed):
     """RED controls (review: checks that could be made vacuous); none leaks into the report."""
@@ -310,3 +380,40 @@ def test_the_e2e_client_needs_no_third_party_package():
     assert "import httpx" not in src and "import requests" not in src
     wf = (root / ".github" / "workflows" / "fcb-mcp-e2e.yml").read_text(encoding="utf-8")
     assert "pip install" not in wf and "python -I scripts/mcp_e2e_render.py" in wf
+
+
+
+def test_tools_call_outside_the_allowlist_is_refused_on_every_path():
+    """Review of #179, P2-1: rpc() itself refuses, not only call_tool()."""
+    run = e2e.Run(client=None, base=e2e.PINNED_BASE, password="p", expected_commit=None, mask=lambda v: None)
+    for name in ("apifootball_status", "sxbet_balance", "browser_create", None):
+        with pytest.raises(e2e.Fail, match="tool_not_allowlisted"):
+            run.rpc("tools/call", {"name": name, "arguments": {}}, "t")
+    assert run.tools_called == []
+
+
+def test_an_unexpected_exception_reports_its_type_only(tmp_path, monkeypatch):
+    """Review of #179, P3: the exception message (which may carry a URL with a code) never
+    reaches the report."""
+    out = tmp_path / "r.json"
+    monkeypatch.setenv("MCP_OAUTH_PASSWORD", PASSWORD)
+
+    def boom(self):
+        raise ValueError("https://claude.ai/api/mcp/auth_callback?code=SECRETCODE " + PASSWORD)
+
+    monkeypatch.setattr(e2e.Run, "execute", boom)
+    assert e2e.main(["--output", str(out)], client=object(), base=e2e.PINNED_BASE) == 1
+    text = out.read_text()
+    assert json.loads(text)["failed_check"] == "unexpected_ValueError"
+    assert "SECRETCODE" not in text and PASSWORD not in text
+
+
+def test_server_values_are_masked_only_when_url_safe():
+    """Review of #179, P3: a server value with a newline can never inject a workflow command."""
+    masked = []
+    run = e2e.Run(client=None, base=e2e.PINNED_BASE, password="p", expected_commit=None, mask=masked.append)
+    assert run.secret("abc-DEF_123.~") == "abc-DEF_123.~" and masked == ["abc-DEF_123.~"]
+    for bad in ("x\n::warning::pwned", "a b", "x" * 600):
+        with pytest.raises(e2e.Fail, match="unexpected_secret_format"):
+            run.secret(bad)
+    assert masked == ["abc-DEF_123.~"] and "x\n::warning::pwned" in run.sensitive

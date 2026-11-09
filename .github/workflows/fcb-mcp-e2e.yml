@@ -77,7 +77,8 @@ jobs:
               d = json.loads(report.read_text(encoding="utf-8"))
               lines = [f"### MCP E2E on {d.get('target')}: {d.get('verdict')}", "",
                        f"Failed check: {d.get('failed_check')}; checks passed: {d.get('checks_passed')}; "
-                       f"tools called: {d.get('tools_called')}; write operations: {d.get('write_operations_attempted')}", "",
+                       f"tools called: {d.get('tools_called')}; provider/order calls: {d.get('provider_or_order_calls_attempted')}; "
+                       f"OAuth rows written: {d.get('oauth_rows_written_per_run')}", "",
                        f"Facts: `{json.dumps(d.get('facts', {}), sort_keys=True)}`", "",
                        "| Check | Outcome |", "|---|---|"]
               lines += [f"| {c.get('check')} | {c.get('outcome')} |" for c in d.get("checks", [])]

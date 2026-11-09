@@ -56,6 +56,8 @@ PROTOCOL_VERSION = "2025-06-18"
 # browser or wallet. Nothing outside this set is ever called.
 ALLOWED_TOOL_CALLS = frozenset({"sxbet_health", "apifootball_health"})
 ISSUED_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{1,512}$")
+COMMIT_PREFIX_RE = re.compile(r"^[0-9a-f]{12}$")
 USER_AGENT = "fcb-mcp-e2e/1"
 
 
@@ -135,11 +137,16 @@ class Run:
         self.results: list[dict[str, Any]] = []
         self.facts: dict[str, Any] = {}
         self._rpc_id = 0
+        self.tools_called: list[str] = []
 
     # ---- bookkeeping ---------------------------------------------------------------------
     def secret(self, value: str) -> str:
         if value:
             self.sensitive.append(value)
+            # Values come from the server: mask only well-formed URL-safe tokens, so a malformed
+            # value (e.g. with a newline) can never inject an Actions workflow command.
+            if not SAFE_TOKEN_RE.fullmatch(value):
+                raise Fail("unexpected_secret_format")
             self._mask(value)
         return value
 
@@ -160,6 +167,10 @@ class Run:
 
     def rpc(self, method: str, params: dict[str, Any] | None, token: str | None,
             notification: bool = False) -> Any:
+        if method == "tools/call" and (params or {}).get("name") not in ALLOWED_TOOL_CALLS:
+            raise Fail("tool_not_allowlisted")  # enforced for every path, not only call_tool()
+        if method == "tools/call":
+            self.tools_called.append(params["name"])
         body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             body["params"] = params
@@ -243,7 +254,8 @@ class Run:
         self.check("browser_and_cloak_off", h.get("browser_tools_enabled") is False and h.get("cloak_enabled") is False)
         if self.expected_commit:
             self.check("deployed_commit_is_main_head",
-                       bool(h.get("deploy_commit")) and self.expected_commit.startswith(str(h.get("deploy_commit"))),
+                       bool(COMMIT_PREFIX_RE.fullmatch(str(h.get("deploy_commit") or "")))
+                       and self.expected_commit.startswith(str(h.get("deploy_commit"))),
                        deployed=h.get("deploy_commit"), expected=self.expected_commit[:12])
 
         prm = self.get("/.well-known/oauth-protected-resource").json()
@@ -390,7 +402,9 @@ class Run:
         return {"target": self.base, "verdict": "PASS" if not error and not fails else "FAIL",
                 "failed_check": error, "checks_passed": sum(r["outcome"] == "PASS" for r in self.results),
                 "checks": self.results, "facts": self.facts,
-                "tools_called": sorted(ALLOWED_TOOL_CALLS), "write_operations_attempted": 0}
+                "tools_called": list(self.tools_called), "provider_or_order_calls_attempted": 0,
+                # The OAuth flow itself writes rows in production (DCR client, codes, tokens):
+                "oauth_rows_written_per_run": "1 DCR client, 2 codes, 2 token pairs (hashes only)"}
 
     def leak_free(self, text: str) -> bool:
         # Raw and JSON-escaped forms: a value with quotes, backslashes or non-ASCII characters
