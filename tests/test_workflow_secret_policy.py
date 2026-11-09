@@ -112,6 +112,7 @@ def test_the_policy_sees_the_known_privileged_workflows():
     assert ("fcb-aiven-pg18-test.yml", "pg18-test") in found
     assert ("fcb-aiven-defaultdb-restore.yml", "restore") in found
     assert ("api-football-live-smoke.yml", "live") in found
+    assert ("fcb-mcp-e2e.yml", "e2e") in found  # MCP_OAUTH_PASSWORD is privileged (default-closed)
 
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
