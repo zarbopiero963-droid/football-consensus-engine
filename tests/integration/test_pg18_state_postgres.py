@@ -336,6 +336,14 @@ POST_GUARD_PLANTS = {
 }
 
 
+POST_GUARD_PLANTS.update({
+    # Eighth review: the post-guard's own schema and settings filters, each killed separately.
+    "lookalike_temp_schema": ["CREATE SCHEMA evil_temp", "CREATE TABLE evil_temp.loot(x int)"],
+    "pgxtemp_schema": ["CREATE SCHEMA pgxtemp", "CREATE TABLE pgxtemp.loot(x int)"],
+    "db_setting_s": ["ALTER DATABASE {db} SET statement_timeout = '5min'"],
+})
+
+
 @pytest.mark.parametrize("kind", sorted(POST_GUARD_PLANTS))
 def test_the_post_apply_guard_refuses_every_foreign_object_kind(db, kind):
     """Sixth review P2-2: every term of pg18_post_apply_guard.sql is exercised on its own."""
@@ -483,3 +491,45 @@ def test_the_target_guard_itself_passes_on_its_database_and_refuses_otherwise(db
         assert path.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in path.stderr
     finally:
         _exec(dsn, sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+
+def test_the_post_apply_guard_refuses_a_monitor_schema_owned_by_a_non_superuser(db):
+    """Eighth review: only a superuser-owned `_avnadmin_monitor` is excluded in the post-guard too."""
+    name, dsn = db
+    role = "avn_helper_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)),
+          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)),
+          "CREATE TABLE _avnadmin_monitor.loot(x int)")
+    try:
+        proc = _post_guard_apply(dsn)
+        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+        assert not _migrated(dsn)
+    finally:
+        _exec(dsn, "DROP SCHEMA _avnadmin_monitor CASCADE", sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_the_post_apply_guard_refuses_a_role_wide_setting_of_the_connecting_role(db):
+    name, dsn = db
+    _exec(dsn, "ALTER ROLE CURRENT_USER SET transform_null_equals = on")
+    try:
+        proc = _post_guard_apply(dsn)
+        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+        assert not _migrated(dsn)
+    finally:
+        _exec(dsn, "ALTER ROLE CURRENT_USER RESET transform_null_equals")
+
+
+def test_the_target_guard_refuses_a_session_started_under_a_planted_setting(db):
+    """Eighth review P3: a role/database setting in force at connect time (then removed from the
+    catalog while the apply waits) is refused by GUARD, which reads pg_settings, not the catalog."""
+    name, dsn = db
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+    _exec(dsn, sql.SQL("ALTER DATABASE {} SET work_mem = '8MB'").format(sql.Identifier(name)))
+    proc = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-c", _target_guard(name)],
+                          env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in proc.stderr
+    _exec(dsn, sql.SQL("ALTER DATABASE {} RESET work_mem").format(sql.Identifier(name)))
+    proc = subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-c", _target_guard(name)],
+                          env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
