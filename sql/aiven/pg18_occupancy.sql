@@ -33,7 +33,14 @@ SELECT k, v FROM (
       OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_conversion x JOIN user_ns n ON n.oid OPERATOR(pg_catalog.=) x.connamespace)
       OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_extension x WHERE x.extname OPERATOR(pg_catalog.<>) 'plpgsql'::pg_catalog.name)
       OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_largeobject_metadata)
-      OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_publication))
+      OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_publication)
+      OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_subscription x
+          WHERE x.subdbid OPERATOR(pg_catalog.=) (SELECT d.oid FROM pg_catalog.pg_database d
+                                                WHERE d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()))
+      OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_prepared_xacts x
+          WHERE x.database OPERATOR(pg_catalog.=) pg_catalog.current_database())
+      OPERATOR(pg_catalog.+) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_replication_slots x
+          WHERE x.database OPERATOR(pg_catalog.=) pg_catalog.current_database()))
   UNION ALL SELECT 5, 'default_privileges', pg_catalog.count(*) FROM pg_catalog.pg_default_acl
   UNION ALL SELECT 6, 'database_settings', pg_catalog.count(*)
     FROM pg_catalog.pg_db_role_setting s, pg_catalog.unnest(s.setconfig) AS c(cfg)

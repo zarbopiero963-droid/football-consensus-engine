@@ -40,7 +40,12 @@ def db():
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     params = psycopg.conninfo.conninfo_to_dict(admin)
     params["dbname"] = name
-    yield name, psycopg.conninfo.make_conninfo(**params)
+    dsn = psycopg.conninfo.make_conninfo(**params)
+    yield name, dsn
+    with psycopg.connect(dsn, autocommit=True) as conn:  # subscriptions block DROP DATABASE
+        for (sub,) in conn.execute("SELECT subname FROM pg_catalog.pg_subscription s JOIN pg_catalog.pg_database d "
+                                   "ON d.oid = s.subdbid WHERE d.datname = current_database()").fetchall():
+            conn.execute(sql.SQL("DROP SUBSCRIPTION {}").format(sql.Identifier(sub)))
     with psycopg.connect(admin, autocommit=True) as conn:
         conn.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
 
@@ -95,6 +100,8 @@ def test_a_fresh_database_is_empty(db):
     (["ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO PUBLIC"], "NOT_EMPTY"),
     (["ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"], "NOT_EMPTY"),
     (["CREATE SCHEMA _avnadmin_monitor", "CREATE TABLE _avnadmin_monitor.hidden(id int)"], "UNEXPECTED_SCHEMAS"),
+    (["CREATE SUBSCRIPTION sub CONNECTION 'host=127.0.0.1 port=1 dbname=x' PUBLICATION p "
+      "WITH (connect = false, slot_name = NONE, enabled = false)"], "NOT_EMPTY"),
 ])
 def test_any_user_object_or_schema_is_never_empty(db, ddl, expected):
     _exec(db[1], *ddl)
@@ -121,6 +128,21 @@ def test_aiven_monitor_schema_is_excluded_only_when_another_superuser_owns_it(db
         assert _occupancy(dsn) == expected
     finally:
         _exec(dsn, "DROP SCHEMA _avnadmin_monitor CASCADE", sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_occupancy_runs_as_a_non_superuser_database_owner(db):
+    """Aiven's avnadmin is not a superuser: every catalog the occupancy query reads must be readable."""
+    name, dsn = db
+    role = "occ_owner_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(role)),
+          sql.SQL("ALTER DATABASE {} OWNER TO {}").format(sql.Identifier(name), sql.Identifier(role)))
+    params = psycopg.conninfo.conninfo_to_dict(dsn)
+    params["user"] = role
+    try:
+        assert _occupancy(psycopg.conninfo.make_conninfo(**params)) == "EMPTY"
+    finally:
+        _exec(dsn, sql.SQL("ALTER DATABASE {} OWNER TO CURRENT_USER").format(sql.Identifier(name)),
+              sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
 
 
 def test_role_wide_settings_of_the_connecting_role_count(db):

@@ -565,6 +565,10 @@ def test_evidence_sql_has_no_like_wildcards_and_qualifies_every_catalog():
         assert unqualified == [], f"{name}: unqualified catalog references {unqualified}"
         assert re.search(r"(?<![\w.])count\(", body) is None, name
         assert re.search(r"(?<![\w.])schema_migrations\b", body) is None, name
+        # Fifth review F2: no comparison operator outside OPERATOR(pg_catalog.x) (exact-match
+        # operators in public win over pg_catalog's inexact ones, CVE-2018-1058 pattern).
+        bare = re.sub(r"'[^']*'", "''", re.sub(r"OPERATOR\(pg_catalog\.[^)]+\)", "", body))
+        assert re.search(r"<>|<=|>=|!~|(?<![:<>!])=(?!>)|[^-]>|<(?!>)", bare) is None, name
     occ = (ROOT / "sql" / "aiven" / "pg18_occupancy.sql").read_text()
     assert "'^pg_(toast_)?temp_[0-9]+$'" in occ
 
