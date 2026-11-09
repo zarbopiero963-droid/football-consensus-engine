@@ -238,11 +238,12 @@ jobs:
           tls="$(q 'select version || $$ $$ || cipher from pg_stat_ssl where pid = pg_backend_pid()')"
           path1="$(q 'select (pg_catalog.current_schemas(true))[1]')"
           test "$path1" = "pg_catalog" || { echo "::error::pg_catalog is not first in search_path"; exit 1; }
-          # qf FILE OUT: run a read-only evidence file (psql -A -t -F '='); stderr only sanitized.
+          # qf FILE OUT: run a read-only evidence file as ONE read-only transaction (-1), so code reached
+          # through a planted view cannot reopen a read-write transaction; stderr only sanitized.
           qf() {
             local err
             err="$(mktemp)"
-            if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f "$1" >"$2" 2>"$err"; then
+            if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -1 -f "$1" >"$2" 2>"$err"; then
               rm -f "$err"
             else
               echo "::error::read-only evidence query failed ($(classify "$err"))" >&2

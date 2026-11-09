@@ -88,6 +88,9 @@ def test_a_fresh_database_is_empty(db):
     (["CREATE TYPE public.e AS ENUM ('a')"], "NOT_EMPTY"),
     (["CREATE DOMAIN public.d AS int"], "NOT_EMPTY"),
     (["CREATE DOMAIN public.arrdom AS int[] CHECK (VALUE IS NOT NULL)"], "NOT_EMPTY"),
+    # Seventh review: an operator over a pg_catalog function (CVE-2018-1058 shape) is caught by the
+    # operator term alone.
+    (["CREATE OPERATOR public.=== (LEFTARG = int4, RIGHTARG = int8, FUNCTION = pg_catalog.int48ne)"], "NOT_EMPTY"),
     (["CREATE TYPE public.c AS (a int)"], "NOT_EMPTY"),
     (["CREATE COLLATION public.coll (provider = libc, locale = 'C')"], "NOT_EMPTY"),
     (["CREATE TEXT SEARCH CONFIGURATION public.ts (COPY = pg_catalog.simple)"], "NOT_EMPTY"),
@@ -236,7 +239,8 @@ def test_holding_the_advisory_lock_to_plant_objects_after_the_check_fails_the_ap
     proc = _first_apply(dsn)
     t.join()
     assert proc.returncode != 0
-    assert "FCB_DATABASE_NOT_EMPTY" in proc.stderr or "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+    # The lock is taken BEFORE the re-check, so the re-check itself sees the planted schema.
+    assert "FCB_DATABASE_NOT_EMPTY" in proc.stderr
     assert not _migrated(dsn)
 
 
@@ -311,6 +315,11 @@ def test_the_applied_0001_0007_series_is_recognised_and_survives_shadowing(db, t
 
 
 POST_GUARD_PLANTS = {
+    "operator_builtin": ["CREATE OPERATOR public.=== (LEFTARG = int4, RIGHTARG = int8, FUNCTION = pg_catalog.int48ne)"],
+    "collation": ["CREATE COLLATION public.planted_coll (provider = libc, locale = 'C')"],
+    "ts_config": ["CREATE TEXT SEARCH CONFIGURATION public.planted_ts (COPY = pg_catalog.simple)"],
+    "ts_dict": ["CREATE TEXT SEARCH DICTIONARY public.planted_dict (TEMPLATE = pg_catalog.simple)"],
+    "conversion": ["CREATE CONVERSION public.planted_cv FOR 'LATIN1' TO 'UTF8' FROM pg_catalog.iso8859_1_to_utf8"],
     "function": ["CREATE FUNCTION public.planted() RETURNS int LANGUAGE sql AS 'select 1'"],
     "schema": ["CREATE SCHEMA planted"],
     "default_acl": ["ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"],
@@ -372,3 +381,105 @@ def test_a_logical_replication_slot_blocks_empty(db):
         assert _occupancy(dsn) == "NOT_EMPTY"
     finally:
         _exec(dsn, sql.SQL("SELECT pg_catalog.pg_drop_replication_slot({})").format(sql.Literal(slot)))
+
+
+
+def _post_guard_apply(dsn):
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+    return subprocess.run(["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1",
+                           "-f", str(AIVEN / "aiven_migrations_0001_0007.sql"),
+                           "-f", str(AIVEN / "pg18_post_apply_guard.sql")],
+                          env=env, capture_output=True, text=True, timeout=120)
+
+
+def test_an_extension_whose_objects_sit_outside_user_schemas_is_caught_by_the_extension_term(db):
+    """Seventh review: pgcrypto installed into a superuser-owned `_avnadmin_monitor` (excluded
+    schema) leaves only the pg_extension row: both the EMPTY gate and the post-guard must see it."""
+    name, dsn = db
+    role = "avn_ext_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("CREATE ROLE {} SUPERUSER").format(sql.Identifier(role)),
+          sql.SQL("CREATE SCHEMA _avnadmin_monitor AUTHORIZATION {}").format(sql.Identifier(role)),
+          "CREATE EXTENSION pgcrypto SCHEMA _avnadmin_monitor")
+    try:
+        assert _occupancy(dsn) == "NOT_EMPTY"
+        proc = _post_guard_apply(dsn)
+        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+        assert not _migrated(dsn)
+    finally:
+        _exec(dsn, "DROP EXTENSION pgcrypto", "DROP SCHEMA _avnadmin_monitor CASCADE",
+              sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_the_post_apply_guard_sees_a_prepared_transaction(db):
+    name, dsn = db
+    if int(_setting(dsn, "max_prepared_transactions")) == 0:
+        pytest.skip("max_prepared_transactions = 0 on this server")
+    gid = "planted_" + uuid.uuid4().hex[:8]
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("BEGIN")
+        conn.execute("SELECT 1")
+        conn.execute(sql.SQL("PREPARE TRANSACTION {}").format(sql.Literal(gid)))
+    try:
+        proc = _post_guard_apply(dsn)
+        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+        assert not _migrated(dsn)
+    finally:
+        _exec(dsn, sql.SQL("ROLLBACK PREPARED {}").format(sql.Literal(gid)))
+
+
+def test_the_post_apply_guard_sees_a_logical_slot(db):
+    name, dsn = db
+    if _setting(dsn, "wal_level") != "logical":
+        pytest.skip("wal_level is not logical on this server")
+    slot = "planted_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("SELECT pg_catalog.pg_create_logical_replication_slot({}, 'test_decoding')")
+          .format(sql.Literal(slot)))
+    try:
+        proc = _post_guard_apply(dsn)
+        assert proc.returncode != 0 and "FCB_FOREIGN_OBJECTS_AFTER_APPLY" in proc.stderr
+        assert not _migrated(dsn)
+    finally:
+        _exec(dsn, sql.SQL("SELECT pg_catalog.pg_drop_replication_slot({})").format(sql.Literal(slot)))
+
+
+def _target_guard(expected_db: str) -> str:
+    """The workflow's target GUARD with only the PG18 and TLS clauses relaxed for a local server."""
+    import re as _re
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "fcb-aiven-pg18-test.yml").read_text())
+    run = next(s["run"] for s in wf["jobs"]["pg18-test"]["steps"]
+               if s.get("name", "").startswith("Apply 0001-0007"))
+    line = next(l for l in run.splitlines() if l.strip().startswith("GUARD="))
+    guard = subprocess.run(["bash", "-c", line + '\nprintf %s "$GUARD"'], cwd=ROOT,
+                           env={**os.environ, "EXPECTED_DB": expected_db},
+                           capture_output=True, text=True, check=True).stdout
+    relaxed = guard.replace("OPERATOR(pg_catalog.<) 180000", "OPERATOR(pg_catalog.<) 0").replace(
+        "OPERATOR(pg_catalog.>) 189999", "OPERATOR(pg_catalog.>) 999999")
+    relaxed, n = _re.subn(r"OR NOT COALESCE\(\(SELECT s\.ssl .*?\), false\)", "", relaxed)
+    assert n == 1 and relaxed != guard
+    return relaxed
+
+
+def test_the_target_guard_itself_passes_on_its_database_and_refuses_otherwise(db):
+    """Seventh review P3: run the real GUARD (database, pg_catalog first, CURRENT_USER = SESSION_USER)."""
+    name, dsn = db
+    env = {**os.environ, "PGOPTIONS": WORKFLOW_PGOPTIONS}
+
+    def run(guard, *pre):
+        args = ["psql", dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1"]
+        for p in pre:
+            args += ["-c", p]
+        return subprocess.run(args + ["-c", guard], env=env, capture_output=True, text=True, timeout=60)
+
+    assert run(_target_guard(name)).returncode == 0
+    wrong = run(_target_guard("not_" + name))
+    assert wrong.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in wrong.stderr
+    role = "guard_other_" + uuid.uuid4().hex[:8]
+    _exec(dsn, sql.SQL("CREATE ROLE {}").format(sql.Identifier(role)))
+    try:
+        switched = run(_target_guard(name), f"SET ROLE {role}")
+        assert switched.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in switched.stderr
+        path = run(_target_guard(name), "SET search_path = public, pg_catalog")
+        assert path.returncode != 0 and "FCB_TARGET_GUARD_FAILED" in path.stderr
+    finally:
+        _exec(dsn, sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))

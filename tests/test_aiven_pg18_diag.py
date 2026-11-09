@@ -591,7 +591,7 @@ def test_workflow_state_gates_apply_and_diagnose_exactly():
     mig_if = 'if ! verdict="$(python -I -S scripts/pg18_state.py migrated "$evidence" "$expected_rows")"; then'
     assert lines[lines.index(mig_if) + 1].endswith("exit 1")
     assert 'qf sql/aiven/pg18_occupancy.sql "$occ"' in lines and 'qf sql/aiven/verify_schema.sql "$evidence"' in lines
-    assert ("""if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -f "$1" >"$2" 2>"$err"; then"""
+    assert ("""if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -1 -f "$1" >"$2" 2>"$err"; then"""
             in lines)
     assert pre_step["env"]["PGOPTIONS"] == "-c search_path=public -c default_transaction_read_only=on"
     assert 'test "$path1" = "pg_catalog" || { echo "::error::pg_catalog is not first in search_path"; exit 1; }' in lines
