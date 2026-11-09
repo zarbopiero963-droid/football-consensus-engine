@@ -71,6 +71,26 @@ jobs:
             echo "::error::secret FCB_PG18_TEST_URL is not set"; exit 1
           fi
 
+      - name: Materialize and authenticate the Aiven project CA (D02 verify-full)
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::FCB_AIVEN_CA_PEM / FCB_AIVEN_CA_SHA256 missing in environment aiven-pg18-test"; exit 1
+          fi
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || {
+            echo "::error::Aiven CA checksum mismatch"; exit 1;
+          }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+          echo "Aiven CA parsed and matched the protected SHA-256" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -149,9 +169,10 @@ jobs:
           forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
           if forbidden & {k.lower() for k in q}:
               sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
-          mode = q.get('sslmode', ['require'])[0]
-          if mode not in ('require', 'verify-ca', 'verify-full'):
-              sys.exit('::error::sslmode must be require, verify-ca or verify-full')
+          # D02: certificate chain AND hostname are verified against the authenticated project CA.
+          mode = q.get('sslmode', [None])[0]
+          if mode != 'verify-full' or len(q.get('sslmode', [])) != 1:
+              sys.exit('::error::sslmode must be verify-full')
           PY
           # urlsplit silently drops spaces/newlines/tabs that libpq keeps (e.g. a final newline
           # after "sslmode=require" makes libpq fail before connecting): reject them explicitly.
@@ -167,10 +188,14 @@ jobs:
           set -euo pipefail
           python -I -S scripts/aiven_pg18_diag.py probe | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Prechecks (database, PostgreSQL 18, TLS, empty schema)
+      - name: Prechecks (database, PostgreSQL 18, TLS verify-full, state)
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
-          PGSSLMODE: require
+          PGSSLMODE: verify-full
+          # Startup option: overrides any role/database search_path default, and pg_catalog stays
+          # implicitly FIRST, so objects in public cannot shadow catalogs (review of #178, P2).
+          # Read-only sessions: nothing a planted view or function does can write (sixth review).
+          PGOPTIONS: -c search_path=public -c default_transaction_read_only=on
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
@@ -211,44 +236,88 @@ jobs:
           ssl="$(q 'select ssl from pg_stat_ssl where pid = pg_backend_pid()')"
           test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
           tls="$(q 'select version || $$ $$ || cipher from pg_stat_ssl where pid = pg_backend_pid()')"
-          objects="$(q "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname not in ('pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and n.nspname not like 'pg_temp%' and n.nspname not like 'pg_toast_temp%' and c.relkind in ('r','p','v','m','S','f')")"
-          funcs="$(q "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname not in ('pg_catalog','information_schema','_avnadmin_monitor')")"
-          # Aiven installs its own monitoring schema (_avnadmin_monitor, owned by postgres) in every
-          # database; it is excluded by exact name only. Any other non-system schema besides public
-          # makes the precheck fail.
-          schemas="$(q "select count(*) from pg_namespace where nspname not in ('public','pg_catalog','information_schema','pg_toast','_avnadmin_monitor') and nspname not like 'pg_temp%' and nspname not like 'pg_toast_temp%'")"
-          if [ "$schemas" != "0" ]; then
-            echo "::error::unexpected non-system schemas present ($schemas); refusing to run"; exit 1
+          path1="$(q 'select (pg_catalog.current_schemas(true))[1]')"
+          test "$path1" = "pg_catalog" || { echo "::error::pg_catalog is not first in search_path"; exit 1; }
+          # qf FILE OUT: run a read-only evidence file as ONE read-only transaction (-1), so code reached
+          # through a planted view cannot reopen a read-write transaction; stderr only sanitized.
+          qf() {
+            local err
+            err="$(mktemp)"
+            if "$PSQL" "$FCB_PG18_TEST_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 -1 -f "$1" >"$2" 2>"$err"; then
+              rm -f "$err"
+            else
+              echo "::error::read-only evidence query failed ($(classify "$err"))" >&2
+              echo "libpq (sanitized): $(python -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          # Occupancy (relations, functions, types, other objects, schemas) is decided by
+          # scripts/pg18_state.py. EMPTY - the only state that lets apply run - requires every
+          # category to be 0. Aiven's _avnadmin_monitor schema is excluded by exact name only.
+          occ="$RUNNER_TEMP/pg18_occupancy.txt"
+          qf sql/aiven/pg18_occupancy.sql "$occ"
+          counts="$(tr '\n' ' ' <"$occ")"
+          if ! occupancy="$(python -I -S scripts/pg18_state.py occupancy "$occ")"; then
+            echo "::error::database refused ($occupancy; $counts)"; exit 1
           fi
-          if [ "$objects" != "0" ] || [ "$funcs" != "0" ]; then
-            echo "::error::database is not empty (relations=$objects functions=$funcs); refusing to run"; exit 1
+          if [ "$occupancy" = "EMPTY" ]; then
+            state=EMPTY
+          else
+            # Not empty: accepted (read-only, never applied to) only when it matches the bridge
+            # 0001-0007 series: the object counts the apply step verifies and one schema_migrations
+            # row per repo file with equal version, name and checksum (consistency evidence).
+            tracked="$(q "select pg_catalog.to_regclass('public.schema_migrations') is not null")"
+            if [ "$tracked" != "t" ]; then
+              echo "::error::database is not empty and has no schema_migrations ($counts); refusing to run"; exit 1
+            fi
+            evidence="$RUNNER_TEMP/pg18_evidence.txt"; expected_rows="$RUNNER_TEMP/pg18_expected.txt"
+            qf sql/aiven/verify_schema.sql "$evidence"
+            for f in sql/migrations/bridge/000[1-7]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done >"$expected_rows"
+            if ! verdict="$(python -I -S scripts/pg18_state.py migrated "$evidence" "$expected_rows")"; then
+              echo "::error::database is not empty and is not the recorded bridge 0001-0007 series ($verdict; $counts); refusing to run"; exit 1
+            fi
+            state="$verdict"
           fi
+          echo "PG18_TEST_STATE=$state" >> "$GITHUB_ENV"
           {
             echo "## Prechecks: PASS"
             echo "- current_database: $db"
             echo "- server_version_num: $ver"
-            echo "- TLS: $tls"
-            echo "- pre-existing relations/functions: 0/0"
+            echo "- TLS: $tls (verify-full)"
+            echo "- state: $state ($counts)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Diagnose mode - stop before any write
-        if: ${{ inputs.mode != 'apply' }}
+      - name: Diagnose mode or already-migrated database - stop before any write
+        if: ${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}
+        env:
+          MODE: ${{ inputs.mode }}
         run: |
-          echo "## Mode: diagnose - prechecks only, the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
-          echo "diagnose mode: apply step skipped, no database writes"
+          set -euo pipefail
+          echo "## Mode: $MODE, state: $PG18_TEST_STATE - the apply step is skipped (no writes)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MODE" = "apply" ]; then
+            echo "::warning::mode=apply requested but the database is already migrated ($PG18_TEST_STATE): nothing was applied"
+          fi
+          echo "no database writes: apply runs only with mode=apply on an EMPTY database"
 
       - name: Apply 0001-0007 twice (single transaction, ON_ERROR_STOP) and verify
         # Writes only with an explicit mode=apply; any other value (including empty) skips it.
-        if: ${{ inputs.mode == 'apply' }}
+        if: ${{ inputs.mode == 'apply' && env.PG18_TEST_STATE == 'EMPTY' }}
         env:
           FCB_PG18_TEST_URL: ${{ secrets.FCB_PG18_TEST_URL }}
-          PGSSLMODE: require
+          PGSSLMODE: verify-full
+          # lock_timeout: a session holding the migration's advisory lock cannot stall the run.
+          PGOPTIONS: -c search_path=public -c lock_timeout=120s
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
           # Same-session, same-transaction guard: the apply connection itself must be fcb_pg18_test,
           # PostgreSQL 18 and TLS, otherwise the transaction aborts before any migration statement.
-          GUARD="DO \$guard\$ BEGIN IF current_database() <> '$EXPECTED_DB' OR current_setting('server_version_num')::int NOT BETWEEN 180000 AND 189999 OR NOT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR EXISTS (SELECT 1 FROM pg_catalog.pg_settings g WHERE g.source OPERATOR(pg_catalog.=) ANY (ARRAY['database', 'user', 'database user']::pg_catalog.text[]) AND g.name OPERATOR(pg_catalog.<>) 'search_path'::pg_catalog.text) OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          # The EMPTY precheck ran on earlier connections: the FIRST apply re-runs the very same
+          # occupancy query inside its own transaction and aborts unless every count is still 0
+          # (review of #178: precheck/apply race). The second, idempotency run skips it.
+          OCC="$(grep -v '^[[:space:]]*--' sql/aiven/pg18_occupancy.sql | sed 's/;[[:space:]]*$//')"
+          GUARD_EMPTY="DO \$empty\$ BEGIN IF COALESCE((SELECT pg_catalog.sum(q.v) FROM ( $OCC ) q), 1::pg_catalog.numeric) OPERATOR(pg_catalog.<>) 0::pg_catalog.numeric THEN RAISE EXCEPTION 'FCB_DATABASE_NOT_EMPTY'; END IF; END \$empty\$"
           # psql stderr is captured and printed only in sanitized form (no host/IP/credentials).
           sp() {
             local err rc=0
@@ -260,12 +329,19 @@ jobs:
             fi
             rm -f "$err"; return "$rc"
           }
+          # First apply, one transaction: target guard; the migration's own advisory lock taken
+          # BEFORE the emptiness re-check (so nobody can hold it to stall us after the check);
+          # emptiness re-check; migrations; then every user object must carry THIS transaction's
+          # xmin (pg18_post_apply_guard.sql), else nothing is committed. Residual: an object a
+          # concurrent session commits after the post-guard statement and before COMMIT.
+          LOCK="SELECT pg_catalog.pg_advisory_xact_lock(460244120)"
+          first_run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -c "$LOCK" -c "$GUARD_EMPTY" -f "$SCRIPT" -f sql/aiven/pg18_post_apply_guard.sql >/dev/null; }
           run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" >/dev/null; }
           verify() { sp -X -A -t -F '=' -v ON_ERROR_STOP=1 -f sql/aiven/verify_schema.sql; }
-          run;    first="$(verify)"
-          applied1="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          first_run; first="$(verify)"
+          applied1="$(sp -X -A -t -c 'select pg_catalog.string_agg(applied_at::pg_catalog.text, $$,$$ order by version) from public.schema_migrations')"
           run;    second="$(verify)"
-          applied2="$(sp -X -A -t -c 'select string_agg(applied_at::text, $$,$$ order by version) from schema_migrations')"
+          applied2="$(sp -X -A -t -c 'select pg_catalog.string_agg(applied_at::pg_catalog.text, $$,$$ order by version) from public.schema_migrations')"
           test "$first" = "$second" || { echo "::error::second run changed the schema evidence"; exit 1; }
           test "$applied1" = "$applied2" || { echo "::error::second run re-applied migrations"; exit 1; }
           expected="$(printf '%s\n' tables=29 functions=4 triggers=9 indexes=54 constraints_information_schema=307 constraints_pg_constraint=61 schema_migrations_rows=7)"
