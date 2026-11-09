@@ -145,12 +145,43 @@ GATE_LINE_RE = re.compile(
     r'|reviewers="\$\(bash scripts/require_protected_environment\.sh "\$REPO" [A-Za-z0-9_-]+\)")$')
 
 
+# The gate step's inputs must come from GitHub's own context, never from literals or from
+# values an earlier step could inject (review of #176: hardcoded actor/repo, BASH_ENV, PATH).
+GATE_ENV_REQUIRED = {
+    "GH_TOKEN": "${{ github.token }}",
+    "REPO": "${{ github.repository }}",
+    "GH_EVENT_NAME": "${{ github.event_name }}",
+    "GIT_REF": "${{ github.ref }}",
+    "ACTOR": "${{ github.actor }}",
+    "TRIGGERING_ACTOR": "${{ github.triggering_actor }}",
+    "REPO_OWNER": "${{ github.repository_owner }}",
+}
+# The restore workflow's combined mode gate also reads its own dispatch inputs.
+GATE_ENV_OPTIONAL = {"MODE": "${{ inputs.mode }}", "CONFIRM": "${{ inputs.confirm }}"}
+
+
+def _gate_env_ok(step) -> bool:
+    env = step.get("env") or {}
+    for key, value in env.items():
+        expected = GATE_ENV_REQUIRED.get(key, GATE_ENV_OPTIONAL.get(key))
+        if expected is None or str(value).strip() != expected:
+            return False
+    return True
+
+
+def _writes_runner_env(step) -> bool:
+    run = str(step.get("run", ""))
+    return "GITHUB_ENV" in run or "GITHUB_PATH" in run
+
+
 def _is_strict_gate(step, needle: str) -> bool:
     """A gate counts only if it cannot be skipped or neutralised: no `if:`, no
     continue-on-error, no `shell:`/`working-directory:` override, `set -euo pipefail` first,
     and the gate command inside the LEADING block of gate commands (comments aside): nothing
     else can run before it, so `exit 0`, `|| true` or any other command first disqualifies it."""
     if any(k in step for k in ("if", "continue-on-error", "shell", "working-directory")):
+        return False
+    if not _gate_env_ok(step):
         return False
     lines = [line for line in _gate_lines(step) if not line.startswith("#")]
     if len(lines) < 2 or lines[0] != "set -euo pipefail":
@@ -174,6 +205,10 @@ def test_database_secrets_only_after_both_gates_and_only_at_step_level(item):
     dispatch_line = f"bash {GATE_DISPATCH}"
     gates_done = set()
     for step in job["steps"]:
+        if gates_done != {"dispatch", "environment"}:
+            # Nothing before the gates may rewrite the runner environment (PATH, BASH_ENV, ...).
+            assert not _writes_runner_env(step), \
+                f"{path.name}:{job_id}: step {step.get('name')!r} writes GITHUB_ENV/GITHUB_PATH before the gates"
         if _is_strict_gate(step, dispatch_line):
             gates_done.add("dispatch")
         if _is_strict_gate(step, env_line):
@@ -203,6 +238,9 @@ def test_a_neutralised_gate_is_not_a_gate():
         {**good, "shell": 'bash -c "true {0}"'},
         {**good, "working-directory": "/tmp"},
         {"run": "set -euo pipefail\nexit 0\nbash scripts/require_owner_main_dispatch.sh\n"},
+        {**good, "env": {"ACTOR": "x", "TRIGGERING_ACTOR": "x", "REPO_OWNER": "x"}},
+        {**good, "env": {"REPO": "attacker/decoy"}},
+        {**good, "env": {"BASH_ENV": "/tmp/evil"}},
     ):
         assert not _is_strict_gate(bad, "bash scripts/require_owner_main_dispatch.sh"), bad
 
