@@ -14,7 +14,8 @@ from psycopg.rows import dict_row
 from app.db import database_url
 
 
-# WP-007: bounded storage calls. A slow or unreachable database must surface as a fast,
+# WP-007: bounded storage calls. Note: the `options` keyword replaces any `options=` inside
+# DATABASE_URL (psycopg gives keywords precedence); the Aiven URI carries none today. A slow or unreachable database must surface as a fast,
 # fixed 503 at the endpoint, never as a request hung for libpq's default (~130 s).
 CONNECT_TIMEOUT_SECONDS = 5
 STATEMENT_TIMEOUT_MS = 5000

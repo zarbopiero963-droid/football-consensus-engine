@@ -87,12 +87,27 @@ def test_the_global_window_bounds_rotating_addresses(valid_client):
     assert _post(_consent_form(), client=("198.51.100.99", 1)).status_code == 429
 
 
-def test_spoofed_forwarded_hops_do_not_escape_the_per_address_window(valid_client):
-    for i in range(5):
-        _post(_consent_form("wrong"), headers={"x-forwarded-for": f"10.0.0.{i}, 203.0.113.50"})
-    # The last hop (what the proxy saw) is the key; the attacker-chosen earlier hop is ignored.
-    r = _post(_consent_form(), headers={"x-forwarded-for": "10.9.9.9, 203.0.113.50"})
-    assert r.status_code == 429
+def test_the_cloudflare_client_header_keys_the_per_address_window(valid_client):
+    """Render: client -> Cloudflare -> proxy; X-Forwarded-For's last hop is the CF edge, shared by
+    unrelated users. CF-Connecting-IP (set by Cloudflare) is the key (review of #177, P1)."""
+    edge = "172.70.1.1"
+    for _ in range(5):
+        _post(_consent_form("wrong"), headers={"cf-connecting-ip": "203.0.113.50",
+                                               "x-forwarded-for": f"203.0.113.50, {edge}"})
+    assert _post(_consent_form(), headers={"cf-connecting-ip": "203.0.113.50",
+                                           "x-forwarded-for": f"203.0.113.50, {edge}"}).status_code == 429
+    # Another user behind the SAME Cloudflare edge is not locked out by the first one.
+    other = _post(_consent_form(), headers={"cf-connecting-ip": "198.51.100.8",
+                                            "x-forwarded-for": f"198.51.100.8, {edge}"})
+    assert other.status_code == 302
+
+
+def test_without_the_cloudflare_header_the_first_forwarded_hop_is_the_key():
+    from types import SimpleNamespace
+    req = SimpleNamespace(headers={"x-forwarded-for": "203.0.113.7, 172.70.1.1"}, client=None)
+    assert oauth_throttle.client_address(req) == "203.0.113.7"
+    req = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.9"))
+    assert oauth_throttle.client_address(req) == "10.0.0.9"
 
 
 def test_window_expires():
@@ -233,7 +248,7 @@ def test_a_slow_token_check_does_not_block_other_requests(monkeypatch):
         result = {}
 
         def stalled():
-            result["mcp"] = client.post("/mcp", headers={"Authorization": "Bearer x"}, json={}).status_code
+            result["mcp"] = client.post("/mcp", headers={"Authorization": "Bearer " + "A" * 43}, json={}).status_code
 
         t = threading.Thread(target=stalled)
         t.start()
@@ -249,13 +264,61 @@ def test_a_slow_token_check_does_not_block_other_requests(monkeypatch):
 
 def test_bearer_scheme_is_case_insensitive(monkeypatch):
     import bridge.server as srv
-    monkeypatch.setattr(srv.oauth_store, "valid_access_token", lambda token, r, s: token == "GOOD")
+    good = "G" * 43
+    monkeypatch.setattr(srv.oauth_store, "valid_access_token", lambda token, r, s: token == good)
     # No lifespan here (the MCP session manager can start only once per process): the
     # middleware's verdict is what matters, anything but 401 means the token was accepted.
     client = TestClient(srv.app, raise_server_exceptions=False)
     if True:
         for scheme in ("Bearer", "bearer", "BEARER"):
-            r = client.post("/mcp/", headers={"Authorization": f"{scheme} GOOD", "Accept": "application/json, text/event-stream"},
+            r = client.post("/mcp/", headers={"Authorization": f"{scheme} {good}", "Accept": "application/json, text/event-stream"},
                             json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
             assert r.status_code != 401, scheme
-        assert client.post("/mcp/", headers={"Authorization": "Basic GOOD"}, json={}).status_code == 401
+        assert client.post("/mcp/", headers={"Authorization": f"Basic {good}"}, json={}).status_code == 401
+
+
+def test_malformed_bearers_never_touch_the_database(monkeypatch):
+    import bridge.server as srv
+    calls = []
+    monkeypatch.setattr(srv.oauth_store, "valid_access_token", lambda *a: calls.append(1) or False)
+    client = TestClient(srv.app, raise_server_exceptions=False)
+    for token in ("x", "A" * 42, "A" * 44, "A" * 42 + "!", "A" * 41 + "=="):
+        assert client.post("/mcp/", headers={"Authorization": "Bearer " + token}, json={}).status_code == 401
+    assert calls == []
+
+
+def test_storage_concurrency_is_capped_and_fails_fast(monkeypatch):
+    """Review of #177 P2: at most STORE_CONCURRENCY storage calls in flight; more get an
+    immediate 503 instead of opening more connections against Aiven's 15."""
+    gate = threading.Event()
+    started = []
+
+    def slow(*_a, **_k):
+        started.append(1)
+        gate.wait(5)
+        return False
+
+    async def scenario():
+        tasks = [asyncio.create_task(oauth._store(slow)) for _ in range(oauth.STORE_CONCURRENCY)]
+        await asyncio.sleep(0.2)
+        with pytest.raises(oauth.StorageBusy):
+            await oauth._store(slow)
+        gate.set()
+        await asyncio.gather(*tasks)
+        assert await oauth._store(lambda: "ok") == "ok"   # slots released
+
+    asyncio.run(scenario())
+    assert len(started) == oauth.STORE_CONCURRENCY
+
+
+def test_a_saturated_store_returns_the_fixed_503(valid_client, monkeypatch):
+    async def busy(*_a, **_k):
+        raise oauth.StorageBusy()
+    monkeypatch.setattr(oauth, "_store", busy)
+    r = _post(_consent_form())
+    assert r.status_code == 503 and json.loads(r.body) == {"error": "temporarily_unavailable"}
+
+
+def test_consent_csp_has_no_form_action():
+    """Review of #177 P0: form-action would block the 302 to the client's cross-origin callback."""
+    assert "form-action" not in oauth.CONSENT_HEADERS["Content-Security-Policy"]

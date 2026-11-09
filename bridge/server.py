@@ -352,13 +352,16 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
             # RFC 7235: the auth scheme is case-insensitive.
             token = token.strip() if scheme.lower() == "bearer" else ""
             valid = False
-            if token:
+            # Tokens this server issues are secrets.token_urlsafe(32): 43 base64url characters.
+            # Anything else is refused without touching the database (review of #177, P2).
+            if token and oauth.ISSUED_TOKEN_RE.fullmatch(token):
                 try:
-                    # WP-007: off the event loop, so a slow database never stalls /healthz or
-                    # other requests; the store call itself is bounded by connect/statement timeouts.
-                    valid = await asyncio.to_thread(
+                    # WP-007: off the event loop and capped, so neither a slow database nor a flood
+                    # of random bearers can stall /healthz or exhaust Aiven's 15 connections.
+                    valid = await oauth._store(
                         oauth_store.valid_access_token, token, oauth.resource_url(), oauth.SCOPE)
                 except Exception:
+                    logging.getLogger(__name__).error("oauth_storage_error stage=bearer_check")
                     return JSONResponse({"detail": "authorization backend unavailable"}, status_code=503)
             if not valid:
                 metadata = oauth.public_base() + "/.well-known/oauth-protected-resource"

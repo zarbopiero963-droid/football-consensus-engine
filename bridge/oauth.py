@@ -11,6 +11,7 @@ import os
 import re
 import time
 import secrets
+import threading
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -31,12 +32,17 @@ LOG = logging.getLogger(__name__)
 # RFC 7636: verifier = 43-128 unreserved characters; S256 challenge = 43 base64url characters.
 _PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 _PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+# Access tokens issued by _token_response: secrets.token_urlsafe(32) -> 43 base64url characters.
+ISSUED_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 # RFC 6749 §5.1: token responses (and anything carrying codes or tokens) are never cached.
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 # The consent page carries the authorization password: never framed, never cached, no referrer.
 CONSENT_HEADERS = {**NO_STORE, "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+                   # No form-action: Chromium also applies form-action to the redirect that follows
+                   # the form POST, which would block the 302 to the client's (cross-origin)
+                   # callback and break every new authorization (review of #177, P0).
                    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
-                                              "form-action 'self'; frame-ancestors 'none'"}
+                                              "frame-ancestors 'none'"}
 
 
 class StorageUnavailable(Exception):
@@ -55,9 +61,26 @@ def _throttled(retry_after: int) -> JSONResponse:
                         headers={**NO_STORE, "Retry-After": str(retry_after)})
 
 
+# At most this many OAuth storage calls run at once (each opens its own connection). Aiven
+# piero-1 allows 15 connections in total, shared with the coordinators, leases and workflows;
+# without this cap, concurrent unauthenticated requests could fill them (review of #177, P2).
+STORE_CONCURRENCY = 4
+_STORE_SLOTS = threading.BoundedSemaphore(STORE_CONCURRENCY)
+
+
+class StorageBusy(Exception):
+    """All storage slots are in use: fail fast (fixed 503) instead of queueing connections."""
+
+
 async def _store(fn, *args, **kwargs):
-    """Run a synchronous storage call off the event loop (WP-007: never block /healthz or /mcp)."""
-    return await asyncio.to_thread(fn, *args, **kwargs)
+    """Run a synchronous storage call off the event loop (WP-007: never block /healthz or /mcp),
+    with at most STORE_CONCURRENCY in flight; when saturated, raise StorageBusy immediately."""
+    if not _STORE_SLOTS.acquire(blocking=False):
+        raise StorageBusy()
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    finally:
+        _STORE_SLOTS.release()
 
 
 def public_base() -> str:

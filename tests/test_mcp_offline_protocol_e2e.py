@@ -30,10 +30,10 @@ SCRIPT = textwrap.dedent(r'''
     srv.bridge.prepare_cloak_runtime = noop
     srv.bridge.reaper_loop = idle
     srv.bridge.stop_all = stop_all
-    srv.oauth_store.valid_access_token = lambda token, resource, scope: token == "TEST_TOKEN_ONLY"
+    srv.oauth_store.valid_access_token = lambda token, resource, scope: token == "TEST_TOKEN_ONLY_xxxxxxxxxxxxxxxxxxxxxxxxxxx"
     host = srv.public_host
     base = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json", "Host": host}
-    auth = {**base, "Authorization": "Bearer TEST_TOKEN_ONLY"}
+    auth = {**base, "Authorization": "Bearer TEST_TOKEN_ONLY_xxxxxxxxxxxxxxxxxxxxxxxxxxx"}
     out = {}
 
     def rpc(c, i, method, params):
@@ -97,7 +97,7 @@ def test_protocol_auth_discovery_and_calls_with_api_football_enabled():
     assert rejected["status"] == "INVALID_INPUT" and rejected["network_calls_made"] == 0
     health = json.loads(_payload(out["health"])["content"][0]["text"])
     assert health["provider_requests_authorized"] is False and health["network_calls_made"] == 0
-    assert "TEST_TOKEN_ONLY" not in logs
+    assert "TEST_TOKEN_ONLY_xxxxxxxxxxxxxxxxxxxxxxxxxxx" not in logs
 
 
 def test_api_football_off_registers_no_provider_tools():

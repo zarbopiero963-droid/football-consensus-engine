@@ -102,12 +102,21 @@ REGISTRATIONS = DualLimiter(WindowLimiter(10, 3600), WindowLimiter(100, 3600))
 
 
 def client_address(request) -> str:
-    """Best-effort client address. Behind Render's proxy the last X-Forwarded-For hop is the
-    address the proxy saw; a spoofed earlier hop is ignored. The global window still bounds
-    an attacker who controls the whole header."""
+    """Best-effort client address for the per-address windows.
+
+    On Render the path is client -> Cloudflare -> Render proxy -> app, and X-Forwarded-For
+    reads "<client>, <Cloudflare edge>": its LAST hop is a shared Cloudflare edge address, not
+    the client (review of #177, P1). Cloudflare sets CF-Connecting-IP itself, overwriting any
+    client-sent value, so it is used first. Without it, the FIRST X-Forwarded-For hop is used:
+    it is client-controlled, which can only split an attacker across keys (the global window
+    still bounds them) and never merges unrelated users into one shared bucket.
+    """
+    cf = request.headers.get("cf-connecting-ip", "").strip()
+    if cf:
+        return cf[:64]
     forwarded = request.headers.get("x-forwarded-for", "")
     hops = [h.strip() for h in forwarded.split(",") if h.strip()]
     if hops:
-        return hops[-1][:64]
+        return hops[0][:64]
     client = getattr(request, "client", None)
     return (getattr(client, "host", None) or "unknown")[:64]
