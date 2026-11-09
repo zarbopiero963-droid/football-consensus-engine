@@ -81,7 +81,8 @@ def test_protection_gate_passes_with_a_required_reviewer_and_a_branch_policy(tmp
     # G-02 (declared behaviour change): a deployment-branch policy is now required as well;
     # the missing/wide-policy refusals are covered in tests/test_workflow_secret_policy.py.
     out = _gate(tmp_path, '{"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User"}]}],'
-                          '"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}')
+                          '"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true},'
+                          '"total_count":1,"branch_policies":[{"name":"main","type":"branch"}]}')
     assert out.returncode == 0 and out.stdout.strip() == "1"
 
 

@@ -1,6 +1,6 @@
 # GitHub secrets: protected environments (G-02)
 
-**Problem fixed in code.** Gap G-02 from the 2026-11-09 audit: `fcb-aiven-pg18-test.yml` used `FCB_PG18_TEST_URL` in a job with no environment, so the secret had to be repository-level. On Aiven `piero-1` the only database user is `avnadmin`, so that credential also reaches production `defaultdb`. Any workflow on any branch, including a same-repository pull request, could therefore receive it and bypass every gate of the `defaultdb` restore workflow.
+**Code hardening done; G-02 stays OPEN until the owner completes actions 1–5 below.** Gap G-02 from the 2026-11-09 audit: `fcb-aiven-pg18-test.yml` used `FCB_PG18_TEST_URL` in a job with no environment, so the secret had to be repository-level. On Aiven `piero-1` the only database user is `avnadmin`, so that credential also reaches production `defaultdb`. Any workflow on any branch, including a same-repository pull request, could therefore receive it and bypass every gate of the `defaultdb` restore workflow.
 
 **Evidence of misuse.** None found for this workflow: all 14 runs of `fcb-aiven-pg18-test.yml` were `workflow_dispatch` on `main` by the owner. Other workflows on other branches cannot be ruled out from here.
 
@@ -20,9 +20,9 @@ The two gate steps, run in-job:
 - `scripts/require_owner_main_dispatch.sh` requires all of these: event `workflow_dispatch`, ref `main`, actor and triggering actor equal to the repository owner.
 - `scripts/require_protected_environment.sh <repo> <env>` requires both:
   - at least one required reviewer;
-  - a deployment-branch policy that is either *protected branches only*, or custom with exactly the branch `main`. If there is no policy, or the policy is wider, the job is refused.
+  - a deployment-branch policy of type *Selected branches and tags* that allows exactly the branch `main` (one rule). *Protected branches*, no policy, or any wider policy is refused.
 
-The in-job gates are **additional layers**. A workflow file can be edited on a branch, so the access control is the environment configuration below, which only the owner can set.
+The in-job gates and the static test are **additional layers**: they cannot stop a workflow file that someone with write access adds or edits on another branch. A workflow file can be edited on a branch, so the access control is the environment configuration below, which only the owner can set.
 
 ## Owner actions (exact)
 
@@ -58,8 +58,8 @@ Repository → **Settings → Environments**.
 
 Dispatch `FCB Aiven PG18 migration test` from `main` with `mode=diagnose`.
 
-- **Expected:**
-  - the gate step prints `environment aiven-pg18-test protected (required reviewers: 1)`;
-  - GitHub asks for the deployment approval;
+- **Expected, in this order:**
+  - GitHub asks for the deployment approval before the job starts;
+  - after approval, the gate step prints `environment aiven-pg18-test protected (required reviewers: 1)`;
   - the read-only prechecks pass.
 - **From any other branch:** the job is skipped (`if:`) or refused by the gate. Without the branch policy, the environment would not release the secret.

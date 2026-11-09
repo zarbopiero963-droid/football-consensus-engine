@@ -24,11 +24,17 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
-SECRET_RE = re.compile(r"secrets\.([A-Za-z0-9_]+)")
-DB_SECRET_RE = re.compile(r"(DATABASE|_DB_|DB_URL|DEFAULTDB|PG18|DSN)")
+EXPR_RE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+NAME_DOT_RE = re.compile(r"\bsecrets\.([A-Za-z0-9_]+)")
+NAME_IDX_RE = re.compile(r"""\bsecrets\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]""")
+WHOLE = "<ALL_SECRETS>"      # toJSON(secrets), secrets[expr], secrets: inherit, ...
+# Default-closed classification (review of #176): every secret is treated as a privileged
+# database credential unless it is on this explicit list of non-database secrets.
+NON_DB_SECRETS = {"APIFOOTBALL_API_KEY", "SXBET_API_KEY", "FCB_AIVEN_CA_PEM", "FCB_AIVEN_CA_SHA256"}
 ALLOWED_SECRET_TRIGGERS = {"workflow_dispatch"}
 GATE_ENV = "scripts/require_protected_environment.sh"
 GATE_DISPATCH = "scripts/require_owner_main_dispatch.sh"
+UNCONDITIONAL = ("always()", "failure()", "cancelled()")
 
 
 def _load(path):
@@ -41,8 +47,32 @@ def _load(path):
     return data, set(triggers or {})
 
 
+def _inherits(obj) -> bool:
+    if isinstance(obj, dict):
+        return any(k == "secrets" or _inherits(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(_inherits(v) for v in obj)
+    return False
+
+
 def _secrets(obj) -> set[str]:
-    return {s for s in SECRET_RE.findall(yaml.safe_dump(obj)) if s != "GITHUB_TOKEN"}
+    """Every secret an object can reach, from any expression form; WHOLE when unbounded."""
+    found: set[str] = set()
+    for expr in EXPR_RE.findall(yaml.safe_dump(obj, width=10**9)):
+        if not re.search(r"\bsecrets\b", expr):
+            continue
+        names = set(NAME_DOT_RE.findall(expr)) | set(NAME_IDX_RE.findall(expr))
+        bare = re.sub(r"""\bsecrets(\.[A-Za-z0-9_]+|\[\s*['"][A-Za-z0-9_]+['"]\s*\])""", "", expr)
+        if re.search(r"\bsecrets\b", bare):
+            names.add(WHOLE)
+        found |= names
+    if _inherits(obj):
+        found.add(WHOLE)
+    return found - {"GITHUB_TOKEN"}
+
+
+def _privileged(names) -> bool:
+    return any(n not in NON_DB_SECRETS for n in names)
 
 
 def _secret_jobs():
@@ -54,8 +84,27 @@ def _secret_jobs():
                 yield path, triggers, job_id, job, names
 
 
+def test_secret_detection_sees_every_expression_form():
+    job = {"steps": [
+        {"run": "x", "env": {"A": "${{ secrets.FCB_PG18_TEST_URL }}"}},
+        {"run": "x", "env": {"B": "${{ secrets['OTHER_URL'] }}"}},
+        {"run": "x", "env": {"C": "${{ toJSON(secrets) }}"}},
+        {"run": "x", "env": {"D": "${{ secrets[format('{0}', 'X')] }}"}},
+        {"run": "x", "env": {"E": "${{ secrets.GITHUB_TOKEN }}"}},
+    ]}
+    assert _secrets(job) == {"FCB_PG18_TEST_URL", "OTHER_URL", WHOLE}
+    assert _secrets({"uses": "./.github/workflows/x.yml", "secrets": "inherit"}) == {WHOLE}
+    assert _privileged({"POSTGRES_URL"}) and _privileged({WHOLE}) and not _privileged({"SXBET_API_KEY"})
+
+
+def test_no_workflow_hands_out_secrets_wholesale():
+    for path in WORKFLOWS:
+        data, _ = _load(path)
+        assert WHOLE not in _secrets(data), f"{path.name}: toJSON(secrets) / secrets[expr] / secrets: inherit"
+
+
 def test_the_policy_sees_the_known_privileged_workflows():
-    found = {(p.name, j) for p, _, j, _, n in _secret_jobs() if any(DB_SECRET_RE.search(x) for x in n)}
+    found = {(p.name, j) for p, _, j, _, n in _secret_jobs() if _privileged(n)}
     assert ("fcb-aiven-pg18-test.yml", "pg18-test") in found
     assert ("fcb-aiven-defaultdb-restore.yml", "restore") in found
     assert ("api-football-live-smoke.yml", "live") in found
@@ -80,7 +129,20 @@ def test_every_secret_job_runs_in_an_environment_from_main_only(item):
 
 
 def _db_jobs():
-    return [t for t in _secret_jobs() if any(DB_SECRET_RE.search(n) for n in t[4])]
+    return [t for t in _secret_jobs() if _privileged(t[4])]
+
+
+def _gate_lines(step) -> list[str]:
+    return [line.strip() for line in str(step.get("run", "")).splitlines() if line.strip()]
+
+
+def _is_strict_gate(step, needle: str) -> bool:
+    """A gate counts only if it cannot be skipped or neutralised: no `if:`, no
+    continue-on-error, `set -euo pipefail` first, and the exact gate command with no `||`."""
+    lines = _gate_lines(step)
+    if not lines or lines[0] != "set -euo pipefail" or "if" in step or step.get("continue-on-error"):
+        return False
+    return any(needle == line for line in lines)
 
 
 @pytest.mark.parametrize("item", _db_jobs(), ids=lambda t: f"{t[0].name}:{t[2]}")
@@ -89,18 +151,35 @@ def test_database_secrets_only_after_both_gates_and_only_at_step_level(item):
     env = job["environment"]
     env_name = env.get("name") if isinstance(env, dict) else env
     job_level = {k: v for k, v in job.items() if k != "steps"}
-    assert not {n for n in _secrets(job_level) if DB_SECRET_RE.search(n)}, \
-        f"{path.name}:{job_id}: database secret exposed at job level"
+    assert not _privileged(_secrets(job_level)), f"{path.name}:{job_id}: privileged secret at job level"
+    env_line = f'reviewers="$(bash {GATE_ENV} "$REPO" {env_name})"'
+    dispatch_line = f"bash {GATE_DISPATCH}"
     gates_done = set()
     for step in job["steps"]:
-        run = step.get("run", "")
-        if GATE_DISPATCH in run or ("refs/heads/main" in run and "REPO_OWNER" in run):
+        if _is_strict_gate(step, dispatch_line):
             gates_done.add("dispatch")
-        if GATE_ENV in run and env_name in run:
+        if _is_strict_gate(step, env_line):
             gates_done.add("environment")
-        if any(DB_SECRET_RE.search(n) for n in _secrets(step)):
+        names = _secrets(step)
+        if _privileged(names):
             assert gates_done == {"dispatch", "environment"}, \
-                f"{path.name}:{job_id}: step {step.get('name')!r} gets a database secret before the gates"
+                f"{path.name}:{job_id}: step {step.get('name')!r} gets a privileged secret before the gates"
+            cond = str(step.get("if", ""))
+            assert not any(u in cond for u in UNCONDITIONAL), \
+                f"{path.name}:{job_id}: step {step.get('name')!r} would run after a failed gate"
+    assert gates_done == {"dispatch", "environment"}, f"{path.name}:{job_id}: gates missing"
+
+
+def test_a_neutralised_gate_is_not_a_gate():
+    good = {"run": "set -euo pipefail\nbash scripts/require_owner_main_dispatch.sh\n"}
+    assert _is_strict_gate(good, "bash scripts/require_owner_main_dispatch.sh")
+    for bad in (
+        {**good, "continue-on-error": True},
+        {**good, "if": "always()"},
+        {"run": "set -euo pipefail\nbash scripts/require_owner_main_dispatch.sh || true\n"},
+        {"run": "bash scripts/require_owner_main_dispatch.sh\n"},
+    ):
+        assert not _is_strict_gate(bad, "bash scripts/require_owner_main_dispatch.sh"), bad
 
 
 def test_pull_request_workflows_never_reference_secrets():
@@ -153,20 +232,17 @@ def _env_gate(tmp_path, env_body, policies_body='{"branch_policies":[]}', rc=0):
 REVIEWER = '"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User"}]}]'
 
 
-def test_environment_gate_accepts_reviewer_and_protected_branches(tmp_path):
-    body = "{" + REVIEWER + ',"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}'
-    out = _env_gate(tmp_path, body)
-    assert out.returncode == 0 and out.stdout.strip() == "1"
-
-
-def test_environment_gate_accepts_custom_policy_main_only(tmp_path):
+def test_environment_gate_accepts_selected_branch_main_only(tmp_path):
     body = "{" + REVIEWER + ',"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
-    out = _env_gate(tmp_path, body, '{"branch_policies":[{"name":"main","type":"branch"}]}')
-    assert out.returncode == 0
+    out = _env_gate(tmp_path, body, '{"total_count":1,"branch_policies":[{"name":"main","type":"branch"}]}')
+    assert out.returncode == 0 and out.stdout.strip() == "1"
 
 
 @pytest.mark.parametrize("policy,policies", [
     ("null", "{}"),                                                       # any branch may deploy
+    ('{"protected_branches":true,"custom_branch_policies":false}', "{}"),  # wider than main
+    ('{"protected_branches":false,"custom_branch_policies":true}',
+     '{"total_count":2,"branch_policies":[{"name":"main","type":"branch"}]}'),  # more pages exist
     ('{"protected_branches":false,"custom_branch_policies":false}', "{}"),
     ('{"protected_branches":true,"custom_branch_policies":true}', "{}"),
     ('{"protected_branches":false,"custom_branch_policies":true}', '{"branch_policies":[]}'),

@@ -30,6 +30,8 @@ jobs:
       APIFOOTBALL_MAX_CONCURRENCY: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Require a protected environment and a trusted dispatch (G-02), else refuse
         env:
           GH_TOKEN: ${{ github.token }}
