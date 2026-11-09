@@ -19,8 +19,18 @@ them before it is written. The report holds fixed outcomes and shapes only. No a
 The authorization redirect goes to Claude's callback URL; it is read from the Location header
 and never followed, so nothing is sent to claude.ai.
 
-Each run leaves one DCR client row and two (expiring) token pairs in the OAuth tables: there is
-no revocation endpoint yet (WP-022). One consent failure is recorded against the runner address.
+HTTP uses the standard library only (no third-party package runs next to the password) and
+never follows redirects, nor uses a proxy from the environment.
+
+What the run proves and what it does not: `network_calls_made == 0` is what the two health tools
+REPORT (their code makes no provider request; that rests on code review); the refresh-token-as-
+bearer check is decided by the bearer format check before any database lookup.
+
+Production leftovers per run (no revocation endpoint yet, WP-022): one DCR client row (730-day
+TTL), two used authorization codes, two access tokens (1 h) and one unrevoked refresh token
+(30 days) whose plaintext existed only in the ephemeral runner's memory. One consent failure is
+recorded against the runner's address (5 per 15 min per address, 50 per hour globally) and two
+registrations (10 per hour per address, 100 globally).
 """
 from __future__ import annotations
 
@@ -34,9 +44,10 @@ import secrets
 import sys
 import time
 from typing import Any, Callable
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import httpx
 
 PINNED_BASE = "https://football-consensus-browser-bridge.onrender.com"
 CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
@@ -48,12 +59,74 @@ ISSUED_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 USER_AGENT = "fcb-mcp-e2e/1"
 
 
+class Response:
+    """The small subset of an HTTP response the run needs (same shape as httpx.Response)."""
+
+    def __init__(self, status_code: int, headers, body: bytes):
+        self.status_code, self.headers, self._body = status_code, headers, body
+
+    @property
+    def text(self) -> str:
+        return self._body.decode("utf-8", errors="replace")
+
+    def json(self) -> Any:
+        return json.loads(self._body)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # a 3xx is returned to the caller, never followed
+        return None
+
+
+class StdlibClient:
+    """Standard-library HTTPS client: no third-party package runs next to the password
+    (review P2-1), and redirects are NEVER followed, so the consent 302 to claude.ai is only
+    parsed from its Location header (review P2-2). No proxy from the environment is used."""
+
+    follow_redirects = False
+
+    def __init__(self, timeout: float = 30.0):
+        self.timeout = timeout
+        self._opener = urllib.request.build_opener(_NoRedirect(), urllib.request.ProxyHandler({}))
+
+    def _send(self, method: str, url: str, headers=None, data=None, json=None) -> Response:
+        hdrs = {"User-Agent": USER_AGENT, **(headers or {})}
+        body = None
+        if json is not None:
+            body = _json_dumps(json).encode()
+            hdrs.setdefault("Content-Type", "application/json")
+        elif data is not None:
+            body = urlencode(data).encode()
+            hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
+        try:
+            with self._opener.open(req, timeout=self.timeout) as r:
+                return Response(r.status, r.headers, r.read())
+        except urllib.error.HTTPError as e:  # 3xx/4xx/5xx: a response, not an error
+            try:
+                return Response(e.code, e.headers, e.read())
+            finally:
+                e.close()
+
+    def get(self, url: str, headers=None) -> Response:
+        return self._send("GET", url, headers=headers)
+
+    def post(self, url: str, headers=None, data=None, json=None) -> Response:
+        return self._send("POST", url, headers=headers, data=data, json=json)
+
+    def close(self) -> None:
+        pass
+
+
+_json_dumps = json.dumps
+
+
 class Fail(Exception):
     """A check failed; the message is a fixed code, never a server or exception text."""
 
 
 class Run:
-    def __init__(self, client: httpx.Client, base: str, password: str, *,
+    def __init__(self, client: Any, base: str, password: str, *,
                  expected_commit: str | None, mask: Callable[[str], None], sleep=time.sleep):
         self.c, self.base, self._password = client, base.rstrip("/"), password
         self.expected_commit = expected_commit
@@ -79,14 +152,14 @@ class Run:
     def _url(self, path: str) -> str:
         return self.base + path
 
-    def get(self, path: str, **kw) -> httpx.Response:
+    def get(self, path: str, **kw) -> Any:
         return self.c.get(self._url(path), **kw)
 
-    def post(self, path: str, **kw) -> httpx.Response:
+    def post(self, path: str, **kw) -> Any:
         return self.c.post(self._url(path), **kw)
 
     def rpc(self, method: str, params: dict[str, Any] | None, token: str | None,
-            notification: bool = False) -> httpx.Response:
+            notification: bool = False) -> Any:
         body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             body["params"] = params
@@ -100,7 +173,7 @@ class Run:
         return self.post("/mcp/", headers=headers, json=body)
 
     @staticmethod
-    def rpc_result(r: httpx.Response) -> dict[str, Any] | None:
+    def rpc_result(r: Any) -> dict[str, Any] | None:
         if r.status_code != 200:
             return None
         ctype = r.headers.get("content-type", "")
@@ -142,7 +215,7 @@ class Run:
         self.check("authorize_code_present", len(code) >= 32)
         return code
 
-    def token(self, data: dict[str, str]) -> httpx.Response:
+    def token(self, data: dict[str, str]) -> Any:
         return self.post("/oauth/token", data=data)
 
     # ---- the run ---------------------------------------------------------------------------
@@ -155,7 +228,7 @@ class Run:
                 if r.status_code == 200:
                     return r.json()
                 last = r.status_code
-            except httpx.HTTPError as exc:
+            except (OSError, ValueError) as exc:  # network errors, timeouts, non-JSON pages
                 last = type(exc).__name__
             self._sleep(15)
         self.check("healthz_reachable", False, last=last)
@@ -235,8 +308,8 @@ class Run:
                     "redirect_uri": CLAUDE_CALLBACK, "code_verifier": verifier2}
         r = self.token(exchange)
         tok = r.json() if r.status_code == 200 else {}
-        access = self.secret(str(tok.get("access_token", "")))
-        refresh = self.secret(str(tok.get("refresh_token", "")))
+        access = self.secret(str(tok.get("access_token") or ""))
+        refresh = self.secret(str(tok.get("refresh_token") or ""))
         self.check("token_exchange_200", r.status_code == 200 and tok.get("token_type") == "Bearer"
                    and "browser:use" in str(tok.get("scope", "")).split()
                    and "no-store" in r.headers.get("cache-control", ""), http=r.status_code)
@@ -285,10 +358,11 @@ class Run:
         self.check("refresh_wrong_client_refused", r.status_code == 400)
         r = self.token({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id})
         rot = r.json() if r.status_code == 200 else {}
-        access2 = self.secret(str(rot.get("access_token", "")))
-        self.secret(str(rot.get("refresh_token", "")))
+        access2 = self.secret(str(rot.get("access_token") or ""))
+        refresh2 = rot.get("refresh_token")
+        refresh2 = self.secret(refresh2) if isinstance(refresh2, str) else ""
         self.check("refresh_rotation_200", r.status_code == 200 and bool(ISSUED_TOKEN_RE.fullmatch(access2))
-                   and access2 != access and rot.get("refresh_token") not in ("", refresh), http=r.status_code)
+                   and access2 != access and bool(refresh2) and refresh2 != refresh, http=r.status_code)
         r = self.token({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id})
         self.check("refresh_replay_refused", r.status_code == 400)
         r = self.rpc("tools/list", {}, refresh)
@@ -319,7 +393,20 @@ class Run:
                 "tools_called": sorted(ALLOWED_TOOL_CALLS), "write_operations_attempted": 0}
 
     def leak_free(self, text: str) -> bool:
-        return not any(s and s in text for s in self.sensitive)
+        # Raw and JSON-escaped forms: a value with quotes, backslashes or non-ASCII characters
+        # appears escaped inside json.dumps output.
+        forms = {f for s in self.sensitive if s for f in (s, json.dumps(s)[1:-1])}
+        return not any(f in text for f in forms)
+
+
+def finalize(run: Run, error: str | None) -> tuple[dict[str, Any], str]:
+    """The report and its text; replaced by a fixed failure if any secret would appear in it."""
+    report = run.report(error)
+    text = json.dumps(report, indent=2, sort_keys=True)
+    if not run.leak_free(text):
+        report = {"verdict": "FAIL", "failed_check": "report_leak_check"}
+        text = json.dumps(report)
+    return report, text
 
 
 def _actions_mask(value: str) -> None:
@@ -328,7 +415,7 @@ def _actions_mask(value: str) -> None:
         sys.stdout.flush()
 
 
-def main(argv: list[str] | None = None, *, client: httpx.Client | None = None,
+def main(argv: list[str] | None = None, *, client: Any = None,
          base: str = PINNED_BASE, sleep=time.sleep) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", required=True)
@@ -342,8 +429,7 @@ def main(argv: list[str] | None = None, *, client: httpx.Client | None = None,
         print("refusing a non-pinned target")
         return 2
     own = client is None
-    client = client or httpx.Client(timeout=httpx.Timeout(30.0), follow_redirects=False,
-                                    headers={"User-Agent": USER_AGENT})
+    client = client or StdlibClient(timeout=20.0)
     run = Run(client, base, password, expected_commit=args.expected_commit, mask=_actions_mask, sleep=sleep)
     del password
     error = None
@@ -357,11 +443,7 @@ def main(argv: list[str] | None = None, *, client: httpx.Client | None = None,
     finally:
         if own:
             client.close()
-    report = run.report(error)
-    text = json.dumps(report, indent=2, sort_keys=True)
-    if not run.leak_free(text):
-        text = json.dumps({"verdict": "FAIL", "failed_check": "report_leak_check"})
-        report = {"verdict": "FAIL"}
+    report, text = finalize(run, error)
     with open(args.output, "w", encoding="utf-8") as fh:
         fh.write(text)
     print(f"verdict={report['verdict']} checks_passed={report.get('checks_passed')} failed_check={report.get('failed_check')}")

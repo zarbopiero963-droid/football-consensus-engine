@@ -57,14 +57,23 @@ SCRIPT = textwrap.dedent(r'''
         row = codes.get(code)
         if not row or row["used"]:
             return None
-        row["used"] = True
-        if row["client_id"] != client_id or row["redirect_uri"] != redirect_uri or not verifier_matches(row["code_challenge"]):
+        if MODE != "code_not_burned":
+            row["used"] = True
+        verifier_ok = MODE == "verifier_ignored" or verifier_matches(row["code_challenge"])
+        if row["client_id"] != client_id or row["redirect_uri"] != redirect_uri or not verifier_ok:
             return None
         pair(access, refresh, {"client_id": client_id, "resource": row["resource"], "scope": row["scope"]})
         return {"resource": row["resource"], "scope": row["scope"]}
 
     def rotate(token, *, client_id, access, refresh, **_):
         row = refresh_store.get(token)
+        if MODE == "wrong_client_burns" and row:
+            row["revoked"], was = True, row["revoked"]
+            if was or row["client_id"] != client_id:
+                return None
+            row["revoked"] = True
+            pair(access, refresh, row)
+            return {"resource": row["resource"], "scope": row["scope"]}
         if not row or row["client_id"] != client_id or row["revoked"]:
             return None
         if MODE != "reusable_refresh":
@@ -79,16 +88,38 @@ SCRIPT = textwrap.dedent(r'''
     st.exchange_code = exchange
     st.refresh_and_issue = rotate
     st.valid_access_token = lambda t, res, scope: (
-        "2099-01-01" if t in access and access[t]["resource"] == res and scope in access[t]["scope"].split() else None)
+        "2099-01-01" if MODE == "any_bearer" or (t in access and access[t]["resource"] == res
+                                                 and scope in access[t]["scope"].split()) else None)
+
+    if MODE == "wrong_password_accepted":
+        import hmac as _hmac
+        class _H:
+            @staticmethod
+            def compare_digest(a, b):
+                return True if isinstance(a, bytes) else _hmac.compare_digest(a, b)
+        srv.oauth.hmac = _H
+    if MODE == "rotation_without_refresh":
+        original, calls = srv.oauth._token_response, {"n": 0}
+        def _token_response(a, r, scope):
+            calls["n"] += 1
+            resp = original(a, r, scope)
+            if calls["n"] >= 2:
+                body = json.loads(resp.body); body.pop("refresh_token")
+                resp = srv.oauth.JSONResponse(body, headers=srv.oauth.NO_STORE)
+            return resp
+        srv.oauth._token_response = _token_response
 
     out_path = os.environ["E2E_OUT"]
     with TestClient(srv.app, base_url=e2e.PINNED_BASE, follow_redirects=False) as c:
-        rc = e2e.main(["--output", out_path], client=c, sleep=lambda s: None)
+        argv = ["--output", out_path]
+        if os.environ.get("E2E_EXPECTED_COMMIT"):
+            argv += ["--expected-commit", os.environ["E2E_EXPECTED_COMMIT"]]
+        rc = e2e.main(argv, client=c, sleep=lambda s: None)
     print("RESULT_JSON=" + json.dumps({"rc": rc, "issued": issued}))
 ''')
 
 
-def _run(tmp_path, mode="normal", github_actions=False):
+def _run(tmp_path, mode="normal", github_actions=False, extra_env=None):
     out = tmp_path / "report.json"
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("APIFOOTBALL_", "SXBET_", "RENDER_GIT_COMMIT", "BROWSER_", "CLOAK"))}
@@ -97,7 +128,7 @@ def _run(tmp_path, mode="normal", github_actions=False):
                 "E2E_OUT": str(out), "BROWSER_TOOLS_ENABLED": "false",
                 "APIFOOTBALL_ENABLED": "true", "APIFOOTBALL_LIVE_AUTHORIZED": "false",
                 "SXBET_ENABLED": "true", "SXBET_API_KEY": "FAKE_SX_KEY_E2E_TEST_ONLY",
-                "GITHUB_ACTIONS": "true" if github_actions else "false"})
+                "GITHUB_ACTIONS": "true" if github_actions else "false", **(extra_env or {})})
     proc = subprocess.run([sys.executable, "-c", SCRIPT], env=env, capture_output=True, text=True, timeout=180)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT_JSON=")), None)
     assert line, proc.stdout[-3000:] + proc.stderr[-3000:]
@@ -126,6 +157,33 @@ def test_full_flow_passes_and_the_report_holds_no_secret(tmp_path):
     for value in res["issued"]:
         assert value not in report_text
         assert f"::add-mask::{value}" in stdout
+        # The only stdout lines that carry a runtime secret are its own mask commands.
+        assert all(l == f"::add-mask::{value}" for l in stdout.splitlines()
+                   if value in l and not l.startswith("RESULT_JSON=")), value
+
+
+@pytest.mark.parametrize("mode,extra_env,failed", [
+    ("code_not_burned", None, "token_code_burned_after_failed_binding"),
+    ("verifier_ignored", None, "token_wrong_verifier_invalid_grant"),
+    ("wrong_client_burns", None, "refresh_rotation_200"),
+    ("rotation_without_refresh", None, "refresh_rotation_200"),
+    ("wrong_password_accepted", None, "consent_wrong_password_401"),
+    ("any_bearer", None, "mcp_unknown_wellformed_bearer_401"),
+    ("normal", {"BROWSER_TOOLS_ENABLED": "true"}, "browser_and_cloak_off"),
+    ("normal", {"RENDER_GIT_COMMIT": "a" * 40, "E2E_EXPECTED_COMMIT": "b" * 40}, "deployed_commit_is_main_head"),
+])
+def test_each_server_regression_fails_the_run_at_its_own_check(tmp_path, mode, extra_env, failed):
+    """RED controls (review: checks that could be made vacuous); none leaks into the report."""
+    res, report_text, _ = _run(tmp_path, mode=mode, extra_env=extra_env)
+    report = json.loads(report_text)
+    assert res["rc"] == 1 and report["verdict"] == "FAIL"
+    assert report["failed_check"] == failed
+    assert PASSWORD not in report_text and not any(v in report_text for v in res["issued"])
+
+
+def test_the_matching_deployed_commit_passes(tmp_path):
+    res, report_text, _ = _run(tmp_path, extra_env={"RENDER_GIT_COMMIT": "c" * 40, "E2E_EXPECTED_COMMIT": "c" * 40})
+    assert res["rc"] == 0 and json.loads(report_text)["verdict"] == "PASS"
 
 
 def test_a_reusable_refresh_token_fails_the_run(tmp_path):
@@ -174,3 +232,81 @@ def test_the_workflow_is_owner_manual_main_only_and_uploads_nothing():
     secret_steps = [s for s in job["steps"] if "secrets." in str(s)]
     assert len(secret_steps) == 1 and set(secret_steps[0]["env"]) == {"MCP_OAUTH_PASSWORD", "EXPECTED_COMMIT"}
     assert "scripts/mcp_e2e_render.py" in secret_steps[0]["run"] and "set -x" not in text
+
+
+def test_a_report_that_would_carry_a_secret_becomes_a_fixed_failure():
+    run = e2e.Run(client=None, base=e2e.PINNED_BASE, password='pa"ss\\wörd', expected_commit=None,
+                  mask=lambda v: None)
+    tok = run.secret("tok-" + "x" * 40)
+    run.facts["echo"] = tok
+    report, text = e2e.finalize(run, None)
+    assert report == {"verdict": "FAIL", "failed_check": "report_leak_check"} and tok not in text
+    run.facts["echo"] = 'pa"ss\\wörd'  # appears JSON-escaped in the report text
+    report, text = e2e.finalize(run, None)
+    assert report["failed_check"] == "report_leak_check"
+    run.facts["echo"] = "clean"
+    assert e2e.finalize(run, None)[0]["verdict"] == "PASS"
+
+
+def test_the_production_client_never_follows_redirects_nor_uses_a_proxy(monkeypatch):
+    """Review P2-2: the consent 302 to claude.ai must be parsed, never followed."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    hits = []
+
+    class Target(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+    seen = {}
+
+    class Origin(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            seen["body"] = self.rfile.read(int(self.headers["Content-Length"])).decode()
+            seen["ctype"] = self.headers["Content-Type"]
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_address[1]}/cb?code=SECRET")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            body = b'{"ok": true}'
+            self.send_response(401); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body)
+
+    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    for srv in (target, origin):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")  # would fail if a proxy were used
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("no_proxy", raising=False); monkeypatch.delenv("NO_PROXY", raising=False)
+    try:
+        c = e2e.StdlibClient(timeout=5)
+        assert c.follow_redirects is False
+        base = f"http://127.0.0.1:{origin.server_address[1]}"
+        r = c.post(base + "/oauth/authorize", data={"password": "p w&x"})
+        assert r.status_code == 302 and "code=SECRET" in r.headers.get("location")
+        assert hits == []  # the redirect target was never contacted
+        assert seen["ctype"] == "application/x-www-form-urlencoded" and "password=p+w%26x" in seen["body"]
+        r = c.get(base + "/healthz")
+        assert r.status_code == 401 and r.json() == {"ok": True}
+    finally:
+        for srv in (target, origin):
+            srv.shutdown(); srv.server_close()
+
+
+def test_the_e2e_client_needs_no_third_party_package():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "scripts" / "mcp_e2e_render.py").read_text(encoding="utf-8")
+    assert "import httpx" not in src and "import requests" not in src
+    wf = (root / ".github" / "workflows" / "fcb-mcp-e2e.yml").read_text(encoding="utf-8")
+    assert "pip install" not in wf and "python -I scripts/mcp_e2e_render.py" in wf
