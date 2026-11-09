@@ -134,10 +134,11 @@ def test_occupancy_runs_as_a_non_superuser_database_owner(db):
     """Aiven's avnadmin is not a superuser: every catalog the occupancy query reads must be readable."""
     name, dsn = db
     role = "occ_owner_" + uuid.uuid4().hex[:8]
-    _exec(dsn, sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(role)),
+    password = uuid.uuid4().hex  # CI authenticates with passwords; local clusters may trust
+    _exec(dsn, sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(role), sql.Literal(password)),
           sql.SQL("ALTER DATABASE {} OWNER TO {}").format(sql.Identifier(name), sql.Identifier(role)))
     params = psycopg.conninfo.conninfo_to_dict(dsn)
-    params["user"] = role
+    params["user"], params["password"] = role, password
     try:
         assert _occupancy(psycopg.conninfo.make_conninfo(**params)) == "EMPTY"
     finally:
