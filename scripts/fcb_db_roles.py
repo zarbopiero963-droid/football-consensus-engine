@@ -1,0 +1,209 @@
+"""FCB-WP-009 helper for the owner-gated roles workflow (fcb-aiven-defaultdb-roles.yml).
+
+Nothing printed by this module contains a password, a SCRAM verifier, or the host, port,
+user, password or database name of the administrative URI.
+
+Subcommands (secrets are always read from the environment, never from argv):
+  check                  validate FCB_APP_DB_PASSWORD and FCB_MIGRATOR_DB_PASSWORD (stdlib, -I -S)
+  verifier VAR           print the SCRAM-SHA-256 verifier of the password in $VAR (stdlib, -I -S);
+                         the workflow masks it and hands it to psql through the environment
+  sanitize FILE          print one redacted line of a psql stderr capture (stdlib, -I -S)
+  login-check [--require-tls]
+                         log in as fcb_app and fcb_migrator (same host/port/database/TLS settings
+                         as $FCB_DEFAULTDB_URL, other user and password) and check, read-only,
+                         what each identity can and cannot do (needs psycopg and the repository)
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import importlib.util
+import os
+import re
+import secrets
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+URL_VAR = "FCB_DEFAULTDB_URL"
+PASSWORD_VARS = {"fcb_app": "FCB_APP_DB_PASSWORD", "fcb_migrator": "FCB_MIGRATOR_DB_PASSWORD"}
+VERIFIER_VARS = ("FCB_APP_DB_VERIFIER", "FCB_MIGRATOR_DB_VERIFIER")
+# URL-safe alphabet only: the owner builds a DSN from it without percent-encoding, and libpq
+# and Python parse it identically (no '@', ':', '/', '%', '#', whitespace or quotes).
+PASSWORD_RE = re.compile(r"[A-Za-z0-9_-]{32,128}")
+SCRAM_ITERATIONS = 4096
+VERIFIER_RE = re.compile(r"SCRAM-SHA-256\$4096:[A-Za-z0-9+/]+=*\$[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]+=*")
+
+
+def password_problem(env=None) -> str | None:
+    """A non-sensitive category when the two role passwords are unusable, else None."""
+    env = os.environ if env is None else env
+    values = {}
+    for role, var in PASSWORD_VARS.items():
+        value = env.get(var, "")
+        if not value:
+            return f"{var}_missing"
+        if not PASSWORD_RE.fullmatch(value):
+            return f"{var}_not_32_to_128_url_safe_chars"
+        values[role] = value
+    if values["fcb_app"] == values["fcb_migrator"]:
+        return "passwords_not_distinct"
+    try:
+        admin = unquote(urlsplit(env.get(URL_VAR, "")).password or "")
+    except ValueError:
+        admin = ""
+    if admin and admin in values.values():
+        return "password_equals_administrative_password"
+    return None
+
+
+def scram_verifier(password: str, salt: bytes | None = None, iterations: int = SCRAM_ITERATIONS) -> str:
+    """PostgreSQL's SCRAM-SHA-256 verifier (RFC 5802/7677), as pg_authid stores it.
+
+    The password alphabet is ASCII-only (PASSWORD_RE), for which SASLprep is the identity.
+    """
+    salt = secrets.token_bytes(16) if salt is None else salt
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    b64 = lambda raw: base64.b64encode(raw).decode("ascii")  # noqa: E731
+    return f"SCRAM-SHA-256${iterations}:{b64(salt)}${b64(stored_key)}:{b64(server_key)}"
+
+
+def _diag():
+    """scripts/aiven_pg18_diag.py, loaded by path (python -I -S does not add the script dir)."""
+    path = Path(__file__).resolve().with_name("aiven_pg18_diag.py")
+    spec = importlib.util.spec_from_file_location("fcb_aiven_pg18_diag", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sanitize(text: str, env=None) -> str:
+    """One redacted line: URI parts (as the restore workflow), role passwords and verifiers,
+    and every line that could quote a statement carrying a verifier are removed."""
+    env = os.environ if env is None else env
+    kept = [line for line in text.splitlines()
+            if not re.search(r"SCRAM-SHA-256|PASSWORD|^\s*LINE \d+:|^\s*\^", line, re.I)]
+    out = "\n".join(kept)
+    raw = env.get(URL_VAR, "")
+    if raw:
+        out = _diag().sanitize(out, raw)
+    for var in (*PASSWORD_VARS.values(), *VERIFIER_VARS):
+        value = env.get(var, "")
+        if len(value) >= 4:
+            out = out.replace(value, "<redacted>")
+    out = " | ".join(part.strip() for part in out.splitlines() if part.strip())
+    return out[:300]
+
+
+def _connect_as(role: str, env):
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    params = conninfo_to_dict(env[URL_VAR])
+    params["user"] = role
+    params["password"] = env[PASSWORD_VARS[role]]
+    params.setdefault("connect_timeout", "15")
+    return psycopg.connect(**params)
+
+
+def _denied(conn, statement: str) -> bool:
+    """True when `statement` is refused for lack of privilege. Always rolled back."""
+    import psycopg
+
+    try:
+        with conn.transaction():
+            conn.execute(statement)
+            # Never commit a probe, also when it unexpectedly succeeds (e.g. the migrator's CREATE).
+            raise psycopg.Rollback()
+    except psycopg.errors.InsufficientPrivilege:
+        return True
+    return False
+
+
+def _check_role(role: str, env, require_tls: bool) -> str:
+    """Read-only checks for one identity; every probe runs in a transaction rolled back."""
+    from psycopg.rows import dict_row
+
+    with _connect_as(role, env) as conn:
+        conn.autocommit = True
+        row = conn.execute(
+            "SELECT CURRENT_USER::pg_catalog.text AS who, COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s "
+            "WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) AS tls").fetchone()
+        if row[0] != role:
+            raise RuntimeError("FCB_LOGIN_IDENTITY_MISMATCH")
+        if require_tls and row[1] is not True:
+            raise RuntimeError("FCB_LOGIN_NOT_TLS")
+        migrations = conn.execute("SELECT pg_catalog.count(*) FROM public.schema_migrations").fetchone()[0]
+        create_denied = _denied(conn, "CREATE TABLE public.fcb_wp009_login_probe (i integer)")
+        if role == "fcb_app":
+            from bridge import schema_readiness
+
+            def app_connect():
+                c = _connect_as("fcb_app", env)
+                c.row_factory = dict_row
+                return c
+
+            readiness = schema_readiness.evaluate(app_connect)["state"]
+            legacy_denied = _denied(conn, "SELECT 1 FROM public.model_snapshots LIMIT 0")
+            ok = readiness == "READY" and create_denied and legacy_denied and migrations == 8
+            line = (f"login {role}: tls={row[1]} schema_migrations_rows={migrations} readiness={readiness} "
+                    f"create_denied={create_denied} legacy_read_denied={legacy_denied}")
+        else:
+            # The migrator owns the bridge: CREATE succeeds, but inside a rolled-back transaction.
+            ok = migrations == 8 and not create_denied
+            line = f"login {role}: tls={row[1]} schema_migrations_rows={migrations} can_create={not create_denied}"
+    if not ok:
+        raise RuntimeError("FCB_LOGIN_MODEL_MISMATCH " + line)
+    return line
+
+
+def login_check(require_tls: bool, env=None) -> int:
+    env = os.environ if env is None else env
+    rc = 0
+    for role in ("fcb_app", "fcb_migrator"):
+        try:
+            print(_check_role(role, env, require_tls))
+        except Exception as exc:  # noqa: BLE001 - only the class and SQLSTATE are printed
+            code = getattr(exc, "sqlstate", None) or "-"
+            reason = str(exc) if str(exc).startswith("FCB_") else type(exc).__name__
+            print(f"::error::login {role}: failed ({reason}, sqlstate={code})", file=sys.stderr)
+            rc = 1
+    return rc
+
+
+def main(argv: list[str]) -> int:
+    cmd = argv[1] if len(argv) > 1 else ""
+    if cmd == "check" and len(argv) == 2:
+        why = password_problem()
+        if why:
+            print(f"::error::role passwords refused ({why})", file=sys.stderr)
+            return 1
+        print("role passwords: present, distinct, 32-128 URL-safe characters")
+        return 0
+    if cmd == "verifier" and len(argv) == 3 and argv[2] in PASSWORD_VARS.values():
+        if password_problem():
+            print("::error::role passwords refused; run `check` first", file=sys.stderr)
+            return 1
+        print(scram_verifier(os.environ[argv[2]]))
+        return 0
+    if cmd == "sanitize" and len(argv) == 3:
+        try:
+            with open(argv[2], encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            text = ""
+        print(sanitize(text) or "<empty psql message>")
+        return 0
+    if cmd == "login-check" and argv[2:] in ([], ["--require-tls"]):
+        return login_check(require_tls=argv[2:] == ["--require-tls"])
+    print("::error::fcb_db_roles: unknown subcommand", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -111,6 +111,7 @@ def test_the_policy_sees_the_known_privileged_workflows():
     found = {(p.name, j) for p, _, j, _, n in _secret_jobs() if _privileged(n)}
     assert ("fcb-aiven-pg18-test.yml", "pg18-test") in found
     assert ("fcb-aiven-defaultdb-restore.yml", "restore") in found
+    assert ("fcb-aiven-defaultdb-roles.yml", "roles") in found  # WP-009: admin URI + role passwords
     assert ("api-football-live-smoke.yml", "live") in found
     assert ("fcb-mcp-e2e.yml", "e2e") in found  # MCP_OAUTH_PASSWORD is privileged (default-closed)
 
