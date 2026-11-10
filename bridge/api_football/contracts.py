@@ -100,8 +100,8 @@ assert all(documented_path(endpoint.path) for endpoint in ENDPOINTS.values())
 def _string(value: str, field: str) -> str:
     if not isinstance(value, str) or not _VALID_VALUE.fullmatch(value):
         raise ParameterError("INVALID_TEXT_PARAMETER")
-    if field == "live" and value != "all":
-        raise ParameterError("INVALID_LIVE_FILTER")
+    if field == "live":
+        _live_filter(value)
     if field == "timezone":
         # FIX-06 (owner-approved removal of TIMEZONE_NOT_CERTIFIED): any IANA zone of the
         # tz database; the provider's /timezone catalog stays the final authority.
@@ -109,6 +109,24 @@ def _string(value: str, field: str) -> str:
         if code is not None:
             raise ParameterError(code)
     return value
+
+
+# FIX-02. Documented enum: "all" | "id-id" ("All or several leagues ids"). League ids are
+# positive integers without leading zeros; a repeated id is refused. The docs give no maximum
+# number of ids: that limit is DOCS_UNVERIFIED, the only bound is the 128-character value limit
+# every text parameter has (transport.validated_request).
+_LIVE_LEAGUE_IDS = re.compile(r"^[1-9][0-9]{0,9}(?:-[1-9][0-9]{0,9})*$")
+LIVE_IDS_MAXIMUM = "DOCS_UNVERIFIED"
+
+
+def _live_filter(value: str) -> None:
+    if value == "all":
+        return
+    if not _LIVE_LEAGUE_IDS.fullmatch(value):
+        raise ParameterError("INVALID_LIVE_FILTER")
+    ids = value.split("-")
+    if len(set(ids)) != len(ids):
+        raise ParameterError("LIVE_LEAGUE_IDS_DUPLICATE")
 
 
 def _positive_int(value: int, field: str) -> int:
