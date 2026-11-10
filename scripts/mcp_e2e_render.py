@@ -1216,7 +1216,8 @@ CASE_VERDICTS = ("PASS", "FAIL", "PARTIAL", "NOT_TESTED", "PROVIDER_UNAVAILABLE"
 # is the MCP's fault (coordinator down, a failed MCP call, an unexpected error) stays FAIL.
 STOP_VERDICT = {"STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT": "NOT_TESTED",
                 "STOP_PROVIDER_QUOTA_ZERO": "NOT_TESTED",
-                "STOP_LOCAL_QUOTA_EXHAUSTED": "NOT_TESTED",
+                "STOP_LOCAL_RATE_LIMITED": "NOT_TESTED",
+                "STOP_LOCAL_DAILY_QUOTA_EXHAUSTED": "NOT_TESTED",
                 "STOP_PROVIDER_NOT_ENABLED": "NOT_TESTED"}
 
 
@@ -1250,8 +1251,11 @@ def stop_reason_for(p: dict[str, Any] | None) -> str | None:
     if status in ("KEY_NOT_CONFIGURED", "LIVE_NOT_AUTHORIZED", "PROVIDER_CLIENT_UNAVAILABLE"):
         return "STOP_PROVIDER_NOT_ENABLED"
     if status == "PROVIDER_ERROR":
-        if code == "LOCAL_QUOTA_EXHAUSTED":
-            return "STOP_LOCAL_QUOTA_EXHAUSTED"
+        # The bridge's own coordinator refused (FIX-08): the run stops, nothing was sent.
+        if code == "LOCAL_RATE_LIMITED":
+            return "STOP_LOCAL_RATE_LIMITED"
+        if code == "LOCAL_DAILY_QUOTA_EXHAUSTED":
+            return "STOP_LOCAL_DAILY_QUOTA_EXHAUSTED"
         if code in COORDINATOR_CODES:
             return "STOP_COORDINATOR_UNAVAILABLE"
         if code in PROVIDER_ENVIRONMENT_CODES or _declared_category(p) in DECLARED_ENVIRONMENT_CATEGORIES:

@@ -65,7 +65,7 @@ Lo schema `tools/list` espone tutti i 140 parametri di query della documentazion
 
 - **Payload:** risposta MCP massima 256 KiB. Una pagina `/odds` o `/odds/live` più grande restituisce `PARTIAL_ODDS_MANIFEST`: ID delle fixture e dei mercati e conteggi, **senza prezzi**. I prezzi si richiedono con `fixture` (pre-match) oppure `fixture` + `bet` (live). Lettura dal provider limitata a 2 MiB per `/odds` e `/odds/live`, 512 KiB per le altre rotte, sempre in modo chiuso.
 - **Paginazione:** `pagination` riporta il `paging` del provider; `page` è disponibile dove il contratto lo prevede, compreso `/odds/mapping` (45 pagine osservate).
-- **Quota:** ogni richiesta prenota un lease nel coordinatore PostgreSQL condiviso. Errori possibili: `LOCAL_QUOTA_EXHAUSTED`, `LOCAL_CONCURRENCY_BUSY`, `QUOTA_COORDINATOR_UNAVAILABLE`, quest'ultimo con diagnostica fissa nei log (`stage`, `reason`, `elapsed_ms`). L'inizializzazione dello schema non consuma il budget della richiesta, e un lease orfano viene rilasciato.
+- **Quota:** ogni richiesta prenota un lease nel coordinatore PostgreSQL condiviso. Errori possibili: `LOCAL_RATE_LIMITED` (finestra mobile di 60 s, con `retry_after_seconds`), `LOCAL_DAILY_QUOTA_EXHAUSTED` (giorno UTC, con `reset_at_utc` alla mezzanotte UTC successiva), `LOCAL_CONCURRENCY_BUSY`, `QUOTA_COORDINATOR_UNAVAILABLE`, quest'ultimo con diagnostica fissa nei log (`stage`, `reason`, `elapsed_ms`). L'inizializzazione dello schema non consuma il budget della richiesta, e un lease orfano viene rilasciato.
 - **Dati mancanti:** un campo mancante o null non viene mai convertito in 0. Una selezione con `suspended` mancante è contata come sconosciuta.
 - **Limiti del provider osservati:**
   - le quote live non indicano il bookmaker;

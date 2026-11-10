@@ -385,7 +385,12 @@ def test_an_open_circuit_stops_the_run():
 
 @pytest.mark.parametrize("error,reason,verdict", [
     (RuntimeError("db down"), "STOP_COORDINATOR_UNAVAILABLE", "FAIL"),  # the MCP's own infrastructure
-    (QuotaExceeded("local"), "STOP_LOCAL_QUOTA_EXHAUSTED", "NOT_TESTED"),
+    # FIX-08 (declared behaviour change): LOCAL_QUOTA_EXHAUSTED is split in two codes. A refusal
+    # without a known window maps to the conservative daily stop.
+    (QuotaExceeded("local"), "STOP_LOCAL_DAILY_QUOTA_EXHAUSTED", "NOT_TESTED"),
+    (QuotaExceeded("local", window="day", retry_after_seconds=3600,
+                   reset_at_utc="2026-11-11T00:00:00+00:00"), "STOP_LOCAL_DAILY_QUOTA_EXHAUSTED", "NOT_TESTED"),
+    (QuotaExceeded("local", window="minute", retry_after_seconds=17), "STOP_LOCAL_RATE_LIMITED", "NOT_TESTED"),
 ])
 def test_coordinator_and_local_quota_failures_stop_before_any_request(error, reason, verdict):
     suite, t = _suite(quota=fake.FakeQuota(error=error))

@@ -40,7 +40,7 @@ def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any
                          classify_declared_errors)
     from .quota import QuotaExceeded, QuotaConcurrencyBusy
     if isinstance(exc, QuotaExceeded):
-        return {"code": "LOCAL_QUOTA_EXHAUSTED"}
+        return _local_quota_error(exc)
     if isinstance(exc, QuotaConcurrencyBusy):
         return {"code": "LOCAL_CONCURRENCY_BUSY"}
     if isinstance(exc, CircuitOpen):
@@ -72,6 +72,29 @@ def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any
     if isinstance(exc, ValueError):
         return {"code": "REQUEST_VALIDATION_FAILED"}  # refused locally before any request
     return {"code": "PROVIDER_REQUEST_FAILED"}
+
+
+def _local_quota_error(exc: Any) -> dict[str, Any]:
+    """The binding LOCAL limit of the shared coordinator (never the provider's own limit).
+
+    LOCAL_RATE_LIMITED: the rolling 60 s window (or the provider-zero marker) is full;
+    retry_after_seconds comes from the coordinator's attempt times. LOCAL_DAILY_QUOTA_EXHAUSTED:
+    the UTC calendar-day bucket is spent; reset_at_utc is the next UTC midnight. A refusal
+    without a known window is reported as daily, with no reset time: the conservative reading
+    (never invite a retry the coordinator did not compute)."""
+    window = getattr(exc, "window", None)
+    retry = getattr(exc, "retry_after_seconds", None)
+    reset = getattr(exc, "reset_at_utc", None)
+    if window == "minute":
+        out: dict[str, Any] = {"code": "LOCAL_RATE_LIMITED", "window": "ROLLING_60_SECONDS"}
+        if type(retry) is int and 1 <= retry <= 60:
+            out["retry_after_seconds"] = retry
+        return out
+    out = {"code": "LOCAL_DAILY_QUOTA_EXHAUSTED", "window": "UTC_CALENDAR_DAY",
+           "reset_at_utc": reset if window == "day" and isinstance(reset, str) else None}
+    if window == "day" and type(retry) is int and 1 <= retry <= 86_400:
+        out["retry_after_seconds"] = retry
+    return out
 
 
 def _attempts(source: Any) -> int:
