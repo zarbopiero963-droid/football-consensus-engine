@@ -81,7 +81,9 @@ def response_for(path: str, params: dict[str, Any], *, huge_odds: bool = False) 
                                                     {"type": "Ball Possession", "value": "55%"},
                                                     {"type": "expected_goals", "value": None}]} for t in (42, 47)], one)
     if path in ("/odds/bookmakers", "/odds/bets"):
-        rows = ([{"id": 1, "name": "10Bet"}, {"id": 8, "name": "Bet365"}] if path == "/odds/bookmakers" else
+        # The real /odds/bookmakers publishes a row whose name is null (run 41242779991: 33 rows, one null).
+        rows = ([{"id": 1, "name": "10Bet"}, {"id": 8, "name": "Bet365"}, {"id": 14, "name": None}]
+                if path == "/odds/bookmakers" else
                 [{"id": 1, "name": "Match Winner"}, {"id": 5, "name": "Goals Over/Under"},
                  {"id": 6, "name": "Goals Over/Under First Half"}])
         return (rows, one)
@@ -139,6 +141,8 @@ class FakeTransport:
         if behaviour == "too_large":
             raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
         response, paging = response_for(path, params, huge_odds=self.huge_odds)
+        if behaviour == "empty":  # a valid reply without rows
+            response, paging = [], {"current": 1, "total": 1}
         results = len(response) if isinstance(response, list) else 1
         data = {"get": path.lstrip("/"), "parameters": {k: str(v) for k, v in params.items()}, "errors": [],
                 "results": results, "paging": paging, "response": response}
