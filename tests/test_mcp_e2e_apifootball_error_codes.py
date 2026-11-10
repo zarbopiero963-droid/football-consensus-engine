@@ -49,8 +49,14 @@ def test_plan_not_included_is_provider_unavailable_with_evidence_and_the_run_goe
     assert rec["facts"] == {"unavailable_evidence": {"source": "PROVIDER_DECLARED_ERRORS", "keys": ["plan"],
                                                      "category": "PLAN_NOT_INCLUDED"}}
     assert rec["charged"] == rec["reserved"] == 3  # no settlement down on an error
-    # The run goes on (it ends later only on the per-run budget, as without the plan error).
+    # The run goes on. Under the worst-case accounting (3 per provider call, budget 20) it ends on
+    # the budget exactly where a control run without the plan error ends: same cases executed.
     assert _by_id(suite)["A06"]["outcome"] != "NOT_TESTED" and suite.stop_reason == "STOP_BUDGET_REACHED"
+    control = _suite(Transport())
+    control.run()
+    executed = [r["id"] for r in suite.records if r["outcome"] != "NOT_TESTED"]
+    assert executed == [r["id"] for r in control.records if r["outcome"] != "NOT_TESTED"]
+    assert control.stop_reason == "STOP_BUDGET_REACHED" and suite.budget.committed == control.budget.committed
     rep = suite.report()
     assert rep["verdict"] == "BLOCKED" and rep["verdicts"]["PROVIDER_UNAVAILABLE"] == 1
     assert "SECRET-PROVIDER-TEXT" not in json.dumps(rep) and "example.invalid" not in json.dumps(rep)
