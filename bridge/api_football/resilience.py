@@ -20,7 +20,7 @@ from .circuit import CircuitBreaker
 from .config import Settings
 from .errors import (
     CircuitOpen, ProviderUnavailable, ProviderHTTPError, ProviderDataError,
-    RequestQueueFull,
+    ProviderDeclaredErrors, RequestQueueFull,
 )
 from .quota import PostgresQuota, QuotaExceeded, QuotaConcurrencyBusy, QuotaLease, QuotaLimits
 from .transport import ProviderReply, validated_request
@@ -248,10 +248,11 @@ class ResilientFootballClient:
         except Exception:
             raise ProviderUnavailable("QUOTA_RECONCILIATION_FAILED", retryable=False) from None
 
-    async def _attempt(self, path: str, params: Mapping[str, str | int]) -> ProviderReply:
+    async def _attempt(self, path: str, params: Mapping[str, str | int], sent: list[int]) -> ProviderReply:
         lease = await self._lease()
         try:
             try:
+                sent[0] += 1  # a request handed to the transport: counted even if it then fails
                 reply = await asyncio.wait_for(
                     self.transport.get(path, params), timeout=self.settings.timeout_seconds
                 )
@@ -265,6 +266,7 @@ class ResilientFootballClient:
 
     async def _execute(self, path: str, checked: dict[str, str | int], key: tuple) -> dict[str, Any]:
         began = False
+        sent = [0]  # real provider attempts of this flight, reported as network_calls_made
         try:
             if self.settings.circuit_breaker_enabled:
                 await self.breaker.before_request()
@@ -273,7 +275,7 @@ class ResilientFootballClient:
                 last_error: Exception | None = None
                 for i in range(self.retry.max_attempts):
                     try:
-                        reply = await self._attempt(path, checked)
+                        reply = await self._attempt(path, checked, sent)
                         # A provider reply reporting zero overrides our local
                         # allowance globally for the corresponding UTC bucket.
                         if reply.quota_remaining_day == 0:
@@ -293,6 +295,7 @@ class ResilientFootballClient:
                             "quota_remaining_provider_minute": reply.quota_remaining_minute,
                             "data": deepcopy(reply.data),
                             "warnings": [],
+                            "provider_attempts": sent[0],
                         }
                         if self.settings.cache_enabled:
                             self.cache.put(key, outcome, ttl_for_endpoint(path))
@@ -309,6 +312,13 @@ class ResilientFootballClient:
                         last_error = exc
                         if not exc.retryable:
                             break
+                    except ProviderDeclaredErrors as exc:
+                        # HTTP 200 with provider `errors`: reconcile its quota like any reply.
+                        if exc.quota_remaining_day == 0 or "requests" in exc.error_keys:
+                            await self._mark_exhausted("day")
+                        if exc.quota_remaining_minute == 0 or "rateLimit" in exc.error_keys:
+                            await self._mark_exhausted("minute")
+                        raise
                     except (ProviderDataError, QuotaExceeded, QuotaConcurrencyBusy):
                         raise
                     if i < self.retry.max_attempts - 1:
@@ -324,13 +334,15 @@ class ResilientFootballClient:
             if began:
                 await self.breaker.abort()
             raise
-        except (QuotaExceeded, QuotaConcurrencyBusy, RequestQueueFull, CircuitOpen):
+        except (QuotaExceeded, QuotaConcurrencyBusy, RequestQueueFull, CircuitOpen) as exc:
             if began:
                 await self.breaker.abort()
+            exc.provider_attempts = sent[0]
             raise
-        except (ProviderUnavailable, ProviderHTTPError, ProviderDataError):
+        except (ProviderUnavailable, ProviderHTTPError, ProviderDataError) as exc:
             if began:
                 await self.breaker.fail()
+            exc.provider_attempts = sent[0]
             raise
         except Exception:
             if began:
@@ -339,4 +351,6 @@ class ResilientFootballClient:
             # unexpected exception whose message contains internal URLs,
             # connection strings or even secrets. Never return it through a
             # future MCP tool. The stable code retains fail-closed behavior.
-            raise ProviderUnavailable("PROVIDER_INTERNAL_ERROR", retryable=False) from None
+            internal = ProviderUnavailable("PROVIDER_INTERNAL_ERROR", retryable=False)
+            internal.provider_attempts = sent[0]
+            raise internal from None

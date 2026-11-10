@@ -519,7 +519,8 @@ class Run:
 # cached copy before any lease or request). The provider's own daily counter (quota_remaining.day)
 # is recorded as information only: real runs showed it is not monotonic between consecutive calls
 # (eventually consistent), so it never lowers a charge and its jumps never stop the run.
-# network_calls_made is recorded but never used either: it reports 1 after retries (F-02).
+# network_calls_made is recorded but never used either: it now reports the server's real attempts
+# (retries included), but it is the server's own claim, so the worst case stays charged.
 APIFOOTBALL_BUDGET_CEILING = 45  # owner-approved max HTTP attempts per campaign; raised only by an owner-merged PR
 APIFOOTBALL_DEFAULT_BUDGET = 45
 # The owner approved 45 for the `apifootball_completion` campaign only; the earlier suites keep
@@ -623,7 +624,7 @@ class ProviderBudget:
             charged, basis = worst, "WORST_CASE_NO_REPLY"
         elif status in NO_NETWORK_STATUSES:
             charged, basis = 0, "CODE_PATH_NO_REQUEST"
-        elif payload.get("cache_status") == "HIT":
+        elif payload.get("cache_status") == "HIT" and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST"):
             charged, basis = 0, "CACHE_HIT"
         else:
             charged, basis = worst, "WORST_CASE"
@@ -1164,19 +1165,39 @@ def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
 
 # Per-case verdicts: PASS, FAIL, PARTIAL, NOT_TESTED, PROVIDER_UNAVAILABLE.
 # PROVIDER_UNAVAILABLE needs concrete evidence recorded in the case's facts: the provider's own
-# /leagues coverage flag false for that data. (An explicit provider `errors` entry naming the plan
-# or endpoint would also count, but tools.py collapses declared errors into the fixed code
-# PROVIDER_DECLARED_ERRORS without their text, so the runner can never see one: such a reply stays
-# FAIL.) An empty reply alone is EMPTY_VALID with PARTIAL or NOT_TESTED, never unavailable.
+# /leagues coverage flag false for that data, or an HTTP-200 provider `errors` whose only key is
+# `plan` (tools.py exposes PROVIDER_DECLARED_ERRORS with its keys and the fixed category
+# PLAN_NOT_INCLUDED, never the text; see plan_not_included). Any other declared error stays FAIL
+# or an environment stop. An empty reply alone is EMPTY_VALID with PARTIAL or NOT_TESTED, never
+# unavailable.
 CASE_VERDICTS = ("PASS", "FAIL", "PARTIAL", "NOT_TESTED", "PROVIDER_UNAVAILABLE")
 # The verdict of a call that ended in an environment stop: the endpoint was not exercised to a
-# reply (provider 401/403/429/5xx or open circuit share one fixed code, quota at zero, local quota,
-# provider not enabled), so NOT_TESTED, with the stop and error code in the record. Anything that
+# reply (provider auth, rate limit, 5xx or open circuit: PROVIDER_ENVIRONMENT_CODES, quota at zero,
+# local quota, provider not enabled), so NOT_TESTED, with the stop and error code in the record. Anything that
 # is the MCP's fault (coordinator down, a failed MCP call, an unexpected error) stays FAIL.
 STOP_VERDICT = {"STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT": "NOT_TESTED",
                 "STOP_PROVIDER_QUOTA_ZERO": "NOT_TESTED",
                 "STOP_LOCAL_QUOTA_EXHAUSTED": "NOT_TESTED",
                 "STOP_PROVIDER_NOT_ENABLED": "NOT_TESTED"}
+
+
+# Provider-side conditions (tools.py fixed codes): the environment, not the MCP, stops the run.
+PROVIDER_ENVIRONMENT_CODES = frozenset({"PROVIDER_AUTH_FAILED", "PROVIDER_RATE_LIMITED",
+                                        "PROVIDER_SERVER_ERROR", "CIRCUIT_OPEN"})
+DECLARED_ENVIRONMENT_CATEGORIES = frozenset({"AUTH", "RATE_LIMIT", "DAILY_QUOTA"})
+
+
+def _declared_category(p: dict[str, Any]) -> str | None:
+    err = p.get("error") if isinstance(p.get("error"), dict) else {}
+    return _code(err.get("category")) if err.get("code") == "PROVIDER_DECLARED_ERRORS" else None
+
+
+def plan_not_included(p: dict[str, Any]) -> bool:
+    """Explicit provider evidence that the plan does not include this data: an HTTP-200 reply
+    whose only `errors` key is `plan` (tools.py exposes keys and category, never the text)."""
+    err = p.get("error") if isinstance(p.get("error"), dict) else {}
+    return (p.get("status") == "PROVIDER_ERROR" and _declared_category(p) == "PLAN_NOT_INCLUDED"
+            and err.get("keys") == ["plan"])
 
 
 def stop_reason_for(p: dict[str, Any] | None) -> str | None:
@@ -1194,11 +1215,11 @@ def stop_reason_for(p: dict[str, Any] | None) -> str | None:
             return "STOP_LOCAL_QUOTA_EXHAUSTED"
         if code in COORDINATOR_CODES:
             return "STOP_COORDINATOR_UNAVAILABLE"
-        if code == "PROVIDER_REQUEST_FAILED":
-            # 401/403/429/5xx, an open circuit and a queue timeout share this code (G6).
+        if code in PROVIDER_ENVIRONMENT_CODES or _declared_category(p) in DECLARED_ENVIRONMENT_CATEGORIES:
             return "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT"
-        if code in KNOWN_SIZE_CODES:
-            return None
+        if code in KNOWN_SIZE_CODES or plan_not_included(p):
+            return None  # PLAN_NOT_INCLUDED concerns this endpoint only: the run goes on
+        # Everything else, PROVIDER_REQUEST_FAILED included, may be an MCP or request defect.
         return "STOP_UNEXPECTED_PROVIDER_ERROR"
     if status not in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST", "PAYLOAD_TOO_LARGE", "INVALID_INPUT"):
         return "STOP_UNEXPECTED_TOOL_STATUS"
@@ -1290,6 +1311,9 @@ class ApiFootballSuite:
                     "defects": [] if ok else ["NEGATIVE_INPUT_NOT_REFUSED"]}
         outcome = _classify(p)
         out["outcome"] = outcome
+        if outcome == "ERROR" and plan_not_included(p):
+            return {**out, "verdict": "PROVIDER_UNAVAILABLE", "defects": [], "facts": {"unavailable_evidence": {
+                "source": "PROVIDER_DECLARED_ERRORS", "keys": ["plan"], "category": "PLAN_NOT_INCLUDED"}}}
         if outcome == "ERROR":
             known = ("F03_MCP_PAYLOAD_TOO_LARGE" if status == "PAYLOAD_TOO_LARGE" else
                      "F03_PROVIDER_BODY_TOO_LARGE" if code in KNOWN_SIZE_CODES else None)
