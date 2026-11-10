@@ -134,3 +134,22 @@ def test_server_error_after_retries_reports_the_real_attempts():
     suite.run()
     rec = _by_id(suite)["A02"]
     assert rec["error_code"] == "PROVIDER_SERVER_ERROR" and rec["network_calls_made_reported"] == 3
+
+
+# ---- catalog rows: an explicit null name is published data, a missing name is a shape defect ----
+
+def _catalog(rows):
+    facts: dict = {}
+    page = {"data": {"response": rows}, "pagination": {"current": 1, "total": 1}}
+    return e2e._check_catalog_single_page(page, {}, facts), facts
+
+
+def test_a_catalog_row_without_a_name_key_is_a_shape_defect():
+    defects, facts = _catalog([{"id": 1, "name": "10Bet"}, {"id": 2}])
+    assert defects == ["CATALOG_SHAPE_INVALID"]
+    assert facts["rows_shape_invalid"] == 1 and facts["null_names_kept_null"] == 0
+
+
+def test_only_an_explicit_null_name_counts_as_a_published_null():
+    defects, facts = _catalog([{"id": 1, "name": "10Bet"}, {"id": 14, "name": None}])
+    assert defects == [] and facts["null_names_kept_null"] == 1 and facts["rows_shape_invalid"] == 0

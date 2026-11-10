@@ -844,10 +844,11 @@ def _check_catalog_single_page(p, ctx, facts):
     """Catalog rows are {id, name}. The provider publishes rows whose name is null (real run
     41242779991: /odds/bookmakers 33 rows, one with name null; /odds/bets 338, one null): a null
     stays null and is counted, it is not a shape defect (CLAUDE.md 2.3). A row without an integer
-    id, or with a name that is neither a string nor null, is."""
+    id, without a `name` key (missing is not a published null), or with a name that is neither a
+    string nor null, is."""
     resp = _response(p)
     rows_ok = [r for r in resp if isinstance(r, dict) and _is_int(r.get("id"))
-               and (r.get("name") is None or isinstance(r.get("name"), str))]
+               and "name" in r and (r["name"] is None or isinstance(r["name"], str))]
     total = (p.get("pagination") or {}).get("total")
     # Facts first: a defect must never leave the case without its counts.
     facts.update({"entries": len(resp), "paging_total": total,
