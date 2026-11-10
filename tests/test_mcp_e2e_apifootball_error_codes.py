@@ -159,3 +159,62 @@ def test_a_catalog_row_without_a_name_key_is_a_shape_defect():
 def test_only_an_explicit_null_name_counts_as_a_published_null():
     defects, facts = _catalog([{"id": 1, "name": "10Bet"}, {"id": 14, "name": None}])
     assert defects == [] and facts["null_names_kept_null"] == 1 and facts["rows_shape_invalid"] == 0
+
+
+# ---- live odds selections (C08 real run on b8877fc: ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS) ----
+
+FID = 1602548
+
+
+def _live(values, *, live=True):
+    facts: dict = {}
+    if live:
+        item = {"fixture": {"id": FID, "status": {"elapsed": 60}}, "update": "x",
+                "odds": [{"id": 36, "name": "Over/Under Line", "values": values}]}
+    else:
+        item = {"fixture": {"id": FID}, "bookmakers": [{"id": 8, "bets": [{"id": 5, "values": values}]}]}
+    page = {"status": "REAL_API_RESPONSE", "data": {"response": [item]}}
+    return e2e._check_odds(page, {"fixture_live": FID}, facts, live=live, fixture_key="fixture_live"), facts
+
+
+PRICED = {"value": "Over", "odd": "1.90", "handicap": "2.5", "main": True, "suspended": False}
+
+
+def test_live_suspended_null_odd_stays_null_and_is_counted():
+    defects, facts = _live([PRICED, {"value": "Under", "odd": None, "handicap": "2.5", "main": None,
+                                     "suspended": True}])
+    assert defects == []
+    assert facts == {"fixtures": 1, "selections": 2, "null_odds_kept_null": 1, "suspended": 1,
+                     "suspended_zero_odds": 0}
+
+
+def test_live_suspended_zero_odd_as_in_the_repo_fixture_is_counted_not_a_defect():
+    # tests/test_api_football_five_point_evidence.py: a suspended live selection published odd "0".
+    defects, facts = _live([{"value": "Over", "odd": "0", "suspended": True, "main": None}])
+    assert defects == [] and facts["suspended_zero_odds"] == 1 and facts["suspended"] == 1
+
+
+@pytest.mark.parametrize("bad", [
+    {"value": "Over", "handicap": "2.5", "suspended": True},  # `odd` key missing
+    {"odd": "1.90"},  # `value` key missing
+    {"value": "Over", "odd": "N/A", "suspended": True},  # not a decimal string
+    {"value": "Over", "odd": 1.9},  # a number, not the provider's string
+    {"value": "Over", "odd": "nan"}, {"value": "Over", "odd": "1e3"}, {"value": "Over", "odd": " 1.9"},
+    {"value": "Over", "odd": "0", "suspended": False},  # zero on an open selection
+    {"value": "Over", "odd": "0.5", "suspended": True},  # below 1 and not zero
+    "Over 1.90",
+])
+def test_live_missing_or_non_decimal_odd_stays_a_defect_with_facts_first(bad):
+    defects, facts = _live([PRICED, bad])
+    assert defects == ["ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"]
+    # Facts are written before the defect: the next run shows what was counted.
+    assert facts["fixtures"] == 1 and facts["selections"] == 1 and facts["null_odds_kept_null"] == 0
+
+
+def test_prematch_strictness_is_unchanged():
+    assert _live([{"value": "Over 2.5", "odd": "1.85"}], live=False)[0] == []
+    for bad in ({"value": "Over 2.5", "odd": None}, {"value": "Over 2.5", "odd": "0"},
+                {"value": "Over 2.5"}):
+        defects, facts = _live([{"value": "Under 2.5", "odd": "1.95"}, bad], live=False)
+        assert defects == ["ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"]
+        assert facts == {"fixtures": 1, "selections": 1}  # no live-only counters on pre-match

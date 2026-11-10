@@ -880,6 +880,27 @@ def _odd_ok(v: Any) -> bool:
         return False
 
 
+# A provider decimal price as published: digits with an optional fraction (no sign, exponent, nan).
+_DECIMAL_RE = re.compile(r"^[0-9]{1,6}(?:\.[0-9]{1,6})?$")
+
+
+def _live_odd(v: Any) -> str:
+    """Live selection: OK, NULL (an explicitly published null `odd`, kept null), SUSPENDED_ZERO
+    (odd "0" on a selection flagged suspended, as in the repo's live fixture
+    tests/test_api_football_five_point_evidence.py) or INVALID. A missing `odd` or `value` key, or
+    a non-null odd that is not a decimal string, stays INVALID."""
+    if not isinstance(v, dict) or "value" not in v or "odd" not in v:
+        return "INVALID"
+    odd = v["odd"]
+    if odd is None:
+        return "NULL"
+    if not isinstance(odd, str) or not _DECIMAL_RE.fullmatch(odd):
+        return "INVALID"
+    if float(odd) >= 1.0:
+        return "OK"
+    return "SUSPENDED_ZERO" if float(odd) == 0 and v.get("suspended") is True else "INVALID"
+
+
 def _check_manifest(p, facts) -> list[str]:
     m = p.get("data") if isinstance(p.get("data"), dict) else {}
     ok = (m.get("partial") is True and m.get("prices_included") is False and isinstance(m.get("paging"), dict)
@@ -894,35 +915,52 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
         return _check_manifest(p, facts)
     resp = _response(p)
     over = under = selections = 0
-    for item in resp:
-        if not isinstance(item, dict) or not isinstance(item.get("fixture"), dict) or not _is_int(item["fixture"].get("id")):
-            return ["ODDS_FIXTURE_SHAPE_INVALID"]
-        if fixture_key and item["fixture"]["id"] != ctx[fixture_key]:
-            return ["ODDS_FOR_ANOTHER_FIXTURE"]
-        books = item.get("bookmakers")
-        if live:
-            markets = item.get("odds")
-        elif isinstance(books, list) and all(isinstance(b, dict) and isinstance(b.get("bets"), list) for b in books):
-            markets = [bet for b in books for bet in b["bets"]]
-        else:
-            markets = None
-        if not isinstance(markets, list):
-            return ["ODDS_MARKETS_SHAPE_INVALID"]
-        for bet in markets:
-            if not isinstance(bet, dict) or not isinstance(bet.get("values"), list):
-                return ["ODDS_SELECTIONS_SHAPE_INVALID"]
-            for v in bet["values"]:
-                if not _odd_ok(v):
-                    return ["ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"]
-                selections += 1
-                if not live and ctx.get("bet_ou") is not None and bet.get("id") == ctx["bet_ou"]:
-                    over += str(v["value"]).startswith("Over ")
-                    under += str(v["value"]).startswith("Under ")
+    live_counts = {"null_odds_kept_null": 0, "suspended": 0, "suspended_zero_odds": 0}
+
+    def scan() -> str | None:
+        nonlocal over, under, selections
+        for item in resp:
+            if not isinstance(item, dict) or not isinstance(item.get("fixture"), dict) or not _is_int(item["fixture"].get("id")):
+                return "ODDS_FIXTURE_SHAPE_INVALID"
+            if fixture_key and item["fixture"]["id"] != ctx[fixture_key]:
+                return "ODDS_FOR_ANOTHER_FIXTURE"
+            books = item.get("bookmakers")
+            if live:
+                markets = item.get("odds")
+            elif isinstance(books, list) and all(isinstance(b, dict) and isinstance(b.get("bets"), list) for b in books):
+                markets = [bet for b in books for bet in b["bets"]]
+            else:
+                markets = None
+            if not isinstance(markets, list):
+                return "ODDS_MARKETS_SHAPE_INVALID"
+            for bet in markets:
+                if not isinstance(bet, dict) or not isinstance(bet.get("values"), list):
+                    return "ODDS_SELECTIONS_SHAPE_INVALID"
+                for v in bet["values"]:
+                    if live:
+                        kind = _live_odd(v)
+                        if kind == "INVALID":
+                            return "ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"
+                        live_counts["null_odds_kept_null"] += kind == "NULL"
+                        live_counts["suspended_zero_odds"] += kind == "SUSPENDED_ZERO"
+                        live_counts["suspended"] += v.get("suspended") is True
+                    elif not _odd_ok(v):  # pre-match: unchanged strictness
+                        return "ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"
+                    selections += 1
+                    if not live and ctx.get("bet_ou") is not None and bet.get("id") == ctx["bet_ou"]:
+                        over += str(v["value"]).startswith("Over ")
+                        under += str(v["value"]).startswith("Under ")
+        return None
+
+    defect = scan()
+    # Facts before any defect: a failing case still shows what was counted up to it.
     facts.update({"fixtures": len(resp), "selections": selections})
-    if not live and ctx.get("bet_ou") is not None:
+    if live:
+        facts.update(live_counts)
+    if not live and ctx.get("bet_ou") is not None and defect is None:
         # Both sides counted as PUBLISHED; an absent side is never rebuilt from the other.
         facts.update({"over_published": over, "under_published": under})
-    return []
+    return [defect] if defect else []
 
 
 def _check_odds_page1(p, ctx, facts):
