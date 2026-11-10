@@ -13,6 +13,7 @@ import re
 from typing import Any, Mapping
 
 from .catalog import documented_path
+from .timezones import validate_timezone
 
 VERSION = "v3.9.3"
 SOURCE = "https://www.api-football.com/documentation_v3"
@@ -102,11 +103,11 @@ def _string(value: str, field: str) -> str:
     if field == "live" and value != "all":
         raise ParameterError("INVALID_LIVE_FILTER")
     if field == "timezone":
-        # Unverified/untrusted timezone IDs may be invalid upstream.
-        # For PR-03, return timestamps in UTC only; future TZ conversion
-        # can use the provider's /timezone catalog.
-        if value != "UTC":
-            raise ParameterError("TIMEZONE_NOT_CERTIFIED")
+        # FIX-06 (owner-approved removal of TIMEZONE_NOT_CERTIFIED): any IANA zone of the
+        # tz database; the provider's /timezone catalog stays the final authority.
+        code = validate_timezone(value)
+        if code is not None:
+            raise ParameterError(code)
     return value
 
 

@@ -675,7 +675,8 @@ def test_classification_of_tool_statuses():
 
 def test_a_validator_that_stopped_refusing_the_negative_input_fails():
     def wrap(tool, args, real):
-        if args.get("timezone") == "Europe/Rome":
+        # FIX-06 (declared change): the negative zone is now one outside the IANA catalog.
+        if args.get("timezone") == e2e.NEGATIVE_TIMEZONE:
             return real(tool, {**args, "timezone": "UTC"})  # a server that ignores the policy
         return real(tool, args)
     suite, _ = _suite(wrap=wrap)

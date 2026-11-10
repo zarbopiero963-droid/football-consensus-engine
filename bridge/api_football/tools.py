@@ -16,6 +16,7 @@ from .config import Settings
 from .catalog import ALLOWED_PATHS
 from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
 from .full_contract_audit import audit_contract_coverage
+from .timezones import timezone_context
 
 _MAX_MCP_DATA_BYTES = 262_144
 _OFFLINE_WARNING = "Offline PR-03 tool: never claim real coverage, live odds or PIT data."
@@ -207,6 +208,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "cache_status": "NOT_USED",
             "cache_age_seconds": None,
             "request_subject": _subject(params),
+            **({"timezone_context": timezone_context(str(params["timezone"]))} if "timezone" in params else {}),
             "quota_remaining": None,
             "pagination": None,
             "data": None,
@@ -287,6 +289,12 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
                 return result
             result["status"] = status
+            if "timezone" in params:
+                from .timezones import offset_consistency
+                check = offset_consistency(data.get("data", data) if status == "REAL_API_RESPONSE" else data,
+                                           str(params["timezone"]))
+                if check is not None:
+                    result["timezone_check"] = check
             if status == "REAL_API_RESPONSE":
                 # The offline-placeholder warnings contradict a real reply.
                 result["warnings"] = [
@@ -404,7 +412,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
 
     @add
     async def apifootball_fixtures(id: int | None = None, date: str | None = None, league: int | None = None, season: int | None = None, team: int | None = None, live: str | None = None, timezone: str | None = None, last: int | None = None, next: int | None = None, status: str | None = None, ids: str | None = None, venue: int | None = None, round: str | None = None, from_date: str | None = None, to_date: str | None = None) -> dict[str, Any]:
-        """Fixtures/live calendar. Requires targeted filter; 'live' only 'all'; UTC timezone."""
+        """Fixtures/live calendar. Requires a targeted filter; live='all' or league ids 'id-id'; timezone: any IANA zone (provider is the final authority)."""
         return await execute("apifootball_fixtures", dict(id=id, date=date, league=league, season=season, team=team, live=live, timezone=timezone, last=last, next=next, status=status, ids=ids, venue=venue, round=round, **{"from": from_date, "to": to_date}))
 
     @add
@@ -499,7 +507,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
 
     @add
     async def apifootball_fixture_rounds(league: int, season: int, current: bool | None = None, dates: bool | None = None, timezone: str | None = None) -> dict[str, Any]:
-        """Competition rounds, optionally current or with round dates; UTC only."""
+        """Competition rounds, optionally current or with round dates; timezone: any IANA zone."""
         return await execute("apifootball_fixture_rounds", dict(league=league, season=season, current=current, dates=dates, timezone=timezone))
 
     @add

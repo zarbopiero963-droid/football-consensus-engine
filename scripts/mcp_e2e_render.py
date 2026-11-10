@@ -1011,6 +1011,9 @@ def _check_players(p, ctx, facts):
     return []
 
 
+NEGATIVE_TIMEZONE = "Mars/Olympus_Mons"
+
+
 def _day(ctx: dict[str, Any], delta_days: int = 0) -> str:
     return (datetime.fromtimestamp(ctx["now_ts"], timezone.utc).date() + timedelta(days=delta_days)).isoformat()
 
@@ -1072,8 +1075,10 @@ def _plan(name: str) -> list[Case]:
     bet, odds_page2 = _bet, _odds_page2
 
     cases = [
-        Case("N00", "apifootball_fixtures", lambda c: {"date": _day(c), "timezone": "Europe/Rome"},
-             "invalid_input", what="negative: uncertified timezone refused before any request"),
+        # FIX-06: Europe/Rome and every IANA zone are accepted now; the negative uses a zone that
+        # exists in no catalog, refused before any request.
+        Case("N00", "apifootball_fixtures", lambda c: {"date": _day(c), "timezone": NEGATIVE_TIMEZONE},
+             "invalid_input", what="negative: timezone outside the IANA catalog refused before any request"),
         Case("A01", "apifootball_status", lambda c: {}, "data", _check_status, "provider auth/status"),
         Case("A02", "apifootball_leagues", _args("league", id=L, current=lambda c: True), "data", _check_league,
              "league and current season"),
@@ -1349,7 +1354,7 @@ class ApiFootballSuite:
             "quota_remaining": {k: quota.get(k) for k in ("day", "minute") if _is_int(quota.get(k))},
             "payload_sha256": _sha256(p)}
         if case.expect == "invalid_input":
-            ok = status == "INVALID_INPUT" and code == "TIMEZONE_NOT_CERTIFIED"
+            ok = status == "INVALID_INPUT" and code == "TIMEZONE_NOT_IN_CATALOG"
             return {**out, "outcome": "ERROR", "verdict": "PASS" if ok else "FAIL", "note": "EXPECTED_INVALID_INPUT",
                     "defects": [] if ok else ["NEGATIVE_INPUT_NOT_REFUSED"]}
         outcome = _classify(p)

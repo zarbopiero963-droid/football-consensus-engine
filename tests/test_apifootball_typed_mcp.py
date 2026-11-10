@@ -134,7 +134,10 @@ def test_fixture_filter_validation_and_stable_input_errors():
         ({"date": "2026-02-30"}, "INVALID_DATE"),
         ({"date": "2026-10-24\nHost: evil.example"}, "INVALID_TEXT_PARAMETER"),
         ({"live": "private"}, "INVALID_LIVE_FILTER"),
-        ({"timezone": "Etc/GMT+13", "id": 1}, "TIMEZONE_NOT_CERTIFIED"),
+        # FIX-06 (declared change, owner-approved): TIMEZONE_NOT_CERTIFIED is removed; a zone
+        # outside the IANA catalog is refused instead (Etc/GMT+13 does not exist: GMT+12 is the last).
+        ({"timezone": "Etc/GMT+13", "id": 1}, "TIMEZONE_NOT_IN_CATALOG"),
+        ({"timezone": "Mars/Olympus_Mons", "id": 1}, "TIMEZONE_NOT_IN_CATALOG"),
         ({"league": 39}, "FIXTURE_FILTER_REQUIRED"),
         ({"team": 9}, "FIXTURE_FILTER_REQUIRED"),
         ({"last": 101, "team": 9}, "PAGE_OR_BATCH_TOO_LARGE"),
