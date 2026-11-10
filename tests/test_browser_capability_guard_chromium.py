@@ -29,19 +29,22 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import json
 import os
 import socket
+import ssl
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 
 from bridge import browser_use, session_leases
 from bridge.browser_use import BrowserUseBridge, Session
 from bridge.security import UnsafeURL
+from bridge.security import validate_public_http_url as _real_validate
 
 playwright_api = pytest.importorskip("playwright.async_api")
 
@@ -63,16 +66,55 @@ SPECULATION = {
     "static_inline": "<script type=speculationrules>{\"prefetch\":[{\"source\":\"list\",\"urls\":[\"http://INT/s\"]}]}</script>",
 }
 # A sandboxed srcdoc frame runs in its own process on the remote path, committed before any
-# DevTools client can attach: the init script never reaches it (review P0). Only the
-# browser-enforced document CSP does.
+# DevTools client can attach: the init script normally never reaches it (review P0). Only the
+# browser-enforced document CSP does. "Normally": the init script sometimes wins that race, so
+# each sandboxed payload first reports `typeof Worker` to the public server (_mark). A run that
+# reports "function" is one where the init script missed the frame; the remote RED controls and
+# residual xfails judge only such runs (_remote_runs_until_missed), never a race the init script won.
+def _mark(name):
+    return f"new Image().src='/report?v={name}&t='+typeof Worker;"
+
+
 SANDBOX_PAGES = {
-    "sandbox_srcdoc_worker": "<iframe sandbox=allow-scripts srcdoc=\"<script>try{new Worker(URL.createObjectURL(new Blob([&quot;new WebSocket('ws://INT/sbw')&quot;])))}catch(e){}</script>\"></iframe>",
-    "sandbox_srcdoc_websocket": "<iframe sandbox=allow-scripts srcdoc=\"<script>try{new WebSocket('ws://INT/sbws')}catch(e){}</script>\"></iframe>",
-    "sandbox_srcdoc_websocketstream": "<iframe sandbox=allow-scripts srcdoc=\"<script>try{new WebSocketStream('ws://INT/sbwss')}catch(e){}</script>\"></iframe>",
+    "sandbox_srcdoc_worker": "<iframe sandbox=allow-scripts srcdoc=\"<script>" + _mark("sandbox_srcdoc_worker") + "try{new Worker(URL.createObjectURL(new Blob([&quot;new WebSocket('ws://INT/sbw')&quot;])))}catch(e){}</script>\"></iframe>",
+    "sandbox_srcdoc_websocket": "<iframe sandbox=allow-scripts srcdoc=\"<script>" + _mark("sandbox_srcdoc_websocket") + "try{new WebSocket('ws://INT/sbws')}catch(e){}</script>\"></iframe>",
+    "sandbox_srcdoc_websocketstream": "<iframe sandbox=allow-scripts srcdoc=\"<script>" + _mark("sandbox_srcdoc_websocketstream") + "try{new WebSocketStream('ws://INT/sbwss')}catch(e){}</script>\"></iframe>",
+    # wss: (TLS) from the same frame: the CSP must refuse it too (no route guard reaches the frame).
+    "sandbox_srcdoc_wss": "<iframe sandbox=allow-scripts srcdoc=\"<script>" + _mark("sandbox_srcdoc_wss") + "try{new WebSocket('wss://INT/sbtls')}catch(e){}</script>\"></iframe>",
 }
-RTC_TURN = ("<iframe sandbox=allow-scripts srcdoc=\"<script>try{const pc=new RTCPeerConnection({iceServers:"
+RTC_TURN = ("<iframe sandbox=allow-scripts srcdoc=\"<script>" + _mark("rtc_turn") + "try{const pc=new RTCPeerConnection({iceServers:"
             "[{urls:'turn:INT?transport=tcp',username:'u',credential:'c'}],iceTransportPolicy:'relay'});"
             "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch(e){}</script>\"></iframe>")
+# WebSocket pages. The document CSP refuses ws: and wss: on both providers (owner decision: wss:
+# stays blocked); page-realm sockets are also checked by the route_web_socket IP guard.
+# WSSHOST is the public-like TLS WebSocket server.
+WS_PAGES = {
+    "wss_public": ("<script>const s=new WebSocket('wss://WSSHOST/echo');"
+                   "s.onmessage=e=>{document.getElementById('ok').textContent='ws:'+e.data}</script>"),
+    # Each internal vector reports first that its script ran (_mark), so the RED control below
+    # judges only runs where the vector really executed.
+    "wss_internal_main": "<script>" + _mark("wss_internal_main") + "try{new WebSocket('wss://INT/wm')}catch(e){}</script>",
+    "ws_internal_main": "<script>try{new WebSocket('ws://INT/pm')}catch(e){}</script>",
+    "wss_internal_iframe": "<iframe srcdoc=\"<script>" + _mark("wss_internal_iframe") + "try{new WebSocket('wss://INT/wf')}catch(e){}</script>\"></iframe>",
+    "wss_internal_blob_iframe": ("<script>const html='<script>new Image().src=location.origin+\\'/report?v=wss_internal_blob_iframe&t=\\'+typeof Worker;"
+                                 "try{new WebSocket(\\'wss://INT/wb\\')}catch(e){}<'+'/script>';"
+                                 "const f=document.createElement('iframe');f.src=URL.createObjectURL(new Blob([html],"
+                                 "{type:'text/html'}));document.body.appendChild(f)</script>"),
+    # A live-odds-like page whose numbers would arrive over a public wss: socket.
+    "live_odds": ("<table><tr><td id=match>Home v Away</td><td id=odds-home data-seq=0>-</td></tr></table>"
+                  "<button id=refresh>refresh</button><script>const s=new WebSocket('wss://WSSHOST/odds');"
+                  "s.onmessage=e=>{const d=JSON.parse(e.data);const c=document.getElementById('odds-home');"
+                  "c.textContent=d.home;c.dataset.seq=String(d.seq)};"
+                  "document.getElementById('refresh').onclick=()=>s.send('refresh')</script>"),
+    # The tool-flow page: a click counter and a text input mirrored into the DOM.
+    "flow_form": ("<form onsubmit='return false'><input id=q name=q placeholder=team>"
+                  "<button id=go type=button>go</button><a href='/normal' id=lnk>next</a></form>"
+                  "<p id=clicks>0</p><p id=echo></p><script>"
+                  "document.getElementById('go').onclick=()=>{const c=document.getElementById('clicks');"
+                  "c.textContent=String(Number(c.textContent)+1)};"
+                  "document.getElementById('q').oninput=e=>{document.getElementById('echo').textContent=e.target.value}"
+                  "</script>"),
+}
 
 
 REGRESSION_RESPONSES = {
@@ -99,6 +141,8 @@ class _Servers:
     def __init__(self):
         self.lines: list[bytes] = []
         self.hits: dict[str, int] = {}
+        self.reports: list[tuple[str, str]] = []  # (vector, typeof Worker) from _mark
+        self.wss_host = "wss-server-not-started"
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((INT, 0))
@@ -114,6 +158,12 @@ class _Servers:
             def do_GET(self):
                 name = urlsplit(self.path).path.strip("/")
                 servers.hits[name] = servers.hits.get(name, 0) + 1
+                if name == "report":
+                    query = dict(parse_qsl(urlsplit(self.path).query))
+                    servers.reports.append((query.get("v", ""), query.get("t", "")))
+                    self.send_response(204)
+                    self.end_headers()
+                    return
                 extra = REGRESSION_RESPONSES.get(name)
                 if extra is not None:
                     status, headers, body = extra(servers)
@@ -137,9 +187,9 @@ class _Servers:
                     except OSError:
                         pass
                     return
-                page = {**WORKER_PAGES, **SANDBOX_PAGES, **SPECULATION, **POSITIVE}.get(name, "")
+                page = {**WORKER_PAGES, **SANDBOX_PAGES, **SPECULATION, **POSITIVE, **WS_PAGES}.get(name, "")
                 body = (f"<html><head></head><body><p id=ok>public</p>{page}</body></html>"
-                        .replace("INT", servers.internal).encode())
+                        .replace("INT", servers.internal).replace("WSSHOST", servers.wss_host).encode())
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
                 if name == "gzip_page":  # the re-served body is decoded: framing headers are dropped
@@ -202,7 +252,7 @@ def _offline_policy(monkeypatch):
     monkeypatch.setattr(browser_use, "_verdict_cache", {})
     monkeypatch.setattr(session_leases, "renew", lambda *a, **k: None)
     monkeypatch.setattr(session_leases, "register", lambda *a, **k: None)
-    monkeypatch.delenv("BROWSER_TOOLS_ENABLED", raising=False)
+    monkeypatch.setenv("BROWSER_TOOLS_ENABLED", "true")  # the kill switch is fail-closed (F-03)
 
 
 # Two Chromium profiles, both run in CI (TEST ENVIRONMENT ONLY; production flags are never changed):
@@ -221,17 +271,17 @@ red_profile_only = pytest.mark.skipif(PROFILE != "lna_off", reason="RED controls
                                       "lna_off profile (native LNA can mask a vector)")
 
 
-async def _launch(p):
+async def _launch(p, extra_args=()):
     try:
-        return await p.chromium.launch(args=CHROMIUM_TEST_ARGS)
+        return await p.chromium.launch(args=[*CHROMIUM_TEST_ARGS, *extra_args])
     except Exception as exc:  # pragma: no cover
         if os.environ.get("FCB_REQUIRE_CHROMIUM") == "1":
             raise
         pytest.skip(f"Chromium not available: {type(exc).__name__}")
 
 
-async def _local_session(p):
-    browser = await _launch(p)
+async def _local_session(p, extra_args=()):
+    browser = await _launch(p, extra_args)
     bridge = BrowserUseBridge()
     session = Session(id="cloak-c", cdp_url="local-cloak-owned", live_url=None, provider="cloak", browser=browser)
     session.context = await browser.new_context()
@@ -247,8 +297,8 @@ def _free_port():
         return s.getsockname()[1]
 
 
-async def _remote_session(p):
-    """Chromium reached only over CDP through the bridge's Browser Use code path."""
+async def _cdp_chromium(p, extra_args=()):
+    """A Chromium process reachable only over CDP, like a Browser Use cloud browser."""
     executable = p.chromium.executable_path
     if not executable or not os.path.exists(executable):  # pragma: no cover
         if os.environ.get("FCB_REQUIRE_CHROMIUM") == "1":
@@ -256,7 +306,8 @@ async def _remote_session(p):
         pytest.skip("Chromium executable not found")
     port = _free_port()
     proc = subprocess.Popen([executable, "--headless=new", "--no-sandbox", f"--remote-debugging-port={port}",
-                             "--remote-debugging-address=127.0.0.1", *CHROMIUM_TEST_ARGS, "about:blank"],
+                             "--remote-debugging-address=127.0.0.1", *CHROMIUM_TEST_ARGS, *extra_args,
+                             "about:blank"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
@@ -265,6 +316,12 @@ async def _remote_session(p):
                 break
         except OSError:
             await asyncio.sleep(0.2)
+    return port, proc
+
+
+async def _remote_session(p, extra_args=()):
+    """Chromium reached only over CDP through the bridge's Browser Use code path."""
+    port, proc = await _cdp_chromium(p, extra_args)
     bridge = BrowserUseBridge()
     session = Session(id="bu-c", cdp_url=f"http://127.0.0.1:{port}", live_url=None, provider="browser_use")
     bridge._sessions[session.id] = session
@@ -282,7 +339,7 @@ async def _remote_session(p):
 PROVIDERS = {"local": _local_session, "remote": _remote_session}
 
 
-def _visit(servers, provider, names, settle=2.0, await_leak=0.0):
+def _visit(servers, provider, names, settle=2.0, await_leak=0.0, extra_args=()):
     """Open each page in a fresh session; return {name: (error or None, title, internal lines)}.
 
     `await_leak` (RED controls only): keep the page open up to that many seconds until its
@@ -293,7 +350,7 @@ def _visit(servers, provider, names, settle=2.0, await_leak=0.0):
         out = {}
         async with playwright_api.async_playwright() as p:
             for name in names:
-                bridge, session, close = await PROVIDERS[provider](p)
+                bridge, session, close = await PROVIDERS[provider](p, extra_args)
                 try:
                     before = len(servers.lines)
                     error = None
@@ -344,13 +401,66 @@ def test_control_every_worker_vector_leaks_without_the_guards(servers, provider,
     assert {name: bool(lines) for name, (_, _, lines) in results.items()} == expected
 
 
+MARKER_ATTEMPTS = 6  # per vector: runs until one where the init script missed the frame
+
+
+def _remote_runs_until_missed(servers, name, leaks, await_leak=8.0, extra_args=(), judged=("function",)):
+    """Remote path, sandboxed srcdoc vectors: open `name` in a fresh session up to
+    MARKER_ATTEMPTS times, stopping at the first run whose frame reports typeof Worker ==
+    "function" (the init script missed it: the vector is really exercised). Returns
+    [(marker, leaked)], marker being the reported typeof (None if no report arrived) and leaked
+    whether `leaks()` grew during the run. A judged run waits up to `await_leak` seconds.
+    `judged` (default: "function") is the set of markers that make a run count."""
+    runs = []
+    for _ in range(MARKER_ATTEMPTS):
+        async def scenario():
+            async with playwright_api.async_playwright() as p:
+                bridge, session, close = await _remote_session(p, extra_args)
+                try:
+                    before, reports_before = leaks(), len(servers.reports)
+                    await bridge.open_url(session.id, servers.url(name))
+                    marker, deadline = None, time.monotonic() + 8.0
+                    while marker is None and time.monotonic() < deadline:
+                        marker = next((t for v, t in servers.reports[reports_before:] if v == name), None)
+                        await asyncio.sleep(0.1)
+                    if marker in judged:
+                        deadline = time.monotonic() + await_leak
+                        while leaks() == before and time.monotonic() < deadline:
+                            await asyncio.sleep(0.2)
+                    else:
+                        await asyncio.sleep(1.0)
+                    return marker, leaks() > before
+                finally:
+                    await close()
+        runs.append(asyncio.run(scenario()))
+        if runs[-1][0] in judged:
+            break
+    return runs
+
+
+class ResidualNotExercised(RuntimeError):
+    """The init script won the race in every run: the residual was not exercised. Not an
+    AssertionError, so a strict xfail(raises=AssertionError) reports it as a real failure."""
+
+
+def _require_missed_run(runs):
+    if not any(marker == "function" for marker, _ in runs):
+        raise ResidualNotExercised(f"no run escaped the init script in {MARKER_ATTEMPTS} attempts: {runs}")
+
+
 @red_profile_only
-def test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path(servers, monkeypatch):
+@pytest.mark.parametrize("name", sorted(SANDBOX_PAGES))
+def test_control_sandboxed_srcdoc_escapes_the_init_script_on_the_remote_path(servers, monkeypatch, name):
     """Review P0 RED: init script ON, document CSP OFF -> a sandboxed srcdoc frame on the remote
-    (Browser Use / CDP) path still reaches the internal host. Only the CSP closes it."""
+    (Browser Use / CDP) path still reaches the internal host. Only the CSP closes it.
+
+    Deterministic: the init script sometimes wins the race into the frame (it then reports
+    typeof Worker "undefined" and cannot leak). Every run reporting "function" must leak, and at
+    least one such run must be observed within MARKER_ATTEMPTS."""
     _guards_off(monkeypatch, init_script=False, csp=True)
-    results = _visit(servers, "remote", list(SANDBOX_PAGES), await_leak=8.0)
-    assert {name: bool(lines) for name, (_, _, lines) in results.items()} == {name: True for name in SANDBOX_PAGES}
+    runs = _remote_runs_until_missed(servers, name, lambda: len(servers.lines))
+    assert any(marker == "function" for marker, _ in runs), runs
+    assert all(leaked for marker, leaked in runs if marker == "function"), runs
 
 
 @red_profile_only
@@ -364,13 +474,17 @@ def test_speculation_rules_residual_is_still_open(servers):
 
 
 @red_profile_only
-@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
                    "the remote path keeps RTCPeerConnection (the init script cannot reach it) and no CSP "
                    "directive governs WebRTC in Chromium: a TURN-over-TCP allocation reaches an internal "
                    "host. Needs an egress proxy. A pass means the residual is gone: update the registry.")
 def test_webrtc_from_a_sandboxed_srcdoc_residual_is_still_open(servers):
-    _visit(servers, "remote", ["rtc_turn"])
-    assert servers.lines == []
+    # Judged only on a run where the init script missed the frame (see _mark); a run it won
+    # proves nothing either way and used to flip this strict xfail to XPASS.
+    runs = _remote_runs_until_missed(servers, "rtc_turn", lambda: len(servers.lines))
+    _require_missed_run(runs)
+    assert not any(leaked for marker, leaked in runs if marker == "function"), runs
 
 
 def test_webrtc_from_a_sandboxed_srcdoc_is_blocked_on_the_local_path(servers):
@@ -402,46 +516,41 @@ def udp():
     u.sock.close()
 
 
-def _wait_for_packets(udp, seconds=10.0):
-    """Review P3-4: wait for the residual to show up before asserting, so load cannot turn a
-    strict xfail into a false 'residual closed'."""
-    deadline = time.monotonic() + seconds
-    while udp.packets == 0 and time.monotonic() < deadline:
-        time.sleep(0.2)
-
-
 def _rtc_udp_page(udp):
-    js = (f"try{{const pc=new RTCPeerConnection({{iceServers:[{{urls:'stun:{INT}:{udp.port}'}}]}});"
+    js = (_mark("rtc_udp_sandbox") +
+          f"try{{const pc=new RTCPeerConnection({{iceServers:[{{urls:'stun:{INT}:{udp.port}'}}]}});"
           "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch(e){}")
     POSITIVE["rtc_udp_sandbox"] = f"<iframe sandbox=allow-scripts srcdoc=\"<script>{js}</script>\"></iframe>"
     return "rtc_udp_sandbox"
 
 
 def _webtransport_page(udp):
-    js = f"try{{new WebTransport('https://{INT}:{udp.port}/x').ready.catch(()=>{{}})}}catch(e){{}}"
+    js = _mark("wt_sandbox") + f"try{{new WebTransport('https://{INT}:{udp.port}/x').ready.catch(()=>{{}})}}catch(e){{}}"
     POSITIVE["wt_sandbox"] = f"<iframe sandbox=allow-scripts srcdoc=\"<script>{js}</script>\"></iframe>"
     return "wt_sandbox"
 
 
 @red_profile_only
-@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="WP-002b residual (P1, documented): a sandboxed srcdoc frame on "
                    "the remote path keeps WebTransport (the init script cannot reach it) and its https: URL "
                    "matches connect-src like fetch: QUIC packets reach an internal host. Needs an egress "
                    "proxy. A pass means the residual is gone: update the registry.")
 def test_webtransport_from_a_sandboxed_srcdoc_residual_is_still_open(servers, udp):
-    _visit(servers, "remote", [_webtransport_page(udp)], settle=3.0)
-    _wait_for_packets(udp)
-    assert udp.packets == 0
+    runs = _remote_runs_until_missed(servers, _webtransport_page(udp), lambda: udp.packets, await_leak=10.0)
+    _require_missed_run(runs)
+    assert not any(leaked for marker, leaked in runs if marker == "function"), runs
 
 
 @red_profile_only
-@pytest.mark.xfail(strict=True, reason="WP-002b residual (P1, documented): WebRTC STUN over UDP from a "
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="WP-002b residual (P1, documented): WebRTC STUN over UDP from a "
                    "sandboxed srcdoc frame on the remote path reaches an internal host (no CSP directive "
                    "governs WebRTC). Needs an egress proxy. A pass means the residual is gone.")
 def test_webrtc_udp_from_a_sandboxed_srcdoc_residual_is_still_open(servers, udp):
-    _visit(servers, "remote", [_rtc_udp_page(udp)], settle=3.0)
-    _wait_for_packets(udp)
-    assert udp.packets == 0
+    runs = _remote_runs_until_missed(servers, _rtc_udp_page(udp), lambda: udp.packets, await_leak=10.0)
+    _require_missed_run(runs)
+    assert not any(leaked for marker, leaked in runs if marker == "function"), runs
 
 
 @red_profile_only
@@ -565,12 +674,16 @@ def test_positive_controls(servers, provider):
                     try { globalThis.Worker = function () {}; } catch (e) {}
                     out.redefined = typeof globalThis.Worker;
                     out.fetch = typeof fetch; out.websocket = typeof WebSocket;
-                    // Behaviour change (documented): the document CSP refuses every ws:/wss: socket.
-                    const violations = [];
-                    document.addEventListener('securitypolicyviolation', e => violations.push(e.effectiveDirective));
-                    try { new WebSocket(wsUrl); } catch (e) { violations.push('threw:' + e.name); }
-                    await new Promise(r => setTimeout(r, 300));
-                    out.websocket_refused_by = violations.filter(v => v === 'connect-src').length ? 'connect-src' : violations.join(',');
+                    // The document CSP refuses every ws: and wss: socket, on both paths.
+                    for (const [key, url] of [['ws', wsUrl], ['wss', wsUrl.replace('ws://', 'wss://')]]) {
+                        const violations = [];
+                        const listener = e => violations.push(e.effectiveDirective);
+                        document.addEventListener('securitypolicyviolation', listener);
+                        try { new WebSocket(url); } catch (e) { violations.push('threw:' + e.name); }
+                        await new Promise(r => setTimeout(r, 300));
+                        document.removeEventListener('securitypolicyviolation', listener);
+                        out[key + '_refused_by'] = violations.filter(v => v === 'connect-src').length ? 'connect-src' : violations.join(',');
+                    }
                     return out;
                 }""", servers.url("x").replace("http://", "ws://"))
                 return result, title, probe, gz_title
@@ -581,7 +694,9 @@ def test_positive_controls(servers, provider):
     assert probe == {"Worker": "disabled", "SharedWorker": "disabled", "RTCPeerConnection": "disabled",
                      "webkitRTCPeerConnection": "disabled", "RTCDataChannel": "disabled",
                      "WebTransport": "disabled", "WebSocketStream": "disabled", "redefined": "undefined",
-                     "fetch": "function", "websocket": "function", "websocket_refused_by": "connect-src"}
+                     "fetch": "function", "websocket": "function", "ws_refused_by": "connect-src",
+                     # Test extended (not a behaviour change): wss: is probed as well as ws:.
+                     "wss_refused_by": "connect-src"}
     assert servers.lines == []
 
 
@@ -631,6 +746,17 @@ def test_document_csp_is_appended_and_site_policies_are_kept():
     assert "worker-src 'none'" in browser_use.DOCUMENT_CSP
     connect = next(d for d in browser_use.DOCUMENT_CSP.split(";") if d.strip().startswith("connect-src"))
     assert "ws:" not in connect and "wss:" not in connect and "*" not in connect and "'self'" not in connect
+
+
+@pytest.mark.parametrize("url", ["ws://127.0.0.1/", "wss://127.0.0.1:8443/x", "wss://10.0.0.5/", "wss://192.168.1.1/",
+                                 "wss://172.16.0.1/", "wss://169.254.169.254/latest/meta-data", "wss://[::1]/",
+                                 "wss://[fd00::1]/", "wss://[::ffff:127.0.0.1]/", "wss://100.64.0.1/",
+                                 "wss://0.0.0.0/", "wss://user:pw@93.184.216.34/"])
+def test_websocket_verdict_refuses_private_loopback_and_metadata(monkeypatch, url):
+    """The route_web_socket IP guard's verdict, with the REAL validator (IP literals: no DNS)."""
+    monkeypatch.setattr(browser_use, "validate_public_http_url", _real_validate)
+    assert asyncio.run(browser_use.request_verdict(url)) is False
+    assert asyncio.run(browser_use.request_verdict("wss://93.184.216.34/odds")) is True
 
 
 def test_document_is_re_served_with_the_csp_never_continued():
@@ -720,3 +846,316 @@ def test_redirect_hop_and_network_error_are_not_re_served():
 def test_a_3xx_without_location_renders_and_is_re_served():
     cdp, _ = _respond({"responseStatusCode": 302, "responseHeaders": []})
     assert "Fetch.fulfillRequest" in [m for m, _ in cdp.sent]
+
+
+# -------------------------------------------------------------------------------------------------
+# Browser Use restored (owner decision "RESTORE BROWSER USE + CLOAKBROWSER", option B: wss: stays
+# blocked): WebSocket refusal and the real tool flow, on the remote/CDP path. LOCAL EVIDENCE ONLY: a
+# local Chromium reached
+# over CDP stands in for a Browser Use cloud browser and the Browser Use REST API is a fake
+# transport. No cloud call and no key: a real cloud smoke test is the owner's, after deploy.
+# -------------------------------------------------------------------------------------------------
+TLS_TEST_ARGS = ["--ignore-certificate-errors"]  # TEST ONLY: the public-like wss server is self-signed
+# Public-wss refusal tests only, in BOTH profiles: the "public" wss server is really on loopback,
+# and native Chromium's Local Network Access refuses that socket
+# (net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS, measured), which a real public site would not
+# trigger. With LNA off the refusal can only come from the bridge's CSP. Tests towards internal
+# hosts never use this: they run with the profile's own LNA setting.
+PUBLIC_WS_ARGS = TLS_TEST_ARGS + ["--disable-features=LocalNetworkAccessChecks"]
+ODDS = ["1.85", "2.10", "2.25"]
+
+
+class _Wss:
+    """A public-like TLS WebSocket server on PUB. /echo greets; /odds pushes live-odds updates."""
+
+    def __init__(self, workdir):
+        try:
+            from websockets.sync.server import serve
+            cert, key = workdir / "wss-cert.pem", workdir / "wss-key.pem"
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
+                            "-out", str(cert), "-days", "1", "-subj", f"/CN={PUB}"],
+                           check=True, capture_output=True, timeout=60)
+        except (ImportError, OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+            if os.environ.get("FCB_REQUIRE_CHROMIUM") == "1":
+                raise
+            pytest.skip(f"TLS WebSocket test server not available: {type(exc).__name__}")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        self.paths: list[str] = []
+        self.server = serve(self._handle, PUB, 0, ssl=context, compression=None)
+        self.host = f"{PUB}:{self.server.socket.getsockname()[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def _handle(self, conn):
+        path = conn.request.path
+        self.paths.append(path)
+        try:
+            if path == "/odds":
+                seq = 1
+                conn.send(json.dumps({"seq": seq, "home": ODDS[0]}))
+                for message in conn:
+                    if message == "refresh" and seq < len(ODDS):
+                        seq += 1
+                        conn.send(json.dumps({"seq": seq, "home": ODDS[seq - 1]}))
+            else:
+                conn.send("hello")
+                for _ in conn:
+                    pass
+        except Exception:
+            pass
+
+    def close(self):
+        self.server.shutdown()
+
+
+@pytest.fixture()
+def wss(servers, tmp_path):
+    w = _Wss(tmp_path)
+    servers.wss_host = w.host
+    yield w
+    w.close()
+
+
+def _ws_scenario(servers, provider, name, read_js, timeout=10.0):
+    """Open `name` on `provider` (PUBLIC_WS_ARGS); return (result of `read_js` polled until truthy or
+    timeout, blocked_requests of the navigation)."""
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, close = await PROVIDERS[provider](p, PUBLIC_WS_ARGS)
+            try:
+                result = await bridge.open_url(session.id, servers.url(name), wait_until="load")
+                deadline, value = time.monotonic() + timeout, None
+                while time.monotonic() < deadline:
+                    value = await session.page.evaluate(read_js)
+                    if value:
+                        break
+                    await asyncio.sleep(0.2)
+                return value, result["blocked_requests"]
+            finally:
+                await close()
+    return asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_public_wss_websocket_is_refused_on_both_paths(servers, wss, provider):
+    """Owner decision (option B): wss: stays blocked on BOTH providers, as on main. A public wss:
+    socket is refused by the document CSP (connect-src) and never reaches the server."""
+    text, _ = _ws_scenario(servers, provider, "wss_public",
+                           "document.getElementById('ok').textContent !== 'public' && document.getElementById('ok').textContent",
+                           timeout=3.0)
+    assert text is False and wss.paths == [] and servers.lines == []
+
+
+WS_INTERNAL = ["wss_internal_main", "ws_internal_main", "wss_internal_iframe", "wss_internal_blob_iframe"]
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_websockets_to_internal_hosts_stay_refused(servers, wss, provider):
+    """Negative: ws:/wss: sockets to private/loopback targets from the main frame, a srcdoc iframe
+    and a blob: document never arrive (document CSP, and the route_web_socket IP guard behind it).
+    The RED control below proves these vectors are real."""
+    results = _visit(servers, provider, WS_INTERNAL, extra_args=TLS_TEST_ARGS)
+    assert all(error is None for error, _, _ in results.values()), results
+    assert servers.lines == []
+
+
+@red_profile_only
+def test_control_internal_wss_leaks_without_the_websocket_guards(servers, wss, monkeypatch):
+    """RED: with the document CSP off and the route_web_socket IP guard disarmed, the wss: vectors
+    above reach the internal host on the Browser Use path, so the negative test is not vacuous."""
+    async def no_route(self, session):
+        session.websocket_guard_installed = True
+    monkeypatch.setattr(BrowserUseBridge, "_arm_websocket_guard", no_route)
+    _guards_off(monkeypatch, init_script=False, csp=True)
+    for name in ("wss_internal_main", "wss_internal_iframe", "wss_internal_blob_iframe"):
+        # Judged on runs where the vector's script reported it ran (any typeof): every such run
+        # must leak, and one must occur within MARKER_ATTEMPTS (a page whose script never ran
+        # under load proves nothing either way).
+        runs = _remote_runs_until_missed(servers, name, lambda: len(servers.lines),
+                                         extra_args=TLS_TEST_ARGS, judged=("function", "undefined"))
+        assert runs[-1][0] is not None and all(leaked for marker, leaked in runs if marker is not None), (name, runs)
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDERS))
+def test_wss_from_a_sandboxed_srcdoc_is_blocked(servers, wss, provider):
+    """No residual with wss: blocked: the CSP inherited by the sandboxed srcdoc frame refuses it on
+    both paths (its RED control is test_control_sandboxed_srcdoc_escapes_..., vector
+    sandbox_srcdoc_wss)."""
+    _visit(servers, provider, ["sandbox_srcdoc_wss"], extra_args=TLS_TEST_ARGS)
+    assert servers.lines == []
+
+
+class _FakeLeases:
+    """In-memory stand-in for bridge.session_leases with the same state machine (no DB)."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    def _row(self, session_id, owner_id, states):
+        row = self.rows.get(session_id)
+        return row if row and row["owner_id"] == owner_id and row["state"] in states else None
+
+    def register(self, session_id, owner_id, seconds=300):
+        now = time.time()
+        self.rows[session_id] = {"session_id": session_id, "owner_id": owner_id, "state": "ACTIVE",
+                                 "created_at": now, "last_activity_at": now, "lease_until": now + seconds,
+                                 "updated_at": now, "stop_error": None}
+
+    def renew(self, session_id, owner_id, seconds=300):
+        if not self._row(session_id, owner_id, {"ACTIVE"}):
+            raise RuntimeError("Browser lease is no longer active or owned by this worker")
+        self.rows[session_id]["last_activity_at"] = time.time()
+
+    def claim_stop(self, session_id, owner_id):
+        row = self._row(session_id, owner_id, {"ACTIVE", "STOP_FAILED"})
+        if row:
+            row["state"] = "STOPPING"
+        return bool(row)
+
+    def renew_stop(self, session_id, owner_id):
+        if not self._row(session_id, owner_id, {"STOPPING"}):
+            raise RuntimeError("Browser stop is no longer owned by this reaper")
+
+    def finish(self, session_id, owner_id, success, error="", retry_seconds=60):
+        row = self._row(session_id, owner_id, {"STOPPING"})
+        if row is None:
+            raise RuntimeError("Browser stop ownership changed before completion")
+        row.update(state="STOPPED" if success else "STOP_FAILED", stop_error=error)
+
+    def get_session(self, session_id):
+        row = self.rows.get(session_id)
+        return {k: v for k, v in row.items() if k != "owner_id"} if row else None
+
+    def list_sessions(self, include_stopped=False, limit=200):
+        return [self.get_session(s) for s, r in self.rows.items()
+                if include_stopped or r["state"] != "STOPPED"][:limit]
+
+
+@pytest.fixture()
+def mcp_browser_use(monkeypatch):
+    """The real MCP tool layer (bridge.server) on the Browser Use provider: fake Browser Use REST
+    API (its cdpUrl points at a local CDP Chromium) and in-memory leases. Yields (call, api)."""
+    import httpx
+
+    from bridge import server as srv
+    monkeypatch.setenv("BROWSER_USE_API_KEY", "fake-test-key-not-a-secret")
+    monkeypatch.delenv("BROWSER_USE_EXPOSE_LIVE_URL", raising=False)
+    leases = _FakeLeases()
+    for fn in ("register", "renew", "claim_stop", "renew_stop", "finish", "get_session", "list_sessions"):
+        monkeypatch.setattr(session_leases, fn, getattr(leases, fn))
+
+    class Api:
+        cdp_url = None
+        requests: list = []
+
+        def __call__(self, request):
+            body = json.loads(request.content or b"{}")
+            self.requests.append((request.method, request.url.path, body,
+                                  request.headers.get("X-Browser-Use-API-Key") == "fake-test-key-not-a-secret"))
+            if request.method == "POST" and request.url.path == "/api/v4/browsers":
+                return httpx.Response(200, json={"id": "bu-flow-1", "status": "active",
+                                                 "cdpUrl": self.cdp_url, "liveUrl": None})
+            if request.method == "PATCH" and request.url.path == "/api/v4/browsers/bu-flow-1" and body == {"action": "stop"}:
+                return httpx.Response(200, json={"id": "bu-flow-1", "status": "stopped"})
+            return httpx.Response(404)
+
+    api = Api()
+    api.requests = []
+    real = httpx.AsyncClient
+    monkeypatch.setattr(browser_use.httpx, "AsyncClient",
+                        lambda *a, **k: real(*a, transport=httpx.MockTransport(api), **k))
+
+    async def call(name, **arguments):
+        result = await srv.mcp.call_tool(name, arguments)
+        assert not getattr(result, "is_error", False), (name, result)
+        return result.structured_content
+
+    yield call, api
+    srv.bridge._sessions.pop("bu-flow-1", None)
+
+
+def _run_with_cdp_chromium(api, flow):
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            port, proc = await _cdp_chromium(p, PUBLIC_WS_ARGS)
+            api.cdp_url = f"http://127.0.0.1:{port}"
+            try:
+                return await flow(), port
+            finally:
+                proc.terminate()
+                proc.wait(timeout=10)
+    return asyncio.run(scenario())
+
+
+def test_browser_use_tool_flow_end_to_end(servers, mcp_browser_use):
+    """create -> open public page -> html, elements -> click -> type -> wait -> session list ->
+    stop, through the registered MCP tools on the Browser Use (CDP) provider path."""
+    call, api = mcp_browser_use
+
+    async def flow():
+        out = {"create": await call("browser_create")}
+        sid = out["create"]["session_id"]
+        out["open"] = await call("browser_open_url", session_id=sid, url=servers.url("flow_form"), wait_until="load")
+        out["html"] = await call("browser_get_html", session_id=sid)
+        out["clicks_html"] = await call("browser_get_html", session_id=sid, selector="#clicks")
+        out["elements"] = await call("browser_get_elements", session_id=sid)
+        out["click"] = await call("browser_click", session_id=sid, selector="#go")
+        out["clicks"] = await call("browser_get_dom", session_id=sid, selector="#clicks")
+        out["type"] = await call("browser_type", session_id=sid, selector="#q", text="Inter Milan")
+        out["wait"] = await call("browser_wait", session_id=sid, milliseconds=200)
+        out["echo"] = await call("browser_get_dom", session_id=sid, selector="#echo")
+        out["listed"] = await call("browser_list_sessions")
+        out["stop"] = await call("browser_stop", session_id=sid)
+        out["listed_after"] = await call("browser_list_sessions")
+        out["status_after"] = await call("browser_session_status", session_id=sid)
+        try:
+            await call("browser_get_html", session_id=sid)
+            out["after_stop"] = "served"
+        except Exception:
+            out["after_stop"] = "refused"
+        return out
+
+    out, port = _run_with_cdp_chromium(api, flow)
+    assert out["create"] == {"session_id": "bu-flow-1", "status": "active", "live_view_available": False}
+    assert out["open"]["final_url"] == servers.url("flow_form") and out["open"]["http_status"] == 200
+    assert out["open"]["blocked_requests"] == 0 and out["open"]["documents_refused"] == 0
+    assert 'id="go"' in out["html"]["html"] and out["clicks_html"]["html"] == '<p id="clicks">0</p>'
+    items = {(i["tag"], i["id"]): i for i in out["elements"]["items"]}
+    assert items[("input", "q")]["placeholder"] == "team" and items[("button", "go")]["text"] == "go"
+    assert items[("a", "lnk")]["href"] == "/normal"
+    assert out["click"]["status"] == "clicked" and out["clicks"]["text"] == "1"
+    assert out["type"]["status"] == "typed" and "Inter Milan" not in json.dumps(out["type"])  # never echoed
+    assert out["wait"]["waited_ms"] == 200 and out["echo"]["text"] == "Inter Milan"
+    listed = {s["session_id"]: s for s in out["listed"]["sessions"]}
+    assert listed["bu-flow-1"]["state"] == "ACTIVE" and listed["bu-flow-1"]["provider"] == "browser_use"
+    assert listed["bu-flow-1"]["local"] is True
+    assert out["stop"] == {"session_id": "bu-flow-1", "status": "stopped"}
+    assert out["listed_after"]["count"] == 0 and out["status_after"]["state"] == "STOPPED"
+    assert out["after_stop"] == "refused"
+    # The provider saw exactly one create and one stop, both with the API key.
+    assert [(m, path, body, keyed) for m, path, body, keyed in api.requests] == [
+        ("POST", "/api/v4/browsers", {}, True), ("PATCH", "/api/v4/browsers/bu-flow-1", {"action": "stop"}, True)]
+    # The CDP endpoint is never returned to the client (CLAUDE.md §2.1).
+    assert f"127.0.0.1:{port}" not in json.dumps(out) and "cdp" not in json.dumps(out).lower()
+    assert servers.lines == []
+
+
+def test_browser_use_live_odds_over_wss_stay_at_the_load_state(servers, wss, mcp_browser_use):
+    """Declared limit (option B): a live-odds page fed over a public wss: socket shows only the state
+    at load through the tools; the socket is refused and never reaches the server."""
+    call, api = mcp_browser_use
+
+    async def flow():
+        sid = (await call("browser_create"))["session_id"]
+        try:
+            await call("browser_open_url", session_id=sid, url=servers.url("live_odds"), wait_until="load")
+            await call("browser_wait", session_id=sid, milliseconds=2000)
+            text = (await call("browser_get_dom", session_id=sid, selector="#odds-home"))["text"]
+            html = (await call("browser_get_html", session_id=sid, selector="#odds-home"))["html"]
+            return text, html
+        finally:
+            await call("browser_stop", session_id=sid)
+
+    (text, html), _ = _run_with_cdp_chromium(api, flow)
+    assert text == "-" and html == '<td id="odds-home" data-seq="0">-</td>'
+    assert wss.paths == [] and servers.lines == []

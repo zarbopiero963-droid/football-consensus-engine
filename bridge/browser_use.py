@@ -89,8 +89,10 @@ _LOCAL_FRAME_PREFIXES = ("about:blank", "about:srcdoc", "data:", "blob:", "chrom
 
 
 def browser_tools_enabled() -> bool:
-    """Server-side kill switch (default on). Off blocks every session create and operation."""
-    return os.environ.get("BROWSER_TOOLS_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    """Server-side kill switch, FAIL-CLOSED (audit F-03): only an explicit 1/true/yes/on
+    (case-insensitive) enables the browser tools. Unset, empty, a typo or any other value keeps
+    them OFF, so a lost or mistyped variable can never re-enable the browser."""
+    return os.environ.get("BROWSER_TOOLS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 _LOCAL_REQUEST_SCHEMES = ("data:", "blob:", "about:", "chrome-extension:")

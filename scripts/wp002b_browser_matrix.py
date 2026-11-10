@@ -47,7 +47,7 @@ def _guards(on: bool):
 def main() -> None:
     browser_use.validate_public_http_url = _validate
     session_leases.renew = session_leases.register = lambda *a, **k: None
-    os.environ.pop("BROWSER_TOOLS_ENABLED", None)
+    os.environ["BROWSER_TOOLS_ENABLED"] = "true"  # the kill switch is fail-closed (F-03)
     servers, udp = g._Servers(), g._Udp()
     vectors = {
         "worker_ws": "worker", "shared_worker_ws": "shared_worker", "srcdoc_worker_ws": "srcdoc_worker",

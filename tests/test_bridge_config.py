@@ -11,6 +11,7 @@ def test_api_key_required(monkeypatch):
 
 def test_proxy_country_code_validation(monkeypatch):
     monkeypatch.setenv("BROWSER_USE_API_KEY", "test-key")
+    monkeypatch.setenv("BROWSER_TOOLS_ENABLED", "true")  # the kill switch is fail-closed (F-03)
 
     # Validation happens before any network call.
     import asyncio
