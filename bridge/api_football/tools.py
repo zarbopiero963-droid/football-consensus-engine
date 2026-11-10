@@ -152,6 +152,24 @@ def _finish_timing(result: dict[str, Any]) -> None:
     }
 
 
+def pagination_state(paging: Any, params: Mapping[str, Any]) -> dict[str, Any]:
+    """FIX-04, derived from the provider's own paging (never fetched ahead): where this page is
+    and the exact parameters of the next one. Pages are never downloaded automatically."""
+    if not isinstance(paging, dict) or type(paging.get("current")) is not int or type(paging.get("total")) is not int:
+        return {"state": "PAGING_NOT_PUBLISHED", "has_next": None, "next_page": None, "auto_fetch": False}
+    current, total = paging["current"], paging["total"]
+    requested = params.get("page", 1)
+    if total == 0 or current > total:
+        return {"state": "PAGE_OUT_OF_RANGE" if total else "NO_PAGES", "current": current, "total": total,
+                "requested_page": requested, "has_next": False, "next_page": None, "next_parameters": None,
+                "auto_fetch": False}
+    has_next = current < total
+    return {"state": "MORE_PAGES" if has_next else "LAST_PAGE", "current": current, "total": total,
+            "requested_page": requested, "has_next": has_next, "next_page": current + 1 if has_next else None,
+            "next_parameters": {**params, "page": current + 1} if has_next else None,
+            "auto_fetch": False}
+
+
 def _real_calls(data: dict[str, Any]) -> int:
     """Provider requests sent for THIS call: none on a cache HIT or when the call joined
     another caller's in-flight request (that caller reports them); otherwise the real attempts."""
@@ -323,6 +341,8 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             # Real replies wrap the provider envelope: paging lives in provider_data.
             provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
             result["pagination"] = provider_paging if isinstance(provider_paging, dict) else data.get("pagination", data.get("paging"))
+            if contract.pagination:
+                result["pagination_state"] = pagination_state(result["pagination"], params)
             result["cache_status"] = cache_status
             result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
             if status == "REAL_API_RESPONSE":

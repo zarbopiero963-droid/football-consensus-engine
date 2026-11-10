@@ -176,7 +176,9 @@ def test_transport_status_handling_never_follows_redirect(code, expect):
     (b"[]", "PROVIDER_JSON_NOT_OBJECT"),
     (b'{"results": 0}', "PROVIDER_RESPONSE_FIELD_MISSING"),
     (b'{"response":[],"errors":{"token":"not valid"}}', "PROVIDER_DECLARED_ERRORS"),
-    (b'{"response":[],"paging":{"current":4,"total":2}}', "PROVIDER_INVALID_PAGINATION"),
+    # FIX-04 / D06 (declared change): a page past the end WITHOUT rows is a valid empty answer
+    # now (tests/test_apifootball_paging_beyond_100.py); with rows it stays invalid.
+    (b'{"response":[{"id":1}],"paging":{"current":4,"total":2}}', "PROVIDER_INVALID_PAGINATION"),
     (b'{"response":[],"paging":{"current":0,"total":0}}', "PROVIDER_INVALID_PAGINATION"),
 ])
 def test_transport_rejects_bad_provider_payloads_without_leaking_body(payload, code):

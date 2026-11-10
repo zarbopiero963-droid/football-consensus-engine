@@ -154,8 +154,12 @@ class InjectedHTTPXTransport:
                     if not isinstance(paging, dict):
                         raise ProviderDataError("PROVIDER_INVALID_PAGINATION")
                     current, total = paging.get("current"), paging.get("total")
-                    if not (type(current) is int and type(total) is int and
-                            1 <= current <= total <= 100000):
+                    in_range = type(current) is int and type(total) is int and 1 <= current <= total <= 100000
+                    # FIX-04 (D06): a page past the end, or a listing with no page at all, is a
+                    # valid answer only when it carries no rows; rows on such a page stay invalid.
+                    past_end = (type(current) is int and type(total) is int and 0 <= total < current <= 100000
+                                and data.get("response") == [])
+                    if not (in_range or past_end):
                         raise ProviderDataError("PROVIDER_INVALID_PAGINATION")
                 return ProviderReply(
                     status_code=code,

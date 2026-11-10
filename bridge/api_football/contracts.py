@@ -36,6 +36,9 @@ _H2H = re.compile(r"^[1-9][0-9]{0,9}-[1-9][0-9]{0,9}$")
 _VALID_VALUE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
 
 
+MAX_PAGE = 100_000  # == the paging.total bound of transport.InjectedHTTPXTransport
+
+
 class ParameterError(ValueError):
     """Fixed-safe validation failure; never reflects user values or secrets."""
 
@@ -134,7 +137,12 @@ def _positive_int(value: int, field: str) -> int:
         raise ParameterError("INVALID_INTEGER_PARAMETER")
     if field == "season" and not (1990 <= value <= 2100):
         raise ParameterError("INVALID_SEASON")
-    if field in ("page", "last", "next") and value > 100:
+    # FIX-04: the docs give `page` no maximum ("Default: 1"); players/profiles has 250 rows
+    # per page, so pages above 100 are real. The bound is the transport's own paging bound
+    # (paging.total <= MAX_PAGE): a technical limit, never an invented provider one.
+    if field == "page" and value > MAX_PAGE:
+        raise ParameterError("PAGE_OR_BATCH_TOO_LARGE")
+    if field in ("last", "next") and value > 100:
         raise ParameterError("PAGE_OR_BATCH_TOO_LARGE")
     return value
 

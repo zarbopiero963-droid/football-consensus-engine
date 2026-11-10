@@ -68,7 +68,8 @@ def test_odds_mapping_page_is_forwarded_and_reachable():
 
 def test_odds_mapping_page_bounds_and_no_other_filter():
     assert ENDPOINTS["apifootball_odds_mapping"].fields == ("page",)
-    for bad in ({"page": 0}, {"page": 101}, {"page": "2"}, {"league": 39}, {"fixture": 1}):
+    # FIX-04 (declared change): 101 is a valid page now; 100_001 exceeds the transport bound.
+    for bad in ({"page": 0}, {"page": 100_001}, {"page": "2"}, {"league": 39}, {"fixture": 1}):
         with pytest.raises(ParameterError):
             validate("apifootball_odds_mapping", bad)
     _, params = validate("apifootball_odds_mapping", {})
