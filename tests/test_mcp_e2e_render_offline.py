@@ -22,6 +22,14 @@ PASSWORD = "LOCAL_E2E_TEST_ONLY_PASSWORD_7d1e"
 
 SCRIPT = textwrap.dedent(r'''
     import asyncio, hashlib, json, os, secrets, sys
+    FAKE_TRANSPORT = None
+    if os.environ.get("E2E_FAKE_APIFOOTBALL"):
+        # Opt-in suite tests: only the provider HTTP transport is replaced (tests/_apifootball_fake_provider.py);
+        # the real resilience client, tools.py and the MCP/OAuth server stay in the loop.
+        import bridge.api_football.wiring as _wiring
+        import _apifootball_fake_provider as _fake
+        FAKE_TRANSPORT = _fake.FakeTransport(by_path=json.loads(os.environ.get("E2E_FAKE_BY_PATH", "{}")))
+        _wiring.build_client = lambda settings: _fake.build_client(FAKE_TRANSPORT)
     import bridge.server as srv
     from starlette.testclient import TestClient
     from scripts import mcp_e2e_render as e2e
@@ -182,10 +190,15 @@ SCRIPT = textwrap.dedent(r'''
             argv += ["--expected-commit", os.environ["E2E_EXPECTED_COMMIT"]]
         if os.environ.get("E2E_EXPECTED_DB_IDENTITY"):
             argv += ["--expected-db-identity", os.environ["E2E_EXPECTED_DB_IDENTITY"]]
+        argv += json.loads(os.environ.get("E2E_EXTRA_ARGV", "[]"))
         for _name in ("httpx", "httpx2", "httpcore"):  # after lifespan logging setup
             logging.getLogger(_name).setLevel(logging.WARNING)
-        rc = e2e.main(argv, client=c, sleep=lambda s: None)
-    print("RESULT_JSON=" + json.dumps({"rc": rc, "issued": issued, "server_tools_called": server_tools_called}))
+        clock = {}
+        if FAKE_TRANSPORT is not None:
+            clock = {"now": lambda: _fake.NOW}
+        rc = e2e.main(argv, client=c, sleep=lambda s: None, **clock)
+    print("RESULT_JSON=" + json.dumps({"rc": rc, "issued": issued, "server_tools_called": server_tools_called,
+                                       "provider_requests": len(FAKE_TRANSPORT.requests) if FAKE_TRANSPORT else 0}))
 ''')
 
 
@@ -316,7 +329,9 @@ def test_a_leaking_report_is_replaced_by_a_fixed_failure():
     assert run.leak_free('{"x": "clean"}')
 
 
-def test_the_workflow_is_owner_manual_main_only_and_uploads_nothing():
+def test_the_workflow_is_owner_manual_main_only_and_uploads_only_the_opt_in_suite_evidence():
+    """Intentional change (owner decision, path B): the default `health` suite still uploads
+    nothing; only the opt-in API-FOOTBALL suites upload their own small, leak-checked JSON."""
     import yaml
     from pathlib import Path
     wf = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "fcb-mcp-e2e.yml"
@@ -325,14 +340,26 @@ def test_the_workflow_is_owner_manual_main_only_and_uploads_nothing():
     job = data["jobs"]["e2e"]
     assert job["environment"] == "mcp-e2e" and job["if"] == "github.ref == 'refs/heads/main'"
     text = wf.read_text(encoding="utf-8")
-    assert "upload-artifact" not in text and "cache" not in text.lower().replace("no-store", "")
+    assert "cache" not in text.lower().replace("no-store", "")
+    uploads = [s for s in job["steps"] if "upload-artifact" in str(s.get("uses", ""))]
+    assert text.count("upload-artifact") == 1 and len(uploads) == 1
+    up = uploads[0]
+    assert up["with"]["path"] == "${{ runner.temp }}/apifootball_suite.json"
+    assert up["if"] == "${{ !cancelled() && inputs.suite != 'health' && inputs.suite != '' }}"
+    assert "secrets." not in str(up) and "mcp_e2e.json" not in str(up)
     secret_steps = [s for s in job["steps"] if "secrets." in str(s)]
-    # WP-009 (R2): the expected database identity is a fixed-choice input, not a secret.
+    # WP-009 (R2): the expected database identity is a fixed-choice input, not a secret; so are
+    # the suite and the budget (validated in bash, capped again by the script's ceiling).
     assert len(secret_steps) == 1 and set(secret_steps[0]["env"]) == {
-        "MCP_OAUTH_PASSWORD", "EXPECTED_COMMIT", "EXPECTED_DB_IDENTITY"}
+        "MCP_OAUTH_PASSWORD", "EXPECTED_COMMIT", "EXPECTED_DB_IDENTITY", "E2E_SUITE", "E2E_APIFOOTBALL_BUDGET"}
     assert secret_steps[0]["env"]["EXPECTED_DB_IDENTITY"] == "${{ inputs.expected_db_identity }}"
+    assert secret_steps[0]["env"]["E2E_SUITE"] == "${{ inputs.suite }}"
+    assert secret_steps[0]["env"]["E2E_APIFOOTBALL_BUDGET"] == "${{ inputs.apifootball_budget }}"
+    assert "${{" not in secret_steps[0]["run"]  # inputs reach bash only through env, never inlined
     inputs = data.get("on", data.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["expected_db_identity"]["options"] == ["", "fcb_app"]
+    assert inputs["suite"]["options"] == ["health", "apifootball", "apifootball_full"]
+    assert inputs["suite"]["default"] == "health" and inputs["apifootball_budget"]["default"] == "20"
     assert data["run-name"] == ("FCB MCP E2E (expected database identity: "
                                 "${{ inputs.expected_db_identity || 'none' }})")
     assert "scripts/mcp_e2e_render.py" in secret_steps[0]["run"] and "set -x" not in text
@@ -491,3 +518,75 @@ def test_the_expected_database_identity_passes(tmp_path):
     report = json.loads(report_text)
     assert res["rc"] == 0 and report["verdict"] == "PASS"
     assert report["facts"]["database_identity"] == {"status": "OK", "current_user": "fcb_app", "session_user": "fcb_app"}
+
+
+# ---- Opt-in API-FOOTBALL suite (owner decision, path B), through the REAL server and OAuth ------
+# Only the provider HTTP transport is a fake (tests/_apifootball_fake_provider.py); retries, the
+# circuit breaker, tools.py and the MCP/OAuth stack are the production code.
+
+FAKE_KEY = "LOCAL_FAKE_APIFOOTBALL_KEY_E2E_ONLY"
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _af_env(tmp_path, suite="apifootball", budget="20", by_path=None, fake=True):
+    env = {"E2E_EXTRA_ARGV": json.dumps(["--suite", suite, "--apifootball-budget", budget,
+                                         "--apifootball-output", str(tmp_path / "af.json")]),
+           "PYTHONPATH": os.pathsep.join([os.getcwd(), TESTS_DIR])}
+    if fake:
+        env.update({"E2E_FAKE_APIFOOTBALL": "1", "APIFOOTBALL_API_KEY": FAKE_KEY,
+                    "APIFOOTBALL_LIVE_AUTHORIZED": "true", "E2E_FAKE_BY_PATH": json.dumps(by_path or {})})
+    return env
+
+
+def test_apifootball_suite_proves_real_tool_outputs_within_the_budget(tmp_path):
+    import _apifootball_fake_provider as fake
+    res, report_text, stdout = _run(tmp_path, github_actions=True, extra_env=_af_env(tmp_path))
+    report = json.loads(report_text)
+    af = report["apifootball_suite"]
+    assert res["rc"] == 0 and report["verdict"] == "PASS" and af["verdict"] == "PASS", af
+    # The OAuth/refresh checks after the suite still ran and passed.
+    assert {"refresh_rotation_200", "refreshed_access_token_works"} <= {c["check"] for c in report["checks"]}
+    # Hard budget: what reached the (fake) provider never exceeds 20, and the charge is an upper bound.
+    assert res["provider_requests"] == 15 and af["provider_requests_charged"] == 17 <= 20
+    assert report["provider_or_order_calls_attempted"] == 17
+    assert {c["outcome"] for c in af["cases"]} <= {"HTTP_200", "DATA_PRESENT", "EMPTY_VALID", "ERROR"}
+    called = res["server_tools_called"]
+    assert set(called) <= {"sxbet_health", "apifootball_health"} | set(e2e.APIFOOTBALL_PROVIDER_TOOLS)
+    assert called.count("sxbet_health") == 1 and not any(n.startswith(("browser_", "cloak_")) for n in called)
+    # Public evidence: no price, no key, no personal account field, no runtime secret.
+    artifact = (tmp_path / "af.json").read_text()
+    assert json.loads(artifact) == af
+    plain_stdout = "\n".join(l for l in stdout.splitlines() if not l.startswith(("::add-mask::", "RESULT_JSON=")))
+    assert "apifootball_verdict=PASS provider_requests_charged=17" in plain_stdout
+    for text in (report_text, artifact, plain_stdout):
+        assert fake.PRICE_SENTINEL not in text and FAKE_KEY not in text and "PRIVATE" not in text
+        assert PASSWORD not in text and not any(v in text for v in res["issued"])
+
+
+def test_apifootball_suite_stops_on_an_auth_error_and_marks_the_rest_not_tested(tmp_path):
+    res, report_text, _ = _run(tmp_path, extra_env=_af_env(tmp_path, by_path={"/leagues": ["http_401"]}))
+    af = json.loads(report_text)["apifootball_suite"]
+    assert res["rc"] == 1 and af["verdict"] == "BLOCKED"
+    assert af["stop_reason"] == "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT"
+    assert res["provider_requests"] == 2  # status + the refused leagues call, nothing after
+    after = af["cases"][[c["id"] for c in af["cases"]].index("A02") + 1:]
+    assert after and all(c["outcome"] == "NOT_TESTED" and c["reserved"] == 0 for c in after)
+
+
+def test_apifootball_suite_makes_no_call_when_live_is_not_authorized(tmp_path):
+    res, report_text, _ = _run(tmp_path, extra_env=_af_env(tmp_path, fake=False))
+    report = json.loads(report_text)
+    af = report["apifootball_suite"]
+    assert res["rc"] == 1 and report["verdict"] == "PASS"  # OAuth/MCP fine, provider suite blocked
+    assert af["stop_reason"] == "BLOCKED_PROVIDER_NOT_LIVE_OR_COORDINATOR_NOT_READY"
+    assert sorted(res["server_tools_called"]) == ["apifootball_health", "sxbet_health"]
+    assert af["provider_requests_charged"] == 0 and all(c["outcome"] == "NOT_TESTED" for c in af["cases"])
+
+
+def test_the_budget_input_cannot_exceed_the_owner_ceiling(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_OAUTH_PASSWORD", "x")
+    out = str(tmp_path / "r.json")
+    for bad in ("21", "0", "-1", "100"):
+        assert e2e.main(["--output", out, "--suite", "apifootball", "--apifootball-budget", bad],
+                        client=object()) == 2
+    assert e2e.APIFOOTBALL_BUDGET_CEILING == 20 and e2e.APIFOOTBALL_DEFAULT_BUDGET == 20

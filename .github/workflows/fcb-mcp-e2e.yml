@@ -3,7 +3,14 @@ name: FCB MCP E2E on the real Render deployment (OAuth + MCP, read-only)
 # Manual only, owner only, from main only, after the mcp-e2e Environment approval.
 # Plays a public PKCE client against the pinned production origin: OAuth (DCR, consent,
 # code, refresh), MCP initialize / tools/list / tools/call on two zero-cost local tools,
-# plus negative tests. No browser tool, no SX Bet order, no provider request, no artifact.
+# plus negative tests. No browser tool, no SX Bet order. With the default suite `health`:
+# no provider request and no artifact (unchanged behaviour).
+# Opt-in suites `apifootball` / `apifootball_full`: read-only apifootball_* tools through the
+# same MCP session (hence the server's shared quota coordinator), under a hard per-run budget
+# of provider requests. The budget input is capped by APIFOOTBALL_BUDGET_CEILING (20, the
+# owner-approved number) in scripts/mcp_e2e_render.py: raising it is an owner-merged PR that
+# changes that constant and its pinning test, never a dispatch input. Those suites upload one
+# small, leak-checked JSON (shapes, counts, ids, hashes; no prices, no raw payloads).
 # The password lives only in the memory of the E2E step; it is never printed or saved.
 # The E2E client is standard-library only: no package is installed next to the password.
 # FCB-WP-009 (R2): the run name records the database identity the run asserted, so the roles
@@ -18,6 +25,15 @@ on:
         type: choice
         options: ['', fcb_app]
         default: ''
+      suite:
+        description: "health = zero provider calls (default); apifootball = prioritized plan; apifootball_full = one call per provider tool"
+        type: choice
+        options: [health, apifootball, apifootball_full]
+        default: health
+      apifootball_budget:
+        description: "Max real API-FOOTBALL requests for this run (1-20; 20 is the owner-approved ceiling)"
+        type: string
+        default: '20'
 
 permissions:
   contents: read
@@ -65,6 +81,8 @@ jobs:
           MCP_OAUTH_PASSWORD: ${{ secrets.MCP_OAUTH_PASSWORD }}
           EXPECTED_COMMIT: ${{ github.sha }}
           EXPECTED_DB_IDENTITY: ${{ inputs.expected_db_identity }}
+          E2E_SUITE: ${{ inputs.suite }}
+          E2E_APIFOOTBALL_BUDGET: ${{ inputs.apifootball_budget }}
         run: |
           set -euo pipefail
           if [ -z "${MCP_OAUTH_PASSWORD:-}" ]; then
@@ -76,8 +94,21 @@ jobs:
             fcb_app) identity=(--expected-db-identity fcb_app) ;;
             *) echo "::error::unexpected expected_db_identity"; exit 1 ;;
           esac
+          suite=()
+          case "${E2E_SUITE:-health}" in
+            ''|health) ;;
+            apifootball|apifootball_full)
+              # Digits only; the script also refuses anything above its owner-approved ceiling.
+              case "${E2E_APIFOOTBALL_BUDGET:-}" in
+                [1-9]|[1-9][0-9]) ;;
+                *) echo "::error::apifootball_budget must be an integer from 1 to 20"; exit 1 ;;
+              esac
+              suite=(--suite "$E2E_SUITE" --apifootball-budget "$E2E_APIFOOTBALL_BUDGET"
+                     --apifootball-output "$RUNNER_TEMP/apifootball_suite.json") ;;
+            *) echo "::error::unexpected suite"; exit 1 ;;
+          esac
           python -I scripts/mcp_e2e_render.py --expected-commit "$EXPECTED_COMMIT" "${identity[@]}" \
-            --output "$RUNNER_TEMP/mcp_e2e.json"
+            "${suite[@]}" --output "$RUNNER_TEMP/mcp_e2e.json"
 
       - name: Publish the sanitized summary (no secret, no artifact)
         if: ${{ !cancelled() }}
@@ -99,5 +130,33 @@ jobs:
                        f"Facts: `{json.dumps(d.get('facts', {}), sort_keys=True)}`", "",
                        "| Check | Outcome |", "|---|---|"]
               lines += [f"| {c.get('check')} | {c.get('outcome')} |" for c in d.get("checks", [])]
+              af = d.get("apifootball_suite")
+              if isinstance(af, dict):
+                  lines += ["", f"### API-FOOTBALL suite {af.get('suite')}: {af.get('verdict')}", "",
+                            f"Provider requests charged: {af.get('provider_requests_charged')} of budget "
+                            f"{af.get('budget')} (ceiling {af.get('budget_ceiling')}, worst case "
+                            f"{af.get('worst_case_per_call')} per call); stop: {af.get('stop_reason')}; "
+                            f"plan: `{json.dumps(af.get('plan', {}), sort_keys=True)}`", "",
+                            "| Case | Tool | Endpoint | Arguments | Provider status | Outcome | Verdict "
+                            "| Reserved/charged | Facts | Defects |",
+                            "|---|---|---|---|---|---|---|---|---|---|"]
+                  for c in af.get("cases", []):
+                      status = c.get("tool_status") or c.get("reason")
+                      lines.append(
+                          f"| {c.get('id')} | {c.get('tool')} | {c.get('endpoint')} "
+                          f"| `{json.dumps(c.get('arguments', {}), sort_keys=True)}` "
+                          f"| {status} {c.get('http_status') or ''} {c.get('error_code') or ''} "
+                          f"| {c.get('outcome')} | {c.get('verdict')} | {c.get('reserved')}/{c.get('charged')} "
+                          f"| `{json.dumps(c.get('facts', {}), sort_keys=True)}` "
+                          f"| {', '.join(c.get('defects') or []) or '-'} |")
               out.write("\n".join(lines) + "\n")
           PY
+
+      - name: Upload the API-FOOTBALL suite evidence (opt-in suites only; shapes, counts, ids, hashes)
+        if: ${{ !cancelled() && inputs.suite != 'health' && inputs.suite != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcb-mcp-e2e-apifootball-suite
+          path: ${{ runner.temp }}/apifootball_suite.json
+          if-no-files-found: ignore
+          retention-days: 30
