@@ -1,0 +1,80 @@
+{
+  "about": "Sanitized /odds/live reply shapes for FIX-09. Synthetic ids, synthetic prices, no provider text. No real /odds/live payload is captured in the repository: every shape below is either derived from a repository fixture (evidence names the file) or ASSUMED. None of them is evidence that C08 passes.",
+  "shapes": [
+    {
+      "name": "active_open_priced",
+      "evidence": "REPO_FIXTURE tests/_apifootball_fake_provider.py (/odds/live branch)",
+      "expected_state": "ACTIVE",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000001"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000001, "status": {"elapsed": 60}}, "update": "2026-01-01T20:00:00+00:00",
+                                "odds": [{"id": 36, "name": "Over/Under Line", "values": [
+                                  {"value": "Over", "odd": "1.90", "handicap": "2.5", "suspended": false},
+                                  {"value": "Under", "odd": "1.90", "handicap": "2.5", "suspended": null}]}]}]}
+    },
+    {
+      "name": "suspended_zero_odd",
+      "evidence": "REPO_FIXTURE tests/test_api_football_five_point_evidence.py (test_live_selection_level_suspend_and_main_are_preserved)",
+      "expected_state": "ALL_SUSPENDED",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000002"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000002}, "status": {"stopped": false},
+                                "odds": [{"id": 5, "name": "Live totals", "values": [
+                                  {"value": "Over", "odd": "0", "suspended": true, "main": null}]}]}]}
+    },
+    {
+      "name": "suspended_null_odd",
+      "evidence": "REPO_FIXTURE tests/test_mcp_e2e_apifootball_error_codes.py (test_live_suspended_null_odd_stays_null_and_is_counted)",
+      "expected_state": "ALL_SUSPENDED",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000003"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000003, "status": {"elapsed": 70}}, "update": "2026-01-01T20:10:00+00:00",
+                                "odds": [{"id": 36, "name": "Over/Under Line", "values": [
+                                  {"value": "Over", "odd": null, "handicap": "2.5", "main": null, "suspended": true},
+                                  {"value": "Under", "odd": null, "handicap": "2.5", "main": null, "suspended": true}]}]}]}
+    },
+    {
+      "name": "all_null_odds_not_flagged",
+      "evidence": "ASSUMED (null odd is repo-evidenced; a reply where every odd is null and no selection is flagged suspended is not)",
+      "expected_state": "ALL_NULL_ODDS",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000004"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000004}, "update": "2026-01-01T20:20:00+00:00",
+                                "odds": [{"id": 36, "name": "Over/Under Line", "values": [
+                                  {"value": "Over", "odd": null, "handicap": "2.5", "suspended": false},
+                                  {"value": "Under", "odd": null, "handicap": "2.5", "suspended": false}]}]}]}
+    },
+    {
+      "name": "no_suspension_field",
+      "evidence": "REPO_FIXTURE tests/test_api_football_five_point_evidence.py (live_payload without suspended)",
+      "expected_state": "NO_OPEN_PRICED_SELECTION",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000005"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000005}, "odds": [{"id": 1, "name": "Live totals", "values": [
+                                  {"value": "Over", "odd": "1.7"}]}]}]}
+    },
+    {
+      "name": "empty_response",
+      "evidence": "REPO_FIXTURE tests/_apifootball_fake_provider.py (behaviour 'empty': a valid reply without rows)",
+      "expected_state": "EMPTY",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000006"}, "errors": [], "results": 0,
+                  "paging": {"current": 1, "total": 1}, "response": []}
+    },
+    {
+      "name": "fixture_without_markets",
+      "evidence": "ASSUMED (a live fixture listed with an empty odds list is not evidenced in the repository)",
+      "expected_state": "EMPTY",
+      "payload": {"get": "odds/live", "parameters": {"league": "39"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000007}, "odds": []}]}
+    },
+    {
+      "name": "markets_key_missing",
+      "evidence": "ASSUMED (malformed: no odds list)",
+      "expected_state": "MALFORMED",
+      "payload": {"get": "odds/live", "parameters": {"fixture": "1000008"}, "errors": [], "results": 1,
+                  "paging": {"current": 1, "total": 1},
+                  "response": [{"fixture": {"id": 1000008}}]}
+    }
+  ]
+}

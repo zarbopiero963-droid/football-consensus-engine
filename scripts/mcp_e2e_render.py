@@ -916,7 +916,7 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
         return _check_manifest(p, facts)
     resp = _response(p)
     over = under = selections = 0
-    live_counts = {"null_odds_kept_null": 0, "suspended": 0, "suspended_zero_odds": 0}
+    live_counts = {"null_odds_kept_null": 0, "suspended": 0, "suspended_zero_odds": 0, "open_priced": 0}
 
     def scan() -> str | None:
         nonlocal over, under, selections
@@ -945,6 +945,8 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
                         live_counts["null_odds_kept_null"] += kind == "NULL"
                         live_counts["suspended_zero_odds"] += kind == "SUSPENDED_ZERO"
                         live_counts["suspended"] += v.get("suspended") is True
+                        # Open AND priced only when the provider says so: a missing flag is not open.
+                        live_counts["open_priced"] += v.get("suspended") is False and kind == "OK"
                     elif not _odd_ok(v):  # pre-match: unchanged strictness
                         return "ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"
                     selections += 1
@@ -958,10 +960,30 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
     facts.update({"fixtures": len(resp), "selections": selections})
     if live:
         facts.update(live_counts)
+        if defect is None:
+            facts["live_state"] = live_state(selections, live_counts)
     if not live and ctx.get("bet_ou") is not None and defect is None:
         # Both sides counted as PUBLISHED; an absent side is never rebuilt from the other.
         facts.update({"over_published": over, "under_published": under})
     return [defect] if defect else []
+
+
+# FIX-09 (PR #185 review P3): a live reply proves live odds only if at least one selection is
+# explicitly open (suspended false) with a published price. All-suspended, all-null or never
+# explicitly open replies are PARTIAL, never PASS.
+LIVE_PARTIAL_STATES = frozenset({"ALL_SUSPENDED", "ALL_NULL_ODDS", "NO_OPEN_PRICED_SELECTION", "NO_SELECTIONS"})
+
+
+def live_state(selections: int, counts: dict[str, int]) -> str:
+    if selections == 0:
+        return "NO_SELECTIONS"
+    if counts["open_priced"]:
+        return "ACTIVE"
+    if counts["suspended"] == selections:
+        return "ALL_SUSPENDED"
+    if counts["null_odds_kept_null"] == selections:
+        return "ALL_NULL_ODDS"
+    return "NO_OPEN_PRICED_SELECTION"
 
 
 def _check_odds_page1(p, ctx, facts):
@@ -1409,6 +1431,8 @@ class ApiFootballSuite:
             verdict = "PROVIDER_UNAVAILABLE"
             facts["unavailable_evidence"] = {"source": "/leagues coverage", "flag": case.coverage, "value": False}
             out["facts"] = facts
+        elif facts.get("live_state") in LIVE_PARTIAL_STATES:
+            verdict = "PARTIAL"  # FIX-09: no open, priced live selection proven
         elif outcome in ("PARTIAL", "EMPTY_VALID"):
             # An empty reply alone proves the envelope, not the data: PARTIAL, never PASS and
             # never PROVIDER_UNAVAILABLE (owner rule: unavailability needs explicit evidence).

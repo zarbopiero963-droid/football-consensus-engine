@@ -16,6 +16,7 @@ from .config import Settings
 from .catalog import ALLOWED_PATHS
 from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, fixtures_combination, validate
 from .full_contract_audit import audit_contract_coverage
+from .live_odds_state import classify as classify_live_odds
 from .timezones import timezone_context
 
 _MAX_MCP_DATA_BYTES = 262_144
@@ -310,6 +311,8 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     manifest_error = "ODDS_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"
                 if manifest is not None:
                     _provenance("PARTIAL_ODDS_MANIFEST")
+                    if tool == "apifootball_live_odds":
+                        result["live_odds_state"] = classify_live_odds(envelope)
                     result["data"] = manifest
                     result["pagination"] = manifest["paging"]
                     return result
@@ -375,6 +378,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 }
             else:
                 result["data"] = provider_data
+                if tool == "apifootball_live_odds":
+                    # FIX-09: DERIVED summary beside the untouched provider data.
+                    result["live_odds_state"] = classify_live_odds(provider_data)
             result["http_status"] = data.get("http_status")
             # Real replies wrap the provider envelope: paging lives in provider_data.
             provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
@@ -397,6 +403,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             else:
                 result["status"] = "PROVIDER_ERROR"
                 result["error"] = _error_for(exc, contract.fields)
+                if tool == "apifootball_live_odds":
+                    from .live_odds_state import unavailable
+                    result["live_odds_state"] = unavailable(result["error"].get("code"))
                 if result["error"].get("code") == "PROVIDER_RESPONSE_TOO_LARGE":
                     from .continuation import read_cap_navigation
                     result["navigation"] = read_cap_navigation(tool)
