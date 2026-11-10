@@ -74,6 +74,24 @@ lines(o, line) AS (
     WHERE f.label OPERATOR(pg_catalog.=) ANY (ARRAY['session', 'fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
       AND t.label OPERATOR(pg_catalog.=) ANY (ARRAY['session', 'fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
       AND f.oid OPERATOR(pg_catalog.<>) t.oid
+    -- R1: every non-superuser role that can reach a bridge role at all (MEMBER, inherit or SET).
+    UNION ALL SELECT 17, 'reach ' OPERATOR(pg_catalog.||) f.label OPERATOR(pg_catalog.||) ' -> ' OPERATOR(pg_catalog.||) t.label
+        OPERATOR(pg_catalog.||) ' member=' OPERATOR(pg_catalog.||) pg_catalog.pg_has_role(r.oid, t.oid, 'MEMBER')::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' inherits_privileges=' OPERATOR(pg_catalog.||) pg_catalog.pg_has_role(r.oid, t.oid, 'USAGE')::pg_catalog.text
+        OPERATOR(pg_catalog.||) ' can_set_role=' OPERATOR(pg_catalog.||) pg_catalog.pg_has_role(r.oid, t.oid, 'SET')::pg_catalog.text
+    FROM pg_catalog.pg_roles r JOIN kind f ON f.oid OPERATOR(pg_catalog.=) r.oid, kind t
+    WHERE NOT r.rolsuper AND t.label OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
+      AND r.oid OPERATOR(pg_catalog.<>) t.oid AND f.label OPERATOR(pg_catalog.<>) 'session'::pg_catalog.text
+      AND f.label OPERATOR(pg_catalog.<>) ALL (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer']::pg_catalog.text[])
+      AND pg_catalog.pg_has_role(r.oid, t.oid, 'MEMBER')
+    UNION ALL SELECT 18, 'superusers=' OPERATOR(pg_catalog.||) (SELECT pg_catalog.count(*) FROM pg_catalog.pg_roles r WHERE r.rolsuper)::pg_catalog.text
+    -- Who holds the bridge advisory lock 460244120 right now (any login can take it).
+    UNION ALL SELECT 19, 'bridge_lock_holders ' OPERATOR(pg_catalog.||) COALESCE((SELECT pg_catalog.string_agg(DISTINCT k.label, ' '::pg_catalog.text)
+        FROM pg_catalog.pg_locks l JOIN pg_catalog.pg_stat_activity a ON a.pid OPERATOR(pg_catalog.=) l.pid
+        JOIN pg_catalog.pg_roles r ON r.rolname OPERATOR(pg_catalog.=) a.usename JOIN kind k ON k.oid OPERATOR(pg_catalog.=) r.oid
+        WHERE l.locktype OPERATOR(pg_catalog.=) 'advisory'::pg_catalog.text AND l.granted
+          AND (l.classid::pg_catalog.int8 OPERATOR(pg_catalog.<<) 32 OPERATOR(pg_catalog.|) l.objid::pg_catalog.int8) OPERATOR(pg_catalog.=) 460244120::pg_catalog.int8),
+        'none'::pg_catalog.text)
     UNION ALL SELECT 20, 'owners relations ' OPERATOR(pg_catalog.||) COALESCE((SELECT pg_catalog.string_agg(x.label OPERATOR(pg_catalog.||) '='
         OPERATOR(pg_catalog.||) x.n::pg_catalog.text, ' '::pg_catalog.text ORDER BY x.label) FROM (
             SELECT k.label, pg_catalog.count(*) AS n FROM pg_catalog.pg_class c JOIN ns ON ns.oid OPERATOR(pg_catalog.=) c.relnamespace

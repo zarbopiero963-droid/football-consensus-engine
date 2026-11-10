@@ -44,6 +44,10 @@ mig AS (SELECT rl.oid FROM rl WHERE rl.rolname OPERATOR(pg_catalog.=) 'fcb_migra
 app AS (SELECT rl.oid FROM rl WHERE rl.rolname OPERATOR(pg_catalog.=) 'fcb_app'::pg_catalog.name),
 sgn AS (SELECT rl.oid FROM rl WHERE rl.rolname OPERATOR(pg_catalog.=) 'fcb_signer'::pg_catalog.name),
 sess AS (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER),
+-- Phase: fcb_migrator LOGIN means phase 2 (it owns the bridge); NOLOGIN means phase 1 (the
+-- session identity still owns it). The expected owner and schema rights follow the phase.
+phase AS (SELECT COALESCE((SELECT r.rolcanlogin FROM rl r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_migrator'::pg_catalog.name), false) AS two),
+owner_oid AS (SELECT CASE WHEN (SELECT phase.two FROM phase) THEN (SELECT mig.oid FROM mig) ELSE (SELECT sess.oid FROM sess) END AS oid),
 ns AS (SELECT n.oid, n.nspowner, n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name),
 rels AS (SELECT c.oid, c.relname, c.relkind, c.relowner, c.relacl FROM pg_catalog.pg_class c JOIN ns ON ns.oid OPERATOR(pg_catalog.=) c.relnamespace),
 rel_grants AS (
@@ -56,15 +60,15 @@ rel_grants AS (
 ),
 runtime_tables(relname, privs) AS (VALUES
     ('schema_migrations'::pg_catalog.text, ARRAY['SELECT']::pg_catalog.text[]),
-    ('oauth_authorization_codes', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('oauth_access_tokens', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('oauth_refresh_tokens', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('oauth_claude_dcr_clients', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('browser_session_leases', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('api_football_quota_counters', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('api_football_quota_leases', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('api_football_quota_attempts', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
-    ('sxbet_rate_attempts', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']),
+    ('oauth_authorization_codes', ARRAY['SELECT', 'INSERT', 'UPDATE']),
+    ('oauth_access_tokens', ARRAY['SELECT', 'INSERT']),
+    ('oauth_refresh_tokens', ARRAY['SELECT', 'INSERT', 'UPDATE']),
+    ('oauth_claude_dcr_clients', ARRAY['SELECT', 'INSERT', 'DELETE']),
+    ('browser_session_leases', ARRAY['SELECT', 'INSERT', 'UPDATE']),
+    ('api_football_quota_counters', ARRAY['SELECT', 'INSERT', 'UPDATE']),
+    ('api_football_quota_leases', ARRAY['SELECT', 'INSERT', 'DELETE']),
+    ('api_football_quota_attempts', ARRAY['SELECT', 'INSERT', 'DELETE']),
+    ('sxbet_rate_attempts', ARRAY['SELECT', 'INSERT', 'DELETE']),
     ('sxbet_rate_cooldowns', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
 ),
 expected_grants AS (
@@ -77,9 +81,9 @@ schema_grants AS (
     WHERE a.grantee OPERATOR(pg_catalog.<>) ns.nspowner AND a.grantee OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess)
 ),
 expected_schema_grants(grantee, priv) AS (
-    SELECT (SELECT mig.oid FROM mig), 'USAGE'::pg_catalog.text
-    UNION ALL SELECT (SELECT mig.oid FROM mig), 'CREATE'::pg_catalog.text
-    UNION ALL SELECT (SELECT app.oid FROM app), 'USAGE'::pg_catalog.text
+    SELECT (SELECT app.oid FROM app), 'USAGE'::pg_catalog.text
+    UNION ALL SELECT (SELECT mig.oid FROM mig), 'USAGE'::pg_catalog.text WHERE (SELECT phase.two FROM phase)
+    UNION ALL SELECT (SELECT mig.oid FROM mig), 'CREATE'::pg_catalog.text WHERE (SELECT phase.two FROM phase)
 ),
 inventory AS (
     SELECT m.roleid, m.member, m.admin_option, m.inherit_option, m.set_option, m.grantor
@@ -91,7 +95,49 @@ expected_inventory(roleid, member, admin_option, inherit_option, set_option, gra
     SELECT (SELECT app.oid FROM app), (SELECT sess.oid FROM sess), true, false, false, 10::pg_catalog.oid
     UNION ALL SELECT (SELECT sgn.oid FROM sgn), (SELECT sess.oid FROM sess), true, false, false, 10::pg_catalog.oid
     UNION ALL SELECT (SELECT mig.oid FROM mig), (SELECT sess.oid FROM sess), true, false, false, 10::pg_catalog.oid
-    UNION ALL SELECT (SELECT mig.oid FROM mig), (SELECT sess.oid FROM sess), false, true, true, (SELECT sess.oid FROM sess)
+),
+-- R1: every role of the cluster (superusers aside: they bypass every check) against each bridge
+-- role: only the session identity may be a MEMBER (its automatic ADMIN-only grant), and nobody
+-- may inherit a bridge role's privileges or SET ROLE to it.
+reach AS (
+    SELECT r.oid AS member, t.oid AS target,
+           pg_catalog.pg_has_role(r.oid, t.oid, 'MEMBER') AS m,
+           pg_catalog.pg_has_role(r.oid, t.oid, 'USAGE') AS u,
+           pg_catalog.pg_has_role(r.oid, t.oid, 'SET') AS s
+    FROM pg_catalog.pg_roles r, rl t
+    WHERE NOT r.rolsuper AND r.oid OPERATOR(pg_catalog.<>) t.oid
+),
+-- Function calls inside stored expressions of public (defaults, generated columns, CHECK
+-- constraints, index expressions and predicates): only these pg_catalog functions, the ones the
+-- bridge 0001-0008 itself uses. A default or CHECK calling e.g. set_config would run with the
+-- rights of whoever writes the row.
+allowed_expr_functions(sig) AS (VALUES
+    ('numeric(integer)'), ('numeric(numeric, integer)'), ('btrim(text)'), ('clock_timestamp()'),
+    ('jsonb_typeof(jsonb)'), ('length(text)'), ('nextval(regclass)'), ('now()'),
+    ('int4gt(integer, integer)'), ('int4le(integer, integer)'), ('jsonb_ne(jsonb, jsonb)'),
+    ('texteq(text, text)'), ('textlike(text, text)'), ('textne(text, text)'), ('textregexeq(text, text)'),
+    ('timestamptz_gt(timestamp with time zone, timestamp with time zone)')
+),
+expr_trees(tree) AS (
+    SELECT d.adbin::pg_catalog.text FROM pg_catalog.pg_attrdef d JOIN rels c ON c.oid OPERATOR(pg_catalog.=) d.adrelid
+    UNION ALL SELECT k.conbin::pg_catalog.text FROM pg_catalog.pg_constraint k JOIN rels c ON c.oid OPERATOR(pg_catalog.=) k.conrelid
+        WHERE k.conbin IS NOT NULL
+    UNION ALL SELECT i.indexprs::pg_catalog.text FROM pg_catalog.pg_index i JOIN rels c ON c.oid OPERATOR(pg_catalog.=) i.indrelid
+        WHERE i.indexprs IS NOT NULL
+    UNION ALL SELECT i.indpred::pg_catalog.text FROM pg_catalog.pg_index i JOIN rels c ON c.oid OPERATOR(pg_catalog.=) i.indrelid
+        WHERE i.indpred IS NOT NULL
+),
+expr_function_oids(oid) AS (
+    SELECT (m.v[2])::pg_catalog.oid FROM expr_trees e,
+        LATERAL pg_catalog.regexp_matches(e.tree, ':(funcid|opfuncid|hashfuncid|negfuncid|aggfnoid|winfnoid) ([0-9]+)'::pg_catalog.text,
+                                          'g'::pg_catalog.text) AS m(v)
+    UNION SELECT o.oprcode::pg_catalog.oid FROM expr_trees e,
+        LATERAL pg_catalog.regexp_matches(e.tree, ':opno ([0-9]+)'::pg_catalog.text, 'g'::pg_catalog.text) AS m(v)
+        JOIN pg_catalog.pg_operator o ON o.oid OPERATOR(pg_catalog.=) (m.v[1])::pg_catalog.oid
+    UNION SELECT o.oprcode::pg_catalog.oid FROM expr_trees e,
+        LATERAL pg_catalog.regexp_matches(e.tree, ':opnos \(o([ 0-9]+)\)'::pg_catalog.text, 'g'::pg_catalog.text) AS m(v),
+        LATERAL pg_catalog.regexp_split_to_table(pg_catalog.btrim(m.v[1]), ' +'::pg_catalog.text) AS x(op)
+        JOIN pg_catalog.pg_operator o ON o.oid OPERATOR(pg_catalog.=) (x.op)::pg_catalog.oid
 ),
 identities AS (SELECT rl.oid FROM rl UNION SELECT sess.oid FROM sess),
 -- Pinned bridge routines and triggers: byte-identical copies of the lists in
@@ -117,13 +163,17 @@ checks(code, bad) AS (
     SELECT 'roles_missing'::pg_catalog.text, ((SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.<>) 3::pg_catalog.int8)
     UNION ALL SELECT 'role_attributes', (EXISTS (SELECT 1 FROM rl WHERE rl.rolsuper OR rl.rolcreaterole OR rl.rolcreatedb
         OR rl.rolreplication OR rl.rolbypassrls))
-    UNION ALL SELECT 'role_login', (EXISTS (SELECT 1 FROM rl WHERE rl.rolcanlogin OPERATOR(pg_catalog.<>)
-        (rl.rolname OPERATOR(pg_catalog.<>) 'fcb_signer'::pg_catalog.name)))
+    UNION ALL SELECT 'role_login', (EXISTS (SELECT 1 FROM rl
+        WHERE (rl.rolname OPERATOR(pg_catalog.=) 'fcb_app'::pg_catalog.name AND NOT rl.rolcanlogin)
+           OR (rl.rolname OPERATOR(pg_catalog.=) 'fcb_signer'::pg_catalog.name AND rl.rolcanlogin)))
     UNION ALL SELECT 'role_member_of_other_role', (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN rl ON rl.oid OPERATOR(pg_catalog.=) m.member))
     UNION ALL SELECT 'unexpected_migrator_member', (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
         WHERE m.roleid OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig) AND m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess)))
-    UNION ALL SELECT 'session_lacks_migrator_privileges', ((SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
-        AND NOT pg_catalog.pg_has_role(SESSION_USER, (SELECT mig.oid FROM mig), 'USAGE'))
+    UNION ALL SELECT 'session_reaches_migrator', ((SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
+        AND (pg_catalog.pg_has_role(SESSION_USER, (SELECT mig.oid FROM mig), 'USAGE')
+             OR pg_catalog.pg_has_role(SESSION_USER, (SELECT mig.oid FROM mig), 'SET')))
+    UNION ALL SELECT 'role_reachability', (EXISTS (SELECT 1 FROM reach x
+        WHERE x.u OR x.s OR (x.m AND x.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess))))
     UNION ALL SELECT 'unexpected_app_or_signer_member', (EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
         WHERE m.roleid OPERATOR(pg_catalog.=) ANY (ARRAY[(SELECT app.oid FROM app), (SELECT sgn.oid FROM sgn)])
         AND (m.member OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess) OR m.inherit_option OR m.set_option)))
@@ -136,11 +186,15 @@ checks(code, bad) AS (
     UNION ALL SELECT 'escalation_path', (EXISTS (
         SELECT 1 FROM rl, identities t
         WHERE rl.oid OPERATOR(pg_catalog.<>) t.oid AND pg_catalog.pg_has_role(rl.oid, t.oid, 'MEMBER')))
-    UNION ALL SELECT 'owner_not_migrator', (EXISTS (SELECT 1 FROM rels c WHERE c.relowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
+    UNION ALL SELECT 'owner_model', (EXISTS (SELECT 1 FROM rels c WHERE c.relowner IS DISTINCT FROM (SELECT owner_oid.oid FROM owner_oid))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace
-        WHERE p.proowner IS DISTINCT FROM (SELECT mig.oid FROM mig))
+        WHERE p.proowner IS DISTINCT FROM (SELECT owner_oid.oid FROM owner_oid))
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN ns ON ns.oid OPERATOR(pg_catalog.=) t.typnamespace
-        WHERE t.typowner IS DISTINCT FROM (SELECT mig.oid FROM mig)))
+        WHERE t.typowner IS DISTINCT FROM (SELECT owner_oid.oid FROM owner_oid))
+        OR (NOT (SELECT phase.two FROM phase) AND EXISTS (SELECT 1 FROM pg_catalog.pg_shdepend d
+            WHERE d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_authid'::pg_catalog.regclass
+              AND d.refobjid OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig)
+              AND d.deptype OPERATOR(pg_catalog.=) ANY (ARRAY['o', 'a', 'i']::pg_catalog."char"[]))))
     UNION ALL SELECT 'unexpected_relation_grant', (EXISTS (
         SELECT g.relname, g.grantee, g.priv FROM rel_grants g
         EXCEPT SELECT e.relname, e.grantee, e.priv FROM expected_grants e))
@@ -165,13 +219,19 @@ checks(code, bad) AS (
     UNION ALL SELECT 'default_acl_grant', (EXISTS (
         SELECT 1 FROM pg_catalog.pg_default_acl d, LATERAL pg_catalog.aclexplode(d.defaclacl) a
         WHERE a.grantee OPERATOR(pg_catalog.<>) d.defaclrole))
-    UNION ALL SELECT 'default_function_revoke_missing', ((SELECT pg_catalog.count(*) FROM mig) OPERATOR(pg_catalog.=) 1::pg_catalog.int8
+    UNION ALL SELECT 'default_function_revoke_missing', ((SELECT phase.two FROM phase)
         AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d
         WHERE d.defaclrole OPERATOR(pg_catalog.=) (SELECT mig.oid FROM mig)
         AND d.defaclnamespace OPERATOR(pg_catalog.=) 0::pg_catalog.oid
         AND d.defaclobjtype OPERATOR(pg_catalog.=) 'f'::pg_catalog."char"
         AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(d.defaclacl) a
         WHERE a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid)))
+    UNION ALL SELECT 'expression_functions', (EXISTS (SELECT 1 FROM expr_function_oids f
+        WHERE f.oid OPERATOR(pg_catalog.<>) 0::pg_catalog.oid AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN allowed_expr_functions a
+            ON a.sig OPERATOR(pg_catalog.=) (p.proname::pg_catalog.text OPERATOR(pg_catalog.||) '('::pg_catalog.text
+               OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_identity_arguments(p.oid) OPERATOR(pg_catalog.||) ')'::pg_catalog.text)
+            WHERE p.oid OPERATOR(pg_catalog.=) f.oid
+              AND p.pronamespace OPERATOR(pg_catalog.=) 'pg_catalog'::pg_catalog.regnamespace)))
     UNION ALL SELECT 'role_settings', (EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting rs
         WHERE rs.setrole OPERATOR(pg_catalog.=) ANY (ARRAY(SELECT rl.oid FROM rl))))
     UNION ALL SELECT 'routine_set', ((SELECT pg_catalog.count(*) FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace)
@@ -234,7 +294,8 @@ checks(code, bad) AS (
 )
 SELECT CASE
     WHEN (SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.=) 0::pg_catalog.int8 THEN 'ROLES_ABSENT'::pg_catalog.text
-    WHEN NOT EXISTS (SELECT 1 FROM checks WHERE checks.bad) THEN 'HARDENED'::pg_catalog.text
+    WHEN NOT EXISTS (SELECT 1 FROM checks WHERE checks.bad) AND (SELECT phase.two FROM phase) THEN 'HARDENED'::pg_catalog.text
+    WHEN NOT EXISTS (SELECT 1 FROM checks WHERE checks.bad) THEN 'HARDENED_PHASE1'::pg_catalog.text
     ELSE 'NOT_HARDENED:'::pg_catalog.text OPERATOR(pg_catalog.||)
          (SELECT pg_catalog.string_agg(checks.code, ','::pg_catalog.text ORDER BY checks.code) FROM checks WHERE checks.bad)
 END AS roles_state \gset fcb_

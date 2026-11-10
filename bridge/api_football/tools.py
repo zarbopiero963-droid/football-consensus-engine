@@ -192,8 +192,12 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     quota_state = "READY"
             except Exception:
                 quota_state = "UNAVAILABLE"
+        # FCB-WP-009 (R2): the database ROLE NAMES the runtime connects as (no host, DSN or error).
+        from bridge.db_identity import database_identity_async
+        db_identity = await database_identity_async()
         return {
             "provider": "API-FOOTBALL",
+            "database_identity": db_identity,
             "module": "FCB-APIFOOTBALL-INTEGRATION-CERT-01/PR-03",
             "status": "LIVE_ENABLED" if settings.real_requests_authorized and client is not None else ("LIVE_NOT_AUTHORIZED" if settings.configured else "KEY_NOT_CONFIGURED"),
             "enabled": True,

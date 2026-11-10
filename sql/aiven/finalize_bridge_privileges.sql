@@ -5,9 +5,11 @@
 -- hand objects over; sql/aiven/upsert_bridge_roles.sql grants exactly that in the same
 -- transaction. Catalog relations, functions and operators are schema-qualified (audit F3).
 --
--- Runtime allowlist (unchanged by WP-009: no runtime path needed a missing grant). Privileges
--- each runtime path exercises, verified through fcb_app on real PostgreSQL by
--- tests/integration/test_wp009_roles_runtime_postgres.py:
+-- Runtime allowlist (D09-02: exactly the privileges a runtime path uses; no other table, no
+-- sequence, no routine, no schema CREATE). Each row is exercised through a real fcb_app login
+-- by tests/integration/test_wp009_roles_runtime_postgres.py (functions, the real Starlette app,
+-- reaper, both coordinators); the privileges removed in D09-02 have a RED test (granted before)
+-- and the whole runtime is GREEN without them. Matrix: docs/certification/areas/wp009_roles_runbook.md.
 --   schema_migrations              S        bridge/schema_readiness.py evaluate()
 --   oauth_authorization_codes      S I U    oauth_store.save_code / exchange_code / consume_code (UPDATE .. RETURNING)
 --   oauth_access_tokens            S I      oauth_store._insert_pair / save_access_token / valid_access_token
@@ -19,9 +21,6 @@
 --   api_football_quota_attempts    S I D    quota._reserve / _mark_exhausted (ON CONFLICT DO NOTHING) / _snapshot
 --   sxbet_rate_attempts            S I D    bridge/sxbet/ratelimit.py _reserve
 --   sxbet_rate_cooldowns           S I U D  ratelimit._reserve (expiry DELETE) / _record (UPSERT)
--- The remaining privileges of the uniform SELECT/INSERT/UPDATE/DELETE grant below are not
--- exercised by any runtime path today (narrowing them is an owner decision, see the WP-009
--- runbook). No sequence, routine or schema CREATE privilege is granted to the runtime.
 DO $roles$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_migrator'::pg_catalog.name)
@@ -85,18 +84,20 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC, fcb_app, fcb_signer;
 
 GRANT SELECT ON TABLE schema_migrations TO fcb_app;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+GRANT SELECT, INSERT, UPDATE ON TABLE
     oauth_authorization_codes,
-    oauth_access_tokens,
     oauth_refresh_tokens,
-    oauth_claude_dcr_clients,
     browser_session_leases,
-    api_football_quota_counters,
+    api_football_quota_counters
+TO fcb_app;
+GRANT SELECT, INSERT ON TABLE oauth_access_tokens TO fcb_app;
+GRANT SELECT, INSERT, DELETE ON TABLE
+    oauth_claude_dcr_clients,
     api_football_quota_leases,
     api_football_quota_attempts,
-    sxbet_rate_attempts,
-    sxbet_rate_cooldowns
+    sxbet_rate_attempts
 TO fcb_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE sxbet_rate_cooldowns TO fcb_app;
 
 -- The signer remains isolated from bridge objects. No signer migration or signer
 -- privilege is introduced by this script.

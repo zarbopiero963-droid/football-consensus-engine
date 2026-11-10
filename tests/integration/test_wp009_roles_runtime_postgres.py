@@ -1,26 +1,35 @@
-"""FCB-WP-009 on real PostgreSQL: the owner-gated roles transaction and the runtime as fcb_app.
+"""FCB-WP-009 on real PostgreSQL: the two-phase roles cutover and the runtime as fcb_app.
 
-Production shape: a restored bridge 0001-0008 owned by a NON-superuser CREATEROLE identity that
-owns the database (Aiven's avnadmin). This module creates exactly that in a throwaway database,
-runs the roles transaction with the files and the order of .github/workflows/fcb-aiven-defaultdb-roles.yml
-(its own $GUARD text, minus the PG18/TLS predicates a local server cannot meet), then:
+Production shape (Aiven defaultdb, verified read-only): a restored bridge 0001-0008 owned by a
+NON-superuser CREATEROLE identity that owns the database (avnadmin), public owned by
+pg_database_owner, createrole_self_grant=inherit,set. This module builds exactly that in a
+throwaway database (the self-grant also per session, so any server, e.g. the CI PostgreSQL 16/18
+jobs, exercises it) and runs the transactions with the files and order of
+.github/workflows/fcb-aiven-defaultdb-roles.yml (its own $GUARD, minus the PG18/TLS predicates):
 
-* runs every runtime database path through a real password LOGIN as fcb_app: OAuth codes,
-  access/refresh tokens, refresh rotation, DCR; browser lease register/renew/stop/reaper;
-  both shared quota coordinators; schema readiness;
-* proves what fcb_app, fcb_migrator and fcb_signer cannot do (DDL, legacy/signer tables);
-* proves the transaction is idempotent, changes no schema evidence, keeps the administrative
-  identity working (rollback path) and refuses unexpected states before writing.
+* phase 1 (mode=apply): fcb_app LOGIN with the runtime allowlist, fcb_migrator NOLOGIN owning
+  nothing, fcb_signer NOLOGIN; the bridge stays administrator-owned (status quo, rollback safe);
+* phase 2 (mode=enable-migrator): ownership to fcb_migrator, no administrator inheritance/SET,
+  fcb_migrator LOGIN - atomically, and only with no other administrator session connected.
+
+It runs every runtime path through a real fcb_app login (functions and the real Starlette app:
+OAuth, MCP, leases + reaper, both coordinators, readiness, the database identity of R2), proves
+what nobody can do, kills every model check with a planted violation, and runs RED/GREEN attacks
+for the privilege-escalation paths of the reviews of PR #182 (planted triggers, forced row-level
+policies, SET ROLE, the read-only "boundary", the cutover window, late administrator sessions).
 
 Every role created here has a random password (CI authenticates with passwords) and is dropped.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -39,61 +48,66 @@ BRIDGE_SCRIPT = AIVEN / "aiven_migrations_bridge_0001_0008.sql"
 WORKFLOW = ROOT / ".github" / "workflows" / "fcb-aiven-defaultdb-roles.yml"
 HELPER = ROOT / "scripts" / "fcb_db_roles.py"
 ROLES = ("fcb_app", "fcb_signer", "fcb_migrator")
-TX_FILES = ("roles_apply_guard.sql", "upsert_bridge_roles.sql", "prepare_bridge_roles.sql",
-            "finalize_bridge_privileges.sql", "roles_post_checks.sql", "assert_bridge_roles.sql")
+# Phase 1 transaction (after $GUARD), in the workflow's order.
+TX_FILES = ("roles_apply_guard.sql", "upsert_bridge_roles.sql", "grant_bridge_runtime.sql",
+            "assert_bridge_counts.sql", "assert_bridge_roles.sql")
+# Phase 2 transaction (after $GUARD).
+TX2_FILES = ("enable_bridge_migrator.sql", "assert_bridge_roles.sql")
 RUNTIME_TABLES = (
     "oauth_authorization_codes", "oauth_access_tokens", "oauth_refresh_tokens", "oauth_claude_dcr_clients",
     "browser_session_leases", "api_football_quota_counters", "api_football_quota_leases",
     "api_football_quota_attempts", "sxbet_rate_attempts", "sxbet_rate_cooldowns",
 )
+# D09-02: the exact runtime allowlist (table -> privileges) and the code path using each.
+ALLOWLIST = {
+    "schema_migrations": {"SELECT"},
+    "oauth_authorization_codes": {"SELECT", "INSERT", "UPDATE"},
+    "oauth_access_tokens": {"SELECT", "INSERT"},
+    "oauth_refresh_tokens": {"SELECT", "INSERT", "UPDATE"},
+    "oauth_claude_dcr_clients": {"SELECT", "INSERT", "DELETE"},
+    "browser_session_leases": {"SELECT", "INSERT", "UPDATE"},
+    "api_football_quota_counters": {"SELECT", "INSERT", "UPDATE"},
+    "api_football_quota_leases": {"SELECT", "INSERT", "DELETE"},
+    "api_football_quota_attempts": {"SELECT", "INSERT", "DELETE"},
+    "sxbet_rate_attempts": {"SELECT", "INSERT", "DELETE"},
+    "sxbet_rate_cooldowns": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+}
 CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback"
 RESOURCE = "https://bridge.example/mcp"
 _TLS_PG18 = (" OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000"
              " OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999"
              " OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) "
              "pg_catalog.pg_backend_pid()), false)")
-
-# Aiven defaultdb (read-only facts, 2026-11-09): createrole_self_grant='inherit,set' at server level,
-# public owned by pg_database_owner, database owned by avnadmin (non-superuser, CREATEROLE). The
-# admin sessions below carry the same setting (as a client option, so CI mirrors it too; the
-# throwaway cluster used for the local evidence also sets it server-wide).
+# Aiven defaultdb: createrole_self_grant='inherit,set' at server level. The administrator's
+# sessions below carry it as a client option, so every server reproduces it.
 AIVEN_SELF_GRANT = "-c createrole_self_grant=inherit,set"
 ADMIN_OPTIONS = f"-c search_path=public {AIVEN_SELF_GRANT}"
-READ_ONLY_OPTIONS = f"{ADMIN_OPTIONS} -c default_transaction_read_only=on"
-
 RESTORE_PINNED_FINGERPRINT = "b825ab11029502140b038ce6d3add670"  # fcb-aiven-defaultdb-restore.yml, PG18
+# After both phases: only PostgreSQL's automatic ADMIN-only grants to the creator remain.
 EXPECTED_MEMBERSHIP_LINES = [
     "membership fcb_app <- session admin=true inherit=false set=false grantor=bootstrap",
-    "membership fcb_migrator <- session admin=false inherit=true set=true grantor=session",
     "membership fcb_migrator <- session admin=true inherit=false set=false grantor=bootstrap",
     "membership fcb_signer <- session admin=true inherit=false set=false grantor=bootstrap",
 ]
-# Effective reach between the four identities: only the administrative session reaches the
-# migrator (privileges + SET ROLE); it is MEMBER (ADMIN only) of fcb_app/fcb_signer, without
-# their privileges and without SET ROLE. No bridge role reaches anything.
 EXPECTED_EFFECTIVE_LINES = [
-    f"effective {a} -> {b} member={m} inherits_privileges={u} can_set_role={c}"
-    for a, b, m, u, c in (
-        ("session", "fcb_migrator", "true", "true", "true"),
-        ("session", "fcb_app", "true", "false", "false"),
-        ("session", "fcb_signer", "true", "false", "false"),
-        *((x, y, "false", "false", "false")
-          for x in ("fcb_app", "fcb_migrator", "fcb_signer")
+    f"effective {a} -> {b} member={m} inherits_privileges=false can_set_role=false"
+    for a, b, m in (
+        ("session", "fcb_migrator", "true"), ("session", "fcb_app", "true"), ("session", "fcb_signer", "true"),
+        *((x, y, "false") for x in ("fcb_app", "fcb_migrator", "fcb_signer")
           for y in ("session", "fcb_app", "fcb_migrator", "fcb_signer") if x != y),
     )
 ]
-
-
-def _server_major(env):
-    with env.connect("admin") as conn:
-        return conn.info.server_version // 10000
-
 
 pytestmark = [
     pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"),
                        reason="requires isolated TEST_DATABASE_URL; no production credentials"),
     pytest.mark.skipif(os.environ.get("FCB_REQUIRE_PSQL") != "1", reason="requires real psql in CI"),
 ]
+
+
+def _server_major_raw():
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        return conn.info.server_version // 10000
 
 
 def _dsn_for(dbname, **override):
@@ -109,13 +123,17 @@ def _drop_bridge_roles():
             conn.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
 
 
-def _workflow_guard(dbname):
+def _guard_from(step_prefix, dbname):
     wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    step = next(s for s in wf["jobs"]["roles"]["steps"] if s.get("name", "").startswith("Apply roles"))
+    step = next(s for s in wf["jobs"]["roles"]["steps"] if s.get("name", "").startswith(step_prefix))
     line = next(l.strip() for l in step["run"].splitlines() if l.strip().startswith('GUARD="DO'))
     guard = line[len('GUARD="'):-1].replace("\\$", "$")
     assert guard.count(_TLS_PG18) == 1
     return guard.replace(_TLS_PG18, "").replace("$EXPECTED_DB", dbname)
+
+
+def _workflow_guard(dbname):
+    return _guard_from("Phase 1 -", dbname)
 
 
 class Env:
@@ -129,7 +147,7 @@ class Env:
         self.admin_dsn = _dsn_for(self.dbname, user=self.admin_role, password=self.admin_password)
         self.extra_roles = []  # roles a test creates; dropped after the database
 
-    def extra_role(self):
+    def extra_role(self, login=False):
         name = "wp009_x_" + uuid.uuid4().hex[:8]
         self.extra_roles.append(name)
         with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
@@ -146,6 +164,11 @@ class Env:
 
     def dsn(self, role):
         return _dsn_for(self.dbname, user=role, password=self.passwords[role])
+
+    def uri(self):
+        params = conninfo_to_dict(self.admin_dsn)
+        return (f"postgresql://{self.admin_role}:{self.admin_password}@/{self.dbname}"
+                f"?host={params['host']}&port={params['port']}")
 
     def connect(self, role="fcb_app", **kw):
         if role == "admin":
@@ -168,40 +191,62 @@ class Env:
         assert rc == 0, err
         return out
 
+    # Catalog-only reads (the administrator never needs to read a bridge row for these).
     def state(self):
         out = self.ok("-f", str(AIVEN / "defaultdb_precheck.sql"))
-        if out == "TRACKED":
+        if out == "TRACKED":  # only before any bridge role exists (administrator owns everything)
             out = self.ok("-f", str(AIVEN / "defaultdb_precheck_tracked.sql"))
         return out
 
     def roles_state(self):
-        return self.ok("-f", str(AIVEN / "verify_bridge_roles.sql"),
-                       pgoptions=READ_ONLY_OPTIONS)
+        return self.ok("-f", str(AIVEN / "verify_bridge_roles.sql"))
 
     def diagnose(self):
-        return self.ok("-f", str(AIVEN / "diagnose_bridge_roles.sql"),
-                       pgoptions=READ_ONLY_OPTIONS)
+        return self.ok("-f", str(AIVEN / "diagnose_bridge_roles.sql"))
 
     def structure_fingerprint(self):
-        return self.ok("-f", str(AIVEN / "fingerprint_bridge_structure.sql"), pgoptions=READ_ONLY_OPTIONS)
+        return self.ok("-f", str(AIVEN / "fingerprint_bridge_structure.sql"))
 
     def full_fingerprint(self):
-        return self.ok("-f", str(AIVEN / "fingerprint_bridge_schema.sql"), pgoptions=READ_ONLY_OPTIONS)
+        return self.ok("-f", str(AIVEN / "fingerprint_bridge_schema.sql"))
+
+    def schema_evidence_as_admin(self):
+        """Only valid while the administrator owns everything and no bridge role exists."""
+        return self.ok("-F", "=", "-f", str(AIVEN / "verify_bridge_schema.sql"))
+
+    def catalog_counts(self):
+        return self.ok("-f", str(AIVEN / "count_bridge_catalog.sql"))
 
     def schema_evidence(self):
-        return self.ok("-F", "=", "-f", str(AIVEN / "verify_bridge_schema.sql"))
+        """Rows read AS fcb_app (the workflow's `fcb_db_roles.py evidence`)."""
+        proc = subprocess.run([sys.executable, "-I", str(HELPER), "evidence"], env=self.helper_env(),
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip()
+
+    def helper_env(self, **extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PG", "FCB_"))}
+        env.update({"FCB_DEFAULTDB_URL": self.uri(), "FCB_APP_DB_PASSWORD": self.passwords["fcb_app"],
+                    "FCB_MIGRATOR_DB_PASSWORD": self.passwords["fcb_migrator"], "PGOPTIONS": AIVEN_SELF_GRANT})
+        env.pop("PYTHONPATH", None)
+        env.update(extra)
+        return env
 
     def verifiers(self):
         env = {**os.environ, "FCB_APP_DB_PASSWORD": self.passwords["fcb_app"],
                "FCB_MIGRATOR_DB_PASSWORD": self.passwords["fcb_migrator"]}
         out = {}
-        for role, var, target in (("fcb_app", "FCB_APP_DB_PASSWORD", "FCB_APP_DB_VERIFIER"),
-                                  ("fcb_migrator", "FCB_MIGRATOR_DB_PASSWORD", "FCB_MIGRATOR_DB_VERIFIER")):
+        for var, target in (("FCB_APP_DB_PASSWORD", "FCB_APP_DB_VERIFIER"),
+                            ("FCB_MIGRATOR_DB_PASSWORD", "FCB_MIGRATOR_DB_VERIFIER")):
             proc = subprocess.run([sys.executable, "-I", "-S", str(HELPER), "verifier", var],
                                   env=env, capture_output=True, text=True, timeout=60)
             assert proc.returncode == 0, proc.stderr
             out[target] = proc.stdout.strip()
         return out
+
+
+def _expected_rows():
+    return "\n".join(["schema_migrations_rows=8", *_expected_migrations().split(" ")])
 
 
 def _expected_migrations():
@@ -212,8 +257,12 @@ def _expected_migrations():
     return " ".join(rows)
 
 
-def _roles_tx(env: Env, *, counts, verifiers=None, migrations=None, extra_before=(), guard=True):
-    args = ["-v", f"expected_counts={counts}", "-v", f"expected_migrations={migrations or _expected_migrations()}", "-1"]
+def _roles_tx(env: Env, *, counts=None, verifiers=None, migrations=None, extra_before=(), guard=True,
+              pgoptions=ADMIN_OPTIONS):
+    """Phase 1, exactly as the workflow's `run`."""
+    args = ["-v", f"expected_counts={counts or env.counts}",
+            "-v", f"expected_migrations={migrations or _expected_migrations()}",
+            "-v", "expected_roles_state=HARDENED_PHASE1", "-1"]
     if guard:
         args += ["-c", _workflow_guard(env.dbname)]
     for name in TX_FILES:
@@ -221,7 +270,21 @@ def _roles_tx(env: Env, *, counts, verifiers=None, migrations=None, extra_before
             for c in extra_before:
                 args += ["-c", c]
         args += ["-f", str(AIVEN / name)]
-    return env.psql(*args, env_extra=verifiers if verifiers is not None else env.verifiers())
+    if verifiers is None:
+        verifiers = {"FCB_APP_DB_VERIFIER": env.verifiers()["FCB_APP_DB_VERIFIER"]}
+    return env.psql(*args, env_extra=verifiers, pgoptions=pgoptions)
+
+
+def _enable_tx(env: Env, *, verifiers=None, observe=0, guard=True, pgoptions=ADMIN_OPTIONS):
+    """Phase 2, exactly as the workflow's enable step."""
+    args = ["-v", f"observe_seconds={observe}", "-v", "expected_roles_state=HARDENED", "-1"]
+    if guard:
+        args += ["-c", _guard_from("Phase 2 -", env.dbname)]
+    for name in TX2_FILES:
+        args += ["-f", str(AIVEN / name)]
+    if verifiers is None:
+        verifiers = {"FCB_MIGRATOR_DB_VERIFIER": env.verifiers()["FCB_MIGRATOR_DB_VERIFIER"]}
+    return env.psql(*args, env_extra=verifiers, pgoptions=pgoptions)
 
 
 def _create_env() -> Env:
@@ -241,7 +304,13 @@ def _create_env() -> Env:
                          "pg_catalog.pg_roles r WHERE n.nspname = 'public' AND d.datname = pg_catalog.current_database() "
                          "AND r.rolname = SESSION_USER")
     assert shape == "pg_database_owner true inherit,set false true", shape
-    env.counts = " ".join(env.schema_evidence().splitlines()[:7])
+    env.counts = " ".join(env.schema_evidence_as_admin().splitlines()[:7])
+    env.schema_before = env.schema_evidence_as_admin()
+    env.structure_before = env.structure_fingerprint()
+    env.full_before = env.full_fingerprint()
+    env.catalog_before = env.catalog_counts()
+    assert env.catalog_before == " ".join(c for c in env.counts.split()
+                                          if not c.startswith(("constraints_information_schema=", "schema_migrations_rows=")))
     return env
 
 
@@ -254,149 +323,196 @@ def _destroy_env(env: Env):
 
 
 @pytest.fixture
-def hardened():
-    """The production path: restored 0001-0008, then the roles transaction (first run)."""
+def fresh():
+    """A restored 0001-0008 database with no bridge role (status quo before WP-009)."""
     env = _create_env()
     try:
-        env.roles_before = env.roles_state()
-        env.schema_before = env.schema_evidence()
-        env.structure_before = env.structure_fingerprint()
-        env.full_before = env.full_fingerprint()
-        rc, _, err = _roles_tx(env, counts=env.counts)
-        assert rc == 0, err
         yield env
     finally:
         _destroy_env(env)
 
 
 @pytest.fixture
-def fresh():
-    """A restored 0001-0008 database with no roles, for refusal tests (function scope)."""
-    env = _create_env()
-    try:
-        yield env
-    finally:
-        _destroy_env(env)
+def phase1(fresh):
+    """After phase 1: fcb_app works, fcb_migrator NOLOGIN owns nothing, administrator owns all."""
+    rc, _, err = _roles_tx(fresh)
+    assert rc == 0, err
+    return fresh
 
 
-# ------------------------------------------------------------------ the transaction itself
+@pytest.fixture
+def hardened(phase1):
+    """After phase 2 (the final production state)."""
+    rc, _, err = _enable_tx(phase1)
+    assert rc == 0, err
+    return phase1
 
-def test_first_run_reaches_the_hardened_model_without_touching_the_schema(hardened):
-    assert hardened.roles_before == "ROLES_ABSENT"
-    assert hardened.roles_state() == "HARDENED"
-    # Owners and grants changed; tables, columns, constraints, indexes, migrations did not.
-    assert hardened.schema_evidence() == hardened.schema_before
-    report = hardened.diagnose()
-    assert "owners relations fcb_migrator=" in report and "session=" not in report.split("owners relations")[1].split("\n")[0]
-    assert "role fcb_signer exists=true login=false" in report
-    assert "createrole_self_grant=inherit,set" in report
-    assert "public_schema_owner=pg_database_owner" in report and "database_owner=session" in report
-    # The Aiven self-grant was switched off inside the transaction: the creator holds ADMIN only
-    # on fcb_app/fcb_signer, and the one explicit SET+INHERIT membership is in fcb_migrator.
-    assert [l for l in report.splitlines() if l.startswith("membership ")] == EXPECTED_MEMBERSHIP_LINES
-    effective = [l for l in report.splitlines() if l.startswith("effective ")]
-    assert sorted(effective) == sorted(EXPECTED_EFFECTIVE_LINES), effective
+
+def _role_exists(role):
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        return conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is not None
+
+
+def _role_flags(*roles):
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        return {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT rolname, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname = ANY(%s)", (list(roles),)).fetchall()}
+
+
+# ------------------------------------------------------------------ phase 1 and phase 2 themselves
+
+def test_phase1_creates_the_runtime_role_and_moves_nothing(phase1):
+    assert phase1.roles_state() == "HARDENED_PHASE1"
+    report = phase1.diagnose()
+    assert "owners relations session=34" in report and "owners routines session=4" in report
     assert "role fcb_app exists=true login=true superuser=false createrole=false createdb=false" in report
+    assert "role fcb_migrator exists=true login=false" in report and "role fcb_signer exists=true login=false" in report
+    assert [l for l in report.splitlines() if l.startswith("membership ")] == EXPECTED_MEMBERSHIP_LINES
+    assert sorted(l for l in report.splitlines() if l.startswith("effective ")) == sorted(EXPECTED_EFFECTIVE_LINES)
+    assert "schema_public_acl fcb_app:USAGE pg_database_owner:CREATE pg_database_owner:USAGE" in report
+    assert "default_acl none" in report and not [l for l in report.splitlines() if l.startswith("reach ")]
+    assert phase1.structure_fingerprint() == phase1.structure_before
+    assert phase1.schema_evidence() == _expected_rows()  # rows read AS fcb_app
+    assert phase1.catalog_counts() == phase1.catalog_before
+    # The restore precheck refuses (runtime grants) BEFORE its tracked part would read a table.
+    assert phase1.state() == "REFUSE_RUNTIME_TABLE_DRIFT"
+
+
+def test_phase1_rollback_is_the_status_quo_administrator_dsn(phase1):
+    """Before phase 2 the administrator still owns the bridge and nobody can act as fcb_migrator,
+    so reverting Render to the administrator DSN is safe and works."""
+    from bridge import schema_readiness
+    assert schema_readiness.evaluate(lambda: phase1.connect("admin"))["state"] == "READY"
+    with phase1.connect("admin") as conn:
+        conn.execute("INSERT INTO oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) "
+                     "VALUES ('rollback-probe','https://example.invalid/cb',now()+interval '1 hour')")
+        conn.rollback()
+
+
+def test_phase1_migrator_cannot_be_used_by_anyone(phase1):
+    """R1 during the window: NOLOGIN (any password refused), owns nothing, and no non-superuser
+    role of the cluster can SET ROLE to it or inherit it; the administrator neither (ADMIN only)."""
+    for pw in ("", phase1.passwords["fcb_migrator"], "x" * 40):
+        with pytest.raises(psycopg.OperationalError):
+            psycopg.connect(_dsn_for(phase1.dbname, user="fcb_migrator", password=pw)).close()
+    with phase1.connect("admin") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SET ROLE fcb_migrator")
+        conn.rollback()
+        reach = conn.execute(
+            "SELECT r.rolname FROM pg_catalog.pg_roles r WHERE NOT r.rolsuper AND r.rolname <> 'fcb_migrator' AND "
+            "(pg_catalog.pg_has_role(r.oid, 'fcb_migrator', 'SET') OR pg_catalog.pg_has_role(r.oid, 'fcb_migrator', 'USAGE'))"
+        ).fetchall()
+        assert reach == []
+        owned = conn.execute("SELECT count(*) AS n FROM pg_catalog.pg_shdepend d WHERE d.refobjid = "
+                             "'fcb_migrator'::regrole AND d.deptype = 'o'").fetchone()["n"]
+        assert owned == 0
+    with phase1.connect("fcb_app") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SET ROLE fcb_migrator")
+
+
+def test_phase1_rerun_is_a_no_op(phase1):
+    first = phase1.diagnose()
+    rc, _, err = _roles_tx(phase1)
+    assert rc == 0, err
+    assert phase1.diagnose() == first and phase1.roles_state() == "HARDENED_PHASE1"
+    with phase1.connect("fcb_app") as conn:  # the re-set password still works
+        assert conn.execute("SELECT CURRENT_USER AS u").fetchone()["u"] == "fcb_app"
+
+
+def test_phase2_hands_the_bridge_over_and_leaves_the_administrator_without_privileges(hardened):
+    assert hardened.roles_state() == "HARDENED"
+    report = hardened.diagnose()
+    assert "owners relations fcb_migrator=34" in report and "owners routines fcb_migrator=4" in report
+    assert "role fcb_migrator exists=true login=true superuser=false createrole=false createdb=false" in report
+    # D09-01: the administrator keeps only the automatic ADMIN-only grant: no INHERIT, no SET.
+    assert [l for l in report.splitlines() if l.startswith("membership ")] == EXPECTED_MEMBERSHIP_LINES
+    assert sorted(l for l in report.splitlines() if l.startswith("effective ")) == sorted(EXPECTED_EFFECTIVE_LINES)
+    assert ("schema_public_acl fcb_app:USAGE fcb_migrator:CREATE fcb_migrator:USAGE "
+            "pg_database_owner:CREATE pg_database_owner:USAGE") in report
+    assert "default_acl fcb_migrator:f:all_schemas:grantees=0" in report and "routine_non_owner_grants=0" in report
     assert report.splitlines()[-1] == "HARDENED"
+    with hardened.connect("admin") as conn:
+        row = conn.execute("SELECT pg_catalog.pg_has_role(SESSION_USER, 'fcb_migrator', 'USAGE') AS u, "
+                           "pg_catalog.pg_has_role(SESSION_USER, 'fcb_migrator', 'SET') AS s, "
+                           "pg_catalog.pg_has_role(SESSION_USER, 'fcb_migrator', 'MEMBER') AS m").fetchone()
+        assert row == {"u": False, "s": False, "m": True}
+    assert hardened.state() == "REFUSE_DEFAULT_PRIVILEGES"  # restore precheck: catalog-only refusal
 
 
-def test_owner_and_acl_change_by_design_and_the_structure_fingerprint_does_not(hardened):
-    """Apply transfers ownership to fcb_migrator and rewrites ACLs BY DESIGN, so the restore's full
-    catalog fingerprint changes; the same fingerprint without owner/ACL fields does not."""
+def test_phase2_changes_owner_and_acl_by_design_but_not_the_structure(hardened):
     assert hardened.structure_fingerprint() == hardened.structure_before
     assert hardened.full_fingerprint() != hardened.full_before
-    if _server_major(hardened) == 18:  # the restore's pinned PG18 value, as the workflow requires
+    assert hardened.schema_evidence() == _expected_rows()  # rows read AS fcb_app
+    assert hardened.catalog_counts() == hardened.catalog_before
+    if _server_major_raw() == 18:  # the restore's pinned PG18 values, as the workflow requires
         assert hardened.full_before == RESTORE_PINNED_FINGERPRINT
         wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         assert hardened.counts == wf["jobs"]["roles"]["env"]["EXPECTED_COUNTS"]
         assert wf["jobs"]["roles"]["env"]["EXPECTED_FINGERPRINT"] == RESTORE_PINNED_FINGERPRINT
 
 
-def test_exact_membership_inventory_after_create_role(hardened):
-    with hardened.connect("admin") as conn:
-        rows = conn.execute(
-            "SELECT r.rolname AS role, CASE WHEN m.member = (SELECT oid FROM pg_roles WHERE rolname = SESSION_USER) "
-            "THEN 'session' ELSE mm.rolname END AS member, m.admin_option, m.inherit_option, m.set_option, "
-            "CASE WHEN m.grantor = 10 THEN 'bootstrap' WHEN m.grantor = (SELECT oid FROM pg_roles WHERE rolname = SESSION_USER) "
-            "THEN 'session' ELSE g.rolname END AS grantor "
-            "FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid JOIN pg_roles mm ON mm.oid = m.member "
-            "JOIN pg_roles g ON g.oid = m.grantor "
-            "WHERE r.rolname IN ('fcb_app','fcb_migrator','fcb_signer') OR mm.rolname IN ('fcb_app','fcb_migrator','fcb_signer') "
-            "ORDER BY 1, 2, 3, 4, 5, 6").fetchall()
-    assert [tuple(r.values()) for r in rows] == [
-        ("fcb_app", "session", True, False, False, "bootstrap"),
-        ("fcb_migrator", "session", False, True, True, "session"),
-        ("fcb_migrator", "session", True, False, False, "bootstrap"),
-        ("fcb_signer", "session", True, False, False, "bootstrap"),
-    ]
-
-
-def test_an_extra_membership_row_is_refused_by_the_model(hardened):
-    """Anything beyond the exact inventory (here: the admin given SET on fcb_app) is refused."""
-    hardened.ok("-c", "GRANT fcb_app TO CURRENT_USER WITH INHERIT FALSE, SET TRUE")
-    state = hardened.roles_state()
-    assert state.startswith("NOT_HARDENED:") and "membership_inventory" in state
-    rc, _, err = _roles_tx(hardened, counts=hardened.counts)
-    assert rc != 0 and "membership_inventory" in err
-
-
-def test_second_run_is_a_no_op(hardened):
-    first = hardened.diagnose()
-    full_first = hardened.full_fingerprint()
-    with hardened.connect("admin") as conn:
-        applied = conn.execute("SELECT pg_catalog.string_agg(m.applied_at::text, ',' ORDER BY m.version) AS a "
-                               "FROM public.schema_migrations m").fetchone()["a"]
-    rc, _, err = _roles_tx(hardened, counts=hardened.counts)
+def test_phase2_rerun_only_resets_the_migrator_password(hardened):
+    first, full = hardened.diagnose(), hardened.full_fingerprint()
+    rc, _, err = _enable_tx(hardened)
     assert rc == 0, err
-    assert hardened.diagnose() == first
-    assert hardened.schema_evidence() == hardened.schema_before
-    assert hardened.full_fingerprint() == full_first  # owners/ACLs too: run 2 changes nothing
-    assert hardened.structure_fingerprint() == hardened.structure_before
-    with hardened.connect("admin") as conn:
-        assert conn.execute("SELECT pg_catalog.string_agg(m.applied_at::text, ',' ORDER BY m.version) AS a "
-                            "FROM public.schema_migrations m").fetchone()["a"] == applied
-    # The password set by the re-run still works (same secret, new salt).
-    with hardened.connect("fcb_app") as conn:
-        assert conn.execute("SELECT CURRENT_USER AS u").fetchone()["u"] == "fcb_app"
+    assert hardened.diagnose() == first and hardened.full_fingerprint() == full
+    with hardened.connect("fcb_migrator") as conn:
+        assert conn.execute("SELECT CURRENT_USER AS u").fetchone()["u"] == "fcb_migrator"
 
 
-def test_after_hardening_the_restore_precheck_refuses(hardened):
-    """The restore workflow must not run on a hardened database as the administrator; future
-    migrations need a migrator-run workflow (documented residual in the runbook)."""
-    assert hardened.state().startswith("REFUSE_")
+def test_phase1_is_refused_after_phase2(hardened):
+    rc, _, err = _roles_tx(hardened)
+    assert rc != 0 and "FCB_ROLES_OWNER_GUARD_FAILED" in err
 
 
-def test_administrative_identity_keeps_working_for_rollback(hardened):
+def test_phase2_is_refused_before_phase1(fresh):
+    rc, _, err = _enable_tx(fresh)
+    assert rc != 0 and "FCB_ROLES_PHASE2_STATE_REFUSED ROLES_ABSENT" in err
+
+
+def test_accidental_administrator_dsn_after_phase2_fails_closed(hardened):
+    """D09-01: every administrator access to a bridge table is refused by the privilege check,
+    before any row is read or any policy, trigger, rule or default could run."""
     from bridge import schema_readiness
-    assert schema_readiness.evaluate(lambda: hardened.connect("admin"))["state"] == "READY"
-    with hardened.connect("admin") as conn:
-        conn.execute("INSERT INTO oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) "
-                     "VALUES ('rollback-probe','https://example.invalid/cb',now()+interval '1 hour')")
-        conn.rollback()
+    assert schema_readiness.evaluate(lambda: hardened.connect("admin"))["state"] != "READY"
+    for stmt in ("SELECT 1 FROM public.schema_migrations", "SELECT count(*) FROM public.oauth_access_tokens",
+                 "INSERT INTO public.oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) VALUES ('a','b',now())",
+                 "UPDATE public.browser_session_leases SET owner_id = 'x'", "DELETE FROM public.sxbet_rate_attempts",
+                 "TRUNCATE public.model_snapshots", "SELECT public.canonical_reject_mutation()",
+                 "ALTER TABLE public.runtime_state ADD COLUMN x integer", "SET ROLE fcb_migrator",
+                 "LOCK TABLE public.schema_migrations IN ACCESS SHARE MODE"):
+        with hardened.connect("admin") as conn:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(stmt)
 
 
-def test_both_identities_pass_the_workflow_login_check(hardened):
-    url = _dsn_for(hardened.dbname, user=hardened.admin_role, password=hardened.admin_password)
-    params = conninfo_to_dict(url)
-    host = params.get("host", "")
-    uri = (f"postgresql://{hardened.admin_role}:{hardened.admin_password}@/{hardened.dbname}"
-           f"?host={host}&port={params.get('port', '5432')}")
-    env = {**os.environ, "FCB_DEFAULTDB_URL": uri, "PYTHONPATH": str(ROOT),
-           "FCB_APP_DB_PASSWORD": hardened.passwords["fcb_app"],
-           "FCB_MIGRATOR_DB_PASSWORD": hardened.passwords["fcb_migrator"]}
-    proc = subprocess.run([sys.executable, str(HELPER), "login-check"], env=env, capture_output=True,
-                          text=True, timeout=120)
+def test_both_identities_pass_the_workflow_login_check(phase1, tmp_path):
+    def run(phase, require_tls=False):
+        args = [sys.executable, "-I", str(HELPER), "login-check", "--phase", str(phase)]
+        if require_tls:
+            args.append("--require-tls")
+        return subprocess.run(args, env=phase1.helper_env(), capture_output=True, text=True, timeout=120)
+    proc = run(1)
     assert proc.returncode == 0, proc.stderr
     assert "login fcb_app: tls=False schema_migrations_rows=8 readiness=READY create_denied=True " \
            "legacy_read_denied=True" in proc.stdout
+    assert "login fcb_migrator: refused (phase 1: NOLOGIN, no password)" in proc.stdout
+    assert run(2).returncode == 1  # phase 2 checks fail in phase 1 (migrator cannot log in)
+    rc, _, err = _enable_tx(phase1)
+    assert rc == 0, err
+    proc = run(2)
+    assert proc.returncode == 0, proc.stderr
     assert "login fcb_migrator: tls=False schema_migrations_rows=8 can_create=True" in proc.stdout
-    for secret in (*hardened.passwords.values(), hardened.admin_password):
-        assert secret not in proc.stdout + proc.stderr
-    # The workflow requires TLS: a plaintext session is refused by the same check.
-    proc = subprocess.run([sys.executable, str(HELPER), "login-check", "--require-tls"], env=env,
-                          capture_output=True, text=True, timeout=120)
+    assert "admin: bridge access denied=True inherits_migrator=False can_set_migrator=False" in proc.stdout
+    assert run(1).returncode == 1  # the phase-1 check now sees a migrator that can log in
+    for out in (proc.stdout + proc.stderr,):
+        for secret in (*phase1.passwords.values(), phase1.admin_password):
+            assert secret not in out
+    proc = run(2, require_tls=True)
     assert proc.returncode == 1 and "FCB_LOGIN_NOT_TLS" in proc.stderr
-    with hardened.connect("admin") as conn:  # the probes were rolled back
+    with phase1.connect("fcb_migrator") as conn:  # the probes were rolled back
         assert conn.execute("SELECT pg_catalog.to_regclass('public.fcb_wp009_login_probe') AS r").fetchone()["r"] is None
 
 
@@ -471,13 +587,13 @@ def test_oauth_code_exchange_tokens_and_refresh_rotation_as_fcb_app(app_runtime)
 
 def test_oauth_dcr_register_validate_and_expiry_cleanup_as_fcb_app(app_runtime, hardened):
     from bridge import oauth_store
-    with hardened.connect("admin") as conn:  # an expired registration for the cleanup DELETE
+    with hardened.connect("fcb_migrator") as conn:  # an expired registration for the cleanup DELETE
         conn.execute("INSERT INTO oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) "
                      "VALUES ('expired-probe','https://example.invalid/cb',now()-interval '1 second')")
     client_id = oauth_store.register_claude_dcr_client(CLAUDE_REDIRECT)
     assert oauth_store.valid_claude_dcr_client(client_id, CLAUDE_REDIRECT)
     assert not oauth_store.valid_claude_dcr_client(client_id, "https://evil.example/cb")
-    with hardened.connect("admin") as conn:
+    with hardened.connect("fcb_migrator") as conn:
         assert conn.execute("SELECT count(*) AS n FROM oauth_claude_dcr_clients "
                             "WHERE client_id_hash='expired-probe'").fetchone()["n"] == 0
 
@@ -612,12 +728,8 @@ def test_signer_tables_created_later_are_not_readable_by_fcb_app(hardened):
     """Signer objects never belong in defaultdb; if one ever appeared there (created by the
     migrator or by the administrator), neither default privileges nor PUBLIC hand it to fcb_app."""
     signer_sql = (ROOT / "sql" / "migrations" / "signer" / "0001_signer_ledger_anchor.sql").read_text()
-    with hardened.connect("admin") as conn:
-        conn.execute("SET ROLE fcb_migrator")
-        conn.execute(signer_sql)
-        conn.execute("RESET ROLE")
-        conn.execute("CREATE TABLE public.wp009_admin_made(id integer)")
-        conn.commit()
+    hardened.superuser(signer_sql, as_role="fcb_migrator")
+    hardened.superuser("CREATE TABLE public.wp009_admin_made(id integer)", as_role=hardened.admin_role)
     with hardened.connect("fcb_app") as app:
         for table in ("signer_ledger_anchors", "signer_ledger_writer_leases", "wp009_admin_made"):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -629,7 +741,7 @@ def test_signer_tables_created_later_are_not_readable_by_fcb_app(hardened):
         # A GRANT by a non-owner grants nothing (PostgreSQL only warns).
         app.execute("GRANT SELECT ON oauth_access_tokens TO fcb_signer")
         app.commit()
-    with hardened.connect("admin") as conn:
+    with hardened.connect("fcb_migrator") as conn:
         assert not conn.execute("SELECT pg_catalog.has_table_privilege('fcb_signer', 'public.oauth_access_tokens', "
                                 "'SELECT') AS a").fetchone()["a"]
 
@@ -659,134 +771,6 @@ def test_fcb_migrator_owns_the_bridge_but_has_no_cluster_privilege(hardened):
         conn.rollback()
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("SET ROLE fcb_app")
-
-
-# ------------------------------------------------------------------ refusals before any write
-
-def _nothing_changed(env: Env):
-    assert env.roles_state() == "ROLES_ABSENT"
-    assert env.state() == "BRIDGE_0001_0008"
-
-
-def test_missing_verifiers_abort_before_commit(fresh):
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts, verifiers={})
-    assert rc != 0
-    _nothing_changed(fresh)
-
-
-def test_malformed_or_equal_verifiers_abort_before_commit(fresh):
-    good = fresh.verifiers()
-    for bad in ({**good, "FCB_APP_DB_VERIFIER": "plaintext-password-not-a-verifier-000000"},
-                {**good, "FCB_MIGRATOR_DB_VERIFIER": good["FCB_APP_DB_VERIFIER"]}):
-        rc, _, err = _roles_tx(fresh, counts=fresh.counts, verifiers=bad)
-        assert rc != 0 and "FCB_ROLE_VERIFIER_INVALID" in err
-        _nothing_changed(fresh)
-
-
-def test_wrong_counts_or_migrations_abort_before_commit(fresh):
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts.replace("tables=33", "tables=34"))
-    assert rc != 0 and "FCB_" in err
-    _nothing_changed(fresh)
-    expected = _expected_migrations()
-    for wrong in (expected.rsplit(" ", 1)[0],                       # 0008 missing from the repository list
-                  expected[:-1] + ("0" if expected[-1] != "0" else "1"),  # a different 0008 checksum
-                  expected.replace("1=0001_", "9=0001_", 1)):       # renumbered
-        rc, _, err = _roles_tx(fresh, counts=fresh.counts, migrations=wrong)
-        assert rc != 0 and "FCB_ROLES_MIGRATIONS_GUARD_FAILED" in err
-        _nothing_changed(fresh)
-
-
-def test_object_of_a_third_owner_aborts_before_commit(fresh):
-    other = "wp009_other_" + uuid.uuid4().hex[:8]
-    with psycopg.connect(_dsn_for(fresh.dbname), autocommit=True) as conn:
-        conn.execute(SQL("CREATE ROLE {} NOLOGIN").format(Identifier(other)))
-        conn.execute(SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier(other)))
-    try:
-        rc, _, err = _roles_tx(fresh, counts=fresh.counts)
-        assert rc != 0 and "FCB_ROLES_OWNER_GUARD_FAILED" in err
-        assert fresh.roles_state() == "ROLES_ABSENT"
-    finally:
-        with psycopg.connect(_dsn_for(fresh.dbname), autocommit=True) as conn:
-            conn.execute(SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier(fresh.admin_role)))
-            conn.execute(SQL("DROP ROLE {}").format(Identifier(other)))
-
-
-def test_preexisting_role_with_extra_privilege_or_membership_is_refused(fresh):
-    """A pre-existing fcb_app that is CREATEDB, or a third member of fcb_migrator, must abort."""
-    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
-        conn.execute("CREATE ROLE fcb_app NOLOGIN CREATEDB")
-        conn.execute(SQL("GRANT fcb_app TO {} WITH ADMIN TRUE").format(Identifier(fresh.admin_role)))
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts)
-    # Roles exist, so this is a re-run: it requires an already HARDENED model and writes nothing.
-    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err and "role_attributes" in err
-    assert fresh.roles_state().startswith("NOT_HARDENED:")
-    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
-        conn.execute("ALTER ROLE fcb_app NOCREATEDB")
-        conn.execute("CREATE ROLE fcb_migrator NOLOGIN")
-        conn.execute(SQL("GRANT fcb_migrator TO {} WITH ADMIN TRUE").format(Identifier(fresh.admin_role)))
-        conn.execute("GRANT fcb_migrator TO fcb_app")
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts)
-    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err
-    assert "role_member_of_other_role" in err and "unexpected_migrator_member" in err
-    assert fresh.state() == "BRIDGE_0001_0008"  # ownership untouched
-
-
-def test_workflow_guard_refuses_a_wrong_database(fresh):
-    guard = _workflow_guard("defaultdb_not_this_one")
-    rc, _, err = fresh.psql("-c", guard)
-    assert rc != 0 and "FCB_TARGET_GUARD_FAILED" in err
-
-
-def test_in_transaction_guards_alone_accept_the_admin_and_refuse_a_set_role_session(fresh):
-    # Without the outer $GUARD the in-file guards still run; a plain administrative session passes.
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts, guard=False)
-    assert rc == 0, err
-    # A SET ROLE session (CURRENT_USER <> SESSION_USER) is refused before any write.
-    args = ["-v", f"expected_counts={fresh.counts}", "-v", f"expected_migrations={_expected_migrations()}", "-1",
-            "-c", "SET ROLE fcb_migrator"]
-    for name in TX_FILES:
-        args += ["-f", str(AIVEN / name)]
-    rc, _, err = fresh.psql(*args, env_extra=fresh.verifiers())
-    assert rc != 0 and "FCB_ROLES_SESSION_GUARD_FAILED" in err
-
-
-def test_without_disabling_the_aiven_self_grant_the_model_refuses_before_commit(fresh, tmp_path):
-    """RED control for the SET LOCAL in upsert_bridge_roles.sql: with Aiven's
-    createrole_self_grant='inherit,set' left on, the creator would hold INHERIT+SET on fcb_app and
-    fcb_signer; the final model check refuses that and nothing is committed."""
-    upsert = (AIVEN / "upsert_bridge_roles.sql").read_text()
-    assert upsert.count("SET LOCAL createrole_self_grant = '';") == 1
-    # A patched copy of the upsert (it has no \\ir include, so its directory does not matter).
-    patched = tmp_path / "upsert_bridge_roles.sql"
-    patched.write_text(upsert.replace("SET LOCAL createrole_self_grant = '';", "")
-                       .replace("IF pg_catalog.current_setting('createrole_self_grant')", "IF false AND pg_catalog.current_setting('createrole_self_grant')"))
-    args = ["-v", f"expected_counts={fresh.counts}", "-v", f"expected_migrations={_expected_migrations()}", "-1",
-            "-c", _workflow_guard(fresh.dbname)]
-    for name in TX_FILES:
-        args += ["-f", str(patched if name == "upsert_bridge_roles.sql" else AIVEN / name)]
-    rc, _, err = fresh.psql(*args, env_extra=fresh.verifiers())
-    assert rc != 0 and "FCB_ROLES_MODEL_MISMATCH" in err and "unexpected_app_or_signer_member" in err
-    _nothing_changed(fresh)
-
-
-def test_roles_created_by_the_admin_outside_the_workflow_are_refused(fresh):
-    """A pre-existing fcb_app/fcb_signer made by avnadmin by hand on Aiven carries the automatic
-    INHERIT+SET self-grant: an unexpected membership, refused before commit."""
-    fresh.ok("-c", "CREATE ROLE fcb_app NOLOGIN", "-c", "CREATE ROLE fcb_signer NOLOGIN")
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts)
-    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err and "unexpected_app_or_signer_member" in err
-    assert fresh.state() == "BRIDGE_0001_0008"  # ownership untouched
-    assert "unexpected_app_or_signer_member" in fresh.roles_state()
-
-
-def test_the_self_grant_switch_is_session_scoped_and_passes_the_target_guard(fresh):
-    """SET LOCAL has source 'session' (not database/user), ends with the transaction, and the
-    workflow $GUARD still accepts the session after it."""
-    out = fresh.ok("-c", "BEGIN", "-c", "SET LOCAL createrole_self_grant = ''",
-                   "-c", "SELECT s.setting || '|' || s.source FROM pg_catalog.pg_settings s WHERE s.name = 'createrole_self_grant'",
-                   "-c", _workflow_guard(fresh.dbname), "-c", "COMMIT",
-                   "-c", "SELECT pg_catalog.current_setting('createrole_self_grant')")
-    assert out.splitlines() == ["|session", "inherit,set"], out
 
 
 # ------------------------------------------------------------------ escalation (no path between identities)
@@ -842,7 +826,7 @@ def test_signer_cannot_be_reached_by_anyone_but_its_admin_grant(hardened):
             conn.execute("SET ROLE fcb_signer")
 
 
-# ------------------------------------------------------------------ the MCP app itself through fcb_app
+# ------------------------------------------------------------------ the MCP app itself
 
 MCP_APP_SCRIPT = r'''
 import asyncio, base64, hashlib, json, os, secrets, urllib.parse
@@ -899,28 +883,29 @@ with TestClient(srv.app, base_url="https://" + host) as c:
     out["initialize"] = [init.status_code, "result" in init.json()]
     tools = c.post("/mcp/", headers=hdr, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     out["tools_list"] = [tools.status_code, len(tools.json()["result"]["tools"])]
+    health = c.post("/mcp/", headers=hdr, json={"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                                "params": {"name": "apifootball_health", "arguments": {}}})
+    hres = health.json().get("result", {})
+    hdata = hres.get("structuredContent") or json.loads(hres["content"][0]["text"])
+    out["database_identity"] = hdata.get("database_identity")
     out["reaper_error"] = srv.bridge.reaper_error
 print("RESULT_JSON=" + json.dumps(out))
 '''
 
 
-@pytest.mark.parametrize("identity", ["fcb_app", "fcb_migrator", "admin"])
-def test_mcp_app_oauth_and_tools_through_the_database_identity(hardened, identity):
-    """The real Starlette app with DATABASE_URL = fcb_app (target), fcb_migrator (the rollback DSN)
-    or the administrator (last-resort emergency only, see the runbook):
-    /healthz READY, DCR + consent + code exchange + refresh over HTTP (all DB-backed), then MCP
-    initialize and tools/list with the DB-issued bearer. Nothing is stubbed in OAuth or storage."""
-    dsn = hardened.admin_dsn if identity == "admin" else hardened.dsn(identity)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("APIFOOTBALL_", "SXBET_", "BROWSER_USE_"))}
-    env.update({"PYTHONPATH": str(ROOT), "DATABASE_URL": dsn, "MCP_OAUTH_PASSWORD": secrets.token_urlsafe(24),
-                "MCP_PUBLIC_HOST": "wp009.test.invalid"})
-    if identity == "admin":
-        env["PGOPTIONS"] = AIVEN_SELF_GRANT
-    proc = subprocess.run([sys.executable, "-c", MCP_APP_SCRIPT], env=env, capture_output=True, text=True,
-                          timeout=180, cwd=str(ROOT))
-    line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT_JSON=")), None)
-    assert line, proc.stdout[-2000:] + proc.stderr[-3000:]
-    out = __import__("json").loads(line[len("RESULT_JSON="):])
+
+
+@pytest.mark.parametrize("phase,identity", [(1, "fcb_app"), (1, "admin"), (2, "fcb_app"), (2, "fcb_migrator")])
+def test_mcp_app_oauth_and_tools_through_the_database_identity(phase1, phase, identity):
+    """The real Starlette app with DATABASE_URL = fcb_app (target, both phases), the administrator
+    (rollback DSN of phase 1) or fcb_migrator (rollback DSN after phase 2): /healthz READY, DCR +
+    consent + code exchange + refresh over HTTP (all DB-backed), MCP initialize, tools/list and the
+    allowlisted apifootball_health reporting the database identity (R2). Nothing is stubbed in
+    OAuth or storage."""
+    if phase == 2:
+        rc, _, err = _enable_tx(phase1)
+        assert rc == 0, err
+    out, proc = _run_mcp_app(phase1, identity)
     assert out["healthz"]["schema_state"] == "READY" and out["healthz"]["schema_missing_tables"] == []
     assert out["healthz"]["database_configured"] is True
     assert (out["register"], out["authorize"], out["token"], out["refresh"]) == (201, 302, 200, 200)
@@ -928,178 +913,299 @@ def test_mcp_app_oauth_and_tools_through_the_database_identity(hardened, identit
     assert out["no_token"] == 401 and out["unknown_token"] == 401
     assert out["initialize"] == [200, True]
     assert out["tools_list"][0] == 200 and out["tools_list"][1] == out["healthz"]["mcp_tools_total"] > 0
+    role = phase1.admin_role if identity == "admin" else identity
+    assert out["database_identity"] == {"status": "OK", "current_user": role, "session_user": role}
     assert out["reaper_error"] is None
     assert "permission denied" not in proc.stderr.lower() and "oauth_storage_error" not in proc.stderr
-    for secret in (*hardened.passwords.values(), hardened.admin_password):
+    for secret in (*phase1.passwords.values(), phase1.admin_password):
         assert secret not in proc.stdout + proc.stderr
 
 
-
-# ------------------------------------------------------------------ one planted violation per model check
-
-def _workflow_refuses(env):
-    """The workflow's precheck step: apply only from BRIDGE_0001_0008 or an already HARDENED model."""
-    return env.roles_state() != "HARDENED" and env.state() != "BRIDGE_0001_0008"
-
-
-def _plant_third_role_grant(env):
-    other = env.extra_role()
-    env.superuser(SQL("GRANT SELECT ON public.model_snapshots TO {}").format(Identifier(other)))
-
-
-def _plant_third_role_routine_grant(env):
-    other = env.extra_role()
-    env.superuser(SQL("GRANT EXECUTE ON FUNCTION public.canonical_reject_mutation() TO {}").format(Identifier(other)))
+def _run_mcp_app(env_obj, identity, script=None):
+    dsn = env_obj.admin_dsn if identity == "admin" else env_obj.dsn(identity)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("APIFOOTBALL_", "SXBET_", "BROWSER_USE_", "PG"))}
+    env.update({"PYTHONPATH": str(ROOT), "DATABASE_URL": dsn, "MCP_OAUTH_PASSWORD": secrets.token_urlsafe(24),
+                "MCP_PUBLIC_HOST": "wp009.test.invalid", "APIFOOTBALL_ENABLED": "true",
+                "APIFOOTBALL_LIVE_AUTHORIZED": "false"})
+    if identity == "admin":
+        env["PGOPTIONS"] = AIVEN_SELF_GRANT
+    proc = subprocess.run([sys.executable, "-c", script or MCP_APP_SCRIPT], env=env, capture_output=True, text=True,
+                          timeout=180, cwd=str(ROOT))
+    line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT_JSON=")), None)
+    assert line, proc.stdout[-2000:] + proc.stderr[-3000:]
+    return json.loads(line[len("RESULT_JSON="):]), proc
 
 
-def _plant_migrator_member(env):
-    other = env.extra_role()
-    env.superuser(SQL("GRANT fcb_migrator TO {}").format(Identifier(other)))
+HEALTH_ONLY_SCRIPT = r'''
+import json
+import bridge.server as srv
+from starlette.testclient import TestClient
+
+async def noop(*a, **k):
+    return None
+
+async def stop_all():
+    return {"failed": []}
+
+srv.bridge.prepare_cloak_runtime = noop
+srv.bridge.stop_all = stop_all
+host = srv.public_host
+with TestClient(srv.app, base_url="https://" + host) as c:
+    out = {"healthz": c.get("/healthz").json()}
+    out["register"] = c.post("/oauth/register", json={"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                                                      "token_endpoint_auth_method": "none"}).status_code
+    out["bearer"] = c.post("/mcp/", headers={"Accept": "application/json, text/event-stream",
+                                             "Content-Type": "application/json", "Host": host,
+                                             "Authorization": "Bearer " + "A" * 43}, json={}).status_code
+print("RESULT_JSON=" + json.dumps(out))
+'''
 
 
-def _plant_session_owned_object(env):
-    env.superuser(SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier(env.admin_role)))
+def test_mcp_app_on_the_administrator_dsn_after_phase2_fails_closed(hardened):
+    """D09-01: Render accidentally left on the administrator after phase 2 serves no bridge data:
+    readiness is not READY, OAuth storage answers 503, bearer checks fail closed."""
+    out, proc = _run_mcp_app(hardened, "admin", HEALTH_ONLY_SCRIPT)
+    assert out["healthz"]["schema_state"] != "READY"
+    assert out["register"] == 503 and out["bearer"] == 503
+    assert hardened.admin_password not in proc.stdout + proc.stderr
 
 
-def _plant_self_setting(env):
-    with env.connect("fcb_app") as conn:  # any login may set its own per-role settings
-        conn.execute("ALTER ROLE CURRENT_USER SET search_path = public")
+# ------------------------------------------------------------------ D09-02: least privilege for fcb_app
+
+@pytest.mark.parametrize("table", sorted(ALLOWLIST))
+def test_fcb_app_has_exactly_the_runtime_matrix(hardened, table):
+    """Each table: exactly the privileges a runtime path uses (finalize_bridge_privileges.sql
+    documents file:function for each); the full runtime is GREEN with this matrix (runtime tests,
+    the real app, reaper, coordinators)."""
+    with hardened.connect("fcb_app") as conn:
+        for priv in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"):
+            has = conn.execute("SELECT pg_catalog.has_table_privilege(CURRENT_USER, %s, %s) AS a",
+                               (f"public.{table}", priv)).fetchone()["a"]
+            assert has == (priv in ALLOWLIST[table]), (table, priv)
+
+
+@pytest.mark.parametrize("stmt", [
+    "DELETE FROM public.oauth_authorization_codes",
+    "UPDATE public.oauth_access_tokens SET revoked_at = now()",
+    "DELETE FROM public.oauth_access_tokens",
+    "DELETE FROM public.oauth_refresh_tokens",
+    "UPDATE public.oauth_claude_dcr_clients SET redirect_uri = 'x'",
+    "DELETE FROM public.browser_session_leases",
+    "DELETE FROM public.api_football_quota_counters",
+    "UPDATE public.api_football_quota_leases SET expires_at = now()",
+    "UPDATE public.api_football_quota_attempts SET created_at = now()",
+    "UPDATE public.sxbet_rate_attempts SET created_at = now()",
+])
+def test_privileges_removed_in_d09_02_are_unusable(hardened, stmt):
+    """RED before D09-02 (the uniform SELECT/INSERT/UPDATE/DELETE grant allowed these), GREEN now."""
+    with hardened.connect("fcb_app") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(stmt)
+
+
+def test_previous_uniform_grant_would_be_flagged_by_the_model(hardened):
+    """RED control: re-granting the pre-D09-02 uniform DML is caught (unexpected_relation_grant)."""
+    hardened.superuser("GRANT SELECT, INSERT, UPDATE, DELETE ON public.oauth_access_tokens TO fcb_app",
+                       as_role="fcb_migrator")
+    assert "unexpected_relation_grant" in hardened.roles_state()
+
+
+def test_temporary_tables_red_and_a_revoke_keeps_the_runtime_green(hardened):
+    """TEMPORARY (database-wide PUBLIC default): RED, fcb_app can create a temp table. A revoke
+    from PUBLIC on this database keeps the whole runtime working (GREEN), so it is technically
+    safe; it is NOT implemented because it changes a database-wide default that other Aiven
+    tooling may rely on: decision for the owner (runbook)."""
+    with hardened.connect("fcb_app") as conn:
+        conn.execute("CREATE TEMP TABLE wp009_t(i integer)")
+        conn.rollback()
+    hardened.superuser(SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(Identifier(hardened.dbname)))
+    with hardened.connect("fcb_app") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("CREATE TEMP TABLE wp009_t(i integer)")
+    out, _ = _run_mcp_app(hardened, "fcb_app")
+    assert out["healthz"]["schema_state"] == "READY" and out["tools_list"][0] == 200
+    assert (out["register"], out["authorize"], out["token"], out["refresh"]) == (201, 302, 200, 200)
+
+
+def test_large_objects_cannot_be_restricted_by_a_non_superuser(hardened):
+    """lo_create: RED, any login can create large objects (no privilege gates creation); the
+    administrator cannot revoke EXECUTE on pg_catalog functions (not their owner). Residual."""
+    with hardened.connect("fcb_app") as conn:
+        assert conn.execute("SELECT pg_catalog.lo_create(0) > 0 AS ok").fetchone()["ok"]
+        conn.rollback()
+    with hardened.connect("admin") as conn:  # not the owner: PostgreSQL only warns, nothing is revoked
+        conn.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.lo_create(oid) FROM PUBLIC")
         conn.commit()
+        assert conn.execute("SELECT pg_catalog.has_function_privilege('fcb_app', 'pg_catalog.lo_create(oid)', "
+                            "'EXECUTE') AS a").fetchone()["a"]
 
 
-def _plant_trigger_backdoor(env):
-    """The review repro: the migrator plants a statement trigger on a runtime table whose function
-    runs with the rights of whoever writes to the table, e.g. the administrator (rollback DSN)."""
-    planted = "wp009_planted_" + uuid.uuid4().hex[:6]
-    env.extra_roles.append(planted)
-    env.superuser(
-        "CREATE FUNCTION public.wp009_backdoor() RETURNS trigger LANGUAGE plpgsql AS "
-        f"$$BEGIN EXECUTE 'CREATE ROLE {planted}'; RETURN NULL; END$$",
-        "CREATE TRIGGER wp009_backdoor AFTER INSERT ON public.oauth_claude_dcr_clients "
-        "FOR EACH STATEMENT EXECUTE FUNCTION public.wp009_backdoor()", as_role="fcb_migrator")
-    with env.connect("admin") as conn:  # the administrator's DML fires it: a role is created
-        conn.execute("INSERT INTO oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) "
-                     "VALUES ('backdoor','https://example.invalid/cb',now()+interval '1 hour')")
-        conn.commit()
-    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
-        assert conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (planted,)).fetchone()
+def test_connect_to_other_databases_via_public_is_a_residual(hardened):
+    """CONNECT is PUBLIC by default on every database; WP-009 changes defaultdb only (the only
+    database the administrator should act on). fcb_app can open a session elsewhere, with no
+    privilege there."""
+    other = _dsn_for("postgres", user="fcb_app", password=hardened.passwords["fcb_app"])
+    with psycopg.connect(other) as conn:
+        assert conn.execute("SELECT current_user").fetchone()[0] == "fcb_app"
 
 
-# (code, plant). Every plant makes verify_bridge_roles.sql report the code. The workflow then
-# refuses to apply (neither HARDENED nor BRIDGE_0001_0008 + ROLES_ABSENT), and the transaction
-# itself refuses before any write (re-run path: FCB_ROLES_RERUN_NOT_HARDENED, catalog-only):
-# nothing is healed automatically, a drift is for the owner to investigate.
-PLANTS = [
-    ("roles_missing", lambda e: e.superuser("DROP ROLE fcb_signer")),
-    ("role_attributes", lambda e: e.superuser("ALTER ROLE fcb_app CREATEDB")),
-    ("role_login", lambda e: e.superuser("ALTER ROLE fcb_app NOLOGIN")),
-    ("role_login", lambda e: e.superuser("ALTER ROLE fcb_signer LOGIN")),
-    ("role_member_of_other_role", lambda e: e.superuser("GRANT pg_read_all_stats TO fcb_app")),
-    ("unexpected_migrator_member", _plant_migrator_member),
-    ("session_lacks_migrator_privileges",
-     lambda e: e.ok("-c", "REVOKE fcb_migrator FROM CURRENT_USER GRANTED BY CURRENT_USER")),
-    ("unexpected_app_or_signer_member", lambda e: e.ok("-c", "GRANT fcb_signer TO CURRENT_USER WITH INHERIT TRUE")),
-    ("membership_inventory", lambda e: e.ok("-c", "GRANT fcb_app TO CURRENT_USER WITH INHERIT FALSE, SET FALSE")),
-    ("escalation_path", lambda e: e.superuser("GRANT fcb_signer TO fcb_app")),
-    ("owner_not_migrator", _plant_session_owned_object),
-    ("unexpected_relation_grant", _plant_third_role_grant),
-    ("missing_runtime_grant", lambda e: e.superuser("REVOKE INSERT ON public.oauth_access_tokens FROM fcb_app")),
-    ("column_grant", lambda e: e.superuser("GRANT SELECT (client_id) ON public.oauth_access_tokens TO fcb_signer")),
-    ("routine_grant", _plant_third_role_routine_grant),
-    ("schema_acl", lambda e: e.superuser("GRANT USAGE ON SCHEMA public TO PUBLIC")),
-    ("signer_schema_usage", lambda e: e.superuser("GRANT USAGE ON SCHEMA public TO fcb_signer")),
-    ("app_schema_create", lambda e: e.superuser("GRANT CREATE ON SCHEMA public TO fcb_app")),
-    ("database_create", lambda e: e.superuser(SQL("GRANT CREATE ON DATABASE {} TO fcb_app").format(Identifier(e.dbname)))),
-    ("database_create", lambda e: e.superuser(SQL("GRANT CREATE ON DATABASE {} TO fcb_migrator").format(Identifier(e.dbname)))),
-    ("default_acl_grant", lambda e: e.superuser(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE fcb_migrator IN SCHEMA public GRANT SELECT ON TABLES TO fcb_app")),
-    ("default_function_revoke_missing", lambda e: e.superuser(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE fcb_migrator GRANT EXECUTE ON FUNCTIONS TO PUBLIC")),
-    ("role_settings", _plant_self_setting),
-    ("routine_set", lambda e: e.superuser(
-        "CREATE FUNCTION public.wp009_extra() RETURNS integer LANGUAGE sql AS 'SELECT 1'", as_role="fcb_migrator")),
-    ("routine_set", lambda e: e.superuser(
-        "CREATE OR REPLACE FUNCTION public.canonical_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS "
-        "$$BEGIN RETURN NULL; END$$", as_role="fcb_migrator")),
-    ("routine_set", lambda e: e.superuser(
-        "ALTER FUNCTION public.canonical_reject_mutation() SECURITY DEFINER", as_role="fcb_migrator")),
-    ("trigger_set", lambda e: e.superuser(
-        "CREATE TRIGGER wp009_t BEFORE INSERT ON public.oauth_access_tokens FOR EACH STATEMENT "
-        "EXECUTE FUNCTION public.canonical_reject_mutation()", as_role="fcb_migrator")),
-    ("trigger_set", lambda e: e.superuser(
-        "ALTER TABLE public.canonical_entities DISABLE TRIGGER canonical_entities_immutable", as_role="fcb_migrator")),
-    ("routine_set", _plant_trigger_backdoor),
-    ("relation_hooks", lambda e: e.superuser("CREATE VIEW public.wp009_v AS SELECT 1 AS x", as_role="fcb_migrator")),
-    ("relation_hooks", lambda e: e.superuser(
-        "CREATE VIEW public.wp009_vi WITH (security_invoker = true) AS SELECT 1 AS x", as_role="fcb_migrator")),
-    ("relation_hooks", lambda e: e.superuser(  # a policy alone (RLS still off) is refused too
-        "CREATE POLICY wp009_p ON public.schema_migrations USING (true)", as_role="fcb_migrator")),
-    ("foreign_objects", lambda e: e.superuser(
-        "CREATE DOMAIN public.wp009_d AS text CHECK (VALUE <> '')", as_role="fcb_migrator")),
-    ("foreign_objects", lambda e: e.superuser(
-        "CREATE OPERATOR public.=== (LEFTARG = text, RIGHTARG = text, FUNCTION = pg_catalog.texteq)", as_role="fcb_migrator")),
-    ("foreign_objects", lambda e: e.superuser(
-        "CREATE TEXT SEARCH CONFIGURATION public.wp009_ts (COPY = pg_catalog.simple)", as_role="fcb_migrator")),
-    ("foreign_objects", lambda e: e.superuser(
-        "CREATE TYPE public.wp009_e AS ENUM ('a')", as_role="fcb_migrator")),
-    ("routine_set", lambda e: e.superuser(  # a function reachable from a CHECK constraint / default
-        "CREATE FUNCTION public.wp009_chk(text) RETURNS boolean LANGUAGE sql AS 'SELECT true'",
-        "ALTER TABLE public.oauth_access_tokens ADD CONSTRAINT wp009_c CHECK (public.wp009_chk(client_id))",
-        "ALTER TABLE public.oauth_access_tokens ALTER COLUMN scope SET DEFAULT (public.wp009_chk('x'))::text",
-        as_role="fcb_migrator")),
-    ("relation_hooks", lambda e: e.superuser(
-        "ALTER TABLE public.oauth_access_tokens ENABLE ROW LEVEL SECURITY", as_role="fcb_migrator")),
-    ("relation_hooks", lambda e: e.superuser(
-        "CREATE RULE wp009_r AS ON INSERT TO public.sxbet_rate_attempts DO ALSO NOTIFY wp009", as_role="fcb_migrator")),
-]
+@pytest.mark.parametrize("stmt", [
+    "SELECT pg_catalog.pg_read_file('/etc/hostname')",
+    "SELECT pg_catalog.pg_ls_dir('.')",
+    "SELECT pg_catalog.pg_read_binary_file('/etc/hostname')",
+    "SELECT pg_catalog.lo_import('/etc/hostname')",
+    "COPY (SELECT 1) TO PROGRAM 'true'",
+])
+def test_privileged_pg_catalog_functions_are_denied(hardened, stmt):
+    with hardened.connect("fcb_app") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(stmt)
 
 
-@pytest.mark.parametrize("code,plant", PLANTS, ids=[f"{c}-{i}" for i, (c, _) in enumerate(PLANTS)])
-def test_each_model_check_catches_its_planted_violation(hardened, code, plant):
-    assert hardened.roles_state() == "HARDENED"
-    plant(hardened)
-    state = hardened.roles_state()
-    assert state.startswith("NOT_HARDENED:") and code in state.split(":", 1)[1].split(","), state
-    assert _workflow_refuses(hardened)  # the workflow never reaches the transaction
-    rc, _, err = _roles_tx(hardened, counts=hardened.counts)
-    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err and code in err, err
-    assert hardened.roles_state() == state  # nothing committed
+def test_fcb_app_cannot_signal_other_backends(hardened):
+    with hardened.connect("admin") as admin:
+        pid = admin.execute("SELECT pg_catalog.pg_backend_pid() AS p").fetchone()["p"]
+        with hardened.connect("fcb_app") as conn:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute("SELECT pg_catalog.pg_terminate_backend(%s)", (pid,))
 
 
-def test_trigger_backdoor_is_reported_as_both_routine_and_trigger(hardened):
-    _plant_trigger_backdoor(hardened)
-    codes = hardened.roles_state().split(":", 1)[1].split(",")
-    assert "routine_set" in codes and "trigger_set" in codes
+@pytest.mark.parametrize("phase", [1, 2])
+def test_advisory_lock_held_by_fcb_app_fails_both_phases_fast_and_is_reported(phase1, phase):
+    """No GRANT can forbid an advisory lock id: fcb_app CAN hold 460244120 (RED, denial of service
+    of the administrative workflows). Mitigation: both transactions try the lock without waiting
+    and refuse with FCB_ROLES_LOCK_BUSY (no hang), and diagnose names the holder."""
+    if phase == 2:
+        rc, _, err = _enable_tx(phase1)
+        assert rc == 0, err
+    with phase1.connect("fcb_app") as holder:
+        holder.execute("SELECT pg_catalog.pg_advisory_lock(460244120::bigint)")
+        assert "bridge_lock_holders fcb_app" in phase1.diagnose()
+        t0 = time.monotonic()
+        rc, _, err = (_roles_tx(phase1) if phase == 1 else _enable_tx(phase1))
+        assert rc != 0 and "FCB_ROLES_LOCK_BUSY" in err and time.monotonic() - t0 < 30
+        holder.execute("SELECT pg_catalog.pg_advisory_unlock(460244120::bigint)")
+    assert phase1.roles_state() == ("HARDENED_PHASE1" if phase == 1 else "HARDENED")
 
 
-# ------------------------------------------------------------------ apply guards without other coverage
+# ------------------------------------------------------------------ refusals before any write
 
-def test_signer_series_anywhere_aborts_the_transaction(fresh):
+def _nothing_changed(env: Env):
+    assert env.roles_state() == "ROLES_ABSENT"
+    assert env.state() == "BRIDGE_0001_0008"
+
+
+def test_missing_verifiers_abort_before_commit(fresh):
+    rc, _, err = _roles_tx(fresh, verifiers={})
+    assert rc != 0
+    _nothing_changed(fresh)
+
+
+def test_malformed_verifiers_abort_before_commit(fresh):
+    rc, _, err = _roles_tx(fresh, verifiers={"FCB_APP_DB_VERIFIER": "plaintext-password-not-a-verifier-000000"})
+    assert rc != 0 and "FCB_ROLE_VERIFIER_INVALID" in err
+    _nothing_changed(fresh)
+    rc, _, err = _roles_tx(fresh)
+    assert rc == 0, err
+    for bad in ({}, {"FCB_MIGRATOR_DB_VERIFIER": "plaintext-password-not-a-verifier-000000"}):
+        rc, _, err = _enable_tx(fresh, verifiers=bad)
+        assert rc != 0
+        assert fresh.roles_state() == "HARDENED_PHASE1"
+
+
+def test_wrong_counts_or_migrations_abort_before_commit(fresh):
+    rc, _, err = _roles_tx(fresh, counts=fresh.counts.replace("tables=33", "tables=34"))
+    assert rc != 0 and "FCB_" in err
+    _nothing_changed(fresh)
+    expected = _expected_migrations()
+    for wrong in (expected.rsplit(" ", 1)[0],
+                  expected[:-1] + ("0" if expected[-1] != "0" else "1"),
+                  expected.replace("1=0001_", "9=0001_", 1)):
+        rc, _, err = _roles_tx(fresh, migrations=wrong)
+        assert rc != 0 and "FCB_ROLES_MIGRATIONS_GUARD_FAILED" in err
+        _nothing_changed(fresh)
+
+
+def test_object_of_another_owner_aborts_phase1(fresh):
+    other = fresh.extra_role()
+    fresh.superuser(SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier(other)))
+    rc, _, err = _roles_tx(fresh)
+    assert rc != 0 and "FCB_ROLES_OWNER_GUARD_FAILED" in err
+    assert fresh.roles_state() == "ROLES_ABSENT"
+
+
+def test_preexisting_role_with_extra_privilege_or_membership_is_refused(fresh):
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("CREATE ROLE fcb_app NOLOGIN CREATEDB")
+        conn.execute(SQL("GRANT fcb_app TO {} WITH ADMIN TRUE").format(Identifier(fresh.admin_role)))
+    rc, _, err = _roles_tx(fresh)
+    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err and "role_attributes" in err
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("ALTER ROLE fcb_app NOCREATEDB")
+        conn.execute("CREATE ROLE fcb_migrator NOLOGIN")
+        conn.execute(SQL("GRANT fcb_migrator TO {} WITH ADMIN TRUE").format(Identifier(fresh.admin_role)))
+        conn.execute("GRANT fcb_migrator TO fcb_app")
+    rc, _, err = _roles_tx(fresh)
+    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err
+    assert "role_member_of_other_role" in err and "unexpected_migrator_member" in err
+    assert fresh.state() == "BRIDGE_0001_0008"
+
+
+def test_roles_created_by_the_admin_outside_the_workflow_are_refused(fresh):
+    """Created by avnadmin by hand on Aiven, they carry the automatic INHERIT+SET self-grant."""
+    fresh.ok("-c", "CREATE ROLE fcb_app NOLOGIN", "-c", "CREATE ROLE fcb_signer NOLOGIN")
+    rc, _, err = _roles_tx(fresh)
+    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err and "unexpected_app_or_signer_member" in err
+    assert fresh.state() == "BRIDGE_0001_0008"
+
+
+def test_without_disabling_the_aiven_self_grant_the_model_refuses_before_commit(fresh, tmp_path):
+    """RED control for the SET LOCAL in upsert_bridge_roles.sql (createrole_self_grant=inherit,set)."""
+    upsert = (AIVEN / "upsert_bridge_roles.sql").read_text()
+    assert upsert.count("SET LOCAL createrole_self_grant = '';") == 1
+    patched = tmp_path / "upsert_bridge_roles.sql"  # no \ir include, so its directory does not matter
+    patched.write_text(upsert.replace("SET LOCAL createrole_self_grant = '';", "")
+                       .replace("IF pg_catalog.current_setting('createrole_self_grant')",
+                                "IF false AND pg_catalog.current_setting('createrole_self_grant')"))
+    args = ["-v", f"expected_counts={fresh.counts}", "-v", f"expected_migrations={_expected_migrations()}",
+            "-v", "expected_roles_state=HARDENED_PHASE1", "-1", "-c", _workflow_guard(fresh.dbname)]
+    for name in TX_FILES:
+        args += ["-f", str(patched if name == "upsert_bridge_roles.sql" else AIVEN / name)]
+    rc, _, err = fresh.psql(*args, env_extra={"FCB_APP_DB_VERIFIER": fresh.verifiers()["FCB_APP_DB_VERIFIER"]})
+    assert rc != 0 and "FCB_ROLES_MODEL_MISMATCH" in err
+    for code in ("unexpected_app_or_signer_member", "membership_inventory", "session_reaches_migrator", "role_reachability"):
+        assert code in err, code
+    _nothing_changed(fresh)
+
+
+def test_the_self_grant_switch_is_session_scoped_and_passes_the_target_guard(fresh):
+    out = fresh.ok("-c", "BEGIN", "-c", "SET LOCAL createrole_self_grant = ''",
+                   "-c", "SELECT s.setting || '|' || s.source FROM pg_catalog.pg_settings s WHERE s.name = 'createrole_self_grant'",
+                   "-c", _workflow_guard(fresh.dbname), "-c", "COMMIT",
+                   "-c", "SELECT pg_catalog.current_setting('createrole_self_grant')")
+    assert out.splitlines() == ["|session", "inherit,set"], out
+
+
+def test_workflow_guards_refuse_a_wrong_database(fresh):
+    for prefix in ("Phase 1 -", "Phase 2 -"):
+        rc, _, err = fresh.psql("-c", _guard_from(prefix, "defaultdb_not_this_one"))
+        assert rc != 0 and "FCB_TARGET_GUARD_FAILED" in err
+
+
+def test_signer_series_anywhere_aborts_phase1(fresh):
     fresh.superuser("CREATE SCHEMA wp009_signer", "CREATE TABLE wp009_signer.signer_ledger_anchors(id integer)")
-    rc, _, err = _roles_tx(fresh, counts=fresh.counts, guard=False)  # $GUARD would refuse the schema first
+    rc, _, err = _roles_tx(fresh, guard=False)  # $GUARD would refuse the schema first
     assert rc != 0 and "FCB_ROLES_SIGNER_SERIES_PRESENT" in err
     assert fresh.roles_state() == "ROLES_ABSENT"
 
 
-def test_the_bridge_advisory_lock_serializes_with_the_restore(fresh):
-    """Held by another session (e.g. a running restore), the roles transaction waits on lock
-    460244120; with a lock timeout it fails before any write."""
-    with psycopg.connect(fresh.admin_dsn) as holder:
-        holder.execute("SELECT pg_catalog.pg_advisory_xact_lock(460244120::pg_catalog.int8)")
-        args = ["-v", f"expected_counts={fresh.counts}", "-v", f"expected_migrations={_expected_migrations()}", "-1"]
-        for name in TX_FILES:
-            args += ["-f", str(AIVEN / name)]
-        rc, _, err = fresh.psql(*args, env_extra=fresh.verifiers(), pgoptions=ADMIN_OPTIONS + " -c lock_timeout=1500")
-        assert rc != 0 and "lock timeout" in err
-        holder.rollback()
-    assert fresh.roles_state() == "ROLES_ABSENT"
-
-
-@pytest.mark.parametrize("name", ["upsert_bridge_roles.sql", "assert_bridge_roles.sql", "roles_apply_guard.sql"])
+@pytest.mark.parametrize("name", ["upsert_bridge_roles.sql", "assert_bridge_roles.sql", "roles_apply_guard.sql",
+                                  "enable_bridge_migrator.sql"])
 def test_every_in_transaction_file_refuses_a_set_role_or_moved_search_path(fresh, name):
     helper = fresh.extra_role()
     fresh.superuser(SQL("GRANT {} TO {} WITH SET TRUE").format(Identifier(helper), Identifier(fresh.admin_role)))
-    base = ["-v", f"expected_counts={fresh.counts}", "-v", f"expected_migrations={_expected_migrations()}", "-1"]
+    base = ["-v", f"expected_counts={fresh.counts}", "-v", f"expected_migrations={_expected_migrations()}",
+            "-v", "expected_roles_state=HARDENED", "-v", "observe_seconds=0", "-1"]
     for prefix, opts in ((["-c", SQL("SET ROLE {}").format(Identifier(helper)).as_string(None)], ADMIN_OPTIONS),
                          ([], ADMIN_OPTIONS.replace("search_path=public", "search_path=public,pg_catalog"))):
         rc, _, err = fresh.psql(*base, *prefix, "-f", str(AIVEN / name), env_extra=fresh.verifiers(), pgoptions=opts)
@@ -1107,13 +1213,63 @@ def test_every_in_transaction_file_refuses_a_set_role_or_moved_search_path(fresh
     assert fresh.roles_state() == "ROLES_ABSENT"
 
 
+# ------------------------------------------------------------------ D09-03 / R3: the cutover window
 
-# ------------------------------------------------------------------ privilege escalation through planted code
-# Threat (independent review of PR #182, P3-1, and owner decision): fcb_migrator owns the bridge,
-# so it can attach code (triggers, forced row-level policies, defaults, ...) that runs with the
-# rights of WHOEVER touches the tables. These tests show who runs it, the escalation it gives
-# when that is the administrator, why SET ROLE is no boundary, and the containment each
-# identity/path of the design relies on.
+def test_phase2_refuses_while_another_administrator_session_is_connected(phase1):
+    with phase1.connect("admin") as other:  # e.g. Render still on the administrator DSN
+        other.execute("SELECT 1")
+        rc, _, err = _enable_tx(phase1)
+        assert rc != 0 and "FCB_ROLES_ADMIN_SESSION_PRESENT" in err
+    assert phase1.roles_state() == "HARDENED_PHASE1"
+
+
+def test_phase2_refuses_an_administrator_session_that_appears_during_the_observation(phase1):
+    def late_session():
+        time.sleep(1.5)
+        with phase1.connect("admin") as other:
+            other.execute("SELECT 1")
+            time.sleep(3)
+    t = threading.Thread(target=late_session)
+    t.start()
+    try:
+        rc, _, err = _enable_tx(phase1, observe=4)
+    finally:
+        t.join()
+    assert rc != 0 and "FCB_ROLES_ADMIN_SESSION_PRESENT" in err
+    assert phase1.roles_state() == "HARDENED_PHASE1"
+
+
+def test_phase2_ignores_runtime_sessions_and_succeeds(phase1):
+    with phase1.connect("fcb_app") as runtime:
+        runtime.execute("SELECT 1")
+        rc, _, err = _enable_tx(phase1, observe=2)
+        assert rc == 0, err
+    assert phase1.roles_state() == "HARDENED"
+
+
+def test_phase2_refuses_a_drifted_phase1_model(phase1):
+    other = phase1.extra_role()
+    phase1.superuser(SQL("GRANT SELECT ON public.model_snapshots TO {}").format(Identifier(other)))
+    rc, _, err = _enable_tx(phase1)
+    assert rc != 0 and "FCB_ROLES_PHASE2_STATE_REFUSED" in err and "unexpected_relation_grant" in err
+    assert phase1.roles_state().startswith("NOT_HARDENED:")
+
+
+def test_a_late_administrator_session_after_phase2_cannot_reach_migrator_code(hardened):
+    """R3: a session of the administrator opened during the cutover and still alive after commit
+    is refused by the privilege check on its next statement; migrator code never runs as it."""
+    with hardened.connect("admin") as late:
+        late.execute("SELECT 1")
+        role = _plant_trap(hardened)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            late.execute(_DCR_INSERT, ("late",))
+    assert not _role_exists(role) and _trap_log(hardened) == []
+
+
+# ------------------------------------------------------------------ privilege escalation through owner code
+# Threat (reviews of PR #182): the bridge OWNER can attach code (triggers, forced row-level
+# policies, defaults, CHECKs, rules, views, ...) that runs with the rights of WHOEVER touches the
+# tables. The design removes every path where an identity above the owner touches them.
 
 TRAP_SQL = """
 CREATE TABLE public.wp009_trap_log(cu text, su text, created boolean);
@@ -1135,6 +1291,24 @@ CREATE TRIGGER wp009_trap AFTER INSERT ON public.oauth_claude_dcr_clients
 """
 _DCR_INSERT = ("INSERT INTO oauth_claude_dcr_clients(client_id_hash,redirect_uri,expires_at) "
                "VALUES (%s,'https://example.invalid/cb',now()+interval '1 hour')")
+# The verified PoC of the review of 2add80b (poc_rls.py): a forced policy whose function turns the
+# READ-ONLY transaction read-write (set_config of default_transaction_read_only is user-settable)
+# and then escalates in the following statement of the same psql invocation.
+POC_RLS_SQL = """
+CREATE FUNCTION public.fcb_probe() RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_catalog.set_config('default_transaction_read_only', 'off', false);
+  IF NOT pg_catalog.current_setting('transaction_read_only')::boolean THEN
+    EXECUTE 'ALTER ROLE fcb_migrator CREATEROLE';
+    EXECUTE 'ALTER ROLE fcb_signer LOGIN PASSWORD ''pwned-signer''';
+  END IF;
+  RETURN true;
+END $$;
+GRANT EXECUTE ON FUNCTION public.fcb_probe() TO PUBLIC;
+ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.schema_migrations FORCE ROW LEVEL SECURITY;
+CREATE POLICY p ON public.schema_migrations USING (public.fcb_probe());
+"""
 
 
 def _plant_trap(env):
@@ -1144,30 +1318,30 @@ def _plant_trap(env):
     return role
 
 
-def _role_exists(role):
-    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
-        return conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is not None
-
-
 def _trap_log(env):
-    with env.connect("fcb_migrator") as conn:
-        return [tuple(r.values()) for r in conn.execute("SELECT cu, su, created FROM public.wp009_trap_log").fetchall()]
+    with psycopg.connect(_dsn_for(env.dbname)) as conn:
+        return [tuple(r) for r in conn.execute("SELECT cu, su, created FROM public.wp009_trap_log").fetchall()]
 
 
-def test_red_planted_trigger_runs_as_the_administrator_and_escalates(hardened):
-    """RED: an invoker-rights trigger function on a fcb_migrator-owned table, fired by the
-    administrator's DML, runs as the administrator and creates a role with its CREATEROLE."""
+def _previous_design(env):
+    """The state the reviews attacked (c9f79ee/2add80b): the administrator INHERITs and can SET
+    to fcb_migrator, which owns the bridge and can log in."""
+    env.superuser(SQL("GRANT fcb_migrator TO {} WITH INHERIT TRUE, SET TRUE").format(Identifier(env.admin_role)))
+
+
+def test_red_previous_design_planted_trigger_runs_as_the_administrator(hardened):
+    _previous_design(hardened)
     role = _plant_trap(hardened)
     with hardened.connect("admin") as conn:
         conn.execute(_DCR_INSERT, ("red",))
         conn.commit()
     assert _trap_log(hardened) == [(hardened.admin_role, hardened.admin_role, True)]
     assert _role_exists(role)
+    assert "session_reaches_migrator" in hardened.roles_state()  # and the model reports it
 
 
-def test_red_set_role_to_the_migrator_is_not_a_boundary(hardened):
-    """RED: `SET LOCAL ROLE fcb_migrator` before the write does not contain it: the trigger runs as
-    fcb_migrator, RESETs ROLE back to the administrator and escalates anyway."""
+def test_red_previous_design_set_role_is_not_a_boundary(hardened):
+    _previous_design(hardened)
     role = _plant_trap(hardened)
     with hardened.connect("admin") as conn:
         conn.execute("SET LOCAL ROLE fcb_migrator")
@@ -1177,10 +1351,36 @@ def test_red_set_role_to_the_migrator_is_not_a_boundary(hardened):
     assert _role_exists(role)
 
 
+def test_red_previous_design_read_only_session_is_not_a_boundary(hardened):
+    """The review's PoC: the workflow's read-only `verify_bridge_schema.sql` read as the
+    administrator escalates (CREATEROLE for fcb_migrator, LOGIN for fcb_signer)."""
+    _previous_design(hardened)
+    hardened.superuser(POC_RLS_SQL, as_role="fcb_migrator")
+    rc, _, err = hardened.psql("-F", "=", "-f", str(AIVEN / "verify_bridge_schema.sql"),
+                               pgoptions=ADMIN_OPTIONS + " -c default_transaction_read_only=on")
+    assert rc == 0, err
+    assert _role_flags("fcb_migrator", "fcb_signer") == {"fcb_migrator": (True, True), "fcb_signer": (False, True)}
+
+
+def test_green_the_same_poc_is_denied_before_any_policy_runs(hardened):
+    """GREEN: after phase 2 the administrator holds no privilege on schema_migrations: the read
+    fails with permission denied before the policy function is evaluated; nothing changes."""
+    hardened.superuser(POC_RLS_SQL, as_role="fcb_migrator")
+    rc, _, err = hardened.psql("-F", "=", "-f", str(AIVEN / "verify_bridge_schema.sql"),
+                               pgoptions=ADMIN_OPTIONS + " -c default_transaction_read_only=on")
+    assert rc != 0 and "permission denied for table schema_migrations" in err
+    assert _role_flags("fcb_migrator", "fcb_signer") == {"fcb_migrator": (False, True), "fcb_signer": (False, False)}
+    # The workflow reads the evidence AS fcb_app instead: the planted code runs as fcb_app, cannot
+    # escalate (fcb_app may not ALTER ROLE) and the evidence step fails closed.
+    proc = subprocess.run([sys.executable, "-I", str(HELPER), "evidence"], env=hardened.helper_env(),
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode != 0 and "permission denied to alter role" in proc.stderr
+    assert _role_flags("fcb_migrator", "fcb_signer") == {"fcb_migrator": (False, True), "fcb_signer": (False, False)}
+    assert "relation_hooks" in hardened.roles_state()
+
+
 @pytest.mark.parametrize("identity", ["fcb_app", "fcb_migrator"])
 def test_green_runtime_and_rollback_identities_gain_nothing_from_planted_code(hardened, identity):
-    """GREEN: the runtime (fcb_app) and the rollback DSN (fcb_migrator) fire the same trap; it runs
-    as themselves (no session user to RESET to) and cannot create a role."""
     role = _plant_trap(hardened)
     with hardened.connect(identity) as conn:
         conn.execute(_DCR_INSERT, (identity,))
@@ -1189,93 +1389,113 @@ def test_green_runtime_and_rollback_identities_gain_nothing_from_planted_code(ha
     assert not _role_exists(role)
 
 
+@pytest.mark.parametrize("stmt", [
+    _DCR_INSERT.replace("%s", "'admin'"),
+    "SELECT count(*) FROM public.schema_migrations",
+    "UPDATE public.oauth_claude_dcr_clients SET redirect_uri = redirect_uri",
+    "DELETE FROM public.oauth_claude_dcr_clients",
+])
+def test_green_late_administrator_access_fails_closed_on_every_path(hardened, stmt):
+    """A trigger trap and a forced policy planted: an administrator session after
+    phase 2 is refused by the privilege check first; no planted code runs."""
+    role = _plant_trap(hardened)
+    read_role = "wp009_esc_" + uuid.uuid4().hex[:6]
+    hardened.extra_roles.append(read_role)
+    hardened.superuser(POLICY_TRAP.replace("{role}", read_role), as_role="fcb_migrator")
+    with hardened.connect("admin") as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(stmt)
+    assert not _role_exists(role) and not _role_exists(read_role) and _trap_log(hardened) == []
+
+
+def test_red_unqualified_administrator_calls_can_resolve_to_migrator_functions(hardened):
+    """Residual, documented: with search_path containing public, an unqualified call whose
+    argument types match a migrator function exactly better than pg_catalog's runs THAT function
+    (CVE-2018-1058 class) if the migrator granted EXECUTE to PUBLIC. The workflow never makes an
+    unqualified call (static test: catalog-qualified SQL) and the model refuses the extra routine;
+    administrators must keep search_path = pg_catalog in manual sessions (runbook)."""
+    hardened.superuser("CREATE FUNCTION public.lower(character varying) RETURNS text LANGUAGE sql "
+                       "AS 'SELECT ''hijacked''::text'", "GRANT EXECUTE ON FUNCTION public.lower(character varying) TO PUBLIC",
+                       as_role="fcb_migrator")
+    assert hardened.ok("-c", "SELECT lower('X'::varchar)") == "hijacked"
+    assert hardened.ok("-c", "SELECT lower('X'::varchar)", pgoptions=AIVEN_SELF_GRANT + " -c search_path=pg_catalog") == "x"
+    assert "routine_set" in hardened.roles_state()
+
+
 POLICY_TRAP = """
 CREATE FUNCTION public.wp009_read_trap() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
     BEGIN
         RESET ROLE;
-        SET LOCAL transaction_read_only = off;
+        PERFORM pg_catalog.set_config('default_transaction_read_only', 'off', false);
         EXECUTE 'CREATE ROLE {role}';
     EXCEPTION WHEN OTHERS THEN NULL;
     END;
     RETURN true;
 END $$;
+GRANT EXECUTE ON FUNCTION public.wp009_read_trap() TO PUBLIC;
 ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.schema_migrations FORCE ROW LEVEL SECURITY;
 CREATE POLICY wp009_read_trap ON public.schema_migrations USING (public.wp009_read_trap());
 """
 
 
-def test_red_a_read_write_administrative_read_runs_a_forced_policy(hardened):
-    """RED: row-level policies run as the reader; FORCE applies them to the owner's members too."""
-    role = "wp009_esc_" + uuid.uuid4().hex[:6]
-    hardened.extra_roles.append(role)
-    hardened.superuser(POLICY_TRAP.replace("{role}", role), as_role="fcb_migrator")
-    hardened.ok("-c", "SELECT pg_catalog.count(*) FROM public.schema_migrations")
-    assert _role_exists(role)
-
-
-def test_green_workflow_reads_are_read_only_and_contain_planted_read_code(hardened):
-    """GREEN: every administrative read of the workflow runs in a read-only transaction: the policy
-    trap fires but can neither create a role nor switch the transaction to read-write."""
-    role = "wp009_esc_" + uuid.uuid4().hex[:6]
-    hardened.extra_roles.append(role)
-    hardened.superuser(POLICY_TRAP.replace("{role}", role), as_role="fcb_migrator")
-    for f in ("defaultdb_precheck.sql", "defaultdb_precheck_tracked.sql", "verify_bridge_schema.sql",
-              "verify_bridge_roles.sql", "diagnose_bridge_roles.sql", "fingerprint_bridge_schema.sql",
-              "fingerprint_bridge_structure.sql"):
-        hardened.psql("-f", str(AIVEN / f), pgoptions=READ_ONLY_OPTIONS)
-    assert not _role_exists(role)
-    assert "relation_hooks" in hardened.roles_state()
-
-
-def test_green_apply_rerun_never_touches_a_bridge_table_and_refuses_planted_code(hardened):
-    """GREEN: with both traps planted, the roles transaction (re-run path) refuses before any
-    write and fires neither trap (the administrator reads/writes no bridge table)."""
+def test_green_every_administrative_workflow_read_is_catalog_only(hardened):
+    """With both traps planted, every SQL file the workflow runs as the administrator (diagnose,
+    model, restore precheck, fingerprints) touches no bridge row: no trap fires."""
     role = _plant_trap(hardened)
     read_role = "wp009_esc_" + uuid.uuid4().hex[:6]
     hardened.extra_roles.append(read_role)
     hardened.superuser(POLICY_TRAP.replace("{role}", read_role), as_role="fcb_migrator")
-    rc, _, err = _roles_tx(hardened, counts=hardened.counts)
-    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err
-    assert "routine_set" in err and "trigger_set" in err and "relation_hooks" in err
-    assert not _role_exists(role) and not _role_exists(read_role)
-    assert _trap_log(hardened) == []
+    for f in ("defaultdb_precheck.sql", "verify_bridge_roles.sql", "diagnose_bridge_roles.sql",
+              "fingerprint_bridge_schema.sql", "fingerprint_bridge_structure.sql"):
+        rc, _, err = hardened.psql("-f", str(AIVEN / f))
+        assert rc == 0, (f, err)
+    assert hardened.state().startswith("REFUSE_")  # never TRACKED: the tracked part never runs
+    assert not _role_exists(role) and not _role_exists(read_role) and _trap_log(hardened) == []
 
 
-def test_green_the_window_after_verification(hardened):
-    """The model is verified HARDENED, then the migrator plants code. Every path used afterwards
-    is contained: runtime (fcb_app) and rollback (fcb_migrator) gain nothing, workflow reads are
-    read-only, and the next roles transaction refuses in-transaction before any write."""
-    assert hardened.roles_state() == "HARDENED"
+def test_green_phase1_rerun_and_phase2_rerun_refuse_planted_code_without_running_it(hardened):
     role = _plant_trap(hardened)
-    for identity in ("fcb_app", "fcb_migrator"):
-        with hardened.connect(identity) as conn:
-            conn.execute(_DCR_INSERT, ("window-" + identity,))
-            conn.commit()
-    hardened.psql("-f", str(AIVEN / "diagnose_bridge_roles.sql"), pgoptions=READ_ONLY_OPTIONS)
-    rc, _, err = _roles_tx(hardened, counts=hardened.counts)
-    assert rc != 0 and "FCB_ROLES_RERUN_NOT_HARDENED" in err
-    assert not _role_exists(role)
-    assert sorted(_trap_log(hardened)) == [("fcb_app", "fcb_app", False), ("fcb_migrator", "fcb_migrator", False)]
+    read_role = "wp009_esc_" + uuid.uuid4().hex[:6]
+    hardened.extra_roles.append(read_role)
+    hardened.superuser(POLICY_TRAP.replace("{role}", read_role), as_role="fcb_migrator")
+    rc, _, err = _enable_tx(hardened)
+    assert rc != 0 and "FCB_ROLES_PHASE2_STATE_REFUSED" in err
+    assert "routine_set" in err and "trigger_set" in err and "relation_hooks" in err
+    rc, _, err = _roles_tx(hardened)
+    assert rc != 0 and "FCB_ROLES_OWNER_GUARD_FAILED" in err
+    assert not _role_exists(role) and not _role_exists(read_role) and _trap_log(hardened) == []
+
+
+def test_green_restore_workflow_after_hardening_refuses_without_running_owner_code(hardened):
+    """The restore workflow (main, unchanged): its catalog precheck refuses a hardened database
+    (REFUSE_DEFAULT_PRIVILEGES) before its tracked part could read schema_migrations, and its
+    diagnose-mode inventory (read-only, skips RLS tables) gets permission denied on the bridge;
+    with both traps planted nothing runs."""
+    from scripts.defaultdb_first_init_inventory import collect_inventory
+    role = _plant_trap(hardened)
+    read_role = "wp009_esc_" + uuid.uuid4().hex[:6]
+    hardened.extra_roles.append(read_role)
+    hardened.superuser(POLICY_TRAP.replace("{role}", read_role), as_role="fcb_migrator")
+    assert hardened.state() != "TRACKED" and hardened.state().startswith("REFUSE_")
+    report = collect_inventory(hardened.admin_dsn, source_sha="wp009")
+    assert report["precheck_state"].startswith("REFUSE_") and report["first_time_initialization_proven"] is False
+    assert not _role_exists(role) and not _role_exists(read_role) and _trap_log(hardened) == []
 
 
 @pytest.mark.parametrize("identity", ["fcb_migrator", "fcb_app", "admin"])
 def test_event_triggers_need_a_superuser(hardened, identity):
-    """The only hook on DDL (which the re-run path still executes) cannot be created without
-    superuser rights, so no non-superuser can intercept the administrator's DDL."""
+    """The only hook on DDL (which the phase-2 re-run still executes) needs a superuser."""
     hardened.superuser("CREATE FUNCTION public.wp009_evt() RETURNS event_trigger LANGUAGE plpgsql "
-                       "AS $$BEGIN NULL; END$$", as_role="fcb_migrator")
-    if identity == "fcb_migrator":
-        hardened.superuser("GRANT EXECUTE ON FUNCTION public.wp009_evt() TO PUBLIC", as_role="fcb_migrator")
+                       "AS $$BEGIN NULL; END$$", "GRANT EXECUTE ON FUNCTION public.wp009_evt() TO PUBLIC",
+                       as_role="fcb_migrator")
     with hardened.connect(identity) as conn:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("CREATE EVENT TRIGGER wp009_evt ON ddl_command_start EXECUTE FUNCTION public.wp009_evt()")
 
 
 def test_migrator_planted_security_definer_only_reaches_the_migrator(hardened):
-    """SECURITY DEFINER code owned by fcb_migrator runs as fcb_migrator, never above it (and the
-    model refuses it): fcb_app could at most borrow the migrator's own rights."""
     role = "wp009_esc_" + uuid.uuid4().hex[:6]
     hardened.extra_roles.append(role)
     hardened.superuser(
@@ -1287,6 +1507,173 @@ def test_migrator_planted_security_definer_only_reaches_the_migrator(hardened):
     assert not _role_exists(role)
     assert "routine_set" in hardened.roles_state()
 
+
+def test_admin_option_can_regrant_inheritance_but_diagnose_detects_it(hardened):
+    """R1: the automatic ADMIN option (CREATEROLE design) lets the administrator grant itself
+    fcb_migrator again; that is a deliberate administrative act, never the default path, and the
+    model refuses it immediately (session_reaches_migrator, membership_inventory)."""
+    hardened.ok("-c", "GRANT fcb_migrator TO CURRENT_USER WITH INHERIT TRUE, SET TRUE")
+    state = hardened.roles_state()
+    for code in ("session_reaches_migrator", "membership_inventory", "role_reachability"):
+        assert code in state, code
+
+
+# ------------------------------------------------------------------ one planted violation per model check
+
+def _plant_third_role_grant(env):
+    other = env.extra_role()
+    env.superuser(SQL("GRANT SELECT ON public.model_snapshots TO {}").format(Identifier(other)), as_role="fcb_migrator")
+
+
+def _plant_third_role_routine_grant(env):
+    other = env.extra_role()
+    env.superuser(SQL("GRANT EXECUTE ON FUNCTION public.canonical_reject_mutation() TO {}").format(Identifier(other)),
+                  as_role="fcb_migrator")
+
+
+def _plant_migrator_member(env):
+    other = env.extra_role()
+    env.superuser(SQL("GRANT fcb_migrator TO {}").format(Identifier(other)))
+
+
+def _plant_set_member(env):
+    other = env.extra_role()
+    env.superuser(SQL("GRANT fcb_app TO {} WITH INHERIT FALSE, SET TRUE").format(Identifier(other)))
+
+
+def _plant_session_owned_object(env):
+    env.superuser(SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier(env.admin_role)))
+
+
+def _plant_self_setting(env):
+    with env.connect("fcb_app") as conn:  # any login may set its own per-role settings
+        conn.execute("ALTER ROLE CURRENT_USER SET search_path = public")
+        conn.commit()
+
+
+def _plant_extension(env):
+    with psycopg.connect(_dsn_for(env.dbname)) as conn:
+        names = [r[0] for r in conn.execute("SELECT name FROM pg_available_extensions WHERE name = ANY(%s)",
+                                            (["pg_trgm", "citext", "pgcrypto", "hstore", "isn", "tablefunc"],)).fetchall()]
+    if not names:
+        pytest.skip("no contrib extension available on this server")
+    env.superuser(f"CREATE EXTENSION {names[0]} SCHEMA public")
+
+
+def _mig(*stmts):
+    return lambda e: e.superuser(*stmts, as_role="fcb_migrator")
+
+
+def _su(*stmts):
+    return lambda e: e.superuser(*stmts)
+
+
+# (code, plant). Every plant makes verify_bridge_roles.sql report the code. The workflow then
+# refuses (state neither HARDENED nor HARDENED_PHASE1) and the phase-2 transaction refuses before
+# any write (FCB_ROLES_PHASE2_STATE_REFUSED, catalog-only); nothing is healed automatically.
+PLANTS = [
+    ("roles_missing", _su("DROP ROLE fcb_signer")),
+    ("role_attributes", _su("ALTER ROLE fcb_app CREATEDB")),
+    ("role_login", _su("ALTER ROLE fcb_app NOLOGIN")),
+    ("role_login", _su("ALTER ROLE fcb_signer LOGIN")),
+    ("role_member_of_other_role", _su("GRANT pg_read_all_stats TO fcb_app")),
+    ("unexpected_migrator_member", _plant_migrator_member),
+    ("session_reaches_migrator", lambda e: e.ok("-c", "GRANT fcb_migrator TO CURRENT_USER WITH INHERIT TRUE, SET FALSE")),
+    ("session_reaches_migrator", lambda e: e.ok("-c", "GRANT fcb_migrator TO CURRENT_USER WITH INHERIT FALSE, SET TRUE")),
+    ("unexpected_app_or_signer_member", lambda e: e.ok("-c", "GRANT fcb_signer TO CURRENT_USER WITH INHERIT TRUE")),
+    ("membership_inventory", lambda e: e.ok("-c", "GRANT fcb_app TO CURRENT_USER WITH INHERIT FALSE, SET FALSE")),
+    ("role_reachability", _plant_set_member),
+    ("role_reachability", _su("GRANT fcb_app TO pg_read_all_stats")),  # via a predefined role
+    ("escalation_path", _su("GRANT fcb_signer TO fcb_app")),
+    ("owner_model", _plant_session_owned_object),
+    ("unexpected_relation_grant", _plant_third_role_grant),
+    ("missing_runtime_grant", _mig("REVOKE INSERT ON public.oauth_access_tokens FROM fcb_app")),
+    ("column_grant", _mig("GRANT SELECT (client_id) ON public.oauth_access_tokens TO fcb_signer")),
+    ("routine_grant", _plant_third_role_routine_grant),
+    ("schema_acl", _su("GRANT USAGE ON SCHEMA public TO PUBLIC")),
+    ("signer_schema_usage", _su("GRANT USAGE ON SCHEMA public TO fcb_signer")),
+    ("app_schema_create", _su("GRANT CREATE ON SCHEMA public TO fcb_app")),
+    ("database_create", lambda e: e.superuser(SQL("GRANT CREATE ON DATABASE {} TO fcb_app").format(Identifier(e.dbname)))),
+    ("database_create", lambda e: e.superuser(SQL("GRANT CREATE ON DATABASE {} TO fcb_migrator").format(Identifier(e.dbname)))),
+    ("default_acl_grant", _mig("ALTER DEFAULT PRIVILEGES FOR ROLE fcb_migrator IN SCHEMA public GRANT SELECT ON TABLES TO fcb_app")),
+    ("default_function_revoke_missing", _mig("ALTER DEFAULT PRIVILEGES FOR ROLE fcb_migrator GRANT EXECUTE ON FUNCTIONS TO PUBLIC")),
+    ("role_settings", _plant_self_setting),
+    ("routine_set", _mig("CREATE FUNCTION public.wp009_extra() RETURNS integer LANGUAGE sql AS 'SELECT 1'")),
+    ("routine_set", _mig("CREATE OR REPLACE FUNCTION public.canonical_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS "
+                         "$$BEGIN RETURN NULL; END$$")),
+    ("routine_set", _mig("ALTER FUNCTION public.canonical_reject_mutation() SECURITY DEFINER")),
+    ("routine_set", _mig("ALTER FUNCTION public.canonical_reject_mutation() SET search_path = public")),
+    ("routine_set", _mig("CREATE FUNCTION public.wp009_chk(text) RETURNS boolean LANGUAGE sql AS 'SELECT true'",
+                         "ALTER TABLE public.oauth_access_tokens ADD CONSTRAINT wp009_c CHECK (public.wp009_chk(client_id))")),
+    ("trigger_set", _mig("CREATE TRIGGER wp009_t BEFORE INSERT ON public.oauth_access_tokens FOR EACH STATEMENT "
+                         "EXECUTE FUNCTION public.canonical_reject_mutation()")),
+    ("trigger_set", _mig("ALTER TABLE public.canonical_entities DISABLE TRIGGER canonical_entities_immutable")),
+    ("trigger_set", _mig("DROP TRIGGER canonical_entities_immutable ON public.canonical_entities")),
+    ("expression_functions", _mig("ALTER TABLE public.oauth_access_tokens ADD CONSTRAINT wp009_sc "
+                                  "CHECK (pg_catalog.set_config('wp009.x', 'y', false) IS NOT NULL)")),
+    ("expression_functions", _mig("ALTER TABLE public.oauth_access_tokens ALTER COLUMN scope "
+                                  "SET DEFAULT pg_catalog.set_config('wp009.x', 'y', false)")),
+    ("expression_functions", _mig("CREATE INDEX wp009_i ON public.oauth_access_tokens (pg_catalog.upper(client_id))")),
+    ("relation_hooks", _mig("CREATE VIEW public.wp009_v AS SELECT 1 AS x")),
+    ("relation_hooks", _mig("CREATE VIEW public.wp009_vi WITH (security_invoker = true) AS SELECT 1 AS x")),
+    ("relation_hooks", _mig("CREATE MATERIALIZED VIEW public.wp009_mv AS SELECT 1 AS x")),
+    ("relation_hooks", _mig("CREATE POLICY wp009_p ON public.schema_migrations USING (true)")),
+    ("relation_hooks", _mig("ALTER TABLE public.oauth_access_tokens ENABLE ROW LEVEL SECURITY")),
+    ("relation_hooks", _mig("ALTER TABLE public.oauth_access_tokens FORCE ROW LEVEL SECURITY")),  # without ENABLE
+    ("relation_hooks", _mig("CREATE RULE wp009_r AS ON INSERT TO public.sxbet_rate_attempts DO ALSO NOTIFY wp009")),
+    ("relation_hooks", _mig("CREATE TABLE public.wp009_child () INHERITS (public.runtime_state)")),
+    ("relation_hooks", _mig("CREATE TABLE public.wp009_part (k integer) PARTITION BY RANGE (k)")),
+    # Superuser-only objects: planted by the test superuser (Aiven's avnadmin cannot create them).
+    ("relation_hooks", _su("CREATE FUNCTION public.wp009_evt() RETURNS event_trigger LANGUAGE plpgsql AS $$BEGIN NULL; END$$",
+                           "CREATE EVENT TRIGGER wp009_evt ON ddl_command_start EXECUTE FUNCTION public.wp009_evt()")),
+    ("foreign_objects", _mig("CREATE DOMAIN public.wp009_d AS text CHECK (VALUE <> '')")),
+    ("foreign_objects", _mig("CREATE OPERATOR public.=== (LEFTARG = text, RIGHTARG = text, FUNCTION = pg_catalog.texteq)")),
+    ("foreign_objects", _mig("CREATE TEXT SEARCH CONFIGURATION public.wp009_ts (COPY = pg_catalog.simple)")),
+    ("foreign_objects", _mig("CREATE TEXT SEARCH DICTIONARY public.wp009_dict (TEMPLATE = pg_catalog.simple)")),
+    ("foreign_objects", _mig("CREATE TYPE public.wp009_e AS ENUM ('a')")),
+    ("foreign_objects", _mig("CREATE COLLATION public.wp009_coll FROM \"C\"")),
+    ("foreign_objects", _mig("CREATE CONVERSION public.wp009_conv FOR 'LATIN1' TO 'UTF8' FROM iso8859_1_to_utf8")),
+    ("foreign_objects", _mig("CREATE TYPE public.wp009_ct AS (a integer)",
+                             "CREATE CAST (public.wp009_ct AS text) WITH INOUT")),
+    ("foreign_objects", _su("CREATE OPERATOR FAMILY public.wp009_opf USING btree")),
+    ("foreign_objects", _su("CREATE OPERATOR CLASS public.wp009_opc FOR TYPE text USING hash AS OPERATOR 1 pg_catalog.=(text, text), "
+                            "FUNCTION 1 pg_catalog.hashtext(text)")),
+    ("foreign_objects", _su("CREATE TEXT SEARCH TEMPLATE public.wp009_tmpl (LEXIZE = pg_catalog.dsimple_lexize)")),
+    ("foreign_objects", _su("CREATE TEXT SEARCH PARSER public.wp009_prs (START = pg_catalog.prsd_start, "
+                            "GETTOKEN = pg_catalog.prsd_nexttoken, END = pg_catalog.prsd_end, LEXTYPES = pg_catalog.prsd_lextype)")),
+    ("foreign_objects", _plant_extension),
+]
+
+
+@pytest.mark.parametrize("code,plant", PLANTS, ids=[f"{c}-{i}" for i, (c, _) in enumerate(PLANTS)])
+def test_each_model_check_catches_its_planted_violation(hardened, code, plant):
+    assert hardened.roles_state() == "HARDENED"
+    plant(hardened)
+    state = hardened.roles_state()
+    assert state.startswith("NOT_HARDENED:") and code in state.split(":", 1)[1].split(","), state
+    rc, _, err = _enable_tx(hardened)
+    assert rc != 0 and "FCB_ROLES_PHASE2_STATE_REFUSED" in err and code in err, err
+    assert hardened.roles_state() == state  # nothing committed
+
+
+@pytest.mark.parametrize("code,plant", [
+    ("owner_model", lambda e: e.superuser(
+        SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier("fcb_migrator")))),
+    ("unexpected_relation_grant", lambda e: e.superuser(
+        SQL("GRANT SELECT ON public.model_snapshots TO {}").format(Identifier(e.extra_role())))),
+    ("role_login", _su("ALTER ROLE fcb_app NOLOGIN")),
+    ("schema_acl", _su("GRANT USAGE ON SCHEMA public TO fcb_migrator")),
+], ids=["owner_model", "unexpected_relation_grant", "role_login", "schema_acl"])
+def test_phase1_model_checks_catch_their_violations(phase1, code, plant):
+    """Phase-1 variants (administrator owns everything, fcb_migrator owns and may do nothing)."""
+    assert phase1.roles_state() == "HARDENED_PHASE1"
+    plant(phase1)
+    state = phase1.roles_state()
+    assert state.startswith("NOT_HARDENED:") and code in state, state
+    rc, _, err = _roles_tx(phase1)
+    assert rc != 0
+    rc, _, err = _enable_tx(phase1)
+    assert rc != 0 and "FCB_ROLES_PHASE2_STATE_REFUSED" in err
 
 
 # ------------------------------------------------------------------ the workflow's own bash, run locally
@@ -1302,22 +1689,14 @@ def _localize(script):
     script = script.replace(_TLS_PG18.replace("$", "\\$"), "")
     script = script.replace('[ "$ver" -ge 180000 ] && [ "$ver" -lt 190000 ] ||', "true ||")
     script = script.replace('test "$ssl" = "t" ||', "true ||")
-    script = script.replace("login-check --require-tls", "login-check")
+    script = script.replace(" --require-tls", "")
     if _server_major_raw() != 18:  # the pinned full fingerprint is the PG18 value
         script = script.replace('test "$full_before" = "$EXPECTED_FINGERPRINT" ||', "true ||")
     return script
 
 
-def _server_major_raw():
-    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
-        return conn.info.server_version // 10000
-
-
 def _run_step(env, prefix, tmp_path, passwords=None, mode="apply"):
     step = _workflow_step(prefix)
-    params = conninfo_to_dict(env.admin_dsn)
-    uri = (f"postgresql://{env.admin_role}:{env.admin_password}@/{env.dbname}"
-           f"?host={params['host']}&port={params['port']}")
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     if not (bindir / "python").exists():
@@ -1325,10 +1704,10 @@ def _run_step(env, prefix, tmp_path, passwords=None, mode="apply"):
     summary = tmp_path / "summary.md"
     run_env = {k: v for k, v in os.environ.items() if not k.startswith(("PG", "FCB_"))}
     run_env.update({
-        "PATH": f"{bindir}:{os.environ['PATH']}", "FCB_DEFAULTDB_URL": uri, "EXPECTED_DB": env.dbname,
+        "PATH": f"{bindir}:{os.environ['PATH']}", "FCB_DEFAULTDB_URL": env.uri(), "EXPECTED_DB": env.dbname,
         "EXPECTED_COUNTS": env.counts, "EXPECTED_FINGERPRINT": RESTORE_PINNED_FINGERPRINT,
         "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_WORKSPACE": str(ROOT), "PGSSLMODE": "disable",
-        "FCB_DB_URL_VAR": "FCB_DEFAULTDB_URL", "MODE": mode,
+        "FCB_DB_URL_VAR": "FCB_DEFAULTDB_URL", "MODE": mode, "OBSERVE_SECONDS": "1",
         "PGOPTIONS": (step.get("env") or {}).get("PGOPTIONS", "") + " " + AIVEN_SELF_GRANT,
     })
     run_env.pop("PYTHONPATH", None)
@@ -1346,60 +1725,97 @@ def _assert_no_secret(env, text):
         assert secret not in text
 
 
-def _passwords(env):
-    return {"FCB_APP_DB_PASSWORD": env.passwords["fcb_app"], "FCB_MIGRATOR_DB_PASSWORD": env.passwords["fcb_migrator"]}
+def _passwords(env, mode="enable-migrator"):
+    pw = {"FCB_APP_DB_PASSWORD": env.passwords["fcb_app"]}
+    if mode == "enable-migrator":
+        pw["FCB_MIGRATOR_DB_PASSWORD"] = env.passwords["fcb_migrator"]
+    return pw
 
 
-def test_workflow_bash_first_apply_then_redispatch_without_leaking_a_secret(fresh, tmp_path):
-    rc, out = _run_step(fresh, "Prechecks and roles report", tmp_path, mode="diagnose")
-    assert rc == 0 and "first apply allowed" in out, out[-3000:]
-    rc, out = _run_step(fresh, "Apply roles", tmp_path, _passwords(fresh))
+PRECHECK, PHASE1, PHASE2 = "Prechecks and roles report", "Phase 1 -", "Phase 2 -"
+
+
+def test_workflow_bash_both_phases_and_redispatch_without_leaking_a_secret(fresh, tmp_path):
+    outs = []
+    rc, out = _run_step(fresh, PRECHECK, tmp_path, mode="diagnose")
+    assert rc == 0 and "phase 1 allowed" in out, out[-3000:]
+    outs.append(out)
+    rc, out = _run_step(fresh, PRECHECK, tmp_path, mode="enable-migrator")
+    assert rc != 0 and "roles refused" in out  # phase 2 before phase 1
+    rc, out = _run_step(fresh, PHASE1, tmp_path, _passwords(fresh, "apply"))
     assert rc == 0, out[-3000:]
-    assert "## Roles: PASS" in out and "model after: HARDENED" in out
-    assert "login fcb_app: tls=False schema_migrations_rows=8 readiness=READY" in out
-    _assert_no_secret(fresh, out)
-    rc, out2 = _run_step(fresh, "Prechecks and roles report", tmp_path, mode="diagnose")
-    assert rc == 0 and "roles already HARDENED" in out2
-    rc, out3 = _run_step(fresh, "Apply roles", tmp_path, _passwords(fresh))  # re-dispatch
-    assert rc == 0 and "## Roles: PASS" in out3, out3[-3000:]
-    _assert_no_secret(fresh, out + out2 + out3)
+    assert "## Phase 1: PASS" in out and "model after: HARDENED_PHASE1" in out
+    assert "login fcb_migrator: refused (phase 1: NOLOGIN, no password)" in out
+    outs.append(out)
+    rc, out = _run_step(fresh, PHASE1, tmp_path, _passwords(fresh, "apply"))  # re-dispatch
+    assert rc == 0 and "## Phase 1: PASS" in out, out[-3000:]
+    outs.append(out)
+    rc, out = _run_step(fresh, PRECHECK, tmp_path, mode="enable-migrator")
+    assert rc == 0 and "HARDENED_PHASE1 accepted for enable-migrator" in out
+    with fresh.connect("admin") as other:  # Render still on the administrator: refused
+        other.execute("SELECT 1")
+        rc, out = _run_step(fresh, PHASE2, tmp_path, _passwords(fresh))
+        assert rc != 0 and fresh.roles_state() == "HARDENED_PHASE1"
+        outs.append(out)
+    rc, out = _run_step(fresh, PHASE2, tmp_path, _passwords(fresh))
+    assert rc == 0, out[-3000:]
+    assert "## Phase 2: PASS" in out and "model after: HARDENED" in out
+    assert "admin: bridge access denied=True inherits_migrator=False can_set_migrator=False" in out
+    outs.append(out)
+    rc, out = _run_step(fresh, PHASE2, tmp_path, _passwords(fresh))  # re-dispatch (password rotation)
+    assert rc == 0 and "## Phase 2: PASS" in out, out[-3000:]
+    outs.append(out)
+    rc, out = _run_step(fresh, PRECHECK, tmp_path, mode="apply")
+    assert rc != 0 and "roles refused" in out  # phase 1 after phase 2
+    rc, out = _run_step(fresh, PRECHECK, tmp_path, mode="diagnose")
+    assert rc == 0 and "Roles model: HARDENED" in out
+    outs.append(out)
+    _assert_no_secret(fresh, "".join(outs))
     assert fresh.roles_state() == "HARDENED"
 
 
 def test_workflow_bash_refuses_planted_code_without_running_it(hardened, tmp_path):
     role = _plant_trap(hardened)
-    read_role = "wp009_esc_" + uuid.uuid4().hex[:6]
-    hardened.extra_roles.append(read_role)
-    hardened.superuser(POLICY_TRAP.replace("{role}", read_role), as_role="fcb_migrator")
-    rc, out = _run_step(hardened, "Prechecks and roles report", tmp_path, mode="diagnose")
+    hardened.superuser(POC_RLS_SQL, as_role="fcb_migrator")
+    rc, out = _run_step(hardened, PRECHECK, tmp_path, mode="diagnose")
     assert rc != 0 and "roles refused" in out
-    rc, out2 = _run_step(hardened, "Apply roles", tmp_path, _passwords(hardened))
+    rc, out2 = _run_step(hardened, PHASE2, tmp_path, _passwords(hardened))
     assert rc != 0 and "refusing" in out2
-    assert not _role_exists(role) and not _role_exists(read_role)
-    _assert_no_secret(hardened, out + out2)
+    rc, out3 = _run_step(hardened, PHASE1, tmp_path, _passwords(hardened, "apply"))
+    assert rc != 0 and "refusing" in out3
+    assert not _role_exists(role) and _trap_log(hardened) == []
+    assert _role_flags("fcb_migrator", "fcb_signer") == {"fcb_migrator": (False, True), "fcb_signer": (False, False)}
+    _assert_no_secret(hardened, out + out2 + out3)
 
 
 def test_workflow_bash_refuses_preexisting_roles_on_a_first_apply(fresh, tmp_path):
     fresh.ok("-c", "CREATE ROLE fcb_signer NOLOGIN")
-    rc, out = _run_step(fresh, "Prechecks and roles report", tmp_path, mode="diagnose")
-    assert rc != 0 and "roles refused" in out
-    rc, out = _run_step(fresh, "Apply roles", tmp_path, _passwords(fresh))
+    rc, out = _run_step(fresh, PRECHECK, tmp_path, mode="diagnose")
+    # A bridge role exists: the tracked precheck (it would read schema_migrations) is refused.
+    assert rc != 0 and "tracked precheck refused once bridge roles exist" in out
+    rc, out = _run_step(fresh, PHASE1, tmp_path, _passwords(fresh, "apply"))
     assert rc != 0 and "refusing" in out
     assert fresh.state() == "BRIDGE_0001_0008"
 
 
-@pytest.mark.parametrize("bad", [
-    {"FCB_APP_DB_PASSWORD": "short"},
-    {"FCB_APP_DB_PASSWORD": "", "FCB_MIGRATOR_DB_PASSWORD": ""},
-    {"FCB_MIGRATOR_DB_PASSWORD": "same-" + "x" * 40, "FCB_APP_DB_PASSWORD": "same-" + "x" * 40},
+@pytest.mark.parametrize("prefix,mode,bad", [
+    ("Fail closed if the fcb_app password", "apply", {"FCB_APP_DB_PASSWORD": "short"}),
+    ("Fail closed if the fcb_app password", "apply", {"FCB_APP_DB_PASSWORD": ""}),
+    ("Fail closed if a role password", "enable-migrator", {"FCB_MIGRATOR_DB_PASSWORD": "short"}),
+    ("Fail closed if a role password", "enable-migrator",
+     {"FCB_MIGRATOR_DB_PASSWORD": "same-" + "x" * 40, "FCB_APP_DB_PASSWORD": "same-" + "x" * 40}),
 ])
-def test_workflow_bash_password_gate_fails_closed_without_echoing(fresh, tmp_path, bad):
+def test_workflow_bash_password_gate_fails_closed_without_echoing(fresh, tmp_path, prefix, mode, bad):
     pw = {**_passwords(fresh), **bad}
-    rc, out = _run_step(fresh, "Fail closed if a role password", tmp_path, pw)
+    rc, out = _run_step(fresh, prefix, tmp_path, pw, mode=mode)
     assert rc != 0 and "role passwords refused" in out
     for v in pw.values():
-        if len(v) >= 5:
+        if len(v) >= 6:
             assert v not in out
-    rc, out = _run_step(fresh, "Apply roles", tmp_path, pw)  # the apply step re-checks via `verifier`
+    step = PHASE1 if mode == "apply" else PHASE2
+    if mode == "enable-migrator":
+        rc, _ = _run_step(fresh, PHASE1, tmp_path, _passwords(fresh, "apply"))
+        assert rc == 0
+    rc, out = _run_step(fresh, step, tmp_path, pw)  # the write step re-checks via `verifier`
     assert rc != 0
-    assert fresh.roles_state() == "ROLES_ABSENT"
+    assert fresh.roles_state() == ("ROLES_ABSENT" if mode == "apply" else "HARDENED_PHASE1")

@@ -129,9 +129,11 @@ class Fail(Exception):
 
 class Run:
     def __init__(self, client: Any, base: str, password: str, *,
-                 expected_commit: str | None, mask: Callable[[str], None], sleep=time.sleep):
+                 expected_commit: str | None, mask: Callable[[str], None], sleep=time.sleep,
+                 expected_db_identity: str | None = None):
         self.c, self.base, self._password = client, base.rstrip("/"), password
         self.expected_commit = expected_commit
+        self.expected_db_identity = expected_db_identity
         self._mask, self._sleep = mask, sleep
         self.sensitive: list[str] = [password]
         self.results: list[dict[str, Any]] = []
@@ -364,6 +366,15 @@ class Run:
         af = self.call_tool("apifootball_health", access)
         self.check("tools_call_apifootball_health_no_provider_call", af.get("network_calls_made") == 0)
         self.facts["apifootball_quota_coordinator"] = af.get("quota_coordinator")
+        # FCB-WP-009 (R2): the database identity the deployed runtime uses (role names only).
+        ident = af.get("database_identity") if isinstance(af.get("database_identity"), dict) else {}
+        self.facts["database_identity"] = {k: ident.get(k) for k in ("status", "current_user", "session_user")
+                                           if isinstance(ident.get(k), str) and len(ident.get(k)) <= 63}
+        if self.expected_db_identity:
+            self.check("database_identity_is_expected",
+                       ident.get("status") == "OK" and ident.get("current_user") == self.expected_db_identity
+                       and ident.get("session_user") == self.expected_db_identity,
+                       expected=self.expected_db_identity, observed=self.facts["database_identity"])
 
         # Refresh: wrong client refused (and does not burn), rotation, replay refused.
         r = self.token({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": "fcbdcr1_" + "z" * 32})
@@ -434,6 +445,8 @@ def main(argv: list[str] | None = None, *, client: Any = None,
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", required=True)
     ap.add_argument("--expected-commit", default=None)
+    # FCB-WP-009 (R2): fail unless the runtime's database identity is exactly this role.
+    ap.add_argument("--expected-db-identity", default=None, choices=["fcb_app"])
     args = ap.parse_args(argv)
     password = os.environ.get("MCP_OAUTH_PASSWORD", "")
     if not password:
@@ -444,7 +457,8 @@ def main(argv: list[str] | None = None, *, client: Any = None,
         return 2
     own = client is None
     client = client or StdlibClient(timeout=20.0)
-    run = Run(client, base, password, expected_commit=args.expected_commit, mask=_actions_mask, sleep=sleep)
+    run = Run(client, base, password, expected_commit=args.expected_commit, mask=_actions_mask, sleep=sleep,
+              expected_db_identity=args.expected_db_identity)
     del password
     error = None
     try:
