@@ -170,6 +170,14 @@ def pagination_state(paging: Any, params: Mapping[str, Any]) -> dict[str, Any]:
             "auto_fetch": False}
 
 
+# A manifest leaves room for the envelope fields of the MCP reply under the 256 KiB cap.
+_MANIFEST_BUDGET = _MAX_MCP_DATA_BYTES - 16_384
+
+
+def _encoded_size(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
 def _real_calls(data: dict[str, Any]) -> int:
     """Provider requests sent for THIS call: none on a cache HIT or when the call joined
     another caller's in-flight request (that caller reports them); otherwise the real attempts."""
@@ -267,39 +275,49 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 from .errors import ProviderDataError
                 raise ProviderDataError("PROVIDER_REPLY_CONTRACT_INVALID")
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+            envelope = data.get("data", data) if status == "REAL_API_RESPONSE" else data
+
+            def _provenance(out_status: str) -> None:
+                result["status"] = out_status
+                # Keep provenance explicit: a mock manifest is not real evidence.
+                result["source_status"] = status
+                result["http_status"] = data.get("http_status")
+                result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
+                result["cache_status"] = cache_status
+                if status == "REAL_API_RESPONSE":
+                    result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
+                    result["quota_remaining"] = {
+                        "day": data.get("quota_remaining_provider_day"),
+                        "minute": data.get("quota_remaining_provider_minute"),
+                    }
+
             if size > _MAX_MCP_DATA_BYTES and tool in ("apifootball_odds", "apifootball_live_odds"):
-                # Never pretend a truncated list of prices is complete.
-                from .odds_manifest import live_odds_manifest, odds_page_manifest
-                try:
-                    manifest = (odds_page_manifest if tool == "apifootball_odds" else live_odds_manifest)(data)
-                except ValueError as exc:
-                    manifest = None
-                    manifest_error = str(exc)
-                if manifest is not None and len(json.dumps(
-                        manifest, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) <= _MAX_MCP_DATA_BYTES:
-                    result["status"] = "PARTIAL_ODDS_MANIFEST"
-                    # Keep provenance explicit: a mock manifest is not real evidence.
-                    result["source_status"] = status
+                # Never pretend a truncated list of prices is complete (FIX-05).
+                from .continuation import response_sha256
+                from .odds_manifest import DETAIL_LEVELS, live_odds_manifest, odds_page_manifest
+                build = odds_page_manifest if tool == "apifootball_odds" else live_odds_manifest
+                manifest = manifest_error = None
+                for detail in DETAIL_LEVELS:  # the most detailed level that fits
+                    try:
+                        candidate = build(data, request=params, detail=detail)
+                    except ValueError as exc:
+                        manifest_error = str(exc)
+                        break
+                    candidate["response_sha256"] = response_sha256(envelope.get("response"))
+                    if _encoded_size(candidate) <= _MANIFEST_BUDGET:
+                        manifest = candidate
+                        break
+                    manifest_error = "ODDS_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"
+                if manifest is not None:
+                    _provenance("PARTIAL_ODDS_MANIFEST")
                     result["data"] = manifest
                     result["pagination"] = manifest["paging"]
-                    result["http_status"] = data.get("http_status")
-                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
-                    result["cache_status"] = cache_status
-                    if status == "REAL_API_RESPONSE":
-                        result["quota_remaining"] = {
-                            "day": data.get("quota_remaining_provider_day"),
-                            "minute": data.get("quota_remaining_provider_minute"),
-                        }
                     return result
-                if manifest is None:
-                    result["manifest_error"] = {"code": manifest_error}
-                else:
-                    result["manifest_error"] = {"code": "ODDS_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"}
+                result["manifest_error"] = {"code": manifest_error}
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
                 # Keep the provider's page position so the client can still navigate (numbers only).
-                envelope = data.get("data", data) if status == "REAL_API_RESPONSE" else data
                 paging = envelope.get("paging") if isinstance(envelope, dict) else None
                 if isinstance(paging, dict) and type(paging.get("current")) is int and type(paging.get("total")) is int:
                     result["pagination"] = {"current": paging["current"], "total": paging["total"]}

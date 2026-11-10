@@ -58,7 +58,9 @@ def _assert_no_prices(result, price="1.95"):
             for value in node:
                 walk(value)
     walk(result)
-    scrubbed = {k: v for k, v in result.items() if k != "retrieved_at_utc"}
+    # FIX-07 added bridge-clock times with the same digit risk (declared): excluded likewise.
+    scrubbed = {k: v for k, v in result.items()
+                if k not in ("retrieved_at_utc", "responded_at_utc", "age_seconds", "time_sources")}
     assert price not in json.dumps(scrubbed)
 
 import httpx
