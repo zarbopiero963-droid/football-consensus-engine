@@ -206,12 +206,8 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
             raise ParameterError("INVALID_COUNTRY_CODE")
     if name == "apifootball_standings" and not ("league" in provided or "team" in provided):
         raise ParameterError("STANDINGS_FILTER_REQUIRED")
-    if name == "apifootball_fixtures" and not (
-        "id" in provided or "ids" in provided or "date" in provided or "live" in provided
-        or ("league" in provided and "season" in provided)
-        or ("team" in provided and ("last" in provided or "next" in provided))
-    ):
-        raise ParameterError("FIXTURE_FILTER_REQUIRED")
+    if name == "apifootball_fixtures":
+        fixtures_combination(provided)  # raises on an MCP_REJECTED combination
     if name == "apifootball_teams" and not provided:
         raise ParameterError("TEAM_FILTER_REQUIRED")
     if name == "apifootball_venues" and not provided:
@@ -250,8 +246,61 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
         "fixture" in provided or "league" in provided
     ):
         raise ParameterError("LIVE_ODDS_FILTER_REQUIRED")
-    if ("league" in provided) != ("season" in provided) and name in (
-        "apifootball_fixtures", "apifootball_odds",
-    ) and "id" not in provided and "fixture" not in provided and "date" not in provided and "live" not in provided:
+    if ("league" in provided) != ("season" in provided) and name == "apifootball_odds" \
+            and "fixture" not in provided and "date" not in provided:
         raise ParameterError("LEAGUE_SEASON_PAIR_REQUIRED")
     return endpoint, provided
+
+
+# ---- FIX-03: /fixtures parameter combinations ------------------------------------------------
+# Documentary evidence only. The captured official contract (docs/api_football/
+# official_parameter_matrix_v3.9.3.json) lists the 15 /fixtures parameters as independent
+# optional filters and records NO combination rule. So:
+#   DOCUMENTED_VALID  - one documented anchor parameter on its own (with the documented
+#                       `timezone`), `season` with the `league` it is documented for ("The
+#                       season of the league"), and league+season+from+to, which also has a
+#                       real PASS in the repo evidence (runs on 37e74fd);
+#   DOCS_UNVERIFIED   - any other scoped combination: forwarded, labelled in the reply, the
+#                       provider is the final authority (its declared errors come back with keys);
+#   MCP_REJECTED      - refused locally with a fixed code: no scoping filter (an unbounded
+#                       listing), last together with next, from after to, last/next > 99.
+# A combination never becomes DOCUMENTED_VALID because the docs do not forbid it.
+DOCUMENTED_VALID = "DOCUMENTED_VALID"
+DOCS_UNVERIFIED = "DOCS_UNVERIFIED"
+MCP_REJECTED = "MCP_REJECTED"
+
+_FIXTURE_DOCUMENTED = (
+    ("F-ID", frozenset({"id"})),
+    ("F-IDS", frozenset({"ids"})),
+    ("F-LIVE", frozenset({"live"})),
+    ("F-DATE", frozenset({"date"})),
+    ("F-LEAGUE-SEASON", frozenset({"league", "season"})),
+    ("F-LEAGUE-SEASON-RANGE", frozenset({"league", "season", "from", "to"})),
+)
+_SELF_SCOPED = ("id", "ids", "live", "date", "last", "next")
+_SUBJECTS = ("league", "team", "venue")
+FIXTURE_LAST_NEXT_MAX = 99  # documented "<= 2 characters"
+
+
+def fixtures_combination(provided: Mapping[str, Any]) -> dict[str, str]:
+    """{status, rule} for a validated /fixtures parameter set; raises ParameterError when the
+    combination is MCP_REJECTED."""
+    keys = frozenset(provided)
+    for field in ("last", "next"):
+        if field in provided and provided[field] > FIXTURE_LAST_NEXT_MAX:
+            raise ParameterError("PAGE_OR_BATCH_TOO_LARGE")
+    if "last" in keys and "next" in keys:
+        raise ParameterError("FIXTURE_LAST_NEXT_EXCLUSIVE")
+    if "from" in keys and "to" in keys and str(provided["from"]) > str(provided["to"]):
+        raise ParameterError("INVALID_DATE_RANGE")
+    scoped = any(k in keys for k in _SELF_SCOPED) or (
+        any(k in keys for k in _SUBJECTS) and ("season" in keys or {"from", "to"} <= keys))
+    if not scoped:
+        raise ParameterError("FIXTURE_FILTER_REQUIRED")
+    core = keys - {"timezone"}
+    for rule, documented in _FIXTURE_DOCUMENTED:
+        if core == documented:
+            if rule == "F-LIVE" and provided["live"] != "all" and "-" not in str(provided["live"]):
+                break  # one league id: the documented form is a list ("id-id")
+            return {"status": DOCUMENTED_VALID, "rule": rule}
+    return {"status": DOCS_UNVERIFIED, "rule": "F-COMBINATION-" + "+".join(sorted(core))}

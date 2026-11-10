@@ -14,7 +14,7 @@ from typing import Any, Mapping, Protocol
 
 from .config import Settings
 from .catalog import ALLOWED_PATHS
-from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
+from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, fixtures_combination, validate
 from .full_contract_audit import audit_contract_coverage
 from .timezones import timezone_context
 
@@ -209,6 +209,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "cache_age_seconds": None,
             "request_subject": _subject(params),
             **({"timezone_context": timezone_context(str(params["timezone"]))} if "timezone" in params else {}),
+            **({"combination": fixtures_combination(params)} if tool == "apifootball_fixtures" else {}),
             "quota_remaining": None,
             "pagination": None,
             "data": None,
