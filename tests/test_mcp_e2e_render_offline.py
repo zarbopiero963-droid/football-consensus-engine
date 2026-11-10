@@ -358,8 +358,13 @@ def test_the_workflow_is_owner_manual_main_only_and_uploads_only_the_opt_in_suit
     assert "${{" not in secret_steps[0]["run"]  # inputs reach bash only through env, never inlined
     inputs = data.get("on", data.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["expected_db_identity"]["options"] == ["", "fcb_app"]
-    assert inputs["suite"]["options"] == ["health", "apifootball", "apifootball_full"]
-    assert inputs["suite"]["default"] == "health" and inputs["apifootball_budget"]["default"] == "20"
+    assert inputs["suite"]["options"] == ["health", "apifootball", "apifootball_full", "apifootball_completion"]
+    assert inputs["suite"]["default"] == "health" and inputs["apifootball_budget"]["default"] == "45"
+    # Owner decision: the dispatch input is validated in bash to 1..45 (the script caps it again
+    # per suite: 45 for apifootball_completion, 20 for the other two).
+    run = secret_steps[0]["run"]
+    assert "apifootball|apifootball_full|apifootball_completion)" in run
+    assert "[1-9]|[1-3][0-9]|4[0-5]) ;;" in run and "from 1 to 45" in run
     assert data["run-name"] == ("FCB MCP E2E (expected database identity: "
                                 "${{ inputs.expected_db_identity || 'none' }})")
     assert "scripts/mcp_e2e_render.py" in secret_steps[0]["run"] and "set -x" not in text
@@ -528,7 +533,7 @@ FAKE_KEY = "LOCAL_FAKE_APIFOOTBALL_KEY_E2E_ONLY"
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _af_env(tmp_path, suite="apifootball", budget="20", by_path=None, fake=True):
+def _af_env(tmp_path, suite="apifootball_completion", budget="45", by_path=None, fake=True):
     env = {"E2E_EXTRA_ARGV": json.dumps(["--suite", suite, "--apifootball-budget", budget,
                                          "--apifootball-output", str(tmp_path / "af.json")]),
            "PYTHONPATH": os.pathsep.join([os.getcwd(), TESTS_DIR])}
@@ -538,33 +543,54 @@ def _af_env(tmp_path, suite="apifootball", budget="20", by_path=None, fake=True)
     return env
 
 
-def test_apifootball_suite_proves_real_tool_outputs_within_the_budget(tmp_path):
+def test_apifootball_completion_proves_real_tool_outputs_within_the_budget(tmp_path):
     import _apifootball_fake_provider as fake
     res, report_text, stdout = _run(tmp_path, github_actions=True, extra_env=_af_env(tmp_path))
     report = json.loads(report_text)
     af = report["apifootball_suite"]
     assert res["rc"] == 0 and report["verdict"] == "PASS" and af["verdict"] == "PASS", af
+    assert af["suite"] == "apifootball_completion" and af["budget"] == af["budget_ceiling"] == 45
     # The OAuth/refresh checks after the suite still ran and passed.
     assert {"refresh_rotation_200", "refreshed_access_token_works"} <= {c["check"] for c in report["checks"]}
-    # Hard budget: what reached the (fake) provider never exceeds 20, and the charge is an upper bound.
-    assert res["provider_requests"] == 15 and af["provider_requests_charged"] == 17 <= 20
-    assert report["provider_or_order_calls_attempted"] == 17
+    # Worst-case counting: 12 provider calls, each charged 3; what reached the (fake) provider is bounded.
+    assert res["provider_requests"] == 12 and af["provider_requests_charged"] == 36 <= 45
+    assert report["provider_or_order_calls_attempted"] == 36
     assert {c["outcome"] for c in af["cases"]} <= {"HTTP_200", "DATA_PRESENT", "EMPTY_VALID", "ERROR"}
     called = res["server_tools_called"]
     assert set(called) <= {"sxbet_health", "apifootball_health"} | set(e2e.APIFOOTBALL_PROVIDER_TOOLS)
+    assert "apifootball_status" not in called and "apifootball_leagues" not in called  # evidence reused
     assert called.count("sxbet_health") == 1 and not any(n.startswith(("browser_", "cloak_")) for n in called)
     # Public evidence: no price, no key, no personal account field, no runtime secret.
     artifact = (tmp_path / "af.json").read_text()
     assert json.loads(artifact) == af
     plain_stdout = "\n".join(l for l in stdout.splitlines() if not l.startswith(("::add-mask::", "RESULT_JSON=")))
-    assert "apifootball_verdict=PASS provider_requests_charged=17" in plain_stdout
+    assert "apifootball_verdict=PASS provider_requests_charged=36" in plain_stdout
     for text in (report_text, artifact, plain_stdout):
         assert fake.PRICE_SENTINEL not in text and FAKE_KEY not in text and "PRIVATE" not in text
         assert PASSWORD not in text and not any(v in text for v in res["issued"])
 
 
+def test_a_partial_suite_exits_non_zero(tmp_path):
+    """P3: only a PASS suite exits 0. No not-started fixture -> U odds NOT_TESTED -> PARTIAL -> rc 1."""
+    res, report_text, stdout = _run(tmp_path, extra_env=_af_env(tmp_path, by_path={"/fixtures": ["empty"]}))
+    report = json.loads(report_text)
+    af = report["apifootball_suite"]
+    assert report["verdict"] == "PASS" and af["verdict"] == "PARTIAL" and af["stop_reason"] is None
+    c = {x["id"]: x for x in af["cases"]}
+    assert c["C01"]["outcome"] == "EMPTY_VALID" and c["C04"]["verdict"] == "NOT_TESTED"
+    assert res["rc"] == 1 and "apifootball_verdict=PARTIAL" in stdout
+
+
+def test_the_earlier_suite_under_its_20_ceiling_stops_at_the_budget_and_exits_non_zero(tmp_path):
+    res, report_text, _ = _run(tmp_path, extra_env=_af_env(tmp_path, suite="apifootball", budget="20"))
+    af = json.loads(report_text)["apifootball_suite"]
+    assert res["rc"] == 1 and af["verdict"] == "BLOCKED" and af["stop_reason"] == "STOP_BUDGET_REACHED"
+    assert res["provider_requests"] == 6 and af["provider_requests_charged"] == 18 <= 20
+
+
 def test_apifootball_suite_stops_on_an_auth_error_and_marks_the_rest_not_tested(tmp_path):
-    res, report_text, _ = _run(tmp_path, extra_env=_af_env(tmp_path, by_path={"/leagues": ["http_401"]}))
+    res, report_text, _ = _run(tmp_path, extra_env=_af_env(tmp_path, suite="apifootball", budget="20",
+                                                          by_path={"/leagues": ["http_401"]}))
     af = json.loads(report_text)["apifootball_suite"]
     assert res["rc"] == 1 and af["verdict"] == "BLOCKED"
     assert af["stop_reason"] == "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT"
@@ -586,7 +612,9 @@ def test_apifootball_suite_makes_no_call_when_live_is_not_authorized(tmp_path):
 def test_the_budget_input_cannot_exceed_the_owner_ceiling(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_OAUTH_PASSWORD", "x")
     out = str(tmp_path / "r.json")
-    for bad in ("21", "0", "-1", "100"):
-        assert e2e.main(["--output", out, "--suite", "apifootball", "--apifootball-budget", bad],
+    for suite, bad in (("apifootball", "21"), ("apifootball_full", "45"), ("apifootball_completion", "46"),
+                       ("apifootball_completion", "0"), ("apifootball", "-1"), ("apifootball_completion", "100")):
+        assert e2e.main(["--output", out, "--suite", suite, "--apifootball-budget", bad],
                         client=object()) == 2
-    assert e2e.APIFOOTBALL_BUDGET_CEILING == 20 and e2e.APIFOOTBALL_DEFAULT_BUDGET == 20
+    assert e2e.APIFOOTBALL_BUDGET_CEILING == 45 and e2e.APIFOOTBALL_DEFAULT_BUDGET == 45
+    assert e2e.SUITE_BUDGET_CEILING == {"apifootball": 20, "apifootball_full": 20, "apifootball_completion": 45}

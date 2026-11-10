@@ -26,9 +26,10 @@ What the run proves and what it does not: `network_calls_made == 0` is what the 
 REPORT (their code makes no provider request; that rests on code review); the refresh-token-as-
 bearer check is decided by the bearer format check before any database lookup.
 
-Opt-in API-FOOTBALL suite (`--suite apifootball` or `apifootball_full`, owner dispatch only): after
-the health tools, read-only apifootball_* tools are called through the same authenticated MCP
-session under a hard per-run provider budget (default and ceiling 20). See the section
+Opt-in API-FOOTBALL suites (`--suite apifootball`, `apifootball_full` or `apifootball_completion`,
+owner dispatch only): after the health tools, read-only apifootball_* tools are called through the
+same authenticated MCP session under a hard per-campaign provider budget (default and ceiling 45,
+every call charged its worst case). See the section
 "API-FOOTBALL real-data suite" below. The default `health` suite is unchanged.
 
 Production leftovers per run (no revocation endpoint yet, WP-022): one DCR client row (730-day
@@ -149,7 +150,8 @@ class Run:
         # The default suite keeps the zero-cost allowlist; the opt-in suites add only the
         # read-only provider tools, each call of which needs an open budget reservation.
         self.allowed_tools = ALLOWED_TOOL_CALLS | (frozenset(APIFOOTBALL_PROVIDER_TOOLS) if suite != "health" else frozenset())
-        self.af_budget = ProviderBudget(apifootball_budget) if suite != "health" else None
+        self.af_budget = (ProviderBudget(apifootball_budget, SUITE_BUDGET_CEILING[suite])
+                          if suite != "health" else None)
         self.af_suite: ApiFootballSuite | None = None
         self.sensitive: list[str] = [password]
         self.results: list[dict[str, Any]] = []
@@ -455,7 +457,7 @@ class Run:
         ready = (health.get("status") == "LIVE_ENABLED" and health.get("provider_requests_authorized") is True
                  and health.get("quota_coordinator") == "READY")
         self.af_suite = ApiFootballSuite(lambda tool, args: self.call_tool_payload(tool, args, token),
-                                         self.af_budget, full=self.suite == "apifootball_full",
+                                         self.af_budget, plan=self.suite,
                                          now=self._now, sleep=self._sleep)
         self.af_suite.run(None if ready else "BLOCKED_PROVIDER_NOT_LIVE_OR_COORDINATOR_NOT_READY")
 
@@ -478,7 +480,7 @@ class Run:
                "failed_check": error, "checks_passed": sum(r["outcome"] == "PASS" for r in self.results),
                "checks": self.results, "facts": self.facts, "suite": self.suite,
                "tools_called": list(self.tools_called),
-               # Upper bound charged by the budget (worst case unless settled down on evidence).
+               # Upper bound of real provider HTTP attempts: every provider call charged its worst case.
                "provider_or_order_calls_attempted": self.af_budget.committed if self.af_budget else 0,
                # The OAuth flow itself writes rows in production (DCR client, codes, tokens):
                "oauth_rows_written_per_run": "1 DCR client, 2 codes, 2 token pairs (hashes only)"}
@@ -496,31 +498,41 @@ class Run:
 
 # ==== API-FOOTBALL real-data suite (owner decision "path B": opt-in, budgeted, read-only) ========
 #
-# Selected only by `--suite apifootball` (prioritized plan) or `--suite apifootball_full` (one call
-# per provider tool); the default `health` suite is the run above, unchanged. Every provider call
+# Selected only by `--suite apifootball` (prioritized plan), `--suite apifootball_full` (one call
+# per provider tool) or `--suite apifootball_completion` (only what the production runs on 37e74fd
+# left unproven, reusing their PASS evidence); the default `health` suite is the run above,
+# unchanged. Every provider call
 # goes through the deployed MCP tools, hence through the server's shared PostgreSQL coordinator:
 # the runner itself never contacts the provider and holds no API key and no database URL.
 #
-# Budget: a hard ceiling of provider requests per run. Before each tools/call the runner reserves
-# the WORST CASE that call can cost on the server, derived from the code:
+# Budget (owner decision "API-FOOTBALL REAL E2E COMPLETION"): one global, fail-closed ceiling of
+# provider HTTP attempts per campaign (= one workflow run). Before each tools/call the runner
+# reserves the WORST CASE that call can cost on the server, derived from the code:
 #   bridge/api_football/resilience.py RetryPolicy: max_attempts <= 3 (validated), one coordinator
 #   lease and at most one provider request per attempt; tools.py: one page per call, no automatic
 #   pagination, no follow-up request for the odds manifest.  =>  3 per tools/call.
-# A call is refused when committed + 3 would exceed the budget. After the call the charge is
-# settled DOWN only on evidence: 0 when the code path provably made no request (validation,
-# authorization gate, cache HIT); otherwise the decrease of the provider's own daily counter
-# (x-ratelimit-requests-remaining, exposed as quota_remaining.day) since the previous reading, when
-# it is between 1 and 3. In every other case the full worst case stays charged. network_calls_made
-# is recorded but never used to settle: it reports 1 after retries (F-02).
-APIFOOTBALL_BUDGET_CEILING = 20  # owner-approved per-run ceiling; raised only by an owner-merged PR
-APIFOOTBALL_DEFAULT_BUDGET = 20
+# A call is refused when charged + 3 would exceed the budget. Conservative counting: a call that
+# can reach the provider is ALWAYS charged the full 3, so the charge bounds the real HTTP attempts,
+# retries included. The charge is 0 only on code paths that provably make no request: the tool
+# statuses INVALID_INPUT, KEY_NOT_CONFIGURED, LIVE_NOT_AUTHORIZED, PROVIDER_CLIENT_UNAVAILABLE
+# (returned by tools.py before the client is called) and a cache HIT (resilience.py returns the
+# cached copy before any lease or request). The provider's own daily counter (quota_remaining.day)
+# is recorded as information only: real runs showed it is not monotonic between consecutive calls
+# (eventually consistent), so it never lowers a charge and its jumps never stop the run.
+# network_calls_made is recorded but never used either: it reports 1 after retries (F-02).
+APIFOOTBALL_BUDGET_CEILING = 45  # owner-approved max HTTP attempts per campaign; raised only by an owner-merged PR
+APIFOOTBALL_DEFAULT_BUDGET = 45
+# The owner approved 45 for the `apifootball_completion` campaign only; the earlier suites keep
+# their owner-approved 20 (now charged at the worst case on every call).
+SUITE_BUDGET_CEILING = {"apifootball": 20, "apifootball_full": 20, "apifootball_completion": 45}
 APIFOOTBALL_MAX_ATTEMPTS_PER_CALL = 3  # resilience.RetryPolicy upper bound
 APIFOOTBALL_PAGES_PER_CALL = 1  # no automatic pagination in tools.py
 APIFOOTBALL_WORST_CASE_PER_CALL = APIFOOTBALL_MAX_ATTEMPTS_PER_CALL * APIFOOTBALL_PAGES_PER_CALL
 # Runtime coordinator default: 8 requests per rolling minute. 9 s between calls keeps the run at
 # <= 7 per minute without retries; with retries the coordinator refuses and the run stops.
 APIFOOTBALL_CALL_SPACING_SECONDS = 9.0
-SUITES = ("health", "apifootball", "apifootball_full")
+SUITES = ("health", "apifootball", "apifootball_full", "apifootball_completion")
+APIFOOTBALL_SUITES = SUITES[1:]
 # The 40 read-only provider tools (GET only; bridge/api_football/contracts.py ENDPOINTS, pinned by
 # a test). apifootball_health and apifootball_quota_report make no provider request.
 APIFOOTBALL_PROVIDER_TOOLS: dict[str, str] = {
@@ -548,6 +560,12 @@ APIFOOTBALL_PROVIDER_TOOLS: dict[str, str] = {
 # League of the repository's existing route inventory (scripts/api_football_39_route_inventory.py).
 # Every other id (season, fixtures, teams, bet, player, venue) is read from a response of this run.
 PROBE_LEAGUE = 39
+# PASS evidence of the production runs on main 37e74fd (suites apifootball / apifootball_full), reused
+# by `apifootball_completion` instead of repeating those calls: /leagues id=39 current=true -> season
+# 2026 (unique current season); /fixtures id=1557464 -> FT 4-4, HT 2-2, with events and statistics.
+EVIDENCE_SEASON = 2026
+EVIDENCE_FINISHED_FIXTURE = 1557464
+UPCOMING_WINDOW_DAYS = 28
 # Negative case: the contract's own upper bound for an id (contracts.py _positive_int).
 NONEXISTENT_FIXTURE_ID = 2_000_000_000
 OVER_UNDER_BET_NAME = "Goals Over/Under"  # exact catalog name, never a fuzzy match
@@ -565,20 +583,24 @@ _RAW_TIME_RE = re.compile(r"^[0-9T:+.Z-]{10,32}$")
 
 
 class BudgetExceeded(Exception):
-    """A reservation would exceed the per-run provider budget."""
+    """A reservation would exceed the per-campaign provider budget."""
 
 
 class ProviderBudget:
-    """Hard per-run provider-request ceiling: reserve the worst case, settle down on evidence."""
+    """Global, fail-closed ceiling of provider HTTP attempts: every call that can reach the
+    provider is charged its worst case; 0 only on a code path that provably makes no request."""
 
-    def __init__(self, budget: int):
-        if type(budget) is not int or not 1 <= budget <= APIFOOTBALL_BUDGET_CEILING:
+    def __init__(self, budget: int, ceiling: int = APIFOOTBALL_BUDGET_CEILING):
+        if type(ceiling) is not int or not 1 <= ceiling <= APIFOOTBALL_BUDGET_CEILING:
+            raise ValueError("ceiling above the owner-approved maximum")
+        if type(budget) is not int or not 1 <= budget <= ceiling:
             raise ValueError("budget outside the owner-approved ceiling")
-        self.budget = budget
+        self.budget, self.ceiling = budget, ceiling
         self.committed = 0
         self.open: tuple[str, int] | None = None
-        self.last_day_remaining: int | None = None
-        self.floor_since_reading = 0  # requests provably made since the last counter reading
+        # Information only (never used to lower a charge or to stop): the provider's daily counter
+        # as read after each charged call, in call order.
+        self.day_readings: list[int] = []
 
     def can_reserve(self, worst: int = APIFOOTBALL_WORST_CASE_PER_CALL) -> bool:
         return self.open is None and self.committed + worst <= self.budget
@@ -589,43 +611,33 @@ class ProviderBudget:
         self.open = (tool, worst)
         return worst
 
-    def settle(self, payload: dict[str, Any] | None) -> tuple[int, str, bool]:
-        """Close the open reservation: (charged, basis, accounting_anomaly)."""
+    def settle(self, payload: dict[str, Any] | None) -> tuple[int, str]:
+        """Close the open reservation: (charged, basis). Never below the worst case unless the
+        code path provably made no request."""
         if self.open is None:
             raise RuntimeError("no open reservation")
         _, worst = self.open
         self.open = None
-        charged, basis, anomaly = worst, "WORST_CASE_NO_EVIDENCE", False
         status = payload.get("status") if isinstance(payload, dict) else None
-        quota = payload.get("quota_remaining") if isinstance(payload, dict) else None
-        day = quota.get("day") if isinstance(quota, dict) else None
-        day = day if type(day) is int and day >= 0 else None
         if payload is None:
-            basis = "WORST_CASE_NO_REPLY"
+            charged, basis = worst, "WORST_CASE_NO_REPLY"
         elif status in NO_NETWORK_STATUSES:
             charged, basis = 0, "CODE_PATH_NO_REQUEST"
         elif payload.get("cache_status") == "HIT":
             charged, basis = 0, "CACHE_HIT"
-        elif status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST") and day is not None:
-            if self.last_day_remaining is None:
-                basis = "WORST_CASE_NO_BASELINE"
-            else:
-                own = self.last_day_remaining - day - self.floor_since_reading
-                if 1 <= own <= worst:
-                    charged, basis = own, "PROVIDER_COUNTER_DELTA"
-                elif own > worst or own < 0:
-                    # Another consumer, or the UTC day rolled over: the counter no longer
-                    # attributes requests to this run, so the accounting cannot continue.
-                    basis, anomaly = "WORST_CASE_COUNTER_ANOMALY", True
-                else:
-                    basis = "WORST_CASE_COUNTER_UNCHANGED"
+        else:
+            charged, basis = worst, "WORST_CASE"
         self.committed += charged
-        if day is not None and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST") \
-                and payload.get("cache_status") != "HIT":  # a HIT replays an old reading
-            self.last_day_remaining, self.floor_since_reading = day, 0
-        elif status == "PAYLOAD_TOO_LARGE" or (status == "PROVIDER_ERROR" and _error_code(payload) in KNOWN_SIZE_CODES):
-            self.floor_since_reading += 1  # at least one request reached the provider, no reading
-        return charged, basis, anomaly
+        quota = payload.get("quota_remaining") if isinstance(payload, dict) else None
+        day = quota.get("day") if isinstance(quota, dict) else None
+        if charged and type(day) is int and day >= 0:
+            self.day_readings.append(day)
+        return charged, basis
+
+    def counter_report(self) -> dict[str, Any]:
+        r = self.day_readings
+        return {"use": "INFORMATIONAL_ONLY_NEVER_USED_FOR_ACCOUNTING", "day_readings": r[:64],
+                "monotonic_non_increasing": all(a >= b for a, b in zip(r, r[1:])) if len(r) > 1 else None}
 
 
 def _code(value: Any) -> str | None:
@@ -654,10 +666,15 @@ def _sha256(obj: Any) -> str:
 
 class Case:
     def __init__(self, cid: str, tool: str, args: Callable[[dict[str, Any]], dict[str, Any] | str],
-                 expect: str, check: Callable[..., list[str]] | None = None, what: str = ""):
+                 expect: str, check: Callable[..., list[str]] | None = None, what: str = "",
+                 coverage: str | None = None):
         if tool not in APIFOOTBALL_PROVIDER_TOOLS or expect not in ("data", "data_or_empty", "empty", "invalid_input"):
             raise ValueError("invalid case")
         self.cid, self.tool, self.args, self.expect, self.check, self.what = cid, tool, args, expect, check, what
+        # The /leagues coverage flag that governs this data (fixtures.events, odds, standings...):
+        # when it is false and the reply is empty, the verdict is PROVIDER_UNAVAILABLE with that
+        # flag as evidence. An empty reply on its own is never evidence of unavailability.
+        self.coverage = coverage
 
 
 def _args(*keys: str, **build: Callable[[dict[str, Any]], Any]):
@@ -706,10 +723,10 @@ def _check_league(p, ctx, facts):
     ctx["season"] = seasons[0]["year"]
     cov = seasons[0].get("coverage") if isinstance(seasons[0].get("coverage"), dict) else {}
     fx = cov.get("fixtures") if isinstance(cov.get("fixtures"), dict) else {}
-    facts.update({"season": ctx["season"], "coverage": {
-        k: v if isinstance(v, bool) else None for k, v in (
-            ("events", fx.get("events")), ("statistics_fixtures", fx.get("statistics_fixtures")),
-            ("standings", cov.get("standings")), ("odds", cov.get("odds")))}})
+    ctx["coverage"] = {k: v if isinstance(v, bool) else None for k, v in (
+        ("events", fx.get("events")), ("statistics_fixtures", fx.get("statistics_fixtures")),
+        ("standings", cov.get("standings")), ("odds", cov.get("odds")))}
+    facts.update({"season": ctx["season"], "coverage": dict(ctx["coverage"])})
     return []
 
 
@@ -755,6 +772,18 @@ def _check_fixture_window(p, ctx, facts):
                    team_away=x["teams"]["away"]["id"],
                    venue=venue.get("id") if isinstance(venue, dict) and _is_int(venue.get("id")) else None)
         facts["X"] = _fixture_fact(x)
+    if u:
+        ctx["fixture_u"] = u["fixture"]["id"]
+        facts["U"] = _fixture_fact(u)
+    return ["FIXTURE_SHAPE_INVALID"] if any(not _fixture_shape(f) for f in resp) else []
+
+
+def _check_upcoming(p, ctx, facts):
+    """Completion: U only (earliest NS >= now + 2 h, ties -> lowest id); X is the fixed evidence id."""
+    resp = _response(p)
+    _, u = select_fixtures(resp, ctx["now_ts"])
+    facts.update({"fixtures": len(resp),
+                  "not_started": sum(_fixture_shape(f) and f["fixture"]["status"]["short"] == "NS" for f in resp)})
     if u:
         ctx["fixture_u"] = u["fixture"]["id"]
         facts["U"] = _fixture_fact(u)
@@ -811,11 +840,20 @@ def _check_statistics(p, ctx, facts):
 
 
 def _check_catalog_single_page(p, ctx, facts):
+    """Catalog rows are {id, name}. The provider publishes rows whose name is null (real run
+    41242779991: /odds/bookmakers 33 rows, one with name null; /odds/bets 338, one null): a null
+    stays null and is counted, it is not a shape defect (CLAUDE.md 2.3). A row without an integer
+    id, or with a name that is neither a string nor null, is."""
     resp = _response(p)
-    if not all(isinstance(r, dict) and _is_int(r.get("id")) and isinstance(r.get("name"), str) for r in resp):
-        return ["CATALOG_SHAPE_INVALID"]
+    rows_ok = [r for r in resp if isinstance(r, dict) and _is_int(r.get("id"))
+               and (r.get("name") is None or isinstance(r.get("name"), str))]
     total = (p.get("pagination") or {}).get("total")
-    facts.update({"entries": len(resp), "paging_total": total})
+    # Facts first: a defect must never leave the case without its counts.
+    facts.update({"entries": len(resp), "paging_total": total,
+                  "null_names_kept_null": sum(r.get("name") is None for r in rows_ok),
+                  "rows_shape_invalid": len(resp) - len(rows_ok)})
+    if len(rows_ok) != len(resp):
+        return ["CATALOG_SHAPE_INVALID"]
     # No `page` parameter is documented for these catalogs: a second page would be unreachable.
     return ["CATALOG_HAS_UNREACHABLE_PAGES"] if total != 1 else []
 
@@ -937,16 +975,61 @@ def _day(ctx: dict[str, Any], delta_days: int = 0) -> str:
     return (datetime.fromtimestamp(ctx["now_ts"], timezone.utc).date() + timedelta(days=delta_days)).isoformat()
 
 
-def _plan(full: bool) -> list[Case]:
+def _bet(c):  # optional filter: None is dropped, never replaced by a guessed id
+    return c.get("bet_ou")
+
+
+def _odds_page2(c):
+    if c.get("odds_pages") == 1:
+        return "NOT_APPLICABLE_SINGLE_PAGE"
+    return _args("league", "season", "odds_pages", league=lambda c: c["league"], season=lambda c: c["season"],
+                 bet=_bet, page=lambda c: 2)(c)
+
+
+def _live_odds_args(c):
+    return "NO_LIVE_FIXTURE" if c.get("fixture_live") is None else {"fixture": c["fixture_live"]}
+
+
+def _completion_plan() -> list[Case]:
+    """What the runs on 37e74fd left unproven, in the owner's priority order; 12 provider calls,
+    36 HTTP attempts at the worst case (<= 45). League 39, season 2026 and the finished fixture
+    1557464 are the PASS evidence of those runs (no status, leagues or finished-fixture call)."""
+    L, Y = (lambda c: c["league"]), (lambda c: c["season"])
+    return [
+        Case("C01", "apifootball_fixtures", _args("league", "season", league=L, season=Y,
+                                                  from_date=lambda c: _day(c), to_date=lambda c: _day(c, UPCOMING_WINDOW_DAYS),
+                                                  timezone=lambda c: "UTC"),
+             "data_or_empty", _check_upcoming, "upcoming fixture discovery (U)"),
+        Case("C02", "apifootball_bookmakers", lambda c: {}, "data", _check_catalog_single_page, "bookmakers"),
+        Case("C03", "apifootball_bets", lambda c: {}, "data", _check_bets, "bets incl. Over/Under by exact name"),
+        Case("C04", "apifootball_odds", _args("fixture_u", "bet_ou", fixture=lambda c: c["fixture_u"], bet=_bet),
+             "data", lambda p, c, f: _check_odds(p, c, f, fixture_key="fixture_u"),
+             "pre-match odds for U, bet=Over/Under", coverage="odds"),
+        Case("C05", "apifootball_odds", _args("league", "season", league=L, season=Y, bet=_bet), "data",
+             _check_odds_page1, "odds league page 1", coverage="odds"),
+        Case("C06", "apifootball_odds", _odds_page2, "data_or_empty", _check_odds_page2, "odds league page 2",
+             coverage="odds"),
+        Case("C07", "apifootball_fixtures", lambda c: {"live": "all"}, "data", _check_live, "live fixtures (empty = PARTIAL)"),
+        Case("C08", "apifootball_live_odds", _live_odds_args, "data_or_empty",
+             lambda p, c, f: _check_odds(p, c, f, live=True, fixture_key="fixture_live"), "live odds for Z"),
+        Case("C09", "apifootball_standings", _args("league", "season", league=L, season=Y), "data",
+             _check_standings, "standings", coverage="standings"),
+        Case("C10", "apifootball_odds_mapping", lambda c: {}, "data_or_empty", what="odds mapping (page 1)"),
+        Case("C11", "apifootball_live_bets", lambda c: {}, "data", _check_catalog_single_page, "live bets catalog"),
+        Case("C12", "apifootball_fixtures", lambda c: {"id": NONEXISTENT_FIXTURE_ID}, "empty",
+             what="negative: nonexistent fixture id"),
+    ]
+
+
+def _plan(name: str) -> list[Case]:
+    if name not in APIFOOTBALL_SUITES:
+        raise ValueError("unknown plan")
+    if name == "apifootball_completion":
+        return _completion_plan()
+    full = name == "apifootball_full"
     L, Y = (lambda c: c["league"]), (lambda c: c["season"])
 
-    def bet(c):  # optional filter: None is dropped, never replaced by a guessed id
-        return c.get("bet_ou")
-
-    def odds_page2(c):
-        if c.get("odds_pages") == 1:
-            return "NOT_APPLICABLE_SINGLE_PAGE"
-        return _args("league", "season", "odds_pages", league=L, season=Y, bet=bet, page=lambda c: 2)(c)
+    bet, odds_page2 = _bet, _odds_page2
 
     cases = [
         Case("N00", "apifootball_fixtures", lambda c: {"date": _day(c), "timezone": "Europe/Rome"},
@@ -961,24 +1044,23 @@ def _plan(full: bool) -> list[Case]:
         Case("A04", "apifootball_fixtures", _args("fixture_x", id=lambda c: c["fixture_x"]), "data",
              _check_fixture_detail, "fixture details/result"),
         Case("A05", "apifootball_fixture_events", _args("fixture_x", fixture=lambda c: c["fixture_x"]),
-             "data_or_empty", _check_events, "events and goals"),
+             "data_or_empty", _check_events, "events and goals", coverage="events"),
         Case("A06", "apifootball_fixture_statistics", _args("fixture_x", fixture=lambda c: c["fixture_x"]),
-             "data_or_empty", _check_statistics, "statistics"),
+             "data_or_empty", _check_statistics, "statistics", coverage="statistics_fixtures"),
         Case("A07", "apifootball_bookmakers", lambda c: {}, "data", _check_catalog_single_page, "bookmakers"),
         Case("A08", "apifootball_bets", lambda c: {}, "data", _check_bets, "bets/markets incl. Over/Under"),
         Case("A09", "apifootball_odds", _args("fixture_u", fixture=lambda c: c["fixture_u"], bet=bet),
              "data_or_empty", lambda p, c, f: _check_odds(p, c, f, fixture_key="fixture_u"),
-             "pre-match odds, real fixture"),
+             "pre-match odds, real fixture", coverage="odds"),
         Case("A10", "apifootball_odds", _args("league", "season", league=L, season=Y, bet=bet), "data_or_empty",
-             _check_odds_page1, "odds page 1"),
-        Case("A11", "apifootball_odds", odds_page2, "data_or_empty", _check_odds_page2, "odds page 2"),
-        Case("A12", "apifootball_fixtures", lambda c: {"live": "all"}, "data_or_empty", _check_live, "live fixtures"),
-        Case("A13", "apifootball_live_odds",
-             lambda c: "NO_LIVE_FIXTURE" if c.get("fixture_live") is None else {"fixture": c["fixture_live"]},
+             _check_odds_page1, "odds page 1", coverage="odds"),
+        Case("A11", "apifootball_odds", odds_page2, "data_or_empty", _check_odds_page2, "odds page 2", coverage="odds"),
+        Case("A12", "apifootball_fixtures", lambda c: {"live": "all"}, "data", _check_live, "live fixtures (empty = PARTIAL)"),
+        Case("A13", "apifootball_live_odds", _live_odds_args,
              "data_or_empty", lambda p, c, f: _check_odds(p, c, f, live=True, fixture_key="fixture_live"),
              "live odds"),
         Case("A14", "apifootball_standings", _args("league", "season", league=L, season=Y), "data",
-             _check_standings, "standings"),
+             _check_standings, "standings", coverage="standings"),
         Case("A15", "apifootball_fixtures", lambda c: {"id": NONEXISTENT_FIXTURE_ID}, "empty",
              what="negative: nonexistent fixture id"),
     ]
@@ -1024,15 +1106,13 @@ def _plan(full: bool) -> list[Case]:
     return cases + [negative]
 
 
-def plan_summary(full: bool) -> dict[str, Any]:
-    cases = _plan(full)
+def plan_summary(name: str) -> dict[str, Any]:
+    cases = _plan(name)
     n = sum(c.expect != "invalid_input" for c in cases)
     w = APIFOOTBALL_WORST_CASE_PER_CALL
-    return {"cases": len(cases), "provider_calls_nominal": n, "worst_case_if_every_call_retries": n * w,
-            # Status settles at the worst case (no earlier counter reading), every later call at 1
-            # when the provider counter proves it, and the last call still needs a full reservation.
-            "min_budget_to_complete_without_retries": w + (n - 2) + w,
-            "provider_tools_covered": len({c.tool for c in cases})}
+    # Every provider call is charged its worst case, so completing the plan needs n * 3.
+    return {"cases": len(cases), "provider_calls_nominal": n, "worst_case_http_attempts": n * w,
+            "min_budget_to_complete": n * w, "provider_tools_covered": len({c.tool for c in cases})}
 
 
 def _classify(p: dict[str, Any]) -> str:
@@ -1082,13 +1162,24 @@ def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
     return defects
 
 
-# A stop for which the environment, not the tool's contract, is the cause: the case is BLOCKED.
-STOP_ENVIRONMENT = frozenset({"STOP_PROVIDER_QUOTA_ZERO", "STOP_LOCAL_QUOTA_EXHAUSTED",
-                              "STOP_COORDINATOR_UNAVAILABLE", "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT",
-                              "STOP_QUOTA_ACCOUNTING_ANOMALY", "STOP_PROVIDER_NOT_ENABLED"})
+# Per-case verdicts: PASS, FAIL, PARTIAL, NOT_TESTED, PROVIDER_UNAVAILABLE.
+# PROVIDER_UNAVAILABLE needs concrete evidence recorded in the case's facts: the provider's own
+# /leagues coverage flag false for that data. (An explicit provider `errors` entry naming the plan
+# or endpoint would also count, but tools.py collapses declared errors into the fixed code
+# PROVIDER_DECLARED_ERRORS without their text, so the runner can never see one: such a reply stays
+# FAIL.) An empty reply alone is EMPTY_VALID with PARTIAL or NOT_TESTED, never unavailable.
+CASE_VERDICTS = ("PASS", "FAIL", "PARTIAL", "NOT_TESTED", "PROVIDER_UNAVAILABLE")
+# The verdict of a call that ended in an environment stop: the endpoint was not exercised to a
+# reply (provider 401/403/429/5xx or open circuit share one fixed code, quota at zero, local quota,
+# provider not enabled), so NOT_TESTED, with the stop and error code in the record. Anything that
+# is the MCP's fault (coordinator down, a failed MCP call, an unexpected error) stays FAIL.
+STOP_VERDICT = {"STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT": "NOT_TESTED",
+                "STOP_PROVIDER_QUOTA_ZERO": "NOT_TESTED",
+                "STOP_LOCAL_QUOTA_EXHAUSTED": "NOT_TESTED",
+                "STOP_PROVIDER_NOT_ENABLED": "NOT_TESTED"}
 
 
-def stop_reason_for(p: dict[str, Any] | None, anomaly: bool) -> str | None:
+def stop_reason_for(p: dict[str, Any] | None) -> str | None:
     """S1-S5 of the certification plan, evaluated after every call."""
     if p is None:
         return "STOP_MCP_CALL_FAILED"
@@ -1096,8 +1187,6 @@ def stop_reason_for(p: dict[str, Any] | None, anomaly: bool) -> str | None:
     quota = p.get("quota_remaining") if isinstance(p.get("quota_remaining"), dict) else {}
     if quota.get("day") == 0 or quota.get("minute") == 0:
         return "STOP_PROVIDER_QUOTA_ZERO"
-    if anomaly:
-        return "STOP_QUOTA_ACCOUNTING_ANOMALY"
     if status in ("KEY_NOT_CONFIGURED", "LIVE_NOT_AUTHORIZED", "PROVIDER_CLIENT_UNAVAILABLE"):
         return "STOP_PROVIDER_NOT_ENABLED"
     if status == "PROVIDER_ERROR":
@@ -1120,23 +1209,28 @@ class ApiFootballSuite:
     """Runs a case plan through `call(tool, args) -> payload | None` under a ProviderBudget."""
 
     def __init__(self, call: Callable[[str, dict[str, Any]], dict[str, Any] | None], budget: ProviderBudget, *,
-                 full: bool = False, now: Callable[[], float] = time.time, sleep=time.sleep,
+                 plan: str = "apifootball", now: Callable[[], float] = time.time, sleep=time.sleep,
                  spacing: float = APIFOOTBALL_CALL_SPACING_SECONDS):
-        self.call, self.budget, self.full = call, budget, full
+        if plan not in APIFOOTBALL_SUITES:
+            raise ValueError("unknown plan")
+        self.call, self.budget, self.plan = call, budget, plan
         self._now, self._sleep, self.spacing = now, sleep, spacing
         self.ctx: dict[str, Any] = {"league": PROBE_LEAGUE, "now_ts": int(now())}
+        if plan == "apifootball_completion":
+            # Reused PASS evidence of the 37e74fd runs, never re-fetched.
+            self.ctx.update(season=EVIDENCE_SEASON, fixture_x=EVIDENCE_FINISHED_FIXTURE)
         self.records: list[dict[str, Any]] = []
         self.stop_reason: str | None = None
         self._last_call: float | None = None
 
     def _not_tested(self, case: Case, reason: str) -> None:
         self.records.append({"id": case.cid, "tool": case.tool, "endpoint": APIFOOTBALL_PROVIDER_TOOLS[case.tool],
-                             "what": case.what, "outcome": "NOT_TESTED", "verdict": "BLOCKED", "reason": reason,
+                             "what": case.what, "outcome": "NOT_TESTED", "verdict": "NOT_TESTED", "reason": reason,
                              "reserved": 0, "charged": 0})
 
     def run(self, precondition: str | None = None) -> None:
         self.stop_reason = precondition
-        for case in _plan(self.full):
+        for case in _plan(self.plan):
             if self.stop_reason:
                 self._not_tested(case, self.stop_reason)
                 continue
@@ -1165,13 +1259,13 @@ class ApiFootballSuite:
             self._last_call = self._now()
         if not isinstance(payload, dict):
             payload = None
-        charged, basis, anomaly = self.budget.settle(payload)
+        charged, basis = self.budget.settle(payload)
         rec: dict[str, Any] = {"id": case.cid, "tool": case.tool, "endpoint": APIFOOTBALL_PROVIDER_TOOLS[case.tool],
                                "what": case.what, "arguments": args, "reserved": reserved, "charged": charged,
                                "settlement": basis}
-        stop = stop_reason_for(payload, anomaly)
+        stop = stop_reason_for(payload)
         if payload is None:
-            rec.update(outcome="ERROR", verdict="BLOCKED", defects=["MCP_CALL_FAILED"])
+            rec.update(outcome="ERROR", verdict="FAIL", defects=["MCP_CALL_FAILED"])
         else:
             rec.update(self._evaluate(case, payload, stop))
         if not stop and case.cid == "A01" and isinstance(self.ctx.get("provider_day_left"), int) \
@@ -1199,7 +1293,7 @@ class ApiFootballSuite:
         if outcome == "ERROR":
             known = ("F03_MCP_PAYLOAD_TOO_LARGE" if status == "PAYLOAD_TOO_LARGE" else
                      "F03_PROVIDER_BODY_TOO_LARGE" if code in KNOWN_SIZE_CODES else None)
-            return {**out, "verdict": "BLOCKED" if stop in STOP_ENVIRONMENT else "FAIL",
+            return {**out, "verdict": STOP_VERDICT.get(stop, "FAIL"),
                     "defects": [known or "TOOL_ERROR_" + (out["tool_status"] if code is None else code)]}
         d = p.get("data") if isinstance(p.get("data"), dict) else {}
         pg = p.get("pagination") if isinstance(p.get("pagination"), dict) else {}
@@ -1213,13 +1307,22 @@ class ApiFootballSuite:
         if facts:
             out["facts"] = facts
         out["defects"] = defects
+        covered = (self.ctx.get("coverage") or {}).get(case.coverage) if case.coverage else None
         if defects == ["CATALOG_HAS_UNREACHABLE_PAGES"]:
             verdict = "PARTIAL"  # real data, but a documented gap: a finding, not a code change
         elif defects:
-            verdict = "FAIL"
+            verdict = "FAIL"  # a structural or MCP defect is never masked by an absence of data
         elif case.expect == "empty":
             verdict = "PASS" if outcome == "EMPTY_VALID" else "FAIL"
-        elif outcome == "PARTIAL" or (case.expect == "data" and outcome == "EMPTY_VALID"):
+        elif outcome == "EMPTY_VALID" and covered is False:
+            # Valid and empty, and the provider itself says the data is not covered: the evidence
+            # is that flag, recorded in the facts. Not a PASS, not an MCP fault.
+            verdict = "PROVIDER_UNAVAILABLE"
+            facts["unavailable_evidence"] = {"source": "/leagues coverage", "flag": case.coverage, "value": False}
+            out["facts"] = facts
+        elif outcome in ("PARTIAL", "EMPTY_VALID"):
+            # An empty reply alone proves the envelope, not the data: PARTIAL, never PASS and
+            # never PROVIDER_UNAVAILABLE (owner rule: unavailability needs explicit evidence).
             verdict = "PARTIAL"
         else:
             verdict = "PASS"
@@ -1240,13 +1343,18 @@ class ApiFootballSuite:
             values = [str(r.get(key)) for r in self.records]
             return {v: values.count(v) for v in sorted(set(values))}
 
-        return {"suite": "apifootball_full" if self.full else "apifootball", "verdict": verdict,
+        return {"suite": self.plan, "verdict": verdict,
                 "stop_reason": self.stop_reason, "budget": self.budget.budget,
-                "budget_ceiling": APIFOOTBALL_BUDGET_CEILING, "worst_case_per_call": APIFOOTBALL_WORST_CASE_PER_CALL,
+                "budget_ceiling": self.budget.ceiling, "worst_case_per_call": APIFOOTBALL_WORST_CASE_PER_CALL,
+                "accounting": "WORST_CASE_EVERY_PROVIDER_CALL",
                 "provider_requests_charged": self.budget.committed,
+                "provider_counter": self.budget.counter_report(),
                 "provider_requests_reserved_total": sum(r["reserved"] for r in self.records),
                 "direct_provider_calls_from_runner": 0, "probe_league": PROBE_LEAGUE,
-                "plan": plan_summary(self.full), "outcomes": count("outcome"), "verdicts": count("verdict"),
+                **({"reused_evidence": {"commit": "37e74fd", "league": PROBE_LEAGUE, "season": EVIDENCE_SEASON,
+                                        "finished_fixture": EVIDENCE_FINISHED_FIXTURE}}
+                   if self.plan == "apifootball_completion" else {}),
+                "plan": plan_summary(self.plan), "outcomes": count("outcome"), "verdicts": count("verdict"),
                 "cases": self.records}
 
 
@@ -1275,11 +1383,14 @@ def main(argv: list[str] | None = None, *, client: Any = None,
     ap.add_argument("--expected-db-identity", default=None, choices=["fcb_app"])
     # Opt-in provider suite; `health` (default) is the zero-provider run.
     ap.add_argument("--suite", default="health", choices=list(SUITES))
-    ap.add_argument("--apifootball-budget", type=int, default=APIFOOTBALL_DEFAULT_BUDGET)
+    ap.add_argument("--apifootball-budget", type=int, default=None)
     ap.add_argument("--apifootball-output", default=None)
     args = ap.parse_args(argv)
-    if not 1 <= args.apifootball_budget <= APIFOOTBALL_BUDGET_CEILING:
-        print(f"apifootball budget outside 1..{APIFOOTBALL_BUDGET_CEILING} (owner-approved ceiling)")
+    ceiling = SUITE_BUDGET_CEILING.get(args.suite, APIFOOTBALL_BUDGET_CEILING)
+    if args.apifootball_budget is None:
+        args.apifootball_budget = min(APIFOOTBALL_DEFAULT_BUDGET, ceiling)
+    if not 1 <= args.apifootball_budget <= ceiling:
+        print(f"apifootball budget outside 1..{ceiling} (owner-approved ceiling for suite {args.suite})")
         return 2
     password = os.environ.get("MCP_OAUTH_PASSWORD", "")
     if not password:
@@ -1318,8 +1429,8 @@ def main(argv: list[str] | None = None, *, client: Any = None,
     if run.suite != "health":
         print(f"apifootball_verdict={(suite or {}).get('verdict', 'FAIL')} "
               f"provider_requests_charged={(suite or {}).get('provider_requests_charged')}")
-        if (suite or {}).get("verdict") not in ("PASS", "PARTIAL"):
-            return 1
+        if (suite or {}).get("verdict") != "PASS":
+            return 1  # only a PASS suite exits 0: PARTIAL, BLOCKED and a mostly NOT_TESTED run fail
     return 0 if report["verdict"] == "PASS" else 1
 
 

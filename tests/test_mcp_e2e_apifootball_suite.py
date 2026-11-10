@@ -1,15 +1,19 @@
-"""Opt-in API-FOOTBALL suite of the protected MCP E2E client (owner decision, path B), offline.
+"""Opt-in API-FOOTBALL suites of the protected MCP E2E client, offline.
 
-The suite is driven through the REAL apifootball_* tool functions (tools.py) over the REAL
+The suites are driven through the REAL apifootball_* tool functions (tools.py) over the REAL
 resilience client (retries, breaker, cache); only the provider HTTP transport is a fake that
-counts every request it receives, like the provider's own daily counter. Proves:
-- the hard budget: the worst case (3 attempts) is reserved before each call, a call that could
-  exceed the budget is never made, and what reaches the provider never exceeds the budget, with
-  real retries, missing counters and other consumers;
-- every stop condition, with the remaining cases NOT_TESTED and no further request;
-- the strict allowlist and the reservation guard on every tools/call path;
-- deterministic id selection, outcome classification and envelope correspondence;
-- no price, key or personal field in the public report.
+counts every request it receives, like the provider's own daily counter. Proves (owner decision
+"API-FOOTBALL REAL E2E COMPLETION"):
+- conservative counting: every call that can reach the provider is charged its worst case (3);
+  0 only on code paths that provably make no request; the charge bounds the real HTTP attempts,
+  retries included, for every budget from 1 to 45; a call is refused when charged + 3 > budget;
+- the provider counter is information only: a non-monotonic counter never stops the run;
+- the ceilings: 45 for apifootball_completion, 20 for the earlier suites;
+- the completion plan: what is still unproven only, its derivations, NOT_TESTED when U is absent;
+- per-case verdicts PASS / FAIL / PARTIAL / NOT_TESTED / PROVIDER_UNAVAILABLE, the last only with
+  explicit evidence in the facts (an empty reply alone never is);
+- the bookmakers catalog check keeps null names null (regression of production run 4, A07);
+- every stop condition, the strict allowlist and the reservation guard, and a leak-free report.
 """
 from __future__ import annotations
 
@@ -24,16 +28,19 @@ from bridge.api_football.quota import QuotaExceeded
 from bridge.api_football.resilience import RetryPolicy
 from scripts import mcp_e2e_render as e2e
 
+COMPLETION = "apifootball_completion"
 
-def _suite(transport=None, *, budget=20, full=False, quota=None, wrap=None, sleep=None, now=None):
+
+def _suite(transport=None, *, budget=45, plan="apifootball", quota=None, wrap=None, sleep=None, now=None):
+    """Plan logic under a 45 budget (the apifootball plan needs exactly 15 x 3 = 45)."""
     transport = transport or fake.FakeTransport()
     call, _ = fake.tool_caller(transport, quota)
     real = call
     if wrap is not None:
         def call(tool, args):  # noqa: F811 - a tampered server for RED controls
             return wrap(tool, args, real)
-    suite = e2e.ApiFootballSuite(call, e2e.ProviderBudget(budget), full=full,
-                                 now=now or (lambda: fake.NOW), sleep=sleep or (lambda s: None))
+    suite = e2e.ApiFootballSuite(call, e2e.ProviderBudget(budget, max(budget, 45)),
+                                 plan=plan, now=now or (lambda: fake.NOW), sleep=sleep or (lambda s: None))
     suite.real_call = real
     return suite, transport
 
@@ -57,68 +64,155 @@ def test_the_allowlist_is_exactly_the_read_only_provider_contracts():
     assert {"apifootball_health", "apifootball_quota_report"}.isdisjoint(e2e.APIFOOTBALL_PROVIDER_TOOLS)
 
 
-def test_the_worst_case_per_call_is_the_code_retry_bound():
+def test_the_worst_case_per_call_is_the_code_retry_bound_and_the_ceilings_are_the_owner_numbers():
     assert RetryPolicy().max_attempts == e2e.APIFOOTBALL_MAX_ATTEMPTS_PER_CALL == 3
     with pytest.raises(ValueError):
         RetryPolicy(max_attempts=4)  # the server cannot be configured above it
     assert e2e.APIFOOTBALL_WORST_CASE_PER_CALL == 3
-    assert e2e.APIFOOTBALL_BUDGET_CEILING == 20  # the owner-approved number
-    for bad in (0, 21, -1, True, "20", 20.0):
+    assert e2e.APIFOOTBALL_BUDGET_CEILING == 45 and e2e.APIFOOTBALL_DEFAULT_BUDGET == 45
+    # 45 was approved for the completion campaign only; the earlier suites keep 20.
+    assert e2e.SUITE_BUDGET_CEILING == {"apifootball": 20, "apifootball_full": 20, COMPLETION: 45}
+    for bad in (0, 46, -1, True, "45", 45.0):
         with pytest.raises(ValueError):
             e2e.ProviderBudget(bad)
+    with pytest.raises(ValueError):
+        e2e.ProviderBudget(21, 20)
+    with pytest.raises(ValueError):
+        e2e.ProviderBudget(46, 46)  # no ceiling above the owner maximum
+    assert e2e.ProviderBudget(45).ceiling == 45
 
 
 def test_the_plans_and_their_call_counts():
-    p, f = e2e.plan_summary(False), e2e.plan_summary(True)
-    assert p == {"cases": 16, "provider_calls_nominal": 15, "worst_case_if_every_call_retries": 45,
-                 "min_budget_to_complete_without_retries": 19, "provider_tools_covered": 10}
-    assert f == {"cases": 46, "provider_calls_nominal": 45, "worst_case_if_every_call_retries": 135,
-                 "min_budget_to_complete_without_retries": 49, "provider_tools_covered": 40}
-    for full in (False, True):
-        assert all(c.tool in e2e.APIFOOTBALL_PROVIDER_TOOLS for c in e2e._plan(full))
-        assert [c.cid for c in e2e._plan(full)][-1] == "A15"  # the negative id stays last
+    p, f, c = (e2e.plan_summary(n) for n in ("apifootball", "apifootball_full", COMPLETION))
+    assert p == {"cases": 16, "provider_calls_nominal": 15, "worst_case_http_attempts": 45,
+                 "min_budget_to_complete": 45, "provider_tools_covered": 10}
+    assert f == {"cases": 46, "provider_calls_nominal": 45, "worst_case_http_attempts": 135,
+                 "min_budget_to_complete": 135, "provider_tools_covered": 40}
+    assert c == {"cases": 12, "provider_calls_nominal": 12, "worst_case_http_attempts": 36,
+                 "min_budget_to_complete": 36, "provider_tools_covered": 8}
+    # Completion: at most 15 provider calls, count x 3 <= 45.
+    assert c["provider_calls_nominal"] <= 15 and c["worst_case_http_attempts"] <= e2e.SUITE_BUDGET_CEILING[COMPLETION]
+    for name in e2e.APIFOOTBALL_SUITES:
+        assert all(x.tool in e2e.APIFOOTBALL_PROVIDER_TOOLS for x in e2e._plan(name))
+    assert [x.cid for x in e2e._plan("apifootball")][-1] == "A15"  # the negative id stays last
+    assert [x.cid for x in e2e._plan("apifootball_full")][-1] == "A15"
+    comp = e2e._plan(COMPLETION)
+    assert [x.cid for x in comp] == [f"C{i:02d}" for i in range(1, 13)]
+    # Reused evidence, no repeat: no status, no leagues, no finished-fixture detail/events/statistics.
+    assert {x.tool for x in comp}.isdisjoint({"apifootball_status", "apifootball_leagues",
+                                              "apifootball_fixture_events", "apifootball_fixture_statistics"})
+    with pytest.raises(ValueError):
+        e2e._plan("health")
 
 
-# ---- the happy path through the real tools --------------------------------------------------
+# ---- the happy paths through the real tools -------------------------------------------------
 
-def test_prioritized_plan_passes_within_the_budget_on_real_tool_outputs():
+def test_prioritized_plan_passes_with_every_call_charged_its_worst_case():
     suite, t = _suite()
     suite.run()
     rep = suite.report()
     assert rep["verdict"] == "PASS" and rep["stop_reason"] is None, rep
-    assert len(t.requests) == 15 and rep["provider_requests_charged"] == 17 <= 20
+    assert len(t.requests) == 15 and rep["provider_requests_charged"] == 45 <= 45
     r = _by_id(suite)
     assert r["N00"]["charged"] == 0 and r["N00"]["settlement"] == "CODE_PATH_NO_REQUEST"
-    assert r["A01"]["outcome"] == "HTTP_200" and r["A01"]["charged"] == 3  # no earlier counter reading
-    assert all(r[c]["settlement"] == "PROVIDER_COUNTER_DELTA" and r[c]["charged"] == 1
-               for c in r if c not in ("N00", "A01"))
+    assert all(r[c]["settlement"] == "WORST_CASE" and r[c]["charged"] == 3 for c in r if c != "N00")
     assert all(x["reserved"] == 3 for x in suite.records)
     assert r["A15"]["outcome"] == "EMPTY_VALID" and r["A15"]["verdict"] == "PASS"
     assert r["A09"]["facts"] == {"fixtures": 1, "selections": 3, "over_published": 2, "under_published": 1}
     assert r["A06"]["facts"]["null_values_kept_null"] == 2
     assert r["A04"]["facts"]["halftime_as_published"] == [1, 1]
     assert r["A11"]["arguments"]["page"] == 2 and r["A11"]["paging"] == {"current": 2, "total": 2}
+    assert rep["accounting"] == "WORST_CASE_EVERY_PROVIDER_CALL"
+    assert rep["provider_counter"]["use"] == "INFORMATIONAL_ONLY_NEVER_USED_FOR_ACCOUNTING"
     text = json.dumps(rep)
     assert fake.PRICE_SENTINEL not in text and fake.KEY not in text and "PRIVATE" not in text
 
 
+def test_completion_plan_passes_and_derives_u_bet_and_z_without_repeating_evidence():
+    suite, t = _suite(plan=COMPLETION)
+    suite.run()
+    rep = suite.report()
+    assert rep["verdict"] == "PASS" and rep["stop_reason"] is None, [(c["id"], c["verdict"]) for c in rep["cases"]]
+    assert rep["suite"] == COMPLETION and rep["budget_ceiling"] == 45
+    assert len(t.requests) == 12 and rep["provider_requests_charged"] == 36 <= 45
+    assert rep["reused_evidence"] == {"commit": "37e74fd", "league": 39, "season": 2026, "finished_fixture": 1557464}
+    paths = [p for p, _ in t.requests]
+    assert "/status" not in paths and "/leagues" not in paths
+    assert not any(q.get("id") == e2e.EVIDENCE_FINISHED_FIXTURE for _, q in t.requests)
+    r = _by_id(suite)
+    # Upcoming window: league 39, season 2026, today .. today + 28, UTC; contract parameters only.
+    assert r["C01"]["arguments"] == {"league": 39, "season": 2026, "from_date": "2025-11-10",
+                                     "to_date": "2025-12-08", "timezone": "UTC"}
+    assert t.requests[0] == ("/fixtures", {"league": 39, "season": 2026, "timezone": "UTC",
+                                           "from": "2025-11-10", "to": "2025-12-08"})
+    assert r["C01"]["facts"]["U"]["fixture"] == 2001 and r["C01"]["facts"]["not_started"] == 3
+    assert r["C03"]["facts"]["over_under_bet_ids"] == [5]
+    assert r["C04"]["arguments"] == {"fixture": 2001, "bet": 5}
+    assert r["C04"]["facts"] == {"fixtures": 1, "selections": 3, "over_published": 2, "under_published": 1}
+    assert r["C05"]["arguments"] == {"league": 39, "season": 2026, "bet": 5}
+    assert r["C06"]["arguments"]["page"] == 2 and r["C06"]["paging"] == {"current": 2, "total": 2}
+    assert r["C07"]["facts"]["Z"] == 9001 and r["C08"]["arguments"] == {"fixture": 9001}
+    assert r["C12"]["arguments"] == {"id": e2e.NONEXISTENT_FIXTURE_ID} and r["C12"]["verdict"] == "PASS"
+    assert all(x["charged"] == 3 and x["settlement"] == "WORST_CASE" for x in suite.records)
+    text = json.dumps(rep)
+    assert fake.PRICE_SENTINEL not in text and fake.KEY not in text
+
+
+def test_completion_without_a_not_started_fixture_leaves_the_u_odds_not_tested():
+    def wrap(tool, args, real):
+        p = real(tool, args)
+        if tool == "apifootball_fixtures" and "from_date" in args:
+            rows = [f for f in p["data"]["response"] if f["fixture"]["status"]["short"] != "NS"]
+            p["data"]["response"], p["data"]["results"] = rows, len(rows)
+        return p
+    suite, t = _suite(plan=COMPLETION, wrap=wrap)
+    suite.run()
+    r = _by_id(suite)
+    assert r["C01"]["verdict"] == "PASS" and "U" not in r["C01"]["facts"] and r["C01"]["facts"]["not_started"] == 0
+    assert r["C04"]["outcome"] == "NOT_TESTED" and r["C04"]["verdict"] == "NOT_TESTED"
+    assert r["C04"]["reason"] == "NOT_DERIVABLE_FIXTURE_U" and r["C04"]["charged"] == 0
+    assert len(t.requests) == 11 and suite.report()["verdict"] == "PARTIAL"
+
+
+def test_completion_never_guesses_the_over_under_bet():
+    def wrap(tool, args, real):
+        p = real(tool, args)
+        if tool == "apifootball_bets":
+            p["data"]["response"].append({"id": 77, "name": "Goals Over/Under"})  # two exact names
+            p["data"]["results"] += 1
+        return p
+    suite, _ = _suite(plan=COMPLETION, wrap=wrap)
+    suite.run()
+    r = _by_id(suite)
+    assert r["C03"]["facts"]["over_under_bet_ids"] == [5, 77] and "bet_ou" not in suite.ctx
+    assert r["C04"]["reason"] == "NOT_DERIVABLE_BET_OU"
+    assert "bet" not in r["C05"]["arguments"]  # an optional filter is dropped, never guessed
+
+
 def test_full_plan_covers_all_40_provider_tools_with_a_raised_ceiling(monkeypatch):
-    """What full coverage costs: 45 requests, 49 of budget without retries (ceiling stays 20)."""
-    monkeypatch.setattr(e2e, "APIFOOTBALL_BUDGET_CEILING", 49)
-    suite, t = _suite(budget=49, full=True)
+    """What full coverage costs under worst-case counting: 45 calls, 135 of budget."""
+    monkeypatch.setattr(e2e, "APIFOOTBALL_BUDGET_CEILING", 135)
+    def wrap(tool, args, real):  # a provider plan large enough for 135 attempts
+        p = real(tool, args)
+        if tool == "apifootball_status":
+            p["data"]["requests"] = {"current": 5, "limit_day": 7500}
+        return p
+    suite, t = _suite(budget=135, plan="apifootball_full", wrap=wrap)
     suite.run()
     rep = suite.report()
     assert rep["verdict"] == "PASS", [(c["id"], c.get("defects"), c.get("reason")) for c in rep["cases"]]
-    assert len(t.requests) == 45 and rep["provider_requests_charged"] == 47
+    assert len(t.requests) == 45 and rep["provider_requests_charged"] == 135
     assert {c["tool"] for c in rep["cases"]} == set(e2e.APIFOOTBALL_PROVIDER_TOOLS)
 
 
-def test_full_plan_under_the_owner_ceiling_stops_at_the_budget():
-    suite, t = _suite(full=True)
+@pytest.mark.parametrize("plan", ["apifootball", "apifootball_full"])
+def test_the_earlier_suites_under_their_owner_ceiling_stop_at_the_budget(plan):
+    suite, t = _suite(budget=20, plan=plan)
     suite.run()
     rep = suite.report()
     assert rep["stop_reason"] == "STOP_BUDGET_REACHED" and rep["verdict"] == "BLOCKED"
-    assert len(t.requests) <= 20 and rep["provider_requests_charged"] <= 20
+    assert len(t.requests) == 6 and rep["provider_requests_charged"] == 18 <= 20
+    assert rep["verdicts"] == {"NOT_TESTED": len(rep["cases"]) - 7, "PASS": 7}
 
 
 # ---- the hard budget --------------------------------------------------------------------------
@@ -139,13 +233,21 @@ def e2e_errors():
     return errors
 
 
-@pytest.mark.parametrize("budget", range(1, 21))
-def test_worst_case_retries_never_exceed_the_budget(budget):
-    suite, t = _suite(RetryTwice(), budget=budget)
+@pytest.mark.parametrize("plan", ["apifootball", COMPLETION])
+@pytest.mark.parametrize("budget", range(1, 46))
+def test_worst_case_charging_bounds_real_attempts_with_retries_for_every_budget(budget, plan):
+    suite, t = _suite(RetryTwice(), budget=budget, plan=plan)
     suite.run()
-    assert len(t.requests) <= budget and suite.budget.committed <= budget
-    assert len(t.requests) == suite.budget.committed  # every attempt charged
-    assert suite.stop_reason == "STOP_BUDGET_REACHED"
+    assert len(t.requests) <= suite.budget.committed <= budget
+    assert len(t.requests) == suite.budget.committed  # every attempt charged, nothing more
+    assert all(r["reserved"] in (0, 3) for r in suite.records)
+    calls = sum(1 for r in suite.records if r["reserved"])
+    assert suite.budget.committed <= 3 * calls
+    need = e2e.plan_summary(plan)["min_budget_to_complete"]  # 45 (apifootball), 36 (completion)
+    if budget >= need:
+        assert suite.stop_reason is None and len(t.requests) == need
+    else:
+        assert suite.stop_reason == "STOP_BUDGET_REACHED"
     if budget < 3:
         assert t.requests == [] and all(r["outcome"] == "NOT_TESTED" for r in suite.records)
 
@@ -165,35 +267,49 @@ def test_random_failures_missing_counters_and_other_consumers_never_exceed_the_b
                 self.by_path.setdefault(path, []).insert(0, "no_headers")
             return await super().get(path, params)
 
-    t = Chaos(other_consumer=lambda i: rng.choice((0, 0, 0, 1, 4)))
-    suite, _ = _suite(t, budget=rng.randint(1, 20))
+    # Other consumers, and a counter that jumps back up (eventually consistent).
+    t = Chaos(other_consumer=lambda i: rng.choice((0, 0, 0, 1, 4, -3)))
+    suite, _ = _suite(t, budget=rng.randint(1, 45), plan=rng.choice(e2e.APIFOOTBALL_SUITES))
     suite.run()
-    assert len(t.requests) <= suite.budget.budget and suite.budget.committed <= suite.budget.budget
-    assert len(t.requests) <= suite.budget.committed  # the charge is an upper bound of the real cost
+    assert len(t.requests) <= suite.budget.committed <= suite.budget.budget  # the charge bounds the real cost
+
+
+@pytest.mark.parametrize("pattern", [
+    [0, 1, -3],                  # production run 3: 7500 -> 7498 -> 7497 -> 7499
+    [0, -2, 2, 0, 0, -5],        # production run 4: 7497 -> 7498 -> 7495 -> ... -> 7496
+])
+def test_a_non_monotonic_provider_counter_no_longer_stops_the_run(pattern):
+    seq = list(pattern)
+    t = fake.FakeTransport(day_remaining=7501, other_consumer=lambda i: seq[i - 1] if i <= len(seq) else 0)
+    suite, _ = _suite(t, plan=COMPLETION)
+    suite.run()
+    rep = suite.report()
+    assert rep["stop_reason"] is None and rep["verdict"] == "PASS"
+    assert rep["provider_counter"]["monotonic_non_increasing"] is False  # recorded, informational
+    assert all(r["charged"] == 3 for r in suite.records) and suite.budget.committed == 36
+    assert "STOP_QUOTA_ACCOUNTING_ANOMALY" not in json.dumps(rep)
 
 
 def test_settlement_rules():
-    b = e2e.ProviderBudget(20)
+    b = e2e.ProviderBudget(45)
+
     def settle(payload):
         b.committed = 0  # the rules only, not the budget, are under test here
         b.reserve("apifootball_fixtures")
         return b.settle(payload)
     real = {"status": "REAL_API_RESPONSE", "cache_status": "MISS"}
-    assert settle({"status": "INVALID_INPUT"}) == (0, "CODE_PATH_NO_REQUEST", False)
-    assert settle({"status": "LIVE_NOT_AUTHORIZED"}) == (0, "CODE_PATH_NO_REQUEST", False)
-    assert settle({**real, "cache_status": "HIT", "quota_remaining": {"day": 1}}) == (0, "CACHE_HIT", False)
-    assert b.last_day_remaining is None  # a HIT replays an old counter: never a reading
-    assert settle(None) == (3, "WORST_CASE_NO_REPLY", False)
-    assert settle({**real, "quota_remaining": {"day": 100}}) == (3, "WORST_CASE_NO_BASELINE", False)
-    assert settle({**real, "quota_remaining": {"day": 99}}) == (1, "PROVIDER_COUNTER_DELTA", False)
-    assert settle({**real, "quota_remaining": {"day": 97}}) == (2, "PROVIDER_COUNTER_DELTA", False)
-    assert settle({**real, "quota_remaining": {"day": 97}}) == (3, "WORST_CASE_COUNTER_UNCHANGED", False)
-    assert settle({**real, "quota_remaining": {"day": None}}) == (3, "WORST_CASE_NO_EVIDENCE", False)
-    assert settle({"status": "PAYLOAD_TOO_LARGE"}) == (3, "WORST_CASE_NO_EVIDENCE", False)
-    # 97 -> 95 with one request provably made by the oversized call in between: 1 for this one.
-    assert settle({**real, "quota_remaining": {"day": 95}}) == (1, "PROVIDER_COUNTER_DELTA", False)
-    assert settle({**real, "quota_remaining": {"day": 90}}) == (3, "WORST_CASE_COUNTER_ANOMALY", True)
-    assert settle({**real, "quota_remaining": {"day": 500}}) == (3, "WORST_CASE_COUNTER_ANOMALY", True)
+    for status in ("INVALID_INPUT", "KEY_NOT_CONFIGURED", "LIVE_NOT_AUTHORIZED", "PROVIDER_CLIENT_UNAVAILABLE"):
+        assert settle({"status": status}) == (0, "CODE_PATH_NO_REQUEST")
+    assert settle({**real, "cache_status": "HIT", "quota_remaining": {"day": 1}}) == (0, "CACHE_HIT")
+    assert b.day_readings == []  # a HIT replays an old counter: never a reading
+    assert settle(None) == (3, "WORST_CASE_NO_REPLY")
+    # Any counter value, rising, falling or missing: the full worst case, always.
+    for day in (100, 99, 97, 97, 500, 0, None):
+        assert settle({**real, "quota_remaining": {"day": day}}) == (3, "WORST_CASE")
+    assert b.day_readings == [100, 99, 97, 97, 500, 0]
+    for p in ({"status": "PAYLOAD_TOO_LARGE"}, {"status": "PROVIDER_ERROR", "error": {"code": "X"}},
+              {"status": "PARTIAL_ODDS_MANIFEST", "cache_status": "MISS"}, {"status": "SOMETHING_NEW"}, {}):
+        assert settle(p) == (3, "WORST_CASE")
 
 
 def test_a_reservation_that_would_exceed_the_budget_is_refused():
@@ -202,11 +318,15 @@ def test_a_reservation_that_would_exceed_the_budget_is_refused():
     with pytest.raises(e2e.BudgetExceeded):
         b.reserve("apifootball_status")  # one open reservation at a time
     b.settle(None)
-    assert b.committed == 3 and not b.can_reserve()
+    assert b.committed == 3 and not b.can_reserve()  # 3 + 3 > 5: refused, fail-closed
     with pytest.raises(e2e.BudgetExceeded):
         b.reserve("apifootball_leagues")
     with pytest.raises(RuntimeError):
         b.settle(None)
+    b = e2e.ProviderBudget(6)
+    b.reserve("x")
+    b.settle({"status": "REAL_API_RESPONSE"})
+    assert b.can_reserve()  # 3 + 3 == 6: allowed, the boundary is inclusive
 
 
 def test_calls_are_paced_under_the_runtime_per_minute_limit():
@@ -226,25 +346,27 @@ def _assert_stopped_at(suite, t, cid, reason, requests):
     assert suite.stop_reason == reason and rep["verdict"] in ("BLOCKED", "FAIL"), rep
     assert _by_id(suite)[cid].get("stop") == reason
     rest = _after(suite, cid)
-    assert rest and all(r["outcome"] == "NOT_TESTED" and r["reason"] == reason and r["reserved"] == 0 for r in rest)
+    assert rest and all(r["outcome"] == "NOT_TESTED" and r["verdict"] == "NOT_TESTED" and r["reason"] == reason
+                        and r["reserved"] == 0 for r in rest)
     assert len(t.requests) == requests
 
 
-@pytest.mark.parametrize("behaviour,reason,requests", [
-    (["http_401"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 2),
-    (["http_403"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 2),
-    (["http_429"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 2),
-    (["http_503", "http_503", "http_503"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 4),
-    (["declared_errors"], "STOP_UNEXPECTED_PROVIDER_ERROR", 2),
-    (["minute_zero"], "STOP_PROVIDER_QUOTA_ZERO", 2),
+@pytest.mark.parametrize("behaviour,reason,requests,verdict", [
+    (["http_401"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 2, "NOT_TESTED"),
+    (["http_403"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 2, "NOT_TESTED"),
+    (["http_429"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 2, "NOT_TESTED"),
+    (["http_503", "http_503", "http_503"], "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 4, "NOT_TESTED"),
+    # Declared provider errors reach the runner only as a fixed code without their text: no
+    # evidence of a plan restriction can be read, so it stays FAIL (never PROVIDER_UNAVAILABLE).
+    (["declared_errors"], "STOP_UNEXPECTED_PROVIDER_ERROR", 2, "FAIL"),
+    (["minute_zero"], "STOP_PROVIDER_QUOTA_ZERO", 2, "PASS"),
 ])
-def test_provider_failures_stop_the_run(behaviour, reason, requests):
+def test_provider_failures_stop_the_run(behaviour, reason, requests, verdict):
     suite, t = _suite(fake.FakeTransport(by_path={"/leagues": behaviour}))
     suite.run()
     _assert_stopped_at(suite, t, "A02", reason, requests)
-    # A reply that reports a zero minute budget is itself valid data; every failure is not.
-    assert _by_id(suite)["A02"]["verdict"] == ("PASS" if behaviour == ["minute_zero"] else
-                                               "FAIL" if behaviour == ["declared_errors"] else "BLOCKED")
+    assert _by_id(suite)["A02"]["verdict"] == verdict
+    assert _by_id(suite)["A02"]["charged"] == 3
 
 
 def test_daily_quota_zero_stops_the_run():
@@ -258,32 +380,26 @@ def test_an_open_circuit_stops_the_run():
     suite.real_call.client.breaker._open_until = float("inf")
     suite.run()
     _assert_stopped_at(suite, t, "A01", "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT", 0)
+    assert _by_id(suite)["A01"]["charged"] == 3  # no proof that no request was made
 
 
-@pytest.mark.parametrize("error,reason", [
-    (RuntimeError("db down"), "STOP_COORDINATOR_UNAVAILABLE"),
-    (QuotaExceeded("local"), "STOP_LOCAL_QUOTA_EXHAUSTED"),
+@pytest.mark.parametrize("error,reason,verdict", [
+    (RuntimeError("db down"), "STOP_COORDINATOR_UNAVAILABLE", "FAIL"),  # the MCP's own infrastructure
+    (QuotaExceeded("local"), "STOP_LOCAL_QUOTA_EXHAUSTED", "NOT_TESTED"),
 ])
-def test_coordinator_and_local_quota_failures_stop_before_any_request(error, reason):
+def test_coordinator_and_local_quota_failures_stop_before_any_request(error, reason, verdict):
     suite, t = _suite(quota=fake.FakeQuota(error=error))
     suite.run()
     _assert_stopped_at(suite, t, "A01", reason, 0)
-    assert _by_id(suite)["A01"]["verdict"] == "BLOCKED"
+    assert _by_id(suite)["A01"]["verdict"] == verdict
 
 
-def test_an_accounting_anomaly_stops_the_run():
-    t = fake.FakeTransport(other_consumer=lambda i: 10 if i == 3 else 0)
-    suite, _ = _suite(t)
-    suite.run()
-    _assert_stopped_at(suite, t, "A03", "STOP_QUOTA_ACCOUNTING_ANOMALY", 3)
-    assert _by_id(suite)["A03"]["charged"] == 3
-
-
-def test_a_failed_mcp_call_stops_with_the_worst_case_charged():
+def test_a_failed_mcp_call_is_a_fail_with_the_worst_case_charged():
     suite, t = _suite(wrap=lambda tool, args, real: None if tool == "apifootball_leagues" else real(tool, args))
     suite.run()
     _assert_stopped_at(suite, t, "A02", "STOP_MCP_CALL_FAILED", 1)
-    assert _by_id(suite)["A02"]["charged"] == 3 and _by_id(suite)["A02"]["settlement"] == "WORST_CASE_NO_REPLY"
+    r = _by_id(suite)["A02"]
+    assert r["charged"] == 3 and r["settlement"] == "WORST_CASE_NO_REPLY" and r["verdict"] == "FAIL"
 
 
 def test_a_server_without_live_authorization_stops_at_no_cost():
@@ -292,7 +408,7 @@ def test_a_server_without_live_authorization_stops_at_no_cost():
     suite, t = _suite(wrap=wrap)
     suite.run()
     _assert_stopped_at(suite, t, "A01", "STOP_PROVIDER_NOT_ENABLED", 0)
-    assert suite.budget.committed == 0
+    assert suite.budget.committed == 0 and _by_id(suite)["A01"]["verdict"] == "NOT_TESTED"
 
 
 def test_a_provider_plan_too_small_for_the_budget_stops_after_status():
@@ -312,12 +428,9 @@ def test_a_known_oversized_body_is_an_error_but_not_a_stop():
     r = _by_id(suite)
     assert r["A05"]["outcome"] == "ERROR" and r["A05"]["defects"] == ["F03_PROVIDER_BODY_TOO_LARGE"]
     assert r["A05"]["verdict"] == "FAIL" and "stop" not in r["A05"] and suite.report()["verdict"] == "FAIL"
-    assert r["A05"]["charged"] == 3  # no counter reading: the worst case stays charged
-    # The next reading covers two requests; one is provably the oversized call's.
-    assert r["A06"]["charged"] == 1 and r["A06"]["settlement"] == "PROVIDER_COUNTER_DELTA"
-    # Two more charged units leave no room for the last case: the budget, not the error, stops.
-    assert r["A14"]["verdict"] == "PASS" and suite.stop_reason == "STOP_BUDGET_REACHED"
-    assert len(t.requests) == 14 and suite.budget.committed == 18
+    assert r["A05"]["charged"] == 3 and r["A06"]["charged"] == 3
+    assert r["A15"]["verdict"] == "PASS" and suite.stop_reason is None
+    assert len(t.requests) == 15 and suite.budget.committed == 45
 
 
 # ---- deterministic selection ------------------------------------------------------------------
@@ -351,17 +464,20 @@ def test_ambiguous_or_missing_ids_are_never_guessed():
     assert r["A07"]["verdict"] == "PASS" and r["A12"]["verdict"] == "PASS"  # independent cases still run
 
 
-def test_no_live_fixture_is_empty_valid_and_live_odds_not_tested():
+@pytest.mark.parametrize("plan,live,odds", [("apifootball", "A12", "A13"), (COMPLETION, "C07", "C08")])
+def test_no_live_fixture_is_empty_valid_partial_and_live_odds_not_tested(plan, live, odds):
     def wrap(tool, args, real):
         p = real(tool, args)
         if args.get("live") == "all":
             p["data"]["response"], p["data"]["results"] = [], 0
         return p
-    suite, t = _suite(wrap=wrap)
+    suite, t = _suite(wrap=wrap, plan=plan)
     suite.run()
     r = _by_id(suite)
-    assert r["A12"]["outcome"] == "EMPTY_VALID" and r["A12"]["verdict"] == "PASS"
-    assert r["A13"]["outcome"] == "NOT_TESTED" and r["A13"]["reason"] == "NO_LIVE_FIXTURE"
+    # Empty alone is no evidence of unavailability: PARTIAL, never PROVIDER_UNAVAILABLE.
+    assert r[live]["outcome"] == "EMPTY_VALID" and r[live]["verdict"] == "PARTIAL"
+    assert r[odds]["outcome"] == "NOT_TESTED" and r[odds]["verdict"] == "NOT_TESTED"
+    assert r[odds]["reason"] == "NO_LIVE_FIXTURE"
     assert suite.report()["verdict"] == "PARTIAL" and suite.stop_reason is None
 
 
@@ -371,9 +487,93 @@ def test_single_odds_page_skips_page_two_without_a_call():
         if tool == "apifootball_odds" and "league" in args:
             p["data"]["paging"] = p["pagination"] = {"current": 1, "total": 1}
         return p
-    suite, t = _suite(wrap=wrap)
+    for plan, cid, n in (("apifootball", "A11", 14), (COMPLETION, "C06", 11)):
+        suite, t = _suite(wrap=wrap, plan=plan)
+        suite.run()
+        assert _by_id(suite)[cid]["reason"] == "NOT_APPLICABLE_SINGLE_PAGE" and len(t.requests) == n
+
+
+# ---- PROVIDER_UNAVAILABLE needs explicit evidence -----------------------------------------------
+
+def _empty_odds_for_u(tool, args, real):
+    p = real(tool, args)
+    if tool == "apifootball_odds" and "fixture" in args:
+        p["data"]["response"], p["data"]["results"] = [], 0
+    return p
+
+
+def test_provider_unavailable_only_with_a_false_coverage_flag_recorded_in_the_facts():
+    def wrap(tool, args, real):
+        p = _empty_odds_for_u(tool, args, real)
+        if tool == "apifootball_leagues":
+            p["data"]["response"][0]["seasons"][1]["coverage"]["odds"] = False
+        return p
+    suite, _ = _suite(wrap=wrap)
     suite.run()
-    assert _by_id(suite)["A11"]["reason"] == "NOT_APPLICABLE_SINGLE_PAGE" and len(t.requests) == 14
+    r = _by_id(suite)["A09"]
+    assert r["outcome"] == "EMPTY_VALID" and r["verdict"] == "PROVIDER_UNAVAILABLE"
+    assert r["facts"]["unavailable_evidence"] == {"source": "/leagues coverage", "flag": "odds", "value": False}
+    # The same flag never hides data that is present, nor a defect.
+    assert _by_id(suite)["A10"]["verdict"] == "PASS"
+
+
+@pytest.mark.parametrize("plan,cid", [("apifootball", "A09"), (COMPLETION, "C04")])
+def test_an_empty_reply_alone_is_never_provider_unavailable(plan, cid):
+    suite, _ = _suite(wrap=_empty_odds_for_u, plan=plan)  # coverage true (apifootball) or unknown (completion)
+    suite.run()
+    r = _by_id(suite)[cid]
+    assert r["outcome"] == "EMPTY_VALID" and r["verdict"] == "PARTIAL"
+    assert "unavailable_evidence" not in (r.get("facts") or {})
+    assert "PROVIDER_UNAVAILABLE" not in suite.report()["verdicts"]
+
+
+def test_a_false_coverage_flag_never_masks_an_mcp_defect():
+    def wrap(tool, args, real):
+        p = _empty_odds_for_u(tool, args, real)
+        if tool == "apifootball_leagues":
+            p["data"]["response"][0]["seasons"][1]["coverage"]["odds"] = False
+        if tool == "apifootball_odds" and "fixture" in args:
+            p["data"]["results"] = 3  # the envelope no longer matches its rows
+        return p
+    suite, _ = _suite(wrap=wrap)
+    suite.run()
+    r = _by_id(suite)["A09"]
+    assert r["verdict"] == "FAIL" and "RESULTS_NOT_EQUAL_LEN_RESPONSE" in r["defects"]
+
+
+def test_case_verdicts_are_the_five_owner_values():
+    assert e2e.CASE_VERDICTS == ("PASS", "FAIL", "PARTIAL", "NOT_TESTED", "PROVIDER_UNAVAILABLE")
+    suite, _ = _suite(fake.FakeTransport(by_path={"/fixtures/events": ["too_large"]}))
+    suite.run()
+    assert {r["verdict"] for r in suite.records} <= set(e2e.CASE_VERDICTS)
+
+
+# ---- bookmakers catalog (production run 4, A07: CATALOG_SHAPE_INVALID with empty facts) ---------
+
+@pytest.mark.parametrize("plan,cid", [("apifootball", "A07"), (COMPLETION, "C02")])
+def test_bookmakers_with_a_null_published_name_pass_and_keep_the_null(plan, cid):
+    """Regression: the real /odds/bookmakers publishes a row whose name is null (the fake does
+    too, like run 41242779991). The old check demanded a string name: CATALOG_SHAPE_INVALID."""
+    suite, _ = _suite(plan=plan)
+    suite.run()
+    r = _by_id(suite)[cid]
+    assert r["verdict"] == "PASS" and r["defects"] == []
+    assert r["facts"] == {"entries": 3, "paging_total": 1, "null_names_kept_null": 1, "rows_shape_invalid": 0}
+
+
+@pytest.mark.parametrize("row", [{"id": "14", "name": "x"}, {"id": None, "name": "x"}, {"id": 3, "name": 7}, "row"])
+def test_a_really_malformed_catalog_row_still_fails_with_its_counts(row):
+    def wrap(tool, args, real):
+        p = real(tool, args)
+        if tool == "apifootball_bookmakers":
+            p["data"]["response"].append(row)
+            p["data"]["results"] += 1
+        return p
+    suite, _ = _suite(wrap=wrap)
+    suite.run()
+    r = _by_id(suite)["A07"]
+    assert r["verdict"] == "FAIL" and r["defects"] == ["CATALOG_SHAPE_INVALID"]
+    assert r["facts"]["rows_shape_invalid"] == 1 and r["facts"]["entries"] == 4  # facts never empty
 
 
 # ---- classification and structure -------------------------------------------------------------
@@ -386,6 +586,15 @@ def test_oversized_odds_become_an_explicit_price_free_manifest():
     assert r["facts"]["manifest"] is True and r["paging"] == {"current": 1, "total": 2}
     assert _by_id(suite)["A11"]["verdict"] == "PASS"  # page 2 still reached from the manifest paging
     assert suite.report()["verdict"] == "PARTIAL" and fake.PRICE_SENTINEL not in json.dumps(suite.report())
+
+
+def test_oversized_league_odds_in_the_completion_plan_are_an_explicit_manifest():
+    suite, _ = _suite(fake.FakeTransport(huge_odds=True), plan=COMPLETION)
+    suite.run()
+    r = _by_id(suite)
+    assert r["C05"]["tool_status"] == "PARTIAL_ODDS_MANIFEST" and r["C05"]["verdict"] == "PARTIAL"
+    assert r["C05"]["facts"]["manifest"] is True and r["C06"]["verdict"] == "PASS"
+    assert fake.PRICE_SENTINEL not in json.dumps(suite.report())
 
 
 @pytest.mark.parametrize("tool,mutate,defect", [
@@ -408,6 +617,7 @@ def test_oversized_odds_become_an_explicit_price_free_manifest():
 ])
 def test_structural_defects_fail_the_case(tool, mutate, defect):
     seen = {"n": 0}
+
     def wrap(t_, args, real):
         p = real(t_, args)
         if t_ == tool and (tool != "apifootball_fixtures" or "id" in args and args["id"] != e2e.NONEXISTENT_FIXTURE_ID):
@@ -470,9 +680,19 @@ def test_a_validator_that_stopped_refusing_the_negative_input_fails():
 
 # ---- allowlist and reservation guard on every path --------------------------------------------
 
-def _run(suite="apifootball"):
+def _run(suite="apifootball", budget=20):
     return e2e.Run(client=None, base=e2e.PINNED_BASE, password="LOCAL-ONLY-pw-31f9", expected_commit=None,
-                   mask=lambda v: None, suite=suite, apifootball_budget=20)
+                   mask=lambda v: None, suite=suite, apifootball_budget=budget)
+
+
+def test_each_suite_gets_its_own_owner_ceiling():
+    assert _run(COMPLETION, 45).af_budget.ceiling == 45
+    with pytest.raises(ValueError):
+        _run("apifootball", 21)
+    with pytest.raises(ValueError):
+        _run("apifootball_full", 45)
+    with pytest.raises(ValueError):
+        _run(COMPLETION, 46)
 
 
 def test_the_opt_in_suite_refuses_anything_outside_the_read_only_provider_tools():
@@ -486,7 +706,7 @@ def test_the_opt_in_suite_refuses_anything_outside_the_read_only_provider_tools(
 
 
 def test_a_provider_tool_needs_its_own_open_reservation():
-    run = _run()
+    run = _run(COMPLETION, 45)
     with pytest.raises(e2e.Fail, match="provider_call_without_reservation"):
         run.rpc("tools/call", {"name": "apifootball_odds", "arguments": {}}, "t")
     run.af_budget.reserve("apifootball_status")
@@ -509,8 +729,8 @@ def test_the_default_suite_is_unchanged():
 # ---- public report ---------------------------------------------------------------------------
 
 def test_the_suite_section_is_leak_checked_and_size_bounded():
-    run = _run()
-    suite, _ = _suite()
+    run = _run(COMPLETION, 45)
+    suite, _ = _suite(plan=COMPLETION)
     suite.run()
     run.af_suite, run.af_budget = suite, suite.budget
     report, text = e2e.finalize(run, None)

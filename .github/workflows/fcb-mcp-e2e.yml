@@ -5,11 +5,13 @@ name: FCB MCP E2E on the real Render deployment (OAuth + MCP, read-only)
 # code, refresh), MCP initialize / tools/list / tools/call on two zero-cost local tools,
 # plus negative tests. No browser tool, no SX Bet order. With the default suite `health`:
 # no provider request and no artifact (unchanged behaviour).
-# Opt-in suites `apifootball` / `apifootball_full`: read-only apifootball_* tools through the
-# same MCP session (hence the server's shared quota coordinator), under a hard per-run budget
-# of provider requests. The budget input is capped by APIFOOTBALL_BUDGET_CEILING (20, the
-# owner-approved number) in scripts/mcp_e2e_render.py: raising it is an owner-merged PR that
-# changes that constant and its pinning test, never a dispatch input. Those suites upload one
+# Opt-in suites `apifootball` / `apifootball_full` / `apifootball_completion`: read-only
+# apifootball_* tools through the same MCP session (hence the server's shared quota coordinator),
+# under a hard, fail-closed budget of provider HTTP attempts per campaign, every provider call
+# charged its worst case (3). The budget input is capped by the owner-approved ceilings in
+# scripts/mcp_e2e_render.py (45 for apifootball_completion, 20 for the other two): raising one is
+# an owner-merged PR that changes those constants and their pinning tests, never a dispatch
+# input. Any suite verdict other than PASS fails the job. Those suites upload one
 # small, leak-checked JSON (shapes, counts, ids, hashes; no prices, no raw payloads).
 # The password lives only in the memory of the E2E step; it is never printed or saved.
 # The E2E client is standard-library only: no package is installed next to the password.
@@ -26,14 +28,14 @@ on:
         options: ['', fcb_app]
         default: ''
       suite:
-        description: "health = zero provider calls (default); apifootball = prioritized plan; apifootball_full = one call per provider tool"
+        description: "health = zero provider calls (default); apifootball = prioritized plan; apifootball_full = one call per provider tool; apifootball_completion = only what is still unproven"
         type: choice
-        options: [health, apifootball, apifootball_full]
+        options: [health, apifootball, apifootball_full, apifootball_completion]
         default: health
       apifootball_budget:
-        description: "Max real API-FOOTBALL requests for this run (1-20; 20 is the owner-approved ceiling)"
+        description: "Max real API-FOOTBALL HTTP attempts for this campaign (1-45; 45 is the owner-approved ceiling for apifootball_completion, 20 for the other suites)"
         type: string
-        default: '20'
+        default: '45'
 
 permissions:
   contents: read
@@ -97,11 +99,11 @@ jobs:
           suite=()
           case "${E2E_SUITE:-health}" in
             ''|health) ;;
-            apifootball|apifootball_full)
-              # Digits only; the script also refuses anything above its owner-approved ceiling.
+            apifootball|apifootball_full|apifootball_completion)
+              # 1..45 only; the script also refuses anything above the suite's owner-approved ceiling.
               case "${E2E_APIFOOTBALL_BUDGET:-}" in
-                [1-9]|[1-9][0-9]) ;;
-                *) echo "::error::apifootball_budget must be an integer from 1 to 20"; exit 1 ;;
+                [1-9]|[1-3][0-9]|4[0-5]) ;;
+                *) echo "::error::apifootball_budget must be an integer from 1 to 45"; exit 1 ;;
               esac
               suite=(--suite "$E2E_SUITE" --apifootball-budget "$E2E_APIFOOTBALL_BUDGET"
                      --apifootball-output "$RUNNER_TEMP/apifootball_suite.json") ;;
