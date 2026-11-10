@@ -114,16 +114,14 @@ class ResilientFootballClient:
         # Type-safe cache keys: string "12" is different from integer 12.
         key = (path, tuple(sorted((k, type(v).__name__, v) for k, v in checked.items())))
         if self.settings.cache_enabled:
-            hit = self.cache.get(key)
+            hit = self._cache_hit(key)
             if hit is not None:
-                hit["cache_status"] = "HIT"
                 return hit
 
         async with self._flights_lock:
             # Recheck under lock to avoid races between dispatches.
-            hit = self.cache.get(key) if self.settings.cache_enabled else None
+            hit = self._cache_hit(key) if self.settings.cache_enabled else None
             if hit is not None:
-                hit["cache_status"] = "HIT"
                 return hit
             task = self._flights.get(key)
             leader = task is None
@@ -151,6 +149,17 @@ class ResilientFootballClient:
             outcome["provider_attempts"] = 0
             outcome["shared_flight"] = True
         return outcome
+
+    def _cache_hit(self, key: tuple) -> dict[str, Any] | None:
+        """A cached outcome keeps its original acquisition time and provider timestamp; only
+        the cache status and its age (cache clock, seconds) are added."""
+        entry = self.cache.get_with_age(key)
+        if entry is None:
+            return None
+        hit, age = entry
+        hit["cache_status"] = "HIT"
+        hit["cache_age_seconds"] = round(age, 3)
+        return hit
 
     def _flight_completed(self, key: tuple, task: asyncio.Task) -> None:
         if self._flights.get(key) is task:
@@ -322,8 +331,12 @@ class ResilientFootballClient:
                             "params": deepcopy(checked),
                             "status": "PROVIDER_RESPONSE_RECEIVED",
                             "http_status": reply.status_code,
+                            # Bridge clock when the reply was received (acquisition time).
                             "retrieved_at_utc": reply.received_at_utc,
-                            "provider_timestamp_utc": None,
+                            # Provider clock only: its HTTP Date header, or None.
+                            "provider_timestamp_utc": getattr(reply, "provider_date_utc", None),
+                            "provider_timestamp_source": (
+                                "PROVIDER_HTTP_DATE_HEADER" if getattr(reply, "provider_date_utc", None) else None),
                             "cache_status": "MISS",
                             "quota_remaining_provider_day": reply.quota_remaining_day,
                             "quota_remaining_provider_minute": reply.quota_remaining_minute,

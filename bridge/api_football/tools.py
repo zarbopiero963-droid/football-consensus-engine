@@ -102,6 +102,55 @@ def _attempts(source: Any) -> int:
     return n if type(n) is int and 0 <= n <= 3 else 0
 
 
+_SUBJECT_KEYS = ("fixture", "id", "ids", "bet", "bookmaker")
+
+
+def _subject(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The fixture or market identifiers of the request, exactly as validated."""
+    return {k: params[k] for k in _SUBJECT_KEYS if k in params}
+
+
+def _iso_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0 else None
+
+
+def _reply_timing(data: dict[str, Any]) -> dict[str, Any]:
+    """Times of a real reply as the resilience layer recorded them: the bridge's acquisition
+    time (kept on a cache HIT), the provider's own timestamp only if it published one."""
+    out: dict[str, Any] = {}
+    if _iso_utc(data.get("retrieved_at_utc")) is not None:
+        out["retrieved_at_utc"] = data["retrieved_at_utc"]
+    if _iso_utc(data.get("provider_timestamp_utc")) is not None \
+            and data.get("provider_timestamp_source") == "PROVIDER_HTTP_DATE_HEADER":
+        out["provider_timestamp_utc"] = data["provider_timestamp_utc"]
+        out["provider_timestamp_source"] = "PROVIDER_HTTP_DATE_HEADER"
+    age = data.get("cache_age_seconds")
+    if data.get("cache_status") == "HIT" and isinstance(age, (int, float)) and not isinstance(age, bool) and age >= 0:
+        out["cache_age_seconds"] = age
+    return out
+
+
+def _finish_timing(result: dict[str, Any]) -> None:
+    """Server-side times are labelled as bridge-clock times; the provider timestamp is never
+    filled from them. age_seconds = responded - acquired (bridge clock), None if nothing was acquired."""
+    responded = datetime.now(timezone.utc)
+    result["responded_at_utc"] = responded.isoformat()
+    acquired = _iso_utc(result.get("retrieved_at_utc"))
+    result["age_seconds"] = round(max(0.0, (responded - acquired).total_seconds()), 3) if acquired else None
+    result["time_sources"] = {
+        "retrieved_at_utc": "BRIDGE_SERVER_CLOCK_AT_ACQUISITION" if acquired else None,
+        "responded_at_utc": "BRIDGE_SERVER_CLOCK",
+        "provider_timestamp_utc": result.get("provider_timestamp_source"),
+        "cache_age_seconds": "BRIDGE_CACHE_CLOCK" if result.get("cache_age_seconds") is not None else None,
+    }
+
+
 def _real_calls(data: dict[str, Any]) -> int:
     """Provider requests sent for THIS call: none on a cache HIT or when the call joined
     another caller's in-flight request (that caller reports them); otherwise the real attempts."""
@@ -128,6 +177,11 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return func
 
     async def execute(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        result = await _execute_core(tool, args)
+        _finish_timing(result)
+        return result
+
+    async def _execute_core(tool: str, args: dict[str, Any]) -> dict[str, Any]:
         at = datetime.now(timezone.utc).isoformat()
         try:
             contract, params = validate(tool, args)
@@ -135,7 +189,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             return {
                 "provider": "API-FOOTBALL", "tool": tool, "status": "INVALID_INPUT",
                 "error": {"code": str(exc)},
-                "retrieved_at_utc": at, "data": None, "network_calls_made": 0,
+                "retrieved_at_utc": None, "data": None, "network_calls_made": 0,
             }
         result: dict[str, Any] = {
             "provider": "API-FOOTBALL",
@@ -146,9 +200,13 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "source_contract": contract.confidence,
             "documentation_url": SOURCE,
             "documentation_version": VERSION,
-            "retrieved_at_utc": at,
+            # Set only when a reply was acquired (see _reply_timing); None means nothing was.
+            "retrieved_at_utc": None,
             "provider_timestamp_utc": None,
+            "provider_timestamp_source": None,
             "cache_status": "NOT_USED",
+            "cache_age_seconds": None,
+            "request_subject": _subject(params),
             "quota_remaining": None,
             "pagination": None,
             "data": None,
@@ -176,12 +234,14 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 data = await test_mock.get(contract.path, params)
                 status = "MOCK_VERIFIED"
                 cache_status = "TEST_FIXTURE"
+                result["retrieved_at_utc"] = datetime.now(timezone.utc).isoformat()
             else:
                 data = await client.get(contract.path, params)
                 status = "REAL_API_RESPONSE"
                 cache_status = data.get("cache_status", "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
                 if isinstance(data, dict):
                     received = _real_calls(data)
+                    result.update(_reply_timing(data))
             if not isinstance(data, dict):
                 from .errors import ProviderDataError
                 raise ProviderDataError("PROVIDER_REPLY_CONTRACT_INVALID")

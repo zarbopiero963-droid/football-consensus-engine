@@ -59,6 +59,27 @@ class ProviderReply:
     bytes_received: int
     quota_remaining_day: int | None = None
     quota_remaining_minute: int | None = None
+    # The provider's own HTTP `Date` header (RFC 9110 IMF-fixdate, GMT), normalised to UTC ISO
+    # 8601; None when absent or not in that exact form. Never the bridge clock.
+    provider_date_utc: str | None = None
+
+
+_IMF_FIXDATE = re.compile(
+    r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
+    r"[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$")
+
+
+def provider_http_date(headers: Mapping[str, str]) -> str | None:
+    """The provider's `Date` header as UTC ISO 8601, or None. Only the strict IMF-fixdate form
+    is accepted: an obsolete or malformed date is not guessed."""
+    raw = headers.get("date", "")
+    if not isinstance(raw, str) or not _IMF_FIXDATE.fullmatch(raw.strip()):
+        return None
+    try:
+        parsed = datetime.strptime(raw.strip(), "%a, %d %b %Y %H:%M:%S GMT")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc).isoformat()
 
 
 def _quota_header(headers: httpx.Headers, key: str) -> int | None:
@@ -143,6 +164,7 @@ class InjectedHTTPXTransport:
                     bytes_received=count,
                     quota_remaining_day=_quota_header(response.headers, "x-ratelimit-requests-remaining"),
                     quota_remaining_minute=_quota_header(response.headers, "x-ratelimit-remaining"),
+                    provider_date_utc=provider_http_date(response.headers),
                 )
         except httpx.TimeoutException:
             raise ProviderUnavailable("PROVIDER_TIMEOUT") from None
