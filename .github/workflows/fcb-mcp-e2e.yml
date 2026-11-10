@@ -6,8 +6,18 @@ name: FCB MCP E2E on the real Render deployment (OAuth + MCP, read-only)
 # plus negative tests. No browser tool, no SX Bet order, no provider request, no artifact.
 # The password lives only in the memory of the E2E step; it is never printed or saved.
 # The E2E client is standard-library only: no package is installed next to the password.
+# FCB-WP-009 (R2): the run name records the database identity the run asserted, so the roles
+# workflow (phase 2) can verify through the GitHub API that a successful run on the same main
+# commit proved the deployed runtime connects as fcb_app (inputs are not exposed by the API).
+run-name: "FCB MCP E2E (expected database identity: ${{ inputs.expected_db_identity || 'none' }})"
 on:
   workflow_dispatch:
+    inputs:
+      expected_db_identity:
+        description: "WP-009 cutover only: fail unless the runtime's database identity is this role"
+        type: choice
+        options: ['', fcb_app]
+        default: ''
 
 permissions:
   contents: read
@@ -54,12 +64,19 @@ jobs:
         env:
           MCP_OAUTH_PASSWORD: ${{ secrets.MCP_OAUTH_PASSWORD }}
           EXPECTED_COMMIT: ${{ github.sha }}
+          EXPECTED_DB_IDENTITY: ${{ inputs.expected_db_identity }}
         run: |
           set -euo pipefail
           if [ -z "${MCP_OAUTH_PASSWORD:-}" ]; then
             echo "::error::secret MCP_OAUTH_PASSWORD is not set in environment mcp-e2e"; exit 1
           fi
-          python -I scripts/mcp_e2e_render.py --expected-commit "$EXPECTED_COMMIT" \
+          identity=()
+          case "${EXPECTED_DB_IDENTITY:-}" in
+            '') ;;
+            fcb_app) identity=(--expected-db-identity fcb_app) ;;
+            *) echo "::error::unexpected expected_db_identity"; exit 1 ;;
+          esac
+          python -I scripts/mcp_e2e_render.py --expected-commit "$EXPECTED_COMMIT" "${identity[@]}" \
             --output "$RUNNER_TEMP/mcp_e2e.json"
 
       - name: Publish the sanitized summary (no secret, no artifact)

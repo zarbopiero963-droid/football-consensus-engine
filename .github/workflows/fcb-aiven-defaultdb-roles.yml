@@ -1,0 +1,491 @@
+name: FCB Aiven defaultdb roles (WP-009, owner-gated)
+
+# FCB-WP-009. Manual only. Least-privilege roles for the PRODUCTION database `defaultdb` (Aiven
+# piero-1, PG18) in TWO owner-confirmed phases, so that no identity above the bridge owner can ever
+# run code the owner attached to the bridge (docs/certification/areas/wp009_roles_runbook.md):
+#
+#   mode=apply (phase 1, confirm "APPLY WP-009 ROLES TO defaultdb"): create fcb_app (LOGIN,
+#     runtime allowlist), fcb_migrator (NOLOGIN, no password, owns nothing, nobody can SET ROLE to
+#     it) and fcb_signer (NOLOGIN). Every bridge object stays owned by the administrative identity
+#     (status quo), so the runtime may keep using it until the owner switches Render to fcb_app.
+#   mode=enable-migrator (phase 2, confirm "ENABLE WP-009 MIGRATOR ON defaultdb", input e2e_run_id):
+#     requires a successful protected MCP E2E run on this main commit that proved, through an
+#     authenticated MCP call, that the runtime's database identity is fcb_app; then ONE transaction
+#     refuses while any other session of the administrative identity is connected, moves the
+#     bridge to fcb_migrator, leaves the administrator WITHOUT inheritance or SET on fcb_migrator
+#     (only PostgreSQL's automatic ADMIN-only grant) and enables fcb_migrator LOGIN. After commit
+#     any administrator access to a bridge table fails with permission denied, before any policy,
+#     trigger or default could run.
+#   mode=diagnose (default): catalog-only report; never writes.
+#
+# Gates, all required: protected Environment `aiven-production` (required reviewer, main only),
+# owner dispatch from main, exact confirmation phrase per mode, pinned target (host/port hashes,
+# database), PostgreSQL 18, TLS verify-full against the authenticated Aiven CA, pinned SHA-256 of
+# every SQL file, hash-pinned psycopg. The administrator never reads a bridge table row once a
+# bridge role exists: evidence rows are read AS fcb_app; the only administrative row read is the
+# phase-1 migration check of a database it still owns entirely (see sql/aiven/roles_apply_guard.sql).
+# Passwords never reach argv, stdout, the summary or the runner env files: SCRAM-SHA-256 verifiers
+# are computed on the runner, kept in shell variables and read by psql with \getenv; psql stderr
+# is printed only after redaction (scripts/fcb_db_roles.py sanitize).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "diagnose = catalog-only report (default); apply = phase 1; enable-migrator = phase 2"
+        type: choice
+        options: [diagnose, apply, enable-migrator]
+        default: diagnose
+      confirm:
+        description: "apply: APPLY WP-009 ROLES TO defaultdb / enable-migrator: ENABLE WP-009 MIGRATOR ON defaultdb"
+        type: string
+        default: ''
+      e2e_run_id:
+        description: "enable-migrator only: id of the successful 'FCB MCP E2E (expected database identity: fcb_app)' run on this commit"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with the restore workflow: the two never run against defaultdb at the same time.
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  roles:
+    # G-02: second layer; the environment (required reviewer + branch main) is the control.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_DEFAULTDB_URL
+      CONFIRM_APPLY: APPLY WP-009 ROLES TO defaultdb
+      CONFIRM_ENABLE: ENABLE WP-009 MIGRATOR ON defaultdb
+      # Phase 2 refuses while any other session of the administrative identity is seen during
+      # this many seconds (sampled every second, inside the transaction).
+      OBSERVE_SECONDS: '75'
+      # SHA-256 of every SQL file the roles transactions and checks run (tests/test_defaultdb_roles_workflow.py).
+      EXPECTED_SQL_SHA256: |
+        sql/aiven/count_bridge_catalog.sql=ab0317404cf0ac9a3722a808f2e9f6c1ac4a75503ccac8c508aa2eb5aa304fae
+        sql/aiven/roles_apply_guard.sql=e190992da69803ae840a166ab82c0379e43bb5488af6c808c483994531ebf5e8
+        sql/aiven/upsert_bridge_roles.sql=d98180803cf88fc736057955c7d59098b086e2f17baa74b1a8c706db127084f4
+        sql/aiven/grant_bridge_runtime.sql=b69e7563d9c1bf798d195e79570107c8bf6622d260a2b6b6ae312efdc33a19c7
+        sql/aiven/assert_bridge_counts.sql=aee4b5378ce4c0ecfd55b6d3461b02cba87cbb0c119afe2e2fc65f6dd450b0b2
+        sql/aiven/assert_bridge_roles.sql=1d945d5c33502d3983d4d7129f6a8343d935328e49f9b77517cf8b35f41c2241
+        sql/aiven/enable_bridge_migrator.sql=f72274593da4d640b12a4dff35a6a756f6be0cee9abafa88496766b23c5b421d
+        sql/aiven/prepare_bridge_roles.sql=150c7895f9245d5dca4ba1981310ad8bef782c9ec232ce06a2d66792671a6d0f
+        sql/aiven/finalize_bridge_privileges.sql=bc85bf8196cb5040f3b051871ab98f63dca04459537a65fcea4f44478326e9a6
+        sql/aiven/verify_bridge_roles.sql=625ac4ffabe22489d141a48d811226c7ba492b88ee0af70e71d6bffedf59023c
+        sql/aiven/diagnose_bridge_roles.sql=b6052fb941fd52bd48064a71bbf3a9ffd61cdccac292b45c0cb2383b5cd0f270
+        sql/aiven/verify_bridge_schema.sql=fd063c1d7fee80616647f3f98a42693bbf4a7c77691846d89a8df590e14deb24
+        sql/aiven/defaultdb_precheck.sql=d3291db3e7d6cc75ba9e40f34c86f44241f4c883f22d2098d5abfde274311d6d
+        sql/aiven/defaultdb_precheck_tracked.sql=e20c845d49a8af61d12975d7756f51a806a8833ffe09b7ef500106143ee5b493
+        sql/aiven/fingerprint_bridge_schema.sql=9a04f81ac3fa6a24fb72f0e2e911b76a4c3b33bdeb6f12c8347b674767e36ba8
+        sql/aiven/fingerprint_bridge_structure.sql=995ba192e5c8c93b70b484d71f110a3b955a8e1b6b3298db74d6eed557ec092c
+      # The restore's pinned catalog fingerprint (PostgreSQL 18): a first phase 1 requires it.
+      EXPECTED_FINGERPRINT: 'b825ab11029502140b038ce6d3add670'
+      # Same pinned object counts as the restore (PostgreSQL 18); they must hold after each phase.
+      EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
+      PGCONNECT_TIMEOUT: '15'
+      # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Fails closed on any API/JSON error or a missing/zero reviewer count.
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          if [ "$GIT_REF" != "refs/heads/main" ]; then
+            echo "::error::the defaultdb roles workflow runs only from main"; exit 1
+          fi
+          if [ "$TRIGGERING_ACTOR" != "$REPO_OWNER" ] || [ "$ACTOR" != "$REPO_OWNER" ]; then
+            echo "::error::only the repository owner may run the defaultdb roles workflow"; exit 1
+          fi
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (catalog-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            apply)
+              if [ "$CONFIRM" != "$CONFIRM_APPLY" ]; then
+                echo "::error::mode=apply requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: apply = phase 1 (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            enable-migrator)
+              if [ "$CONFIRM" != "$CONFIRM_ENABLE" ]; then
+                echo "::error::mode=enable-migrator requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: enable-migrator = phase 2 (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then
+            echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Fail closed if the fcb_app password is missing or weak (phase 1)
+        if: ${{ inputs.mode == 'apply' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_APP_DB_PASSWORD: ${{ secrets.FCB_APP_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Presence, alphabet/length, not the administrative password. Prints categories only.
+          python3 -I -S scripts/fcb_db_roles.py check --mode apply
+
+      - name: Fail closed if a role password is missing or weak (phase 2)
+        if: ${{ inputs.mode == 'enable-migrator' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_APP_DB_PASSWORD: ${{ secrets.FCB_APP_DB_PASSWORD }}
+          FCB_MIGRATOR_DB_PASSWORD: ${{ secrets.FCB_MIGRATOR_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/fcb_db_roles.py check --mode enable-migrator
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || {
+            echo "::error::Aiven CA checksum mismatch"; exit 1;
+          }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+          echo "Aiven CA parsed and matched the protected SHA-256" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify the pinned SHA-256 of every SQL file of the roles transactions
+        run: |
+          set -euo pipefail
+          # Hash-pinned: this is the only third-party code that later runs with role passwords in its env.
+          python -m pip install --quiet --require-hashes --no-deps -r scripts/fcb_db_roles_requirements.txt
+          n=0
+          while IFS='=' read -r f sha; do
+            [ -n "$f" ] || continue
+            actual="$(sha256sum "$f" | cut -d' ' -f1)"
+            test "$actual" = "$sha" || { echo "::error::$f differs from its pinned SHA-256"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_SQL_SHA256"
+          test "$n" -eq 16 || { echo "::error::expected 16 pinned SQL files, found $n"; exit 1; }
+          if grep -Eq 'signer_ledger_anchors|signer_ledger_writer_leases|signer_schema_migrations' \
+               sql/aiven/upsert_bridge_roles.sql sql/aiven/grant_bridge_runtime.sql sql/aiven/enable_bridge_migrator.sql sql/aiven/prepare_bridge_roles.sql sql/aiven/finalize_bridge_privileges.sql; then
+            echo "::error::signer content found in a roles script"; exit 1
+          fi
+          echo "pinned SQL files: $n verified" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install postgresql-client-18 from PGDG (pinned key fingerprint)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 60 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/psql --version
+
+      - name: Mask connection details and enforce TLS
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          # -I -S: isolated interpreter, no site-packages (.pth) while the secret is in env.
+          python -I -S - <<'PY'
+          import os, sys
+          from urllib.parse import urlsplit, parse_qs, unquote
+          raw = os.environ['FCB_DEFAULTDB_URL']
+          try:
+              u = urlsplit(raw)
+              parts = (u.hostname, u.username, u.password, u.password and unquote(u.password), str(u.port or ''))
+              q = parse_qs(u.query, keep_blank_values=True)
+          except Exception:
+              sys.exit('::error::secret is not a parseable PostgreSQL URI')
+          for v in parts:
+              if v:
+                  print(f'::add-mask::{v}')
+          if u.scheme not in ('postgres', 'postgresql'):
+              sys.exit('::error::unexpected URL scheme')
+          if ',' in u.netloc or not u.hostname:
+              sys.exit('::error::multi-host or empty host URIs are not allowed')
+          if u.netloc.count('@') > 1:
+              sys.exit('::error::password contains an unencoded @ (percent-encode it as %40)')
+          if u.path.lstrip('/') != os.environ['EXPECTED_DB']:
+              sys.exit('::error::secret does not point to the expected database')
+          forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
+          if forbidden & {k.lower() for k in q}:
+              sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
+          mode = q.get('sslmode', [None])[0]
+          if mode != 'verify-full' or len(q.get('sslmode', [])) != 1:
+              sys.exit('::error::sslmode must be verify-full')
+          PY
+          python -I -S scripts/aiven_pg18_diag.py check-raw
+          python -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prechecks and roles report (catalog only)
+        env:
+          # default_transaction_read_only is defense in depth only, NOT a boundary (code can switch
+          # it); the boundary is that this step reads only catalogs (see the comments below).
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off -c default_transaction_read_only=on'
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          PGSSLMODE: verify-full
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          qf() {
+            local err out
+            err="$(mktemp)"
+            if out="$("$PSQL" "$FCB_DEFAULTDB_URL" -X -A -t -v ON_ERROR_STOP=1 "$@" 2>"$err")"; then
+              rm -f "$err"; printf '%s\n' "$out"
+            else
+              echo "::error::catalog query failed" >&2
+              echo "psql (sanitized): $(python -I -S scripts/fcb_db_roles.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          db="$(qf -c 'select pg_catalog.current_database()')"
+          test "$db" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
+          ver="$(qf -c "select pg_catalog.current_setting('server_version_num')::pg_catalog.int4")"
+          [ "$ver" -ge 180000 ] && [ "$ver" -lt 190000 ] || { echo "::error::server is not PostgreSQL 18"; exit 1; }
+          ssl="$(qf -c 'select s.ssl from pg_catalog.pg_stat_ssl s where s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()')"
+          test "$ssl" = "t" || { echo "::error::connection is not TLS"; exit 1; }
+          # Catalog only: the model, the restore precheck (its tracked part, which reads
+          # schema_migrations, runs only for TRACKED, i.e. before any bridge role exists, when the
+          # administrator still owns everything) and the report.
+          roles_state="$(qf -f sql/aiven/verify_bridge_roles.sql)"
+          state="$(qf -f sql/aiven/defaultdb_precheck.sql)"
+          if [ "$state" = "TRACKED" ]; then
+            test "$roles_state" = "ROLES_ABSENT" || { echo "::error::tracked precheck refused once bridge roles exist"; exit 1; }
+            state="$(qf -f sql/aiven/defaultdb_precheck_tracked.sql)"
+          fi
+          report="$(qf -f sql/aiven/diagnose_bridge_roles.sql)"
+          {
+            echo "## Restore precheck state: $state"
+            echo "## Roles model: $roles_state"
+            echo '```'
+            printf '%s\n' "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$report"
+          first_apply=false
+          if [ "$state" = "BRIDGE_0001_0008" ] && [ "$roles_state" = "ROLES_ABSENT" ]; then first_apply=true; fi
+          case "$MODE:$roles_state" in
+            diagnose:HARDENED|diagnose:HARDENED_PHASE1|apply:HARDENED_PHASE1|enable-migrator:HARDENED_PHASE1|enable-migrator:HARDENED)
+              echo "## Precheck: $roles_state accepted for $MODE" >> "$GITHUB_STEP_SUMMARY" ;;
+            diagnose:*|apply:*)
+              if [ "$first_apply" = true ]; then
+                echo "## Precheck: BRIDGE_0001_0008 and no bridge role yet (phase 1 allowed)" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "::error::roles refused: precheck state $state and roles model $roles_state"; exit 1
+              fi ;;
+            *) echo "::error::roles refused: precheck state $state and roles model $roles_state"; exit 1 ;;
+          esac
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode == 'diagnose' }}
+        run: |
+          echo "## Diagnose mode: catalog-only report, no transaction runs (no writes)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Phase 2 evidence - authenticated MCP E2E proved the runtime uses fcb_app
+        if: ${{ inputs.mode == 'enable-migrator' && inputs.confirm == 'ENABLE WP-009 MIGRATOR ON defaultdb' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          E2E_RUN_ID: ${{ inputs.e2e_run_id }}
+          EXPECTED_SHA: ${{ github.sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          [[ "$E2E_RUN_ID" =~ ^[0-9]{1,20}$ ]] || { echo "::error::e2e_run_id must be a numeric run id"; exit 1; }
+          run_json="$RUNNER_TEMP/e2e_run.json"
+          gh api "repos/$REPO/actions/runs/$E2E_RUN_ID" > "$run_json" || { echo "::error::cannot read the E2E run"; exit 1; }
+          python3 -I -S scripts/fcb_db_roles.py e2e-evidence "$run_json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Phase 1 - roles and runtime allowlist (single transaction, run twice) and verify
+        # Writes only with mode=apply AND the exact confirmation phrase (re-checked here).
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY WP-009 ROLES TO defaultdb' }}
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_APP_DB_PASSWORD: ${{ secrets.FCB_APP_DB_PASSWORD }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR pg_catalog.current_schema() IS NULL OR pg_catalog.current_schema() OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR pg_catalog.current_setting('search_path') OPERATOR(pg_catalog.<>) 'public'::pg_catalog.text OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR EXISTS (SELECT 1 FROM pg_catalog.pg_settings g WHERE g.source OPERATOR(pg_catalog.=) ANY (ARRAY['database', 'user', 'database user']::pg_catalog.text[]) AND g.name OPERATOR(pg_catalog.<>) 'search_path'::pg_catalog.text) OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r_owner ON r_owner.oid OPERATOR(pg_catalog.=) n.nspowner WHERE n.nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['public', 'pg_catalog', 'information_schema', 'pg_toast']::pg_catalog.name[]) AND n.nspname OPERATOR(pg_catalog.!~) '^pg_(toast_)?temp_[0-9]+\$'::pg_catalog.text AND NOT (n.nspname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name AND n.nspowner OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER) AND (r_owner.rolsuper OR r_owner.rolname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name) AND NOT pg_catalog.pg_has_role(SESSION_USER, n.nspowner, 'MEMBER') AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE'))) OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          sp() {
+            local err rc=0
+            err="$(mktemp)"
+            "$PSQL" "$FCB_DEFAULTDB_URL" "$@" 2>"$err" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::psql failed (exit $rc)" >&2
+              echo "psql (sanitized): $(python -I -S scripts/fcb_db_roles.py sanitize "$err")" >&2
+            fi
+            rm -f "$err"; return "$rc"
+          }
+          q() { sp -X -A -t -v ON_ERROR_STOP=1 "$@"; }
+          state() {
+            local s
+            s="$(q -f sql/aiven/defaultdb_precheck.sql)"
+            if [ "$s" = "TRACKED" ]; then s="$(q -f sql/aiven/defaultdb_precheck_tracked.sql)"; fi
+            printf '%s' "$s"
+          }
+          # Re-check right before writing (catalog only; the tracked precheck can only run while
+          # no bridge role exists, i.e. on a database the administrator still owns entirely).
+          roles_before="$(q -f sql/aiven/verify_bridge_roles.sql)"
+          if [ "$roles_before" = "ROLES_ABSENT" ]; then before="$(state)"; else before="$(q -f sql/aiven/defaultdb_precheck.sql)"; fi
+          if [ "$roles_before" != "HARDENED_PHASE1" ] && { [ "$before" != "BRIDGE_0001_0008" ] || [ "$roles_before" != "ROLES_ABSENT" ]; }; then
+            echo "::error::state changed since precheck ($before / $roles_before); refusing"; exit 1
+          fi
+          migrations="$(for f in sql/migrations/bridge/000[1-8]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
+          # SCRAM-SHA-256 verifier, computed on the runner and kept in a shell variable only: never
+          # echoed (not even as ::add-mask::), never in the runner env files or argv; psql reads it
+          # from its own environment with \getenv, and psql stderr is printed only after
+          # scripts/fcb_db_roles.py sanitize, which drops every line carrying SCRAM-SHA-256 or PASSWORD.
+          app_verifier="$(python -I -S scripts/fcb_db_roles.py verifier FCB_APP_DB_PASSWORD)"
+          # Object counts from the catalog only (privilege-independent), rows AS fcb_app.
+          expected_catalog="$(printf '%s\n' $EXPECTED_COUNTS | grep -v -e '^constraints_information_schema=' -e '^schema_migrations_rows=' | paste -sd' ')"
+          expected_rows="$(printf 'schema_migrations_rows=8\n%s\n' "$(printf '%s\n' $migrations)")"
+          structure_before="$(q -f sql/aiven/fingerprint_bridge_structure.sql)"
+          catalog_before="$(q -f sql/aiven/count_bridge_catalog.sql)"
+          test "$catalog_before" = "$expected_catalog" || { echo "::error::object counts differ from expected"; exit 1; }
+          if [ "$roles_before" = "ROLES_ABSENT" ]; then
+            # First phase 1: the restored database, owned entirely by the administrator, no
+            # bridge role yet: the restore's own evidence read as it (status quo before WP-009).
+            full_before="$(q -f sql/aiven/fingerprint_bridge_schema.sql)"
+            test "$full_before" = "$EXPECTED_FINGERPRINT" || { echo "::error::catalog fingerprint is not the restored one"; exit 1; }
+            restore_evidence="$(q -F '=' -f sql/aiven/verify_bridge_schema.sql)"
+            counts_before="$(printf '%s\n' "$restore_evidence" | head -n 7 | paste -sd' ')"
+            test "$counts_before" = "$EXPECTED_COUNTS" || { echo "::error::object counts differ from expected"; exit 1; }
+          else
+            rows_before="$(python -I scripts/fcb_db_roles.py evidence)"  # rows read AS fcb_app
+            test "$rows_before" = "$expected_rows" || { echo "::error::schema_migrations rows differ from the repository"; exit 1; }
+          fi
+          run() { FCB_APP_DB_VERIFIER="$app_verifier" \
+                    sp -X -q -v ON_ERROR_STOP=1 -v expected_counts="$EXPECTED_COUNTS" -v expected_migrations="$migrations" -v expected_roles_state=HARDENED_PHASE1 -1 \
+                    -c "$GUARD" -f sql/aiven/roles_apply_guard.sql -f sql/aiven/upsert_bridge_roles.sql -f sql/aiven/grant_bridge_runtime.sql -f sql/aiven/assert_bridge_counts.sql -f sql/aiven/assert_bridge_roles.sql >/dev/null; }
+          run;    first="$(q -f sql/aiven/diagnose_bridge_roles.sql)"
+          run;    second="$(q -f sql/aiven/diagnose_bridge_roles.sql)"
+          test "$first" = "$second" || { echo "::error::second run changed the roles evidence"; exit 1; }
+          structure_after="$(q -f sql/aiven/fingerprint_bridge_structure.sql)"
+          test "$structure_before" = "$structure_after" || { echo "::error::bridge structure fingerprint changed"; exit 1; }
+          catalog_after="$(q -f sql/aiven/count_bridge_catalog.sql)"
+          test "$catalog_after" = "$expected_catalog" || { echo "::error::object counts changed"; exit 1; }
+          rows_after="$(python -I scripts/fcb_db_roles.py evidence)"  # rows read AS fcb_app
+          test "$rows_after" = "$expected_rows" || { echo "::error::schema_migrations rows differ from the repository"; exit 1; }
+          roles_after="$(q -f sql/aiven/verify_bridge_roles.sql)"
+          test "$roles_after" = "HARDENED_PHASE1" || { echo "::error::post-apply roles model is $roles_after"; exit 1; }
+          python -I scripts/fcb_db_roles.py login-check --phase 1 --require-tls | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Phase 1: PASS (state before: $before / $roles_before; run 2 no-op; model after: $roles_after; structure fingerprint $structure_after, object counts and migration rows unchanged; objects still owned by the administrator)"
+            echo '```'
+            printf '%s\n' "$second"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Phase 2 - hand the bridge to fcb_migrator and enable its login (single transaction) and verify
+        # Writes only with mode=enable-migrator AND the exact confirmation phrase (re-checked here),
+        # after the E2E evidence step above succeeded.
+        if: ${{ inputs.mode == 'enable-migrator' && inputs.confirm == 'ENABLE WP-009 MIGRATOR ON defaultdb' }}
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_APP_DB_PASSWORD: ${{ secrets.FCB_APP_DB_PASSWORD }}
+          FCB_MIGRATOR_DB_PASSWORD: ${{ secrets.FCB_MIGRATOR_DB_PASSWORD }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR pg_catalog.current_schema() IS NULL OR pg_catalog.current_schema() OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR pg_catalog.current_setting('search_path') OPERATOR(pg_catalog.<>) 'public'::pg_catalog.text OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR EXISTS (SELECT 1 FROM pg_catalog.pg_settings g WHERE g.source OPERATOR(pg_catalog.=) ANY (ARRAY['database', 'user', 'database user']::pg_catalog.text[]) AND g.name OPERATOR(pg_catalog.<>) 'search_path'::pg_catalog.text) OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_roles r_owner ON r_owner.oid OPERATOR(pg_catalog.=) n.nspowner WHERE n.nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['public', 'pg_catalog', 'information_schema', 'pg_toast']::pg_catalog.name[]) AND n.nspname OPERATOR(pg_catalog.!~) '^pg_(toast_)?temp_[0-9]+\$'::pg_catalog.text AND NOT (n.nspname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name AND n.nspowner OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER) AND (r_owner.rolsuper OR r_owner.rolname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name) AND NOT pg_catalog.pg_has_role(SESSION_USER, n.nspowner, 'MEMBER') AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE'))) OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          sp() {
+            local err rc=0
+            err="$(mktemp)"
+            "$PSQL" "$FCB_DEFAULTDB_URL" "$@" 2>"$err" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::psql failed (exit $rc)" >&2
+              echo "psql (sanitized): $(python -I -S scripts/fcb_db_roles.py sanitize "$err")" >&2
+            fi
+            rm -f "$err"; return "$rc"
+          }
+          q() { sp -X -A -t -v ON_ERROR_STOP=1 "$@"; }
+          roles_before="$(q -f sql/aiven/verify_bridge_roles.sql)"
+          case "$roles_before" in
+            HARDENED_PHASE1|HARDENED) ;;
+            *) echo "::error::state changed since precheck ($roles_before); refusing"; exit 1 ;;
+          esac
+          # Catalog only, and evidence rows read AS fcb_app: the administrator reads no bridge row.
+          migrations="$(for f in sql/migrations/bridge/000[1-8]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
+          expected_catalog="$(printf '%s\n' $EXPECTED_COUNTS | grep -v -e '^constraints_information_schema=' -e '^schema_migrations_rows=' | paste -sd' ')"
+          expected_rows="$(printf 'schema_migrations_rows=8\n%s\n' "$(printf '%s\n' $migrations)")"
+          structure_before="$(q -f sql/aiven/fingerprint_bridge_structure.sql)"
+          catalog_before="$(q -f sql/aiven/count_bridge_catalog.sql)"
+          test "$catalog_before" = "$expected_catalog" || { echo "::error::object counts differ from expected"; exit 1; }
+          rows_before="$(python -I scripts/fcb_db_roles.py evidence)"
+          test "$rows_before" = "$expected_rows" || { echo "::error::schema_migrations rows differ from the repository"; exit 1; }
+          migrator_verifier="$(python -I -S scripts/fcb_db_roles.py verifier FCB_MIGRATOR_DB_PASSWORD)"
+          FCB_MIGRATOR_DB_VERIFIER="$migrator_verifier" \
+            sp -X -q -v ON_ERROR_STOP=1 -v observe_seconds="$OBSERVE_SECONDS" -v expected_roles_state=HARDENED -1 \
+            -c "$GUARD" -f sql/aiven/enable_bridge_migrator.sql -f sql/aiven/assert_bridge_roles.sql >/dev/null
+          report="$(q -f sql/aiven/diagnose_bridge_roles.sql)"
+          roles_after="$(q -f sql/aiven/verify_bridge_roles.sql)"
+          test "$roles_after" = "HARDENED" || { echo "::error::post-phase-2 roles model is $roles_after"; exit 1; }
+          structure_after="$(q -f sql/aiven/fingerprint_bridge_structure.sql)"
+          test "$structure_before" = "$structure_after" || { echo "::error::bridge structure fingerprint changed"; exit 1; }
+          catalog_after="$(q -f sql/aiven/count_bridge_catalog.sql)"
+          test "$catalog_after" = "$expected_catalog" || { echo "::error::object counts changed"; exit 1; }
+          rows_after="$(python -I scripts/fcb_db_roles.py evidence)"
+          test "$rows_after" = "$expected_rows" || { echo "::error::schema_migrations rows differ from the repository"; exit 1; }
+          sessions="$(q -c "select pg_catalog.string_agg(x.who OPERATOR(pg_catalog.||) '=' OPERATOR(pg_catalog.||) x.n::pg_catalog.text, ' ' order by x.who) from (select case when a.usename OPERATOR(pg_catalog.=) session_user then 'session' when a.usename OPERATOR(pg_catalog.=) any (array['fcb_app','fcb_migrator','fcb_signer']::pg_catalog.name[]) then a.usename::pg_catalog.text else 'other' end as who, pg_catalog.count(*) as n from pg_catalog.pg_stat_activity a where a.datname OPERATOR(pg_catalog.=) pg_catalog.current_database() group by 1) x")"
+          python -I scripts/fcb_db_roles.py login-check --phase 2 --require-tls | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Phase 2: PASS (model before: $roles_before; model after: $roles_after; structure fingerprint $structure_after, object counts and migration rows unchanged; sessions on defaultdb now: ${sessions:-none})"
+            echo '```'
+            printf '%s\n' "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

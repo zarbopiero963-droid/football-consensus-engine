@@ -140,7 +140,14 @@ SCRIPT = textwrap.dedent(r'''
                                                                     "LIVE_TRADING": "AVAILABLE"}}),
                   "sxbet_mode": ("sxbet_health", {"mode": "LIVE_TRADING"}),
                   "sxbet_write_tools": ("sxbet_health", {"write_tools": ["sxbet_place_order"]}),
-                  "apifootball_network": ("apifootball_health", {"network_calls_made": 1})}.get(MODE)
+                  "apifootball_network": ("apifootball_health", {"network_calls_made": 1}),
+                  # FCB-WP-009 (R2): the runtime's database identity as the real tool reports it.
+                  "db_identity_app": ("apifootball_health", {"database_identity": {
+                      "status": "OK", "current_user": "fcb_app", "session_user": "fcb_app"}}),
+                  "db_identity_admin": ("apifootball_health", {"database_identity": {
+                      "status": "OK", "current_user": "avnadmin", "session_user": "avnadmin"}}),
+                  "db_identity_set_role": ("apifootball_health", {"database_identity": {
+                      "status": "OK", "current_user": "fcb_app", "session_user": "avnadmin"}})}.get(MODE)
         if tamper and tamper[0] == name and getattr(result, "structured_content", None) is not None:
             data = {**result.structured_content, **tamper[1]}
             result.structured_content = data
@@ -173,6 +180,8 @@ SCRIPT = textwrap.dedent(r'''
         argv = ["--output", out_path]
         if os.environ.get("E2E_EXPECTED_COMMIT"):
             argv += ["--expected-commit", os.environ["E2E_EXPECTED_COMMIT"]]
+        if os.environ.get("E2E_EXPECTED_DB_IDENTITY"):
+            argv += ["--expected-db-identity", os.environ["E2E_EXPECTED_DB_IDENTITY"]]
         for _name in ("httpx", "httpx2", "httpcore"):  # after lifespan logging setup
             logging.getLogger(_name).setLevel(logging.WARNING)
         rc = e2e.main(argv, client=c, sleep=lambda s: None)
@@ -318,7 +327,14 @@ def test_the_workflow_is_owner_manual_main_only_and_uploads_nothing():
     text = wf.read_text(encoding="utf-8")
     assert "upload-artifact" not in text and "cache" not in text.lower().replace("no-store", "")
     secret_steps = [s for s in job["steps"] if "secrets." in str(s)]
-    assert len(secret_steps) == 1 and set(secret_steps[0]["env"]) == {"MCP_OAUTH_PASSWORD", "EXPECTED_COMMIT"}
+    # WP-009 (R2): the expected database identity is a fixed-choice input, not a secret.
+    assert len(secret_steps) == 1 and set(secret_steps[0]["env"]) == {
+        "MCP_OAUTH_PASSWORD", "EXPECTED_COMMIT", "EXPECTED_DB_IDENTITY"}
+    assert secret_steps[0]["env"]["EXPECTED_DB_IDENTITY"] == "${{ inputs.expected_db_identity }}"
+    inputs = data.get("on", data.get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["expected_db_identity"]["options"] == ["", "fcb_app"]
+    assert data["run-name"] == ("FCB MCP E2E (expected database identity: "
+                                "${{ inputs.expected_db_identity || 'none' }})")
     assert "scripts/mcp_e2e_render.py" in secret_steps[0]["run"] and "set -x" not in text
 
 
@@ -449,3 +465,29 @@ def test_the_e2e_client_has_no_logging_or_traceback_channel():
     imported |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not imported & {"logging", "traceback", "pprint", "warnings"}, imported
     assert "print_exc" not in src and "stderr" not in src
+
+
+# ---- FCB-WP-009 (R2): the runtime's database identity, proven through an authenticated MCP call
+
+def test_without_an_expected_identity_the_fact_is_only_recorded(tmp_path):
+    res, report_text, _ = _run(tmp_path)
+    report = json.loads(report_text)
+    assert res["rc"] == 0 and report["facts"]["database_identity"] == {"status": "NOT_CONFIGURED"}
+    assert "database_identity_is_expected" not in {c["check"] for c in report["checks"]}
+
+
+@pytest.mark.parametrize("mode", ["normal", "db_identity_admin", "db_identity_set_role"])
+def test_an_unexpected_database_identity_fails_the_run(tmp_path, mode):
+    """RED: no database, the administrator, or a SET ROLE session (session_user differs)."""
+    res, report_text, _ = _run(tmp_path, mode=mode, extra_env={"E2E_EXPECTED_DB_IDENTITY": "fcb_app"})
+    report = json.loads(report_text)
+    assert res["rc"] == 1 and report["failed_check"] == "database_identity_is_expected"
+    assert PASSWORD not in report_text
+
+
+def test_the_expected_database_identity_passes(tmp_path):
+    """GREEN: current_user and session_user both fcb_app."""
+    res, report_text, _ = _run(tmp_path, mode="db_identity_app", extra_env={"E2E_EXPECTED_DB_IDENTITY": "fcb_app"})
+    report = json.loads(report_text)
+    assert res["rc"] == 0 and report["verdict"] == "PASS"
+    assert report["facts"]["database_identity"] == {"status": "OK", "current_user": "fcb_app", "session_user": "fcb_app"}
