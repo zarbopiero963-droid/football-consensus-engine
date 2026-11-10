@@ -102,6 +102,14 @@ def _attempts(source: Any) -> int:
     return n if type(n) is int and 0 <= n <= 3 else 0
 
 
+def _real_calls(data: dict[str, Any]) -> int:
+    """Provider requests sent for THIS call: none on a cache HIT or when the call joined
+    another caller's in-flight request (that caller reports them); otherwise the real attempts."""
+    if data.get("cache_status") == "HIT" or data.get("shared_flight") is True:
+        return 0
+    return _attempts(data) or 1
+
+
 class MockClient(Protocol):
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> dict[str, Any]:
         ...
@@ -172,8 +180,8 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 data = await client.get(contract.path, params)
                 status = "REAL_API_RESPONSE"
                 cache_status = data.get("cache_status", "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
-                if isinstance(data, dict) and cache_status != "HIT":
-                    received = _attempts(data) or 1
+                if isinstance(data, dict):
+                    received = _real_calls(data)
             if not isinstance(data, dict):
                 from .errors import ProviderDataError
                 raise ProviderDataError("PROVIDER_REPLY_CONTRACT_INVALID")
@@ -194,8 +202,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["data"] = manifest
                     result["pagination"] = manifest["paging"]
                     result["http_status"] = data.get("http_status")
-                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else (
-                        _attempts(data) or 1)
+                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
                     result["cache_status"] = cache_status
                     if status == "REAL_API_RESPONSE":
                         result["quota_remaining"] = {
@@ -216,7 +223,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 if isinstance(paging, dict) and type(paging.get("current")) is int and type(paging.get("total")) is int:
                     result["pagination"] = {"current": paging["current"], "total": paging["total"]}
                 if status == "REAL_API_RESPONSE":
-                    result["network_calls_made"] = 0 if cache_status == "HIT" else (_attempts(data) or 1)
+                    result["network_calls_made"] = _real_calls(data)
                     result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
                 return result
             result["status"] = status
@@ -248,8 +255,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
             result["pagination"] = provider_paging if isinstance(provider_paging, dict) else data.get("pagination", data.get("paging"))
             result["cache_status"] = cache_status
-            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else (
-                _attempts(data) or 1)
+            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
             if status == "REAL_API_RESPONSE":
                 result["quota_remaining"] = {
                     "day": data.get("quota_remaining_provider_day"),

@@ -40,6 +40,16 @@ def _request_limitation(exc: BaseException) -> bool:
     return isinstance(exc, ProviderHTTPError) and 400 <= exc.status <= 499 and exc.status not in _COUNTED_4XX
 
 
+def _follower_copy(exc: BaseException) -> BaseException:
+    """The shared flight's exception for a caller that joined it: same class, code and fields,
+    with zero attempts of its own (the leader reports the real ones)."""
+    clone = type(exc).__new__(type(exc))
+    clone.__dict__.update(exc.__dict__)
+    clone.args = exc.args
+    clone.provider_attempts = 0
+    return clone
+
+
 class ProviderTransport(Protocol):
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
         ...
@@ -116,6 +126,7 @@ class ResilientFootballClient:
                 hit["cache_status"] = "HIT"
                 return hit
             task = self._flights.get(key)
+            leader = task is None
             if task is None:
                 # Bound new per-key tasks BEFORE create_task(). The downstream
                 # semaphore alone only bounds active jobs; without this guard
@@ -128,7 +139,18 @@ class ResilientFootballClient:
                 task.add_done_callback(lambda t, k=key: self._flight_completed(k, t))
         # A cancelled caller does not cancel shared in-flight work;
         # it always terminates within policy bounds.
-        return deepcopy(await asyncio.shield(task))
+        try:
+            outcome = deepcopy(await asyncio.shield(task))
+        except Exception as exc:
+            if leader:
+                raise
+            raise _follower_copy(exc) from None
+        if not leader:
+            # The leader's attempts are reported once: a caller that joined the same flight
+            # sent nothing, so summing network_calls_made across callers stays exact.
+            outcome["provider_attempts"] = 0
+            outcome["shared_flight"] = True
+        return outcome
 
     def _flight_completed(self, key: tuple, task: asyncio.Task) -> None:
         if self._flights.get(key) is task:

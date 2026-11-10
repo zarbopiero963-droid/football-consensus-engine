@@ -88,7 +88,12 @@ def test_deduplication_and_quota_reservation_are_shared_per_client():
         )
         return first, second, q, transport
     first, second, q, transport = asyncio.run(scenario())
-    assert first == second
+    # Declared change (PR #185 review P3): the caller that joined the flight reports zero
+    # attempts of its own; everything else is the same reply.
+    strip = lambda o: {k: v for k, v in o.items() if k not in ("provider_attempts", "shared_flight")}
+    assert strip(first) == strip(second)
+    assert first["provider_attempts"] == 1 and "shared_flight" not in first
+    assert second["provider_attempts"] == 0 and second["shared_flight"] is True
     assert transport.calls == 1
     assert q.calls == q.released == 1
 
