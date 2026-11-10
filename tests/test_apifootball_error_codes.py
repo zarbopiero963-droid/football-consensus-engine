@@ -310,9 +310,12 @@ def test_payload_too_large_keeps_paging_and_counts_the_request():
     transport = Transport(ok(big, paging={"current": 2, "total": 5}))
     tools, _ = tools_for(transport)
     r = call(tools, "apifootball_players", league=39, season=2024, page=2)
-    assert r["status"] == "PAYLOAD_TOO_LARGE" and r["data"] is None
-    assert r["error"] == {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
+    # FIX-01 (declared change): an oversized non-odds reply is a data-free id manifest now
+    # (tests/test_apifootball_continuation.py), no longer a bare PAYLOAD_TOO_LARGE.
+    assert r["status"] == "PARTIAL_ID_MANIFEST" and r["data"]["data_included"] is False
+    assert "x" * 300 not in json.dumps(r)
     assert r["pagination"] == {"current": 2, "total": 5}
+    assert r["data"]["next_page_arguments"] == {"league": 39, "season": 2024, "page": 3}
     assert r["network_calls_made"] == 1 == transport.calls
     assert OFFLINE not in r["warnings"]
-    assert len(json.dumps(r)) < 4096  # the error stays small: no data, no paging extras
+    assert len(json.dumps(r).encode()) <= 262_144

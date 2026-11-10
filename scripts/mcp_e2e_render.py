@@ -624,7 +624,8 @@ class ProviderBudget:
             charged, basis = worst, "WORST_CASE_NO_REPLY"
         elif status in NO_NETWORK_STATUSES:
             charged, basis = 0, "CODE_PATH_NO_REQUEST"
-        elif payload.get("cache_status") == "HIT" and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST"):
+        elif payload.get("cache_status") == "HIT" and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST",
+                                                                 "PARTIAL_ID_MANIFEST"):
             charged, basis = 0, "CACHE_HIT"
         else:
             charged, basis = worst, "WORST_CASE"
@@ -1168,9 +1169,22 @@ def _classify(p: dict[str, Any]) -> str:
             return "HTTP_200"  # /status: account counters, no list to count
         resp = data.get("response")
         return "DATA_PRESENT" if isinstance(resp, list) and resp else "EMPTY_VALID"
-    if status == "PARTIAL_ODDS_MANIFEST":
+    if status in ("PARTIAL_ODDS_MANIFEST", "PARTIAL_ID_MANIFEST"):
         return "PARTIAL"
     return "ERROR"
+
+
+def check_id_manifest(p: dict[str, Any], facts: dict[str, Any]) -> list[str]:
+    """FIX-01: an oversized non-odds reply must be an explicit, data-free id manifest."""
+    m = p.get("data") if isinstance(p.get("data"), dict) else {}
+    follow = m.get("follow_up") if isinstance(m.get("follow_up"), dict) else {}
+    ok = (m.get("partial") is True and m.get("data_included") is False and isinstance(m.get("response_sha256"), str)
+          and _is_int(m.get("rows_in_reply")) and isinstance(follow.get("calls"), list)
+          and isinstance(m.get("complete_retrieval_available"), bool))
+    facts.update({"id_manifest": True, "rows_in_reply": m.get("rows_in_reply") if _is_int(m.get("rows_in_reply")) else None,
+                  "follow_up_calls": len(follow["calls"]) if isinstance(follow.get("calls"), list) else None,
+                  "complete_retrieval_available": m.get("complete_retrieval_available")})
+    return [] if ok else ["ID_MANIFEST_NOT_EXPLICIT"]
 
 
 def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
@@ -1180,7 +1194,7 @@ def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
         defects.append("HTTP_STATUS_NOT_200")
     if p.get("endpoint") != APIFOOTBALL_PROVIDER_TOOLS[tool]:
         defects.append("ENDPOINT_MISMATCH")
-    if tool == "apifootball_status" or p.get("status") == "PARTIAL_ODDS_MANIFEST":
+    if tool == "apifootball_status" or p.get("status") in ("PARTIAL_ODDS_MANIFEST", "PARTIAL_ID_MANIFEST"):
         return defects  # status keeps only non-personal counters; the manifest has its own check
     d = p.get("data")
     if not isinstance(d, dict):
@@ -1269,7 +1283,8 @@ def stop_reason_for(p: dict[str, Any] | None) -> str | None:
             return None  # PLAN_NOT_INCLUDED concerns this endpoint only: the run goes on
         # Everything else, PROVIDER_REQUEST_FAILED included, may be an MCP or request defect.
         return "STOP_UNEXPECTED_PROVIDER_ERROR"
-    if status not in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST", "PAYLOAD_TOO_LARGE", "INVALID_INPUT"):
+    if status not in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST", "PARTIAL_ID_MANIFEST", "PAYLOAD_TOO_LARGE",
+                      "INVALID_INPUT"):
         return "STOP_UNEXPECTED_TOOL_STATUS"
     return None
 
@@ -1374,7 +1389,9 @@ class ApiFootballSuite:
                     "cache_status": p.get("cache_status") if p.get("cache_status") in ("MISS", "HIT") else None})
         facts: dict[str, Any] = {}
         defects = check_envelope(p, case.tool)
-        if case.check and not defects:
+        if p.get("status") == "PARTIAL_ID_MANIFEST":
+            defects += check_id_manifest(p, facts)  # FIX-01: real rows, but only ids: PARTIAL at best
+        elif case.check and not defects:
             defects += case.check(p, self.ctx, facts)
         if facts:
             out["facts"] = facts

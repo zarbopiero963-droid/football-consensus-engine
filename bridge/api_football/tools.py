@@ -314,6 +314,26 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["pagination"] = manifest["paging"]
                     return result
                 result["manifest_error"] = {"code": manifest_error}
+            elif size > _MAX_MCP_DATA_BYTES:
+                # FIX-01: a navigable, data-free id manifest with plain re-validated follow-up calls.
+                from .continuation import id_manifest
+                manifest = manifest_error = None
+                for with_ids in (True, False):
+                    try:
+                        candidate = id_manifest(tool, params, envelope, with_row_ids=with_ids)
+                    except ValueError as exc:
+                        manifest_error = str(exc)
+                        break
+                    if _encoded_size(candidate) <= _MANIFEST_BUDGET:
+                        manifest = candidate
+                        break
+                    manifest_error = "ID_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"
+                if manifest is not None:
+                    _provenance("PARTIAL_ID_MANIFEST")
+                    result["data"] = manifest
+                    result["pagination"] = manifest["paging"]
+                    return result
+                result["manifest_error"] = {"code": manifest_error}
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
@@ -377,6 +397,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             else:
                 result["status"] = "PROVIDER_ERROR"
                 result["error"] = _error_for(exc, contract.fields)
+                if result["error"].get("code") == "PROVIDER_RESPONSE_TOO_LARGE":
+                    from .continuation import read_cap_navigation
+                    result["navigation"] = read_cap_navigation(tool)
                 if isinstance(result["error"].get("http_status"), int):
                     result["http_status"] = result["error"]["http_status"]
                 # Real attempts of the resilience layer (retries included); 0 when none was sent.

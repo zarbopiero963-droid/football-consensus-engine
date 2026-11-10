@@ -199,9 +199,12 @@ def test_mock_large_payload_is_rejected_without_data_leak():
     reg = FakeRegistry()
     register_tools(reg, _settings(key="FAKE"), test_mock=mock)
     result = _call(reg.tools["apifootball_fixtures"](id=1))
-    assert result["status"] == "PAYLOAD_TOO_LARGE"
-    assert result["data"] is None
-    assert result["error"]["code"] == "MOCK_RESPONSE_TOO_LARGE"
+    # FIX-01 (declared change): a data-free manifest instead of a bare PAYLOAD_TOO_LARGE; this
+    # row has no fixture.id and the request is already one fixture, so it is not navigable.
+    assert result["status"] == "PARTIAL_ID_MANIFEST" and result["source_status"] == "MOCK_VERIFIED"
+    assert result["data"]["data_included"] is False
+    assert result["data"]["complete_retrieval_available"] is False
+    assert result["data"]["rows_without_id"] == 1
     assert "z" * 1000 not in str(result)
 
 
