@@ -1,5 +1,14 @@
 # Contract registry changelog
 
+## 2026-11-10 (full capability, FIX-01..FIX-09)
+- `timezone`: any IANA zone (Python zoneinfo; no captured provider catalog), provider is the final authority. `TIMEZONE_NOT_CERTIFIED` is removed (owner-approved); unknown zones are `TIMEZONE_NOT_IN_CATALOG`.
+- `/fixtures`: `live` accepts `all` or `id-id`; combinations labelled DOCUMENTED_VALID / DOCS_UNVERIFIED / MCP_REJECTED; `last`/`next` <= 99.
+- `page`: no local cap of 100 (bound 100000, the transport paging bound); `pagination_state` on paginated tools.
+- Oversized non-odds replies: `PARTIAL_ID_MANIFEST` with plain re-validated follow-up calls; odds manifests navigable by bookmaker/market, pre-match and live namespaces separate.
+- Times: provider `Date` header as `provider_timestamp_utc`, acquisition time kept on cache HIT, labelled bridge-clock times.
+- Local quota: `LOCAL_RATE_LIMITED` (retry_after_seconds) and `LOCAL_DAILY_QUOTA_EXHAUSTED` (reset_at_utc) replace `LOCAL_QUOTA_EXHAUSTED`.
+- Details: `docs/certification/areas/apifootball_full_capability.md`.
+
 ## 2026-11-01 (official parameter reconciliation, v3.9.3)
 - Source: the official documentation page https://www.api-football.com/documentation-v3 (v3.9.3), read in the bridge's Browser Use session. The browser passed the site's standard challenge by itself; nothing was bypassed. Direct HTTP and the OpenAPI file still return 403. Extracted matrix: `official_parameter_matrix_v3.9.3.json` (38 endpoints, 140 query parameters, required flags, documented constraints, pagination).
 - Before: 104/140 documented parameters exposed. After: 140/140 exposed, none invented (test-enforced in both directions).
