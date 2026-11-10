@@ -519,7 +519,8 @@ class Run:
 # cached copy before any lease or request). The provider's own daily counter (quota_remaining.day)
 # is recorded as information only: real runs showed it is not monotonic between consecutive calls
 # (eventually consistent), so it never lowers a charge and its jumps never stop the run.
-# network_calls_made is recorded but never used either: it reports 1 after retries (F-02).
+# network_calls_made is recorded but never used either: it now reports the server's real attempts
+# (retries included), but it is the server's own claim, so the worst case stays charged.
 APIFOOTBALL_BUDGET_CEILING = 45  # owner-approved max HTTP attempts per campaign; raised only by an owner-merged PR
 APIFOOTBALL_DEFAULT_BUDGET = 45
 # The owner approved 45 for the `apifootball_completion` campaign only; the earlier suites keep
@@ -623,7 +624,7 @@ class ProviderBudget:
             charged, basis = worst, "WORST_CASE_NO_REPLY"
         elif status in NO_NETWORK_STATUSES:
             charged, basis = 0, "CODE_PATH_NO_REQUEST"
-        elif payload.get("cache_status") == "HIT":
+        elif payload.get("cache_status") == "HIT" and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST"):
             charged, basis = 0, "CACHE_HIT"
         else:
             charged, basis = worst, "WORST_CASE"
@@ -843,10 +844,11 @@ def _check_catalog_single_page(p, ctx, facts):
     """Catalog rows are {id, name}. The provider publishes rows whose name is null (real run
     41242779991: /odds/bookmakers 33 rows, one with name null; /odds/bets 338, one null): a null
     stays null and is counted, it is not a shape defect (CLAUDE.md 2.3). A row without an integer
-    id, or with a name that is neither a string nor null, is."""
+    id, without a `name` key (missing is not a published null), or with a name that is neither a
+    string nor null, is."""
     resp = _response(p)
     rows_ok = [r for r in resp if isinstance(r, dict) and _is_int(r.get("id"))
-               and (r.get("name") is None or isinstance(r.get("name"), str))]
+               and "name" in r and (r["name"] is None or isinstance(r["name"], str))]
     total = (p.get("pagination") or {}).get("total")
     # Facts first: a defect must never leave the case without its counts.
     facts.update({"entries": len(resp), "paging_total": total,
@@ -878,6 +880,27 @@ def _odd_ok(v: Any) -> bool:
         return False
 
 
+# A provider decimal price as published: digits with an optional fraction (no sign, exponent, nan).
+_DECIMAL_RE = re.compile(r"^[0-9]{1,6}(?:\.[0-9]{1,6})?$")
+
+
+def _live_odd(v: Any) -> str:
+    """Live selection: OK, NULL (an explicitly published null `odd`, kept null), SUSPENDED_ZERO
+    (odd "0" on a selection flagged suspended, as in the repo's live fixture
+    tests/test_api_football_five_point_evidence.py) or INVALID. A missing `odd` or `value` key, or
+    a non-null odd that is not a decimal string, stays INVALID."""
+    if not isinstance(v, dict) or "value" not in v or "odd" not in v:
+        return "INVALID"
+    odd = v["odd"]
+    if odd is None:
+        return "NULL"
+    if not isinstance(odd, str) or not _DECIMAL_RE.fullmatch(odd):
+        return "INVALID"
+    if float(odd) >= 1.0:
+        return "OK"
+    return "SUSPENDED_ZERO" if float(odd) == 0 and v.get("suspended") is True else "INVALID"
+
+
 def _check_manifest(p, facts) -> list[str]:
     m = p.get("data") if isinstance(p.get("data"), dict) else {}
     ok = (m.get("partial") is True and m.get("prices_included") is False and isinstance(m.get("paging"), dict)
@@ -892,35 +915,52 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
         return _check_manifest(p, facts)
     resp = _response(p)
     over = under = selections = 0
-    for item in resp:
-        if not isinstance(item, dict) or not isinstance(item.get("fixture"), dict) or not _is_int(item["fixture"].get("id")):
-            return ["ODDS_FIXTURE_SHAPE_INVALID"]
-        if fixture_key and item["fixture"]["id"] != ctx[fixture_key]:
-            return ["ODDS_FOR_ANOTHER_FIXTURE"]
-        books = item.get("bookmakers")
-        if live:
-            markets = item.get("odds")
-        elif isinstance(books, list) and all(isinstance(b, dict) and isinstance(b.get("bets"), list) for b in books):
-            markets = [bet for b in books for bet in b["bets"]]
-        else:
-            markets = None
-        if not isinstance(markets, list):
-            return ["ODDS_MARKETS_SHAPE_INVALID"]
-        for bet in markets:
-            if not isinstance(bet, dict) or not isinstance(bet.get("values"), list):
-                return ["ODDS_SELECTIONS_SHAPE_INVALID"]
-            for v in bet["values"]:
-                if not _odd_ok(v):
-                    return ["ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"]
-                selections += 1
-                if not live and ctx.get("bet_ou") is not None and bet.get("id") == ctx["bet_ou"]:
-                    over += str(v["value"]).startswith("Over ")
-                    under += str(v["value"]).startswith("Under ")
+    live_counts = {"null_odds_kept_null": 0, "suspended": 0, "suspended_zero_odds": 0}
+
+    def scan() -> str | None:
+        nonlocal over, under, selections
+        for item in resp:
+            if not isinstance(item, dict) or not isinstance(item.get("fixture"), dict) or not _is_int(item["fixture"].get("id")):
+                return "ODDS_FIXTURE_SHAPE_INVALID"
+            if fixture_key and item["fixture"]["id"] != ctx[fixture_key]:
+                return "ODDS_FOR_ANOTHER_FIXTURE"
+            books = item.get("bookmakers")
+            if live:
+                markets = item.get("odds")
+            elif isinstance(books, list) and all(isinstance(b, dict) and isinstance(b.get("bets"), list) for b in books):
+                markets = [bet for b in books for bet in b["bets"]]
+            else:
+                markets = None
+            if not isinstance(markets, list):
+                return "ODDS_MARKETS_SHAPE_INVALID"
+            for bet in markets:
+                if not isinstance(bet, dict) or not isinstance(bet.get("values"), list):
+                    return "ODDS_SELECTIONS_SHAPE_INVALID"
+                for v in bet["values"]:
+                    if live:
+                        kind = _live_odd(v)
+                        if kind == "INVALID":
+                            return "ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"
+                        live_counts["null_odds_kept_null"] += kind == "NULL"
+                        live_counts["suspended_zero_odds"] += kind == "SUSPENDED_ZERO"
+                        live_counts["suspended"] += v.get("suspended") is True
+                    elif not _odd_ok(v):  # pre-match: unchanged strictness
+                        return "ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"
+                    selections += 1
+                    if not live and ctx.get("bet_ou") is not None and bet.get("id") == ctx["bet_ou"]:
+                        over += str(v["value"]).startswith("Over ")
+                        under += str(v["value"]).startswith("Under ")
+        return None
+
+    defect = scan()
+    # Facts before any defect: a failing case still shows what was counted up to it.
     facts.update({"fixtures": len(resp), "selections": selections})
-    if not live and ctx.get("bet_ou") is not None:
+    if live:
+        facts.update(live_counts)
+    if not live and ctx.get("bet_ou") is not None and defect is None:
         # Both sides counted as PUBLISHED; an absent side is never rebuilt from the other.
         facts.update({"over_published": over, "under_published": under})
-    return []
+    return [defect] if defect else []
 
 
 def _check_odds_page1(p, ctx, facts):
@@ -1164,19 +1204,39 @@ def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
 
 # Per-case verdicts: PASS, FAIL, PARTIAL, NOT_TESTED, PROVIDER_UNAVAILABLE.
 # PROVIDER_UNAVAILABLE needs concrete evidence recorded in the case's facts: the provider's own
-# /leagues coverage flag false for that data. (An explicit provider `errors` entry naming the plan
-# or endpoint would also count, but tools.py collapses declared errors into the fixed code
-# PROVIDER_DECLARED_ERRORS without their text, so the runner can never see one: such a reply stays
-# FAIL.) An empty reply alone is EMPTY_VALID with PARTIAL or NOT_TESTED, never unavailable.
+# /leagues coverage flag false for that data, or an HTTP-200 provider `errors` whose only key is
+# `plan` (tools.py exposes PROVIDER_DECLARED_ERRORS with its keys and the fixed category
+# PLAN_NOT_INCLUDED, never the text; see plan_not_included). Any other declared error stays FAIL
+# or an environment stop. An empty reply alone is EMPTY_VALID with PARTIAL or NOT_TESTED, never
+# unavailable.
 CASE_VERDICTS = ("PASS", "FAIL", "PARTIAL", "NOT_TESTED", "PROVIDER_UNAVAILABLE")
 # The verdict of a call that ended in an environment stop: the endpoint was not exercised to a
-# reply (provider 401/403/429/5xx or open circuit share one fixed code, quota at zero, local quota,
-# provider not enabled), so NOT_TESTED, with the stop and error code in the record. Anything that
+# reply (provider auth, rate limit, 5xx or open circuit: PROVIDER_ENVIRONMENT_CODES, quota at zero,
+# local quota, provider not enabled), so NOT_TESTED, with the stop and error code in the record. Anything that
 # is the MCP's fault (coordinator down, a failed MCP call, an unexpected error) stays FAIL.
 STOP_VERDICT = {"STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT": "NOT_TESTED",
                 "STOP_PROVIDER_QUOTA_ZERO": "NOT_TESTED",
                 "STOP_LOCAL_QUOTA_EXHAUSTED": "NOT_TESTED",
                 "STOP_PROVIDER_NOT_ENABLED": "NOT_TESTED"}
+
+
+# Provider-side conditions (tools.py fixed codes): the environment, not the MCP, stops the run.
+PROVIDER_ENVIRONMENT_CODES = frozenset({"PROVIDER_AUTH_FAILED", "PROVIDER_RATE_LIMITED",
+                                        "PROVIDER_SERVER_ERROR", "CIRCUIT_OPEN"})
+DECLARED_ENVIRONMENT_CATEGORIES = frozenset({"AUTH", "RATE_LIMIT", "DAILY_QUOTA"})
+
+
+def _declared_category(p: dict[str, Any]) -> str | None:
+    err = p.get("error") if isinstance(p.get("error"), dict) else {}
+    return _code(err.get("category")) if err.get("code") == "PROVIDER_DECLARED_ERRORS" else None
+
+
+def plan_not_included(p: dict[str, Any]) -> bool:
+    """Explicit provider evidence that the plan does not include this data: an HTTP-200 reply
+    whose only `errors` key is `plan` (tools.py exposes keys and category, never the text)."""
+    err = p.get("error") if isinstance(p.get("error"), dict) else {}
+    return (p.get("status") == "PROVIDER_ERROR" and _declared_category(p) == "PLAN_NOT_INCLUDED"
+            and err.get("keys") == ["plan"])
 
 
 def stop_reason_for(p: dict[str, Any] | None) -> str | None:
@@ -1194,11 +1254,11 @@ def stop_reason_for(p: dict[str, Any] | None) -> str | None:
             return "STOP_LOCAL_QUOTA_EXHAUSTED"
         if code in COORDINATOR_CODES:
             return "STOP_COORDINATOR_UNAVAILABLE"
-        if code == "PROVIDER_REQUEST_FAILED":
-            # 401/403/429/5xx, an open circuit and a queue timeout share this code (G6).
+        if code in PROVIDER_ENVIRONMENT_CODES or _declared_category(p) in DECLARED_ENVIRONMENT_CATEGORIES:
             return "STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT"
-        if code in KNOWN_SIZE_CODES:
-            return None
+        if code in KNOWN_SIZE_CODES or plan_not_included(p):
+            return None  # PLAN_NOT_INCLUDED concerns this endpoint only: the run goes on
+        # Everything else, PROVIDER_REQUEST_FAILED included, may be an MCP or request defect.
         return "STOP_UNEXPECTED_PROVIDER_ERROR"
     if status not in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST", "PAYLOAD_TOO_LARGE", "INVALID_INPUT"):
         return "STOP_UNEXPECTED_TOOL_STATUS"
@@ -1290,6 +1350,9 @@ class ApiFootballSuite:
                     "defects": [] if ok else ["NEGATIVE_INPUT_NOT_REFUSED"]}
         outcome = _classify(p)
         out["outcome"] = outcome
+        if outcome == "ERROR" and plan_not_included(p):
+            return {**out, "verdict": "PROVIDER_UNAVAILABLE", "defects": [], "facts": {"unavailable_evidence": {
+                "source": "PROVIDER_DECLARED_ERRORS", "keys": ["plan"], "category": "PLAN_NOT_INCLUDED"}}}
         if outcome == "ERROR":
             known = ("F03_MCP_PAYLOAD_TOO_LARGE" if status == "PAYLOAD_TOO_LARGE" else
                      "F03_PROVIDER_BODY_TOO_LARGE" if code in KNOWN_SIZE_CODES else None)

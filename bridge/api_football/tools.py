@@ -18,6 +18,65 @@ from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
 from .full_contract_audit import audit_contract_coverage
 
 _MAX_MCP_DATA_BYTES = 262_144
+_OFFLINE_WARNING = "Offline PR-03 tool: never claim real coverage, live odds or PIT data."
+# Fixed codes of the client/resilience layer that reach the MCP client unchanged.
+_PASS_THROUGH_CODES = frozenset({
+    "PROVIDER_TIMEOUT", "PROVIDER_NETWORK_ERROR", "PROVIDER_REDIRECT_REJECTED",
+    "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_INVALID_JSON",
+    "PROVIDER_JSON_NOT_OBJECT", "PROVIDER_DECLARED_ERRORS",
+    "PROVIDER_RESPONSE_FIELD_MISSING", "PROVIDER_INVALID_PAGINATION",
+    "QUOTA_COORDINATOR_UNAVAILABLE", "QUOTA_RELEASE_FAILED",
+    "QUOTA_RECONCILIATION_FAILED", "PROVIDER_INTERNAL_ERROR",
+    "PROVIDER_REPLY_CONTRACT_INVALID", "PROVIDER_NO_REPLY", "PROVIDER_NOT_CONFIGURED",
+    "INVALID_STATUS_RESPONSE",
+})
+
+
+def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any]:
+    """A fixed code (plus numbers or allowlisted keys only) for a real-client failure.
+    Never an exception message, a provider value, a URL or a key."""
+    from .client import UnsupportedEndpoint
+    from .errors import (CircuitOpen, ProviderDeclaredErrors, ProviderHTTPError, RequestQueueFull,
+                         classify_declared_errors)
+    from .quota import QuotaExceeded, QuotaConcurrencyBusy
+    if isinstance(exc, QuotaExceeded):
+        return {"code": "LOCAL_QUOTA_EXHAUSTED"}
+    if isinstance(exc, QuotaConcurrencyBusy):
+        return {"code": "LOCAL_CONCURRENCY_BUSY"}
+    if isinstance(exc, CircuitOpen):
+        return {"code": "CIRCUIT_OPEN"}
+    if isinstance(exc, RequestQueueFull):
+        return {"code": "QUEUE_TIMEOUT"}
+    if isinstance(exc, ProviderHTTPError) and type(exc.status) is int:
+        status = exc.status
+        if status in (401, 403):
+            return {"code": "PROVIDER_AUTH_FAILED", "http_status": status}
+        if status == 429:
+            out: dict[str, Any] = {"code": "PROVIDER_RATE_LIMITED", "http_status": status}
+            if type(exc.retry_after_seconds) is int:
+                out["retry_after_seconds"] = exc.retry_after_seconds
+            return out
+        if 500 <= status <= 599:
+            return {"code": "PROVIDER_SERVER_ERROR", "http_status": status}
+        if 400 <= status <= 499:
+            # Our request was refused (e.g. a wrong parameter mapping): a request defect.
+            return {"code": "PROVIDER_REQUEST_REJECTED", "http_status": status}
+    if isinstance(exc, ProviderDeclaredErrors):
+        keys, category = classify_declared_errors(exc.error_keys, parameters)
+        return {"code": "PROVIDER_DECLARED_ERRORS", "keys": keys, "category": category}
+    if isinstance(exc, UnsupportedEndpoint):
+        return {"code": "UNSUPPORTED_ENDPOINT"}
+    safe_code = getattr(exc, "code", None)
+    if isinstance(safe_code, str) and safe_code in _PASS_THROUGH_CODES:
+        return {"code": safe_code}
+    if isinstance(exc, ValueError):
+        return {"code": "REQUEST_VALIDATION_FAILED"}  # refused locally before any request
+    return {"code": "PROVIDER_REQUEST_FAILED"}
+
+
+def _attempts(source: Any) -> int:
+    n = source.get("provider_attempts") if isinstance(source, dict) else getattr(source, "provider_attempts", None)
+    return n if type(n) is int and 0 <= n <= 3 else 0
 
 
 class MockClient(Protocol):
@@ -64,7 +123,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "data": None,
             "network_calls_made": 0,
             "warnings": [
-                "Offline PR-03 tool: never claim real coverage, live odds or PIT data.",
+                _OFFLINE_WARNING,
                 "Provider calls require separate owner authorization and key.",
             ],
         }
@@ -80,6 +139,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 return result
         # test_mock is supplied only by local unit tests, never from MCP
         # arguments or environment. Preserve raw simulated data losslessly.
+        received = 0  # real attempts behind a reply that later fails local checks
         try:
             if test_mock is not None:
                 data = await test_mock.get(contract.path, params)
@@ -89,8 +149,11 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 data = await client.get(contract.path, params)
                 status = "REAL_API_RESPONSE"
                 cache_status = data.get("cache_status", "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
+                if isinstance(data, dict) and cache_status != "HIT":
+                    received = _attempts(data) or 1
             if not isinstance(data, dict):
-                raise TypeError("Bad provider response type")
+                from .errors import ProviderDataError
+                raise ProviderDataError("PROVIDER_REPLY_CONTRACT_INVALID")
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
             if size > _MAX_MCP_DATA_BYTES and tool in ("apifootball_odds", "apifootball_live_odds"):
                 # Never pretend a truncated list of prices is complete.
@@ -108,7 +171,8 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["data"] = manifest
                     result["pagination"] = manifest["paging"]
                     result["http_status"] = data.get("http_status")
-                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else 1
+                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else (
+                        _attempts(data) or 1)
                     result["cache_status"] = cache_status
                     if status == "REAL_API_RESPONSE":
                         result["quota_remaining"] = {
@@ -123,6 +187,14 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
+                # Keep the provider's page position so the client can still navigate (numbers only).
+                envelope = data.get("data", data) if status == "REAL_API_RESPONSE" else data
+                paging = envelope.get("paging") if isinstance(envelope, dict) else None
+                if isinstance(paging, dict) and type(paging.get("current")) is int and type(paging.get("total")) is int:
+                    result["pagination"] = {"current": paging["current"], "total": paging["total"]}
+                if status == "REAL_API_RESPONSE":
+                    result["network_calls_made"] = 0 if cache_status == "HIT" else (_attempts(data) or 1)
+                    result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
                 return result
             result["status"] = status
             if status == "REAL_API_RESPONSE":
@@ -135,12 +207,13 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             # expose only non-personal subscription and quota counters via MCP.
             if tool == "apifootball_status" and status == "REAL_API_RESPONSE":
                 payload = provider_data.get("response") if isinstance(provider_data, dict) else None
+                from .errors import ProviderDataError
                 if not isinstance(payload, dict):
-                    raise ValueError("INVALID_STATUS_RESPONSE")
+                    raise ProviderDataError("INVALID_STATUS_RESPONSE")
                 subscription = payload.get("subscription")
                 requests = payload.get("requests")
                 if not isinstance(subscription, dict) or not isinstance(requests, dict):
-                    raise ValueError("INVALID_STATUS_RESPONSE")
+                    raise ProviderDataError("INVALID_STATUS_RESPONSE")
                 result["data"] = {
                     "subscription": {k: subscription.get(k) for k in ("plan", "active", "end")},
                     "requests": {k: requests.get(k) for k in ("current", "limit_day")},
@@ -152,7 +225,8 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
             result["pagination"] = provider_paging if isinstance(provider_paging, dict) else data.get("pagination", data.get("paging"))
             result["cache_status"] = cache_status
-            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else 1
+            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else (
+                _attempts(data) or 1)
             if status == "REAL_API_RESPONSE":
                 result["quota_remaining"] = {
                     "day": data.get("quota_remaining_provider_day"),
@@ -161,23 +235,22 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             return result
         except Exception as exc:
             # Never reflect provider bodies, exception messages or secrets.
-            from .quota import QuotaExceeded, QuotaConcurrencyBusy
             if test_mock is not None:
                 result["status"] = "MOCK_ERROR"
                 result["error"] = {"code": "MOCK_FIXTURE_UNAVAILABLE"}
             else:
                 result["status"] = "PROVIDER_ERROR"
-                safe_code = getattr(exc, "code", None)
-                result["error"] = {"code": ("LOCAL_QUOTA_EXHAUSTED" if isinstance(exc, QuotaExceeded) else
-                    "LOCAL_CONCURRENCY_BUSY" if isinstance(exc, QuotaConcurrencyBusy) else
-                    safe_code if isinstance(safe_code, str) and safe_code in {
-                    "PROVIDER_TIMEOUT", "PROVIDER_NETWORK_ERROR", "PROVIDER_REDIRECT_REJECTED",
-                    "PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_INVALID_JSON",
-                    "PROVIDER_JSON_NOT_OBJECT", "PROVIDER_DECLARED_ERRORS",
-                    "PROVIDER_RESPONSE_FIELD_MISSING", "PROVIDER_INVALID_PAGINATION",
-                    "QUOTA_COORDINATOR_UNAVAILABLE", "QUOTA_RELEASE_FAILED",
-                    "QUOTA_RECONCILIATION_FAILED", "PROVIDER_INTERNAL_ERROR",
-                } else "PROVIDER_REQUEST_FAILED")}
+                result["error"] = _error_for(exc, contract.fields)
+                if isinstance(result["error"].get("http_status"), int):
+                    result["http_status"] = result["error"]["http_status"]
+                # Real attempts of the resilience layer (retries included); 0 when none was sent.
+                result["network_calls_made"] = _attempts(exc) if hasattr(exc, "provider_attempts") else received
+                result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
+                day = getattr(exc, "quota_remaining_day", None)
+                minute = getattr(exc, "quota_remaining_minute", None)
+                if type(day) is int or type(minute) is int:  # a declared-errors reply carried headers
+                    result["quota_remaining"] = {"day": day if type(day) is int else None,
+                                                 "minute": minute if type(minute) is int else None}
             return result
 
     @add

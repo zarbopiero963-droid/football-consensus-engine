@@ -17,7 +17,9 @@ import httpx
 from .catalog import documented_path
 from .config import OFFICIAL_BASE_URL
 from .client import UnsupportedEndpoint
-from .errors import ProviderUnavailable, ProviderHTTPError, ProviderDataError
+from .errors import (
+    ProviderUnavailable, ProviderHTTPError, ProviderDataError, ProviderDeclaredErrors, declared_error_keys,
+)
 
 _PARAM = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
 _MAX_BODY = 524288
@@ -66,6 +68,17 @@ def _quota_header(headers: httpx.Headers, key: str) -> int | None:
     return None
 
 
+_MAX_RETRY_AFTER_SECONDS = 86_400
+
+
+def _retry_after(headers: httpx.Headers) -> int | None:
+    # Delta-seconds form only; an HTTP-date or any other text is not reported.
+    raw = headers.get("retry-after", "").strip()
+    if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) <= _MAX_RETRY_AFTER_SECONDS:
+        return int(raw)
+    return None
+
+
 class InjectedHTTPXTransport:
     """Requires an explicit preconfigured client, not accessible via MCP."""
 
@@ -91,7 +104,8 @@ class InjectedHTTPXTransport:
                 if not (200 <= code <= 299):
                     if 300 <= code <= 399:
                         raise ProviderUnavailable("PROVIDER_REDIRECT_REJECTED", retryable=False)
-                    raise ProviderHTTPError(code)
+                    raise ProviderHTTPError(
+                        code, retry_after_seconds=_retry_after(response.headers) if code == 429 else None)
                 chunks: list[bytes] = []
                 count = 0
                 async for chunk in response.aiter_bytes():
@@ -106,7 +120,12 @@ class InjectedHTTPXTransport:
                 if not isinstance(data, dict):
                     raise ProviderDataError("PROVIDER_JSON_NOT_OBJECT")
                 if data.get("errors") not in (None, [], {}):
-                    raise ProviderDataError("PROVIDER_DECLARED_ERRORS")
+                    # Keys only (never the values), and this reply's quota headers.
+                    raise ProviderDeclaredErrors(
+                        declared_error_keys(data["errors"], _PARAM.fullmatch),
+                        quota_remaining_day=_quota_header(response.headers, "x-ratelimit-requests-remaining"),
+                        quota_remaining_minute=_quota_header(response.headers, "x-ratelimit-remaining"),
+                    )
                 if "response" not in data:
                     raise ProviderDataError("PROVIDER_RESPONSE_FIELD_MISSING")
                 paging = data.get("paging")
