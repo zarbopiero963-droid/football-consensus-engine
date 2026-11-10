@@ -314,9 +314,27 @@ def _create_env() -> Env:
     return env
 
 
+def _drop_database(conn, dbname: str, attempts: int = 6):
+    """DROP DATABASE ... WITH (FORCE), retried on ObjectInUse.
+
+    FORCE signals the other backends and waits only 5 s. An autovacuum worker busy in the
+    database can outlive that window (seen in CI on PG16: the drop failed with "1 other
+    session", the worker exited 1.4 s later, and every later test inherited the leftover
+    database and its fcb_app dependencies). Retrying is safe: each attempt is a fresh FORCE.
+    """
+    for attempt in range(attempts):
+        try:
+            conn.execute(SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(Identifier(dbname)))
+            return
+        except psycopg.errors.ObjectInUse:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(1 + attempt)
+
+
 def _destroy_env(env: Env):
     with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
-        conn.execute(SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(Identifier(env.dbname)))
+        _drop_database(conn, env.dbname)
         for role in (*ROLES, *getattr(env, "extra_roles", ())):
             conn.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
         conn.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(env.admin_role)))
