@@ -28,6 +28,18 @@ from .transport import ProviderReply, validated_request
 
 _LOG = logging.getLogger(__name__)
 
+# 4xx that are not limitations: auth (401/403) and rate limit (429) keep counting as failures,
+# 408 (request timeout) is transient.
+_COUNTED_4XX = frozenset({401, 403, 408, 429})
+
+
+def _request_limitation(exc: BaseException) -> bool:
+    """A plan or request limitation (declared `plan` error, or a 4xx refusing this request)."""
+    if isinstance(exc, ProviderDeclaredErrors):
+        return exc.error_keys == ("plan",)
+    return isinstance(exc, ProviderHTTPError) and 400 <= exc.status <= 499 and exc.status not in _COUNTED_4XX
+
+
 class ProviderTransport(Protocol):
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
         ...
@@ -341,7 +353,15 @@ class ResilientFootballClient:
             raise
         except (ProviderUnavailable, ProviderHTTPError, ProviderDataError) as exc:
             if began:
-                await self.breaker.fail()
+                if _request_limitation(exc):
+                    # A valid provider answer about the plan or the request, not a fault: no
+                    # failure counted (abort() also re-opens a half-open probe, never closes it).
+                    await self.breaker.abort()
+                else:
+                    await self.breaker.fail()
+                    if isinstance(exc, ProviderHTTPError) and exc.status == 429:
+                        # Honour the provider's Retry-After as a (bounded) per-worker pause.
+                        await self.breaker.hold(exc.retry_after_seconds)
             exc.provider_attempts = sent[0]
             raise
         except Exception:

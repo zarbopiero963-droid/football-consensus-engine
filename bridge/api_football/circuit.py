@@ -48,6 +48,19 @@ class CircuitBreaker:
                 self._half_open = False
             self._probe_inflight = False
 
+    # Upper bound on a provider-requested pause (Retry-After), as for SX Bet's 429 cooldown.
+    MAX_HOLD_SECONDS = 3600
+
+    async def hold(self, seconds: int):
+        """Keep the circuit open for at least `seconds` (the provider's Retry-After), bounded.
+        Never shortens an already longer opening."""
+        if type(seconds) is not int or seconds <= 0:
+            return
+        async with self._lock:
+            self._open_until = max(self._open_until, self.clock() + min(seconds, self.MAX_HOLD_SECONDS))
+            self._half_open = False
+            self._probe_inflight = False
+
     async def abort(self):
         async with self._lock:
             self._probe_inflight = False
