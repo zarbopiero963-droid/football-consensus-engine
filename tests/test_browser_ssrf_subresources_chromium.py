@@ -151,7 +151,7 @@ def _offline_policy(monkeypatch):
     monkeypatch.setattr(browser_use, "_verdict_cache", {})
     monkeypatch.setattr(session_leases, "renew", lambda *a, **k: None)
     monkeypatch.setattr(session_leases, "register", lambda *a, **k: None)
-    monkeypatch.delenv("BROWSER_TOOLS_ENABLED", raising=False)
+    monkeypatch.setenv("BROWSER_TOOLS_ENABLED", "true")  # the kill switch is fail-closed (F-03)
 
 
 def _chromium_path() -> str | None:

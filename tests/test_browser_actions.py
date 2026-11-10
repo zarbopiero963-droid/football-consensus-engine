@@ -2,8 +2,16 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from bridge import session_leases
 from bridge.browser_use import BrowserUseBridge, Session
+
+
+@pytest.fixture(autouse=True)
+def _browser_tools_on(monkeypatch):
+    """The kill switch is fail-closed (audit F-03): these tests exercise an enabled bridge."""
+    monkeypatch.setenv("BROWSER_TOOLS_ENABLED", "true")
 
 
 def run(coro):

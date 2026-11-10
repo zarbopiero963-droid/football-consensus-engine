@@ -84,6 +84,7 @@ def test_operation_renews_before_and_after_and_preserves_busy_lock(monkeypatch):
 
 def test_stolen_lease_fails_before_page_operation(monkeypatch):
     bridge = BrowserUseBridge()
+    monkeypatch.setenv('BROWSER_TOOLS_ENABLED', 'true')  # the kill switch is fail-closed (F-03)
     bridge._sessions['owned'] = Session('owned', 'memory-only', None)
     monkeypatch.setattr(session_leases, 'renew', lambda *args: (_ for _ in ()).throw(RuntimeError('ownership lost')))
     with pytest.raises(RuntimeError, match='ownership lost'):
@@ -254,7 +255,9 @@ def test_stop_waits_for_existing_stopping_lease(monkeypatch):
     assert session.id not in bridge._sessions
 
 
-@pytest.mark.parametrize('value,expected', [(None, True), ('false', False)])
+# Audit F-03: fail-closed. Unset/empty/unknown is OFF; only an explicit affirmative value is ON.
+@pytest.mark.parametrize('value,expected', [(None, False), ('', False), ('disabled', False),
+                                            ('false', False), ('true', True), ('ON', True)])
 def test_health_reports_the_kill_switch(monkeypatch, value, expected):
     """WP-006: browser_health tells the client the server-side kill switch state."""
     if value is None:

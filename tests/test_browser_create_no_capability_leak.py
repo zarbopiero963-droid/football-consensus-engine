@@ -18,6 +18,7 @@ LIVE = "https://live.browser-use.com?wss=" + CDP.replace(":", "%3A").replace("/"
 @pytest.fixture
 def bridge(monkeypatch):
     monkeypatch.setenv("BROWSER_USE_API_KEY", "fake-test-key")
+    monkeypatch.setenv("BROWSER_TOOLS_ENABLED", "true")  # the kill switch is fail-closed (F-03)
     monkeypatch.delenv("BROWSER_USE_EXPOSE_LIVE_URL", raising=False)
     monkeypatch.setattr(session_leases, "register", lambda *a: None)
 
