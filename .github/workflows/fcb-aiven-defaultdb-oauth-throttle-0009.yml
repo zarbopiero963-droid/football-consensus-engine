@@ -62,6 +62,8 @@ jobs:
       EXPECTED_PORT: '14274'
       EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
       PGPORT: '14274'
+      # A URI sslmode overrides PGSSLMODE in libpq: the target check rejects anything but verify-full.
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
     steps:
       - uses: actions/checkout@v4
         with:

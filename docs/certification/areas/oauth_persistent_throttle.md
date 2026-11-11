@@ -129,7 +129,8 @@ Workflow `FCB Aiven defaultdb OAuth throttle emergency unlock`.
   - `global`: that scope's global bucket;
   - `key`: one exact key hash. Compute it locally with `python3 scripts/oauth_throttle_key_hash.py <address>`. The secret is read without echo and never leaves your machine.
 - **Audit.** Every removed bucket is copied first to `oauth_throttle_unlock_audit`, with the run id and actor. Every run also writes a summary row. The runtime has no privilege on that table.
-- **No other lever.** There is no environment variable that disables the protection.
+- **Other lever (not an unlock).** No environment variable unlocks a bucket. `MCP_OAUTH_THROTTLE_MODE` (`off`/`shadow`), or removing it, does switch enforcement off entirely for anyone with access to the Render environment: see "Owner confirmation needed (D05 vs. the mode lever)" above.
+- **Target guard.** The unlock runs the same in-transaction guard as the 0009 workflow: `current_database()` must be `defaultdb`, the server PostgreSQL 18, the session over SSL (`pg_stat_ssl`) and the identity `fcb_migrator`; otherwise nothing is executed. The target check also rejects a URI `sslmode` other than `verify-full` (in libpq it would override `PGSSLMODE=verify-full`), so the Aiven console default `?sslmode=require` is refused.
 
 ## OAuth password policy (D06)
 

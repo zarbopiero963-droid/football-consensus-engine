@@ -162,3 +162,45 @@ def test_owner_key_hash_helper_reads_the_secret_without_echo_and_prints_only_the
     assert re.fullmatch(r"t9:[0-9a-f]{64}\n", out.out) and secret.split(":", 1)[1] not in out.out + out.err
     assert mod.main(["x", "203.0.113.5"], read_secret=lambda _p: "t9:short") == 1
     assert "getpass" in (ROOT / "scripts" / "oauth_throttle_key_hash.py").read_text()
+
+
+def _guard(path):
+    _data, _job, steps = _wf(path)
+    for s in steps:
+        m = re.search(r'^\s*GUARD="(.*)"$', s.get("run", ""), re.M)
+        if m:
+            return s, m.group(1)
+    raise AssertionError(f"no GUARD in {path.name}")
+
+
+@pytest.mark.parametrize("path", [APPLY, UNLOCK], ids=lambda p: p.name)
+def test_review_198_target_check_requires_verify_full_in_the_uri(path):
+    _data, job, steps = _wf(path)
+    assert job["env"]["REQUIRE_SSLMODE_VERIFY_FULL"] == "true"
+    target = next(s for s in steps if "aiven_pg18_diag.py target" in s.get("run", ""))
+    first_connect = min(i for i, s in enumerate(steps) if "$PSQL" in s.get("run", ""))
+    assert steps.index(target) < first_connect
+    for s in steps:
+        if '"$PSQL" "$FCB_MIGRATOR_DB_URL"' in s.get("run", "") or "sp " in s.get("run", ""):
+            assert s.get("env", {}).get("PGSSLMODE", "verify-full") == "verify-full"
+
+
+def test_review_198_unlock_runs_the_same_in_transaction_target_guard_as_0009():
+    step, guard = _guard(UNLOCK)
+    _apply_step, apply_guard = _guard(APPLY)
+    assert guard == apply_guard
+    for needle in ("pg_catalog.current_database()", "'$EXPECTED_DB'", "pg_catalog.pg_stat_ssl",
+                   "server_version_num", "'fcb_migrator'", "RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'"):
+        assert needle in guard
+    run = step["run"]
+    # one transaction (-1), guard first, then the pinned unlock SQL
+    assert '-1 -v ON_ERROR_STOP=1 -c "$GUARD"' in run
+    assert run.index('-c "$GUARD"') < run.index("-f sql/aiven/oauth_throttle_unlock.sql")
+
+
+def test_review_198_docs_no_longer_claim_no_env_lever():
+    doc = (ROOT / "docs" / "certification" / "areas" / "oauth_persistent_throttle.md").read_text()
+    for text in (doc, UNLOCK.read_text()):
+        assert "There is no environment variable that disables the protection" not in text
+        assert "deliberately NO environment variable that disables" not in text
+    assert "MCP_OAUTH_THROTTLE_MODE" in UNLOCK.read_text()

@@ -5,8 +5,8 @@ name: FCB Aiven defaultdb OAuth throttle emergency unlock (owner-gated)
 # exact key hash (target=key; the owner computes it locally with
 # scripts/oauth_throttle_key_hash.py, the secret never leaves the owner's machine). Every removed
 # bucket is first copied, with this run's id and actor, to oauth_throttle_unlock_audit (D11:
-# evidence is never deleted). There is deliberately NO environment variable that disables the
-# protection. Gates, all required: protected Environment `aiven-production` (required reviewer,
+# evidence is never deleted). Note: MCP_OAUTH_THROTTLE_MODE on Render (off/shadow) does switch
+# enforcement off; changing it is an owner action (D05/D10, see the runbook). Gates, all required: protected Environment `aiven-production` (required reviewer,
 # main only), owner dispatch from main, exact confirmation phrase, strict input formats, pinned
 # target, PostgreSQL 18, TLS verify-full with the authenticated Aiven CA, identity fcb_migrator,
 # pinned SHA-256 of the SQL, one transaction.
@@ -59,6 +59,8 @@ jobs:
       EXPECTED_PORT: '14274'
       EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
       PGPORT: '14274'
+      # A URI sslmode overrides PGSSLMODE in libpq: the target check rejects anything but verify-full.
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -180,8 +182,11 @@ jobs:
         run: |
           set -euo pipefail
           PSQL=/usr/lib/postgresql/18/bin/psql
+          # Same in-transaction target guard as the 0009 workflow: the database actually reached
+          # must be EXPECTED_DB, PostgreSQL 18, over SSL, as fcb_migrator; otherwise nothing runs.
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR pg_catalog.current_schema() IS NULL OR pg_catalog.current_schema() OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR CURRENT_USER OPERATOR(pg_catalog.<>) 'fcb_migrator'::pg_catalog.name OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
           err="$(mktemp)"
-          "$PSQL" "$FCB_MIGRATOR_DB_URL" -X -q -1 -v ON_ERROR_STOP=1 \
+          "$PSQL" "$FCB_MIGRATOR_DB_URL" -X -q -1 -v ON_ERROR_STOP=1 -c "$GUARD" \
             -v unlock_scope="$UNLOCK_SCOPE_OK" -v unlock_target="$UNLOCK_TARGET_OK" \
             -v unlock_key_hash="$UNLOCK_KEY_OK" -v github_run_id="$RUN_ID" -v github_actor="$RUN_ACTOR" \
             -f sql/aiven/oauth_throttle_unlock.sql >/dev/null 2>"$err" || {

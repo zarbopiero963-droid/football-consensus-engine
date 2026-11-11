@@ -165,3 +165,38 @@ def test_unlock_refuses_a_non_migrator_and_quotes_its_inputs(env, tmp_path):
     assert rc == 0, err
     rc, out, _ = _psql(env["mig"], "-c", "select count(*) from oauth_throttle_unlock_audit where removed_key_hash is not null")
     assert out == "0"
+
+
+def _workflow_guard(db_name, role):
+    import re as _re
+    import yaml as _yaml
+    wf = _yaml.safe_load((AIVEN.parents[1] / ".github" / "workflows" /
+                          "fcb-aiven-defaultdb-oauth-throttle-unlock.yml").read_text())
+    (job,) = wf["jobs"].values()
+    run = next(s["run"] for s in job["steps"] if 'GUARD="' in s.get("run", ""))
+    guard = _re.search(r'^\s*GUARD="(.*)"$', run, _re.M).group(1)
+    return guard.replace("\\$", "$").replace("$EXPECTED_DB", db_name).replace("fcb_migrator", role)
+
+
+def test_review_198_unlock_guard_refuses_a_session_without_ssl_and_nothing_is_removed(env, tmp_path):
+    """The unlock workflow runs -1 -c "$GUARD" -f unlock.sql. On a connection without SSL (or on a
+    database other than EXPECTED_DB) the guard raises and the whole transaction commits nothing."""
+    rc, _, err = _apply(env, tmp_path)
+    assert rc == 0, err
+    rc, _, err = _psql(env["mig"], "-c", "insert into oauth_throttle_buckets (scope, key_hash, tat) "
+                                         "values ('consent', '*', now() + interval '1 hour')")
+    assert rc == 0, err
+    db = env["mig"].rsplit("/", 1)[1].split("?", 1)[0]
+    rc, out, _ = _psql(env["mig"], "-c", "select coalesce((select ssl from pg_stat_ssl where pid = pg_backend_pid()), false)")
+    if out == "t":
+        pytest.skip("test server connection uses SSL; the non-SSL refusal cannot be shown here")
+    f = tmp_path / "unlock.sql"
+    f.write_text(_sql("oauth_throttle_unlock.sql", env))
+    for expected_db in (db, "defaultdb"):          # no SSL; and wrong database + no SSL
+        guard = _workflow_guard(expected_db, env["mig_role"])
+        rc, _, err = _psql(env["mig"], "-1", "-c", guard, "-v", "unlock_scope=consent", "-v", "unlock_target=global",
+                           "-v", "unlock_key_hash=*", "-v", "github_run_id=77", "-v", "github_actor=x", "-f", str(f))
+        assert rc != 0 and "FCB_TARGET_GUARD_FAILED" in err
+    rc, out, _ = _psql(env["mig"], "-c", "select (select count(*) from oauth_throttle_buckets) || '|' || "
+                                         "(select count(*) from oauth_throttle_unlock_audit)")
+    assert out == "1|0"

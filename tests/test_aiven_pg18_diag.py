@@ -618,3 +618,21 @@ def test_workflow_state_gates_apply_and_diagnose_exactly():
     diag = steps["Diagnose mode or already-migrated database - stop before any write"]
     assert diag["if"] == "${{ inputs.mode != 'apply' || env.PG18_TEST_STATE != 'EMPTY' }}"
     assert "${{" not in diag["run"] and diag["env"] == {"MODE": "${{ inputs.mode }}"}
+
+
+# --- review #198 P2-2: a URI sslmode overrides PGSSLMODE in libpq; jobs that require verify-full
+# (REQUIRE_SSLMODE_VERIFY_FULL=true) must refuse a weaker URI sslmode such as Aiven's default 'require'.
+@pytest.mark.parametrize("query,ok", [
+    ("", True),
+    ("?sslmode=verify-full", True),
+    ("?sslmode=require", False),
+    ("?sslmode=verify-ca", False),
+])
+def test_target_requires_verify_full_when_the_job_asks(query, ok):
+    uri = f"postgres://u:p@{_T_HOST}/fcb_pg18_test{query}"
+    got, msg = diag.target_check(uri, _tenv(REQUIRE_SSLMODE_VERIFY_FULL="true"))
+    assert got is ok, msg
+    if not ok:
+        assert msg == "sslmode_not_verify_full"
+    # Without the flag the existing policy is unchanged (require stays accepted).
+    assert diag.target_check(uri, _tenv())[0] is True
