@@ -153,7 +153,9 @@ ROUNDING_RULE = {
     "arithmetic": "Python int on USDC base units (1 USDC = 10^6) and decimal.Decimal for fee rates; never float",
     "exact_fields": "*_exact: the exact Decimal result, no rounding (may carry sub-base-unit digits)",
     "conservative_fields": ("*_base_units: fee rounded UP to a whole base unit (ROUND_CEILING), so the net "
-                            "profit is never overstated; returns are floored (stake * 1e20 // percentageOdds)"),
+                            "profit is not overstated by this computation; returns are floored "
+                            "(stake * 1e20 // percentageOdds). The fee is rounded once on the aggregate profit: if the "
+                            "exchange rounds per fill, the real fee can exceed it by up to (fills - 1) base units"),
     "usdc_fields": "*_usdc: base units / 10^6 as an exact decimal string (6 decimals, no further rounding)",
     "exchange_rounding": "DOCS_UNVERIFIED: the exchange's own fee rounding to base units is not documented",
 }
@@ -164,7 +166,17 @@ COMMISSION_DOCS_UNVERIFIED = (
     "REFUND_FEE_SEMANTICS: refundFee is in the schema but its base is not documented; a void is computed only "
     "when the provider rate is null (nothing charged)",
     "EXCHANGE_FEE_ROUNDING: see ROUNDING_RULE.exchange_rounding",
+    "FEE_RATE_SCALE: rates are read as fractions (\"0.01\" = 1%) and a rate >= 1 is refused as malformed; the "
+    "fraction scale is consistent with the user guide's 1% but is not stated in the developer docs",
 )
+
+HEDGE_ROUNDING_RULE = {
+    "arithmetic": "Python int on USDC base units (1 USDC = 10^6) and decimal.Decimal for fee rates; never float",
+    "hedge_fee_fields": ("hedge_taker_payout_fee_if_hedge_wins_base_units, pnl_after_projected_fees_base_units and "
+                         "worst_case_after_projected_fees_base_units are EXACT Decimal values in base units, NOT "
+                         "rounded (they may carry sub-base-unit digits)"),
+    "exchange_rounding": "DOCS_UNVERIFIED: the exchange's own fee rounding to base units is not documented",
+}
 
 
 def usdc(base_units: int | Decimal | None) -> str | None:

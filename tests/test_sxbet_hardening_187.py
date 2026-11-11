@@ -371,7 +371,7 @@ def test_full_hedge_equalises_outcomes_and_applies_fees_on_profit_only():
     f = out["fees"]
     assert f["hedge_taker_payout_fee_if_hedge_wins_base_units"] == "93900"  # 1% of the hedge profit 9.39
     assert f["pnl_after_projected_fees_base_units"] == {"if_outcome_one": "-697800", "if_outcome_two": "-703900"}
-    assert f["worst_case_after_projected_fees_base_units"] == "-703900" and f["rounding_rule"] is pm.ROUNDING_RULE
+    assert f["worst_case_after_projected_fees_base_units"] == "-703900" and f["rounding_rule"] is pm.HEDGE_ROUNDING_RULE
     assert [p for p in _floats(out) if not _ALLOWED_FLOAT.search(p)] == []
 
 
@@ -638,3 +638,21 @@ def test_no_live_trading_path_is_reachable_from_any_tool():
     t, _, _ = make()
     assert run(t["sxbet_risk_status"]())["live_trading"] == "UNAVAILABLE"
     assert run(t["sxbet_health"]())["available_modes"]["LIVE_TRADING"] == "UNAVAILABLE"
+
+
+def test_review_p2_hedge_rounding_rule_declares_exact_unrounded_fees():
+    """Review P2-a: the hedge fee values are exact Decimals, so the rule attached to them must not claim a ceiling."""
+    import inspect
+    from bridge.sxbet import hedging, positions
+    src = inspect.getsource(hedging)
+    assert '"rounding_rule": pm.HEDGE_ROUNDING_RULE' in src and '"rounding_rule": pm.ROUNDING_RULE' not in src
+    rule = positions.HEDGE_ROUNDING_RULE
+    assert "NOT rounded" in rule["hedge_fee_fields"] and "CEILING" not in str(rule)
+    assert "DOCS_UNVERIFIED" in rule["exchange_rounding"]
+
+
+def test_review_p2_fee_rate_scale_is_declared_unverified():
+    """Review P2-b: the fraction scale of the provider fee rate is an assumption, declared as such."""
+    from bridge.sxbet import positions
+    assert any(item.startswith("FEE_RATE_SCALE:") for item in positions.COMMISSION_DOCS_UNVERIFIED)
+    assert "per fill" in positions.ROUNDING_RULE["conservative_fields"]

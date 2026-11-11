@@ -274,7 +274,7 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
                      None if None in after_fee.values()
                      else pm.dstr(min(Decimal(after_fee["if_outcome_one"]), Decimal(after_fee["if_outcome_two"])))),
                  "fee_basis": "PROFIT_OF_WINNING_BET (hedge: taker rate, only if the hedge outcome wins)",
-                 "rounding_rule": pm.ROUNDING_RULE},
+                 "rounding_rule": pm.HEDGE_ROUNDING_RULE},
         "residual_risk": {"worst_case_after_base_units": min(a1, a2), "residual_gap_base_units": abs(a1 - a2),
                           "unhedged_return_base_units": str(max(0, target - got)) if mode != "REDUCE" else None},
         "liquidity": liquidity,
