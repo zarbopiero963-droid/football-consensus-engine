@@ -229,6 +229,23 @@ def test_token_bound():
     assert info.value.bound == "MAX_TOKEN"
 
 
+def test_an_unterminated_token_cannot_grow_the_buffer_past_the_bound():
+    s = IdScanner(FIX, limits=ScanLimits(max_token=65_536))
+    s.feed(b'{"response":[{"fixture":{"id":1,"x":"')
+    with pytest.raises(ScanBoundExceeded) as info:
+        for _ in range(100):  # 100 x 4 KiB of a string that never closes
+            s.feed(b"a" * 4096)
+            assert len(s.buf) <= 65_536 + 4096
+    assert info.value.bound == "MAX_TOKEN"
+
+
+def test_invalid_utf8_in_a_long_unread_string_is_still_refused():
+    raw = b'{"response":[{"fixture":{"id":1,"name":"' + b"a" * 300 + b'\xff"}}]}'
+    with pytest.raises(ProviderDataError) as info:
+        scan(raw)
+    assert info.value.code == "PROVIDER_INVALID_JSON"
+
+
 def test_slow_stream_hits_the_time_bound():
     now = [0.0]
 
