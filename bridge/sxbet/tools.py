@@ -125,6 +125,111 @@ def _bool(v, name):
     return v
 
 
+# ---- upcoming-events filter (DERIVED view; the provider rows stay untouched in `data`) ----
+# Start-time field per row kind, as seen in the repo's evidence and the official schema:
+# markets: `gameTime`, unix seconds (api-reference Market schema; also read by rules.py);
+# fixtures: `startDate` (field name seen in evidence/sxbet/readonly_audit_*.json; its value format is
+# DOCS_UNVERIFIED, so only an ISO-8601 string with an explicit offset or Z is accepted).
+_START_FIELD = {"markets": "gameTime", "fixtures": "startDate"}
+_ID_FIELD = {"markets": "marketHash", "fixtures": "eventId"}
+
+
+def _start_unix(value: Any, kind: str) -> tuple[int | None, str | None]:
+    """(start unix seconds UTC, None) or (None, fixed reason). Never guesses a timezone or a unit."""
+    if value is None:
+        return None, "START_TIME_MISSING"
+    if kind == "markets":
+        if type(value) is int and value > 0:
+            return value, None
+        return None, "START_TIME_UNPARSEABLE"
+    if not isinstance(value, str):
+        return None, "START_TIME_FORMAT_DOCS_UNVERIFIED"
+    if not re.fullmatch(r"[0-9TtZz:+. \-]{10,40}", value):
+        return None, "START_TIME_UNPARSEABLE"
+    try:
+        t = datetime.fromisoformat(value.replace("z", "Z").replace("Z", "+00:00"))
+    except ValueError:
+        return None, "START_TIME_UNPARSEABLE"
+    if t.tzinfo is None:
+        return None, "TIMEZONE_UNRESOLVED"
+    return int(t.timestamp()), None
+
+
+def upcoming_filter(data: Any, *, kind: str, now_unix: int | None = None) -> dict[str, Any]:
+    """Split provider rows into upcoming (start > now, UTC) / started / unresolved. Pure; rows unchanged.
+
+    A provider status of ACTIVE does not prove the event is in the future (issue #187): only the provider
+    start time does. Missing, unparseable or timezone-less start times are never treated as future.
+    """
+    now = int(time.time()) if now_unix is None else now_unix
+    field, idf = _START_FIELD[kind], _ID_FIELD[kind]
+    base = {"label": "DERIVED", "filter": "UPCOMING_ONLY", "rule": f"{field} > now (UTC)", "start_field": field,
+            "reference_now_utc": datetime.fromtimestamp(now, timezone.utc).isoformat(), "reference_now_unix": now,
+            "raw_rows_location": "data (unfiltered provider rows)"}
+    if kind == "markets":
+        rows = data.get("markets") if isinstance(data, dict) else None
+        base["scope"] = "THIS_PAGE_ONLY: paginate with next_key; other pages are not filtered here"
+    else:
+        rows = data
+    if not isinstance(rows, list):
+        return {"upcoming": {**base, "status": "UNEXPECTED_SHAPE", "rows": None, "counts": None}}
+    upcoming, started, unresolved = [], [], []
+    for row in rows:
+        if not isinstance(row, dict):
+            unresolved.append({"id": None, "reason": "ROW_MALFORMED"})
+            continue
+        start, reason = _start_unix(row.get(field), kind)
+        rid = row.get(idf)
+        if start is None:
+            unresolved.append({"id": rid, "reason": reason, "provider_value": row.get(field),
+                               "provider_status": row.get("status")})
+        elif start > now:
+            upcoming.append(row)
+        else:
+            started.append({"id": rid, "start_unix": start,
+                            "start_utc": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                            "provider_status": row.get("status")})
+    return {"upcoming": {**base, "status": "PARTIAL" if unresolved else "OK", "rows": upcoming,
+                         "excluded_started": started, "excluded_unresolved": unresolved,
+                         "counts": {"provider_rows": len(rows), "upcoming": len(upcoming),
+                                    "excluded_started": len(started), "excluded_unresolved": len(unresolved)}}}
+
+
+# ---- declared worst-case provider cost per tool (governance 2.4: budgets known before calling) ----
+# max_provider_calls = the most GET requests one call can send; each GET takes one slot in the global
+# per-key budget and one in its documented route bucket (ratelimit.py). 0 = no provider call.
+_ONE = "1 GET"
+TOOL_COST_CATALOG: dict[str, dict[str, Any]] = {
+    **{name: {"max_provider_calls": 0, "basis": "no provider call"}
+       for name in ("sxbet_health", "sxbet_risk_status")},
+    **{name: {"max_provider_calls": 1, "basis": _ONE} for name in (
+        "sxbet_sports", "sxbet_leagues", "sxbet_fixtures_active", "sxbet_fixture_status", "sxbet_live_scores",
+        "sxbet_markets_active", "sxbet_markets_find", "sxbet_markets_popular", "sxbet_metadata", "sxbet_search",
+        "sxbet_teams", "sxbet_public_trades", "sxbet_orderbook_market", "sxbet_orderbook_event", "sxbet_best_odds",
+        "sxbet_balance", "sxbet_fees", "sxbet_positions", "sxbet_open_orders", "sxbet_trades", "sxbet_fills",
+        "sxbet_ledger", "sxbet_order", "sxbet_order_by_client_id", "sxbet_trade", "sxbet_public_market_orders",
+        "sxbet_public_user_orders", "sxbet_public_positions", "sxbet_privacy", "sxbet_proxy_wallet",
+        "sxbet_proxy_deploy_pending", "sxbet_proxy_funding_pending", "sxbet_proxy_funding_status",
+        "sxbet_proxy_address_check", "sxbet_safe_info")},
+    "sxbet_simulate_order": {"max_provider_calls": 5, "basis": (
+        "metadata/obv3 + markets/find + orderbook-v3/snapshot/market (API key) "
+        "+ user/balance-v3 if check_balance + user/fees-v3 if include_fees")},
+    "sxbet_order_status": {"max_provider_calls": 2, "basis": "orders-v3/{orderId} + fills-v3"},
+    "sxbet_positions_summary": {"max_provider_calls": 8, "basis": (
+        "positions-v3 + trades-v3 x2 (MATCHED, LOCKED) + orders-v3 + balance-v3 + fees-v3 + metadata/obv3 "
+        "+ orders-v3/odds/best (only with 1..30 markets)")},
+    "sxbet_exposure_pnl": {"max_provider_calls": 3, "basis": (
+        "positions-v3 (MATCHED,LOCKED) + positions-v3 (SETTLED) + orders-v3/odds/best (only with 1..30 markets)")},
+    "sxbet_resting_orders_scope": {"max_provider_calls": 2, "basis": "metadata/obv3 + orders-v3"},
+    **{name: {"max_provider_calls": 7, "basis": (
+        "markets/find + metadata/obv3 + trades-v3 x2 (MATCHED, LOCKED) + orders-v3 + fees-v3 "
+        "+ orderbook-v3/snapshot/market")}
+       for name in ("sxbet_hedge_simulation", "sxbet_close_position_preview", "sxbet_rules_evaluate")},
+    "sxbet_reconciliation_diagnostics": {"max_provider_calls": 5, "basis": (
+        "orders-v3 + (trades-v3 + fills-v3) x2 (MATCHED, LOCKED)")},
+}
+
+
 def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadClient | None = None) -> tuple[str, ...]:
     if not settings.enabled:
         return ()
@@ -136,7 +241,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         names.append(fn.__name__)
         return fn
 
-    async def call(tool: str, path: str, build, *, auth: bool) -> dict[str, Any]:
+    async def call(tool: str, path: str, build, *, auth: bool, derive=None) -> dict[str, Any]:
         at = datetime.now(timezone.utc).isoformat()
         base = {"provider": "SX_BET", "tool": tool, "endpoint": path, "network": settings.network,
                 "mode": "READ_ONLY", "source_contract": DOCS, "retrieved_at_utc": at,
@@ -162,6 +267,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                   "network_calls_made": 1, "rate_limit_remaining": reply["rate_limit_remaining"],
                   "next_key": data.get("nextKey") if isinstance(data, dict) else None,
                   "data": data, "warnings": [_UNITS]}
+        if derive is not None:
+            result.update(derive(data))
         if len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > _MAX_MCP_BYTES:
             # Never truncate silently: ask for a smaller page instead.
             return {**base, "status": "PAYLOAD_TOO_LARGE", "parameters": params, "network_calls_made": 1,
@@ -185,6 +292,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "local_rate_limit_per_minute": settings.max_rpm,
                 "rate_coordinator": getattr(getattr(client, "_limiter", None), "kind", "CUSTOM"),
                 "rate_limit_contract": RATE_LIMIT_DOCS,
+                "tool_cost_catalog": {"label": "DECLARED_MAX_PROVIDER_CALLS_PER_TOOL_CALL",
+                                      "unit": "GET requests (each = 1 slot of the global and of its route bucket)",
+                                      "tools": {n: dict(TOOL_COST_CATALOG[n]) for n in sorted(TOOL_COST_CATALOG)}},
                 "source_contract": DOCS, "network_calls_made": 0}
 
     # ---- public routes ----
@@ -203,10 +313,16 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                           lambda: {"sportId": None if sport_id is None else _int(sport_id, "sport_id")}, auth=False)
 
     @add
-    async def sxbet_fixtures_active(league_id: int) -> dict[str, Any]:
-        """Active fixtures for a league (GET /fixture/active, leagueId required)."""
+    async def sxbet_fixtures_active(league_id: int, upcoming_only: bool = False) -> dict[str, Any]:
+        """Active fixtures for a league (GET /fixture/active, leagueId required). upcoming_only=true adds a DERIVED
+        `upcoming` view: only fixtures whose provider startDate (UTC) is after now; started ones and fixtures
+        with a missing/unparseable/naive start time are listed apart, never treated as future. `data` stays raw."""
+        if not isinstance(upcoming_only, bool):
+            return await call("sxbet_fixtures_active", "/fixture/active", lambda: _raise("INVALID_UPCOMING_ONLY"),
+                              auth=False)
         return await call("sxbet_fixtures_active", "/fixture/active",
-                          lambda: {"leagueId": _int(league_id, "league_id")}, auth=False)
+                          lambda: {"leagueId": _int(league_id, "league_id")}, auth=False,
+                          derive=(lambda d: upcoming_filter(d, kind="fixtures")) if upcoming_only else None)
 
     @add
     async def sxbet_fixture_status(sportx_event_ids: list[str]) -> dict[str, Any]:
@@ -225,9 +341,12 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                    event_id: str | None = None, only_main_line: bool | None = None,
                                    live_only: bool | None = None, bet_group: str | None = None,
                                    type: list[int] | None = None, page_size: int | None = None,
-                                   pagination_key: str | None = None, game_time: int | None = None) -> dict[str, Any]:
-        """Active markets (GET /markets/active). Paginate with next_key -> pagination_key; a short page is not the last page. Use type OR bet_group, not both."""
+                                   pagination_key: str | None = None, game_time: int | None = None,
+                                   upcoming_only: bool = False) -> dict[str, Any]:
+        """Active markets (GET /markets/active). Paginate with next_key -> pagination_key; a short page is not the last page. Use type OR bet_group, not both. upcoming_only=true adds a DERIVED `upcoming` view of this page: only markets whose provider gameTime (unix seconds, UTC) is after now; started or unresolved start times are listed apart. `data` stays raw."""
         def build():
+            if not isinstance(upcoming_only, bool):
+                raise InvalidInput("INVALID_UPCOMING_ONLY")
             if type is not None and bet_group is not None:
                 raise InvalidInput("TYPE_AND_BET_GROUP_EXCLUSIVE")
             return {
@@ -245,7 +364,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "paginationKey": None if pagination_key is None else _cursor(pagination_key),
                 "gameTime": None if game_time is None else _int(game_time, "game_time"),
             }
-        return await call("sxbet_markets_active", "/markets/active", build, auth=False)
+        return await call("sxbet_markets_active", "/markets/active", build, auth=False,
+                          derive=(lambda d: upcoming_filter(d, kind="markets")) if upcoming_only is True else None)
 
     @add
     async def sxbet_markets_find(market_hashes: list[str]) -> dict[str, Any]:
@@ -402,11 +522,48 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             "nextKey": None if next_key is None else _cursor(next_key)}, auth=True)
 
     # ---- SIMULATION (GET reads + pure simulation; never signs, never submits) ----
+    async def _simulated_net_pnl(intent, fill, include_fees, fetch) -> dict[str, Any]:
+        """Gross/net P&L of the simulated order; the fee rate is read from /user/fees-v3, never assumed."""
+        base = {"label": "DERIVED_SIMULATION", "fee_basis": "PROFIT_OF_WINNING_BET",
+                "rounding_rule": pos_mod.ROUNDING_RULE, "sources": list(pos_mod.COMMISSION_SOURCES),
+                "taker_filled": None, "maker_resting_projection": None}
+        if not include_fees:
+            return {**base, "status": "FEES_NOT_REQUESTED",
+                    "note": "Pass include_fees=true to read your account fee rates; no rate is ever assumed."}
+        if not settings.api_key:
+            return {**base, "status": "FEES_UNRESOLVED", "reason": "SXBET_KEY_NOT_CONFIGURED"}
+        fees, err = await fetch("/user/fees-v3", {}, auth=True)
+        if err:
+            return {**base, "status": "FEES_UNRESOLVED", "reason": err["code"]}
+        fee_info = pos_mod.parse_fees(fees)
+        out = {**base, "status": "OK" if fee_info["derived_rates"] is not None else "FEES_UNRESOLVED",
+               "fee_status": fee_info["status"], "provider_fees_raw": fee_info.get("raw")}
+        if fee_info["derived_rates"] is None:
+            out["reason"] = fee_info["status"]
+        if not isinstance(fill, dict) or fill.get("status") != "SIMULATED":
+            out["taker_filled_reason"] = "FILL_NOT_SIMULATED"
+        else:
+            filled = int(fill["filled_base_units"])
+            ret = fill.get("potential_return_base_units")
+            if filled > 0 and ret is not None:
+                out["taker_filled"] = pos_mod.commission_breakdown(
+                    stake_base_units=filled, return_base_units=int(ret), is_maker=False, fees=fees)
+            else:
+                out["taker_filled_reason"] = "NOTHING_FILLED"
+            resting = int(fill["resting_base_units"])
+            if resting > 0:
+                proj = pos_mod.commission_breakdown(
+                    stake_base_units=resting, return_base_units=resting * sim.ODDS_PRECISION // int(intent["percentage_odds"]),
+                    is_maker=True, fees=fees)
+                out["maker_resting_projection"] = {
+                    **proj, "projection": "IF_THE_GTC_REMAINDER_IS_LATER_FILLED_AT_ITS_LIMIT_AS_MAKER"}
+        return out
+
     @add
     async def sxbet_simulate_order(market_hash: str, betting_outcome_one: bool, stake_base_units: int,
                                    percentage_odds: str, time_in_force: str, expiry: int,
                                    idempotency_key: str, maker_address: str | None = None,
-                                   check_balance: bool = False) -> dict[str, Any]:
+                                   check_balance: bool = False, include_fees: bool = False) -> dict[str, Any]:
         """SIMULATION only: validate an order intent and simulate its fill. Never signs, never submits.
 
         percentage_odds: implied probability x 1e20 as a decimal string (the highest price you accept);
@@ -415,7 +572,10 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         idempotency_key: 8-64 chars [A-Za-z0-9_-]. maker_address: optional; with it the intent gets a
         fresh salt and its intent_hash is the exact value an out-of-band owner approval must bind to.
         Reads GET /metadata/obv3, /markets/find and (API key) /orderbook-v3/snapshot/market with
-        showTakerPerspective=true; check_balance=true also reads /user/balance-v3.
+        showTakerPerspective=true; check_balance=true also reads /user/balance-v3; include_fees=true also
+        reads /user/fees-v3 and adds `net_pnl`: gross and net P&L with the payout fee charged on the profit of
+        a winning bet (taker rate on the simulated fill, maker rate on a GTC remainder), Decimal-exact, never
+        a hardcoded rate. An expiry outside the accepted window is refused with `expiry_diagnostics`.
         """
         tool = "sxbet_simulate_order"
         out: dict[str, Any] = {"provider": "SX_BET", "tool": tool, "network": settings.network, "mode": "SIMULATION",
@@ -430,9 +590,16 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                          (type(stake_base_units) is int and stake_base_units > 0, "INVALID_STAKE_BASE_UNITS"),
                          (time_in_force in sim.TIME_IN_FORCE, "INVALID_TIME_IN_FORCE"),
                          (type(expiry) is int, "INVALID_EXPIRY"),
-                         (isinstance(check_balance, bool), "INVALID_CHECK_BALANCE")):
+                         (isinstance(check_balance, bool), "INVALID_CHECK_BALANCE"),
+                         (isinstance(include_fees, bool), "INVALID_INCLUDE_FEES")):
             if not ok:
                 return {**out, "status": "INVALID_INPUT", "error": {"code": code}}
+        # Expiry outside even the most permissive window: refused before any provider call (no useless reads).
+        early = sim.expiry_bounds(None, int(time.time()))
+        if expiry < early["min_expiry_unix"] or expiry > early["max_expiry_unix"]:
+            return {**out, "status": "INVALID_INPUT",
+                    "error": {"code": "EXPIRY_TOO_SOON" if expiry < early["min_expiry_unix"] else "EXPIRY_TOO_FAR"},
+                    "expiry_diagnostics": {**early, "requested_expiry_unix": expiry}}
 
         async def fetch(path, params, *, auth):
             try:
@@ -449,23 +616,30 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             return {**out, "status": "PROVIDER_ERROR", "error": err}
         try:
             meta = sim.parse_metadata(meta_raw, settings.network)
+            now = int(time.time())
             intent = sim.build_intent(
                 network=settings.network, metadata=meta, market_hash=market_hash,
                 betting_outcome_one=betting_outcome_one, stake_base_units=stake_base_units,
                 requested_percentage_odds=int(percentage_odds), time_in_force=time_in_force, expiry=expiry,
-                idempotency_key=idempotency_key, now=int(time.time()), maker=maker_address,
+                idempotency_key=idempotency_key, now=now, maker=maker_address,
                 salt=None if maker_address is None else secrets.randbits(256))
         except sim.IntentError as exc:
             status = "METADATA_INVALID" if str(exc).startswith("METADATA_") else "INVALID_INPUT"
-            return {**out, "status": status, "error": {"code": str(exc)}}
+            refused = {**out, "status": status, "error": {"code": str(exc)}}
+            if str(exc) in ("EXPIRY_TOO_SOON", "EXPIRY_TOO_FAR"):
+                refused["expiry_diagnostics"] = {**sim.expiry_bounds(meta["max_betting_delay_ms"], now),
+                                                 "requested_expiry_unix": expiry}
+            return refused
         out.update({"intent": intent, "intent_hash": sim.intent_hash(intent),
                     "signing_ready": sim.signing_ready(intent),
                     "odds_rounding": {"requested": intent["requested_percentage_odds"],
                                       "rounded_down": intent["percentage_odds"],
                                       "changed": intent["requested_percentage_odds"] != intent["percentage_odds"]},
                     "live_eligibility": sim.live_eligibility(intent, sim.ExposureLimits()),
-                    "warnings": [_UNITS, "Simulation output is DERIVED_SIMULATION, not provider data: fees, betting "
-                                 "delay, self-match prevention and book movement are not modelled."]})
+                    "warnings": [_UNITS, "Simulation output is DERIVED_SIMULATION, not provider data: betting "
+                                 "delay, self-match prevention and book movement are not modelled; fees only "
+                                 "in net_pnl (include_fees=true, account rate from /user/fees-v3).",
+                                 "Market odds are prices, not model probabilities."]})
         markets, err = await fetch("/markets/find", {"marketHashes": [intent["market_hash"]]}, auth=False)
         if err:
             return {**out, "status": "PROVIDER_ERROR", "error": err}
@@ -474,6 +648,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         if market["status"] != "MARKET_ACTIVE":
             return {**out, "status": "REFUSED", "error": {"code": market["status"]},
                     "fill": {"status": "NOT_SIMULATABLE", "reason": market["status"]}}
+        if (missing := sim.check_outcomes(market.get("market"))):
+            return {**out, "status": "REFUSED", "error": {"code": missing},
+                    "fill": {"status": "NOT_SIMULATABLE", "reason": missing}}
         if not settings.api_key:
             out["fill"] = {"status": "NOT_SIMULATABLE", "reason": "SXBET_KEY_NOT_CONFIGURED"}
         else:
@@ -490,6 +667,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                   sim.check_balance(bal, base_token=intent["base_token"],
                                                     escrow=intent["verifying_contract"],
                                                     stake=int(intent["total_bet_size"])))
+        out["net_pnl"] = await _simulated_net_pnl(intent, out.get("fill"), include_fees, fetch)
         out["status"] = "SIMULATED"
         if len(json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > _MAX_MCP_BYTES:
             return {k: out[k] for k in ("provider", "tool", "network", "mode", "network_calls_made", "signed",

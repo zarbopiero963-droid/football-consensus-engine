@@ -269,7 +269,12 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
         "fees": {"fee_status": fee_info["status"], "provider_raw_rates": fee_info.get("raw"),
                  "hedge_taker_payout_fee_if_hedge_wins_base_units": pm.dstr(hedge_fee),
                  "position_projected_fee_base_units": {"if_outcome_one": pf1, "if_outcome_two": pf2},
-                 "pnl_after_projected_fees_base_units": after_fee},
+                 "pnl_after_projected_fees_base_units": after_fee,
+                 "worst_case_after_projected_fees_base_units": (
+                     None if None in after_fee.values()
+                     else pm.dstr(min(Decimal(after_fee["if_outcome_one"]), Decimal(after_fee["if_outcome_two"])))),
+                 "fee_basis": "PROFIT_OF_WINNING_BET (hedge: taker rate, only if the hedge outcome wins)",
+                 "rounding_rule": pm.HEDGE_ROUNDING_RULE},
         "residual_risk": {"worst_case_after_base_units": min(a1, a2), "residual_gap_base_units": abs(a1 - a2),
                           "unhedged_return_base_units": str(max(0, target - got)) if mode != "REDUCE" else None},
         "liquidity": liquidity,

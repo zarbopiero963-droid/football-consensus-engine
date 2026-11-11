@@ -157,6 +157,37 @@ def parse_metadata(meta: Any, network: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------- expiry
+def expiry_bounds(max_betting_delay_ms: int | None, now: int, *,
+                  max_expiry_seconds: int = DEFAULT_MAX_EXPIRY_SECONDS) -> dict[str, Any]:
+    """The accepted expiry window and how it is made up (shown to the caller when an expiry is refused).
+
+    min = now + ceil(max betting delay) + 2 s (developers/posting-orders) + EXPIRY_SAFETY_SECONDS (local margin).
+    max = now + max_expiry_seconds (local policy, not a provider limit). With the betting delay not read yet
+    (None) the minimum is a LOWER BOUND only (delay counted as 0): an expiry below it can be refused before
+    any provider call, an expiry above it still needs the metadata check.
+    """
+    delay_known = (isinstance(max_betting_delay_ms, (int, float)) and not isinstance(max_betting_delay_ms, bool)
+                   and max_betting_delay_ms == max_betting_delay_ms and 0 <= max_betting_delay_ms < 10 ** 12)
+    delay_s = int(-(-max_betting_delay_ms // 1000)) if delay_known else 0
+    return {
+        "now_unix": now,
+        "min_expiry_unix": now + delay_s + 2 + EXPIRY_SAFETY_SECONDS,
+        "max_expiry_unix": now + max_expiry_seconds,
+        "min_is_lower_bound_only": not delay_known,
+        "components": {
+            "max_betting_delay_ms": max_betting_delay_ms if delay_known else None,
+            "betting_delay_seconds_rounded_up": delay_s if delay_known else None,
+            "provider_margin_seconds": 2,
+            "local_safety_margin_seconds": EXPIRY_SAFETY_SECONDS,
+            "max_expiry_seconds_local_policy": max_expiry_seconds,
+        },
+        "sources": ["https://docs.sx.bet/developers/posting-orders", "GET /metadata/obv3 bettingDelay"],
+        "note": ("Minimum = now + max betting delay (rounded up) + 2 s + local margin; maximum is a local policy. "
+                 "The largest delay of any sport/league is used: live vs pregame is not proven here."),
+    }
+
+
 # ---------------------------------------------------------------- intent
 def build_intent(*, network: str, metadata: Mapping[str, Any], market_hash: Any, betting_outcome_one: Any,
                  stake_base_units: Any, requested_percentage_odds: Any, time_in_force: Any, expiry: Any,
@@ -192,10 +223,12 @@ def build_intent(*, network: str, metadata: Mapping[str, Any], market_hash: Any,
         raise IntentError("INVALID_TIME_IN_FORCE")
     if type(expiry) is not int:
         raise IntentError("INVALID_EXPIRY")
-    min_expiry = now + -(-metadata["max_betting_delay_ms"] // 1000) + 2 + EXPIRY_SAFETY_SECONDS
-    if expiry < min_expiry:
+    bounds = expiry_bounds(metadata.get("max_betting_delay_ms"), now, max_expiry_seconds=max_expiry_seconds)
+    if bounds["min_is_lower_bound_only"]:  # never validate an expiry against an unknown betting delay
+        raise IntentError("METADATA_BETTING_DELAY_MISSING")
+    if expiry < bounds["min_expiry_unix"]:
         raise IntentError("EXPIRY_TOO_SOON")
-    if expiry > now + max_expiry_seconds:
+    if expiry > bounds["max_expiry_unix"]:
         raise IntentError("EXPIRY_TOO_FAR")
     if not isinstance(idempotency_key, str) or not _IDEMPOTENCY.fullmatch(idempotency_key):
         raise IntentError("INVALID_IDEMPOTENCY_KEY")
@@ -262,6 +295,17 @@ def check_market(markets: Any, market_hash: str) -> dict[str, Any]:
     if m.get("status") != "ACTIVE":
         return {"status": "MARKET_INACTIVE", "market": raw}
     return {"status": "MARKET_ACTIVE", "market": raw}
+
+
+def check_outcomes(market: Any) -> str | None:
+    """A binary market must name both outcomes before anything is simulated on it; None when it does."""
+    if not isinstance(market, Mapping):
+        return "MARKET_DATA_MISSING"
+    for k in ("outcomeOneName", "outcomeTwoName"):
+        v = market.get(k)
+        if not isinstance(v, str) or not v.strip():
+            return "MARKET_OUTCOMES_MISSING"
+    return None
 
 
 def _levels(raw: Any) -> list[tuple[int, int]]:
@@ -336,6 +380,10 @@ def simulate_fill(intent: Mapping[str, Any], book: Any, *, min_resting_base_unit
             # Effective implied probability = total stake / total potential return (1e20 scale).
             "effective_percentage_odds": str(filled * ODDS_PRECISION // payout) if payout else None,
             "potential_return_base_units": str(payout) if legs else None,
+            # Fixed code for the book depth at or better than the limit; never a fake price or a zero fill.
+            "liquidity_status": ("NO_LIQUIDITY" if not levels else "NO_LIQUIDITY_AT_OR_BETTER_THAN_LIMIT"
+                                 if not fillable else "INSUFFICIENT_LIQUIDITY" if fillable < stake
+                                 else "SUFFICIENT_LIQUIDITY"),
             "fok_killed": tif == "FOK" and fillable < stake}
 
 

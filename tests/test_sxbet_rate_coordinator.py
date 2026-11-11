@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -277,7 +278,10 @@ def test_simulation_counts_no_network_call_when_coordinator_is_down():
     tools, calls = _tools(Broken())
     out = run(tools["sxbet_simulate_order"](market_hash=H, betting_outcome_one=True, stake_base_units=1_000_000,
                                             percentage_odds="50000000000000000000", time_in_force="GTC",
-                                            expiry=2_000_000_000, idempotency_key="rate-test-1"))
+                                            # Intentional change (#187): an expiry outside the local 24 h window is now
+                                            # refused before any read (EXPIRY_TOO_FAR), so use a valid one here to keep
+                                            # testing the coordinator path.
+                                            expiry=int(time.time()) + 3600, idempotency_key="rate-test-1"))
     assert out["error"]["code"] == "SXBET_RATE_COORDINATOR_UNAVAILABLE" and out["network_calls_made"] == 0
     assert calls == [] and "SXBET_RATE_COORDINATOR_UNAVAILABLE" in NO_NETWORK_CODES
 

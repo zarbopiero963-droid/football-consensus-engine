@@ -43,7 +43,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from fractions import Fraction
 from typing import Any, Iterable, Mapping
 
@@ -144,6 +144,117 @@ def parse_fees(fees: Any) -> dict[str, Any]:
             return {"status": "FEES_MALFORMED", "raw": {k: fees.get(k) for k in FEE_FIELDS}, "derived_rates": None}
     return {"status": "FEES_OK", "raw": {k: fees.get(k) for k in FEE_FIELDS}, "derived_rates": derived,
             "derived_label": "DERIVED", "null_rate_notes": notes}
+
+
+USDC_DECIMALS = 6
+_USDC = Decimal(10) ** USDC_DECIMALS
+# Rounding rule of every DERIVED money figure (governance 2.3: explicit, raw values kept).
+ROUNDING_RULE = {
+    "arithmetic": "Python int on USDC base units (1 USDC = 10^6) and decimal.Decimal for fee rates; never float",
+    "exact_fields": "*_exact: the exact Decimal result, no rounding (may carry sub-base-unit digits)",
+    "conservative_fields": ("*_base_units: fee rounded UP to a whole base unit (ROUND_CEILING), so the net "
+                            "profit is not overstated by this computation; returns are floored "
+                            "(stake * 1e20 // percentageOdds). The fee is rounded once on the aggregate profit: if the "
+                            "exchange rounds per fill, the real fee can exceed it by up to (fills - 1) base units"),
+    "usdc_fields": "*_usdc: base units / 10^6 as an exact decimal string (6 decimals, no further rounding)",
+    "exchange_rounding": "DOCS_UNVERIFIED: the exchange's own fee rounding to base units is not documented",
+}
+COMMISSION_SOURCES = ("https://docs.sx.bet/developers/fees", "https://docs.sx.bet/api-reference/get-user-fees-v3")
+COMMISSION_DOCS_UNVERIFIED = (
+    "FEE_RATE_FROM_ACCOUNT_ONLY: the user guide quotes a fixed taker 1% / maker 0% (parlay 5%) while the developer "
+    "docs say fees are set per account (GET /user/fees-v3); only the rate read from the API is used, never a constant",
+    "REFUND_FEE_SEMANTICS: refundFee is in the schema but its base is not documented; a void is computed only "
+    "when the provider rate is null (nothing charged)",
+    "EXCHANGE_FEE_ROUNDING: see ROUNDING_RULE.exchange_rounding",
+    "FEE_RATE_SCALE: rates are read as fractions (\"0.01\" = 1%) and a rate >= 1 is refused as malformed; the "
+    "fraction scale is consistent with the user guide's 1% but is not stated in the developer docs",
+)
+
+HEDGE_ROUNDING_RULE = {
+    "arithmetic": "Python int on USDC base units (1 USDC = 10^6) and decimal.Decimal for fee rates; never float",
+    "hedge_fee_fields": ("hedge_taker_payout_fee_if_hedge_wins_base_units, pnl_after_projected_fees_base_units and "
+                         "worst_case_after_projected_fees_base_units are EXACT Decimal values in base units, NOT "
+                         "rounded (they may carry sub-base-unit digits)"),
+    "exchange_rounding": "DOCS_UNVERIFIED: the exchange's own fee rounding to base units is not documented",
+}
+
+
+def usdc(base_units: int | Decimal | None) -> str | None:
+    """Base units -> exact USDC decimal string (no float). None stays None."""
+    if base_units is None:
+        return None
+    return dstr(Decimal(base_units) / _USDC)
+
+
+def commission_breakdown(*, stake_base_units: int, return_base_units: int | None, is_maker: bool,
+                         fees: Any) -> dict[str, Any]:
+    """Gross and net P&L of ONE single (non-parlay) bet, payout fee charged on the PROFIT of a winning bet.
+
+    developers/fees: the payout fee is charged at settlement, only on a winning bet, on its profit, at the
+    maker or taker rate of the fill (makerPayoutFee / takerPayoutFee of GET /user/fees-v3; null = unset,
+    nothing charged). A loss costs the stake and pays no fee. The rate is never assumed: without fee data
+    every net figure is null with an explicit status, never 0.
+    Reference (issue #187): stake 1 USDC at decimal 1.878 -> profit 0.878, taker 1% -> fee 0.00878,
+    net profit 0.86922 USDC.
+    """
+    if type(stake_base_units) is not int or stake_base_units <= 0:
+        raise ValueError("INVALID_STAKE_BASE_UNITS")
+    if return_base_units is not None and (type(return_base_units) is not int or return_base_units < 0):
+        raise ValueError("INVALID_RETURN_BASE_UNITS")
+    if not isinstance(is_maker, bool):
+        raise ValueError("INVALID_ROLE")
+    field = "makerPayoutFee" if is_maker else "takerPayoutFee"
+    info = parse_fees(fees)
+    rates = info["derived_rates"]
+    rate = None if rates is None else Decimal(rates[field])
+    raw_rate = (info.get("raw") or {}).get(field) if isinstance(info.get("raw"), dict) else None
+    out: dict[str, Any] = {
+        "label": "DERIVED", "role": "MAKER" if is_maker else "TAKER", "fee_rate_field": field,
+        "fee_basis": "PROFIT_OF_WINNING_BET", "fee_status": info["status"],
+        "provider_raw_rate": raw_rate, "derived_rate": None if rate is None else rates[field],
+        "rate_note": (info.get("null_rate_notes") or {}).get(field),
+        "stake_base_units": stake_base_units, "stake_usdc": usdc(stake_base_units),
+        "rounding_rule": ROUNDING_RULE, "sources": list(COMMISSION_SOURCES),
+        "docs_unverified": list(COMMISSION_DOCS_UNVERIFIED),
+        "odds_note": "Market prices, not model probabilities (HYBRID_MARKET_AWARE when used for decisions).",
+    }
+    if return_base_units is None:
+        win = {"status": "RETURN_UNKNOWN", "gross_return_base_units": None, "gross_profit_base_units": None,
+               "fee_exact": None, "fee_base_units": None, "net_profit_exact": None, "net_profit_base_units": None,
+               "net_return_base_units": None, "gross_profit_usdc": None, "fee_usdc_exact": None,
+               "net_profit_usdc_exact": None, "net_profit_usdc": None, "net_return_usdc": None}
+    else:
+        profit = return_base_units - stake_base_units
+        win = {"gross_return_base_units": return_base_units, "gross_return_usdc": usdc(return_base_units),
+               "gross_profit_base_units": profit, "gross_profit_usdc": usdc(profit)}
+        if rate is None:
+            win.update({"status": "FEE_UNRESOLVED_" + info["status"], "fee_exact": None, "fee_base_units": None,
+                        "fee_usdc_exact": None, "net_profit_exact": None, "net_profit_base_units": None,
+                        "net_profit_usdc_exact": None, "net_profit_usdc": None, "net_return_base_units": None,
+                        "net_return_usdc": None})
+        else:
+            fee_exact = rate * Decimal(max(profit, 0))  # no profit, no payout fee
+            fee_units = int(fee_exact.to_integral_value(rounding=ROUND_CEILING))
+            net_exact = Decimal(profit) - fee_exact
+            win.update({"status": "OK", "fee_exact": dstr(fee_exact), "fee_base_units": fee_units,
+                        "fee_usdc_exact": dstr(fee_exact / _USDC),
+                        "net_profit_exact": dstr(net_exact), "net_profit_base_units": profit - fee_units,
+                        "net_profit_usdc_exact": dstr(net_exact / _USDC), "net_profit_usdc": usdc(profit - fee_units),
+                        "net_return_base_units": return_base_units - fee_units,
+                        "net_return_usdc": usdc(return_base_units - fee_units)})
+    refund_raw = (info.get("raw") or {}).get("refundFee") if isinstance(info.get("raw"), dict) else None
+    void_known = rates is not None and refund_raw is None
+    out.update({
+        "if_win": win,
+        "if_lose": {"status": "OK", "gross_pnl_base_units": -stake_base_units, "fee_base_units": 0,
+                    "net_pnl_base_units": -stake_base_units, "net_pnl_usdc": usdc(-stake_base_units),
+                    "note": "A losing bet pays no payout fee (developers/fees)."},
+        "if_void": {"status": "OK" if void_known else ("REFUND_FEE_DOCS_UNVERIFIED" if rates is not None
+                                                       else "FEE_UNRESOLVED_" + info["status"]),
+                    "gross_pnl_base_units": 0, "net_pnl_base_units": 0 if void_known else None,
+                    "provider_raw_refund_fee": refund_raw},
+    })
+    return out
 
 
 def _rows(payload: Any, key: str) -> tuple[list | None, bool]:
