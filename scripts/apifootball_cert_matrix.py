@@ -112,7 +112,7 @@ CODE_PATH = ("bridge/api_football", "bridge/server.py", "bridge/db_identity.py",
 CODE_PATH_CHANGES = ("bridge/api_football/contracts.py", "bridge/api_football/stream_scan.py",
                      "bridge/api_football/tools.py", "bridge/server.py")
 CHANGES_SINCE = ("e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; "
-                 "#198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup "
+                 "#198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup "
                  "logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file "
                  "of the API-FOOTBALL code path")
 _PROOF = "tests/test_apifootball_cert_reuse_equivalence.py"

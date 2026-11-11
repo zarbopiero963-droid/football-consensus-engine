@@ -8,8 +8,8 @@ name: FCB Aiven defaultdb API-FOOTBALL cert ledger 0010 (owner-gated)
 # AF-11: requires bridge 0009 (PR #198) to be ALREADY APPLIED in production. Verified twice: the
 # read-only precheck (rows exactly 0001-0009 or 0001-0010) and, inside the write transaction before
 # the bridge script, sql/aiven/apifootball_cert_ledger_0010_require_0009.sql (0009 row with the
-# pinned checksum). A database at 0001-0008 is refused; this workflow never applies 0009. If #198 is
-# not merged, 0010 is not applied and is renumbered only after re-checking the real baseline.
+# pinned checksum). A database at 0001-0008 is refused; this workflow never applies 0009 (its own
+# owner-gated workflow does). Any renumbering only after re-checking the real production baseline.
 # The runtime never applies migrations; nothing applies 0010 at deploy. Gates, all required:
 #   1. protected GitHub Environment `aiven-production` (required reviewer, main only), checked;
 #   2. owner dispatch from main (scripts/require_owner_main_dispatch.sh);

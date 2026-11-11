@@ -3980,7 +3980,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -4350,7 +4350,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000; 1990..2100",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -4424,7 +4424,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -4831,7 +4831,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "PROVIDER_REJECTED_OBSERVED",
@@ -7125,7 +7125,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7273,7 +7273,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7532,7 +7532,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7606,7 +7606,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7680,7 +7680,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7717,7 +7717,7 @@
    "verdict": "DATA_PRESENT"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (squash a46ba72 on main): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000; <= MAX_PAGE (100000, transport paging bound)",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",

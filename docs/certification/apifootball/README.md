@@ -60,7 +60,7 @@ Non sono difetti del MCP. Se sono documentati, `gate_status` è `PROVIDER_LIMITA
 
 Colonne della matrice: `source_sha`, `evidence_date`, `evidence_ref`, `changes_since`, `reuse_status`, `reuse_reason`, `reuse_proof`.
 
-**Modifiche tra 848c007 e la base del branch sul percorso di codice API-FOOTBALL** (`bridge/api_football/**`, `bridge/server.py`, `bridge/db_identity.py`, `requirements.txt`): `e155193` (#193), che ha toccato `contracts.py`, `stream_scan.py` e `tools.py`; e #198 (base impilata), che in `bridge/server.py` aggiunge solo campi di `/healthz` e log di avvio del throttle OAuth, fuori dal percorso dei tool API-FOOTBALL. Gli altri commit del periodo (`6615acb`, `6c69521`, `d09571f`, `f666cc1`) non toccano quel percorso.
+**Modifiche tra 848c007 e la base del branch sul percorso di codice API-FOOTBALL** (`bridge/api_football/**`, `bridge/server.py`, `bridge/db_identity.py`, `requirements.txt`): `e155193` (#193), che ha toccato `contracts.py`, `stream_scan.py` e `tools.py`; e #198 (squash `a46ba72` su main), che in `bridge/server.py` aggiunge solo campi di `/healthz` e log di avvio del throttle OAuth, fuori dal percorso dei tool API-FOOTBALL. Gli altri commit del periodo (`6615acb`, `6c69521`, `d09571f`, `f666cc1`) non toccano quel percorso.
 
 **Come è provata l'equivalenza** (`tests/test_apifootball_cert_reuse_equivalence.py`), in due passi:
 1. `git diff --name-only 848c007 HEAD` sul percorso di codice deve coincidere con i file registrati. Qualunque nuova modifica invalida i riusi.
@@ -107,15 +107,17 @@ Ne seguono tre garanzie:
 - un riavvio o un nuovo dispatch con lo stesso `campaign_id` continua lo stesso budget e non ritenta le chiamate già tentate;
 - ogni richiesta prende anche il lease del coordinatore di quota condiviso (`PostgresQuota`), che resta **intatto**.
 
-**Numero e dipendenza (AF-11, decisione owner).** Su main l'ultima migration bridge è 0008. La PR #198, non ancora mergiata, introduce la 0009 (`0009_oauth_throttle_buckets.sql`). Questa migration è quindi la **0010** (`sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql`).
+**Numero e dipendenza (AF-11, decisione owner).** La PR #198, mergiata dall'owner su main come squash `a46ba72`, introduce la 0009 (`0009_oauth_throttle_buckets.sql`). Questa migration è quindi la **0010** (`sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql`).
 
-`app/migrations.py` esige una numerazione consecutiva. Per questo il branch è impilato su #198 (`c4ddcad`) e va **mergiato dopo #198**.
+`app/migrations.py` esige una numerazione consecutiva: il branch è ribasato su main `a46ba72` e la serie è 0001..0010 senza buchi.
+
+In **codice**, #198 è su main. Il **database** di produzione è un'altra cosa: la 0009 va applicata dall'owner con il suo workflow.
 
 Prima di applicare la 0010 in produzione va **verificato** che la 0009 sia già applicata. Il workflow 0010 lo verifica due volte:
 - nel precheck in sola lettura, che accetta solo le righe 0001-0009 (apply) o 0001-0010 (no-op);
 - dentro la transazione di scrittura, prima dello script bridge, con `sql/aiven/apifootball_cert_ledger_0010_require_0009.sql`. Serve perché lo script 0001-0010 applicherebbe altrimenti anche una 0009 mancante. Il controllo esige la riga 0009 con il checksum del repository e rifiuta con `FCB_CERT_LEDGER_REQUIRES_BRIDGE_0009`.
 
-Se #198 non venisse integrata, la 0010 non si applica. Si rinumera solo dopo aver ricontrollato la baseline reale della produzione, non in questa PR.
+Se la 0009 non risultasse applicata in produzione, la 0010 non si applica. Una eventuale rinumerazione si fa solo dopo aver ricontrollato la baseline reale della produzione, non in questa PR.
 
 **Contenuto della migration:**
 - è additiva e non tocca tabelle esistenti, in particolare `api_football_quota_*`;
@@ -189,7 +191,7 @@ L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restan
 **Decisioni owner aperte:**
 1. Ruolo dedicato al ledger al posto di `fcb_app` condiviso (obiettivo futuro).
 2. Aggiornamento del modello di verifica e dei conteggi del workflow ruoli WP-009 per i database 0009/0010.
-3. L'ordine di merge: prima #198, poi questa PR.
+3. In produzione: prima applicare la 0009 (workflow #198), poi la 0010.
 
 ### AF-08 — Guardia `live_harness` (modifica intenzionale di un test esistente)
 
