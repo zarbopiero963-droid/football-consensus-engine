@@ -79,3 +79,26 @@ def test_live_local_session_is_usable_and_stopped_or_closing_is_not(monkeypatch)
     assert (gone['usable'], gone['usability']) == (False, 'NOT_USABLE_STOPPED')
     assert (failed['usable'], failed['usability']) == (False, 'NOT_USABLE_STOP_FAILED')
     assert 'memory-only-capability' not in repr([live, closing, gone, failed])
+
+
+def test_active_row_with_local_session_closing_is_not_usable(monkeypatch):
+    # Stop in flight: the local session is closing but the lease row still reads ACTIVE.
+    bridge = BrowserUseBridge()
+    bridge._sessions['racing'] = Session('racing', 'memory-only-capability', None)
+    bridge._sessions['racing'].closing = True
+    monkeypatch.setattr(session_leases, 'get_session', lambda sid: _row(sid, 'ACTIVE'))
+
+    status = run(bridge.session_status('racing'))
+
+    assert (status['usable'], status['usability']) == (False, 'NOT_USABLE_STOPPING')
+    assert 'memory-only-capability' not in repr(status)
+
+
+def test_unknown_lease_state_fails_closed_with_explicit_code(monkeypatch):
+    bridge = BrowserUseBridge()
+    bridge._sessions['odd'] = Session('odd', 'memory-only-capability', None)
+    monkeypatch.setattr(session_leases, 'get_session', lambda sid: _row(sid, 'SOMETHING_NEW'))
+
+    status = run(bridge.session_status('odd'))
+
+    assert (status['usable'], status['usability']) == (False, 'NOT_USABLE_UNKNOWN_STATE')

@@ -1805,10 +1805,14 @@ class BrowserUseBridge:
             usability = "USABLE"
         elif state == "ACTIVE" and local is None:
             usability = "NOT_USABLE_NOT_IN_THIS_WORKER"
-        elif state in ("STOPPED", "STOP_FAILED"):
+        elif state == "ACTIVE":
+            # ACTIVE row but the local session is already closing (stop in flight).
+            usability = "NOT_USABLE_STOPPING"
+        elif state in ("STOPPING", "STOPPED", "STOP_FAILED"):
             usability = "NOT_USABLE_" + state
         else:
-            usability = "NOT_USABLE_STOPPING"
+            # Fail closed on any lease state this code does not know.
+            usability = "NOT_USABLE_UNKNOWN_STATE"
         return {
             "session_id": session_id,
             "usable": usability == "USABLE",
