@@ -511,12 +511,28 @@ def test_scanned_live_odds_say_not_evaluated():
     assert out["live_odds_state"] == {"label": "DERIVED", "state": "NOT_EVALUATED", "reason": "STREAMED_SCAN_KEEPS_IDS_ONLY"}
 
 
-@pytest.mark.parametrize("bad", [b'"ab\\x', b'"ab\x01', b'tx', b'nul ', b'-a', b'1.e'])
+@pytest.mark.parametrize("bad", [b'"ab\\x', b'"ab\x01', b'tx', b'nul ', b'-a'])
 def test_an_invalid_unfinished_token_is_invalid_json_at_once(bad):
     s = IdScanner(FIX)
     s.feed(b'{"response":[')
     with pytest.raises(ProviderDataError) as info:
-        s.feed(bad)
+        s.feed(bad)  # refused on this feed: never buffered up to the token bound
+    assert info.value.code == "PROVIDER_INVALID_JSON"
+
+
+def test_an_invalid_long_string_is_invalid_json_not_a_bound():
+    s = IdScanner(FIX)
+    with pytest.raises(ProviderDataError) as info:
+        s.feed(b'{"response":[{"fixture":{"id":1,"x":"' + b"a" * 1000 + b"\\q")
+        for _ in range(40):
+            s.feed(b"a" * 4096)
+    assert info.value.code == "PROVIDER_INVALID_JSON" and s.bytes < 2048  # not MAX_TOKEN later
+
+
+def test_a_number_that_cannot_complete_fails_at_the_end_of_the_stream():
+    s = IdScanner(FIX)
+    s.feed(b'{"response":[1.e')
+    with pytest.raises(ProviderDataError) as info:
         s.finish()
     assert info.value.code == "PROVIDER_INVALID_JSON"
 
