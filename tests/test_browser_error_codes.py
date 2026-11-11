@@ -162,3 +162,32 @@ def test_every_browser_tool_is_wrapped():
 ])
 def test_error_code_table(exc, code):
     assert browser_use.browser_error_code(exc) == code
+
+
+def test_stop_all_reports_fixed_codes_not_exception_text():
+    """P2 review #191: browser_stop_all returns failures inside a successful result, so the
+    _fixed_errors wrapper never sees them; the per-session error must still be a fixed code."""
+    import asyncio
+    from bridge import browser_use as bu
+
+    secret = "connection to server at db.internal.example (10.0.0.5), user=avnadmin failed"
+
+    class Boom(Exception):
+        pass
+
+    bridge = bu.BrowserUseBridge.__new__(bu.BrowserUseBridge)
+    bridge._lock = asyncio.Lock()
+    bridge._sessions = {"s-db": object(), "s-rt": object()}
+
+    async def stop(session_id):
+        if session_id == "s-db":
+            raise Boom(secret)
+        raise RuntimeError(secret)
+
+    bridge.stop = stop
+    result = asyncio.run(bridge.stop_all())
+    assert result["stopped"] == []
+    assert {f["session_id"] for f in result["failed"]} == {"s-db", "s-rt"}
+    for item in result["failed"]:
+        assert item["error"] == "BROWSER_INTERNAL_ERROR"
+        assert secret not in repr(result)

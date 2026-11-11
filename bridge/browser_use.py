@@ -1928,5 +1928,6 @@ class BrowserUseBridge:
                     await self.stop(session_id)
                 stopped.append(session_id)
             except Exception as exc:
-                failed.append({"session_id": session_id, "error": str(exc)})
+                # Fixed code only (#188): the exception text (e.g. a DB error with host/user) never reaches the client.
+                failed.append({"session_id": session_id, "error": browser_error_code(exc)})
         return {"stopped": stopped, "failed": failed}
