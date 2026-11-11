@@ -19,6 +19,12 @@ jobs:
       # Signer-only deps (eth-account, cryptography): test-only here, never in the Render runtime.
       - run: pip install -r signer/requirements.txt
       - run: pytest -q
+      # API-FOOTBALL certification matrix: OFFLINE gate only (structure, schema coverage, no invented
+      # parameter, committed files up to date). The live gate (--gate-live) is informative, never here.
+      - name: API-FOOTBALL cert matrix offline gate
+        run: |
+          python scripts/apifootball_cert_matrix.py --gate-offline
+          python scripts/apifootball_cert_batch1.py --check-plan
 
   browser-ssrf-chromium:
     # FCB-WP-001/002: the SSRF regression tests must run against a REAL Chromium; this job

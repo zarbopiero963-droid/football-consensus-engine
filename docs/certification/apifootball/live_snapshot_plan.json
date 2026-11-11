@@ -1,0 +1,16 @@
+{
+ "campaign": "live_full_match_snapshot",
+ "cap": 8,
+ "plan_kind": "LIVE_FULL_MATCH_SNAPSHOT",
+ "schema": "apifootball-live-full-match-snapshot-plan/v1",
+ "status": "PREPARED_NOT_AUTHORIZED",
+ "steps": [
+  "fixture",
+  "statistics",
+  "events",
+  "lineups",
+  "players",
+  "live_odds",
+  "coverage"
+ ]
+}

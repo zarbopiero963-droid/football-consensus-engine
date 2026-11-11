@@ -83,6 +83,30 @@ def render_bridge_0009():
     return text
 
 
+# AF-07 API-FOOTBALL certification campaign ledger: bridge 0001-0010 for the owner-gated 0010 workflow
+# (.github/workflows/fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml), run as fcb_migrator. On a
+# database at 0001-0009 the blocks of 0001-0009 only verify name and checksum; 0010 is applied.
+BRIDGE_0010_TARGET = ROOT / 'sql' / 'aiven' / 'aiven_migrations_bridge_0001_0010.sql'
+BRIDGE_0010_HEADER = '-- FCB bridge migrations 0001-0010 only (no signer series), regenerated from main\n'
+BRIDGE_0010_VERSIONS = list(range(1, 11))
+
+
+def render_bridge_0010():
+    from app.migrations import BRIDGE, load_migrations
+    migrations = load_migrations(BRIDGE.directory)
+    if [m.version for m in migrations][:len(BRIDGE_0010_VERSIONS)] != BRIDGE_0010_VERSIONS:
+        raise SystemExit(f'expected bridge versions {BRIDGE_0010_VERSIONS}')
+    with tempfile.TemporaryDirectory() as tmp:
+        for m in migrations[:len(BRIDGE_0010_VERSIONS)]:
+            shutil.copyfile(BRIDGE.directory / m.name, Path(tmp) / m.name)
+        statements = migration_statements(tmp, series=BRIDGE)
+    text = BRIDGE_0010_HEADER + ';\n'.join(statements) + ';\n'
+    for marker in ('signer_ledger_anchors', 'signer_ledger_writer_leases', 'signer_schema_migrations'):
+        if marker in text:
+            raise SystemExit('signer content leaked into the bridge script')
+    return text
+
+
 # FCB-WP-005: the precheck, re-evaluated INSIDE the restore transaction (no TOCTOU window).
 # Generated from the two read-only precheck files so the logic cannot diverge.
 GUARD_TARGET = ROOT / 'sql' / 'aiven' / 'defaultdb_restore_guard.sql'
@@ -264,7 +288,8 @@ def render_post_guard():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'bridge-0001-0009', 'restore-guard',
+    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'bridge-0001-0009',
+                                             'bridge-0001-0010', 'restore-guard',
                                                    'restore-post-guard'),
                         default='aiven-0001-0007')
     args = parser.parse_args()
@@ -272,6 +297,8 @@ def main():
         text, target = render_bridge(), BRIDGE_TARGET
     elif args.target == 'bridge-0001-0009':
         text, target = render_bridge_0009(), BRIDGE_0009_TARGET
+    elif args.target == 'bridge-0001-0010':
+        text, target = render_bridge_0010(), BRIDGE_0010_TARGET
     elif args.target == 'restore-guard':
         text, target = render_guard(), GUARD_TARGET
     elif args.target == 'restore-post-guard':

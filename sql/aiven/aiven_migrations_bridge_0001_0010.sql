@@ -1,0 +1,1359 @@
+-- FCB bridge migrations 0001-0010 only (no signer series), regenerated from main
+SELECT pg_advisory_xact_lock(460244120);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+DO $guard$ BEGIN
+        IF EXISTS (SELECT 1 FROM schema_migrations WHERE version=8 AND name='0008_signer_ledger_anchor.sql') THEN
+            RAISE EXCEPTION 'PRE_SPLIT_SIGNER_0008: schema_migrations v8 is the signer anchor from the pre-split layout; see docs/certification/FCB_PR_WORKPACKAGES.md (WP-004). Owner decision required.';
+        END IF;
+        IF EXISTS (SELECT 1 FROM schema_migrations WHERE version NOT IN (1,2,3,4,5,6,7,8,9,10)) THEN
+            RAISE EXCEPTION 'Database has migrations absent from this checkout';
+        END IF;
+        END; $guard$;
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=1;
+        IF FOUND THEN
+            IF applied.name <> ''0001_baseline.sql'' OR applied.sha256 <> ''a6cd3bda6f1bfb8f029d4039b2c50d0ed8d444bc12470b28a382faac068f7287'' THEN
+                RAISE EXCEPTION ''Migration 1 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''CREATE TABLE IF NOT EXISTS model_snapshots (
+    match_id TEXT NOT NULL,
+    snapshot_timestamp_utc TIMESTAMPTZ NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '''''''',
+    source_match_id TEXT NOT NULL DEFAULT '''''''',
+    valid_prematch BOOLEAN NOT NULL DEFAULT FALSE,
+    analysis_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    model_pick TEXT NOT NULL DEFAULT '''''''',
+    model_pick_probability DOUBLE PRECISION,
+    picked_odds DOUBLE PRECISION,
+    picked_edge DOUBLE PRECISION,
+    pin_favorite TEXT NOT NULL DEFAULT '''''''',
+    pin_favorite_odds DOUBLE PRECISION,
+    same_as_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+    sha256_model_raw TEXT NOT NULL DEFAULT '''''''',
+    sha256_odds_raw TEXT NOT NULL DEFAULT '''''''',
+    payload JSONB NOT NULL,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (match_id, snapshot_timestamp_utc)
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_snapshots_kickoff ON model_snapshots (kickoff_utc);
+CREATE INDEX IF NOT EXISTS idx_model_snapshots_match_kickoff ON model_snapshots (match_id, kickoff_utc);
+
+CREATE TABLE IF NOT EXISTS match_results (
+    match_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT '''''''',
+    result_1x2 TEXT NOT NULL DEFAULT '''''''',
+    final_home_goals INTEGER,
+    final_away_goals INTEGER,
+    result_timestamp_utc TIMESTAMPTZ,
+    result_source TEXT NOT NULL DEFAULT '''''''',
+    payload JSONB NOT NULL,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (match_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_match_results_match ON match_results (match_id, version DESC);
+
+CREATE TABLE IF NOT EXISTS ingest_runs (
+    id BIGSERIAL PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    rows_seen INTEGER NOT NULL,
+    rows_inserted INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source, source_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS runtime_state (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    token_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_access_active
+ON oauth_access_tokens (expires_at)
+WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_active
+ON oauth_refresh_tokens (expires_at)
+WHERE revoked_at IS NULL;
+
+
+CREATE TABLE IF NOT EXISTS decision_batches (
+    batch_id TEXT PRIMARY KEY,
+    requested_at_utc TIMESTAMPTZ NOT NULL,
+    requested_date DATE NOT NULL,
+    timezone TEXT NOT NULL DEFAULT ''''Europe/Rome'''',
+    mode TEXT NOT NULL DEFAULT ''''all'''',
+    strategy_filter JSONB NOT NULL DEFAULT ''''[]''''::jsonb,
+    label TEXT NOT NULL DEFAULT '''''''',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_batches_date
+ON decision_batches (requested_date, requested_at_utc);
+
+CREATE TABLE IF NOT EXISTS decision_tickets (
+    batch_id TEXT NOT NULL REFERENCES decision_batches(batch_id) ON DELETE RESTRICT,
+    match_id TEXT NOT NULL,
+    snapshot_timestamp_utc TIMESTAMPTZ NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '''''''',
+    model_pick TEXT NOT NULL DEFAULT '''''''',
+    model_probability DOUBLE PRECISION,
+    picked_odds DOUBLE PRECISION,
+    picked_edge DOUBLE PRECISION,
+    strategies JSONB NOT NULL DEFAULT ''''[]''''::jsonb,
+    display_status TEXT NOT NULL DEFAULT ''''NO_BET'''',
+    snapshot_view JSONB NOT NULL,
+    shown_to_user BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (batch_id, match_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_tickets_match
+ON decision_tickets (match_id, kickoff_utc);
+
+
+CREATE TABLE IF NOT EXISTS source_pilot_runs (
+    run_id TEXT PRIMARY KEY,
+    pilot_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    slot_no INTEGER NOT NULL,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    finished_at_utc TIMESTAMPTZ,
+    status TEXT NOT NULL,
+    final_url TEXT NOT NULL DEFAULT '''''''',
+    http_status INTEGER,
+    browser_session_id TEXT NOT NULL DEFAULT '''''''',
+    browser_cost DOUBLE PRECISION,
+    proxy_cost DOUBLE PRECISION,
+    proxy_used_mb DOUBLE PRECISION,
+    captcha_cost DOUBLE PRECISION,
+    html_sha256 TEXT NOT NULL DEFAULT '''''''',
+    screenshot_sha256 TEXT NOT NULL DEFAULT '''''''',
+    html_gzip BYTEA,
+    screenshot_png BYTEA,
+    manifest JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    UNIQUE (pilot_id, source, slot_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_pilot_runs_pilot
+ON source_pilot_runs (pilot_id, source, slot_no);
+
+CREATE TABLE IF NOT EXISTS source_pilot_predictions (
+    run_id TEXT NOT NULL REFERENCES source_pilot_runs(run_id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    source_match_key TEXT NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '''''''',
+    kickoff_raw TEXT NOT NULL DEFAULT '''''''',
+    source_timezone TEXT NOT NULL DEFAULT '''''''',
+    kickoff_utc TIMESTAMPTZ,
+    timezone_status TEXT NOT NULL DEFAULT ''''TIMEZONE_UNRESOLVED'''',
+    p1 DOUBLE PRECISION,
+    px DOUBLE PRECISION,
+    p2 DOUBLE PRECISION,
+    over25 DOUBLE PRECISION,
+    under25 DOUBLE PRECISION,
+    btts_yes DOUBLE PRECISION,
+    btts_no DOUBLE PRECISION,
+    xg_home DOUBLE PRECISION,
+    xg_away DOUBLE PRECISION,
+    correct_score TEXT NOT NULL DEFAULT '''''''',
+    parse_status TEXT NOT NULL DEFAULT ''''OK'''',
+    payload JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    PRIMARY KEY (run_id, source_match_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_pilot_predictions_source
+ON source_pilot_predictions (source, kickoff_utc);
+
+CREATE TABLE IF NOT EXISTS source_pilot_matches (
+    run_id TEXT NOT NULL REFERENCES source_pilot_runs(run_id) ON DELETE CASCADE,
+    source_match_key TEXT NOT NULL,
+    anchor_match_id TEXT,
+    match_status TEXT NOT NULL,
+    match_confidence DOUBLE PRECISION,
+    reason TEXT NOT NULL DEFAULT '''''''',
+    PRIMARY KEY (run_id, source_match_key)
+);
+
+CREATE TABLE IF NOT EXISTS source_pilot_control (
+    pilot_id TEXT PRIMARY KEY,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    ends_at_utc TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT ''''RUNNING'''',
+    slots_expected INTEGER NOT NULL DEFAULT 16,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+CREATE TABLE IF NOT EXISTS strategy_simulations (
+    batch_id TEXT NOT NULL,
+    match_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    pick TEXT NOT NULL,
+    probability DOUBLE PRECISION,
+    odds DOUBLE PRECISION,
+    edge DOUBLE PRECISION,
+    stake_eur NUMERIC(12,2) NOT NULL DEFAULT 1.00,
+    priced BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT ''''PENDING'''',
+    result_1x2 TEXT,
+    correct BOOLEAN,
+    profit_eur NUMERIC(14,4),
+    source_snapshot_timestamp_utc TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (batch_id, match_id, strategy_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_simulations_strategy
+ON strategy_simulations (strategy_id, status, kickoff_utc);
+
+CREATE TABLE IF NOT EXISTS strategy_stats (
+    strategy_id TEXT PRIMARY KEY,
+    strategy_name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    stake_eur NUMERIC(12,2) NOT NULL DEFAULT 1.00,
+    signals_total INTEGER NOT NULL DEFAULT 0,
+    pending INTEGER NOT NULL DEFAULT 0,
+    settled INTEGER NOT NULL DEFAULT 0,
+    priced_settled INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    staked_eur NUMERIC(14,2) NOT NULL DEFAULT 0,
+    profit_eur NUMERIC(14,4) NOT NULL DEFAULT 0,
+    cumulative_profit_eur NUMERIC(14,4) NOT NULL DEFAULT 0,
+    win_rate DOUBLE PRECISION,
+    roi DOUBLE PRECISION,
+    sample_reliability TEXT NOT NULL DEFAULT ''''INSUFFICIENT_SAMPLE'''',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+CREATE TABLE IF NOT EXISTS market_decision_tickets (
+    ticket_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES decision_batches(batch_id) ON DELETE RESTRICT,
+    match_id TEXT NOT NULL,
+    kickoff_utc TIMESTAMPTZ NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    league TEXT NOT NULL DEFAULT '''''''',
+    source TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    period TEXT NOT NULL DEFAULT ''''FT'''',
+    selection TEXT NOT NULL,
+    line DOUBLE PRECISION,
+    probability DOUBLE PRECISION,
+    odds DOUBLE PRECISION,
+    edge DOUBLE PRECISION,
+    derivation TEXT NOT NULL DEFAULT ''''SOURCE'''',
+    source_snapshot_utc TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT ''''PENDING'''',
+    result_value TEXT,
+    correct BOOLEAN,
+    stake_eur NUMERIC(12,2) NOT NULL DEFAULT 1.00,
+    profit_eur NUMERIC(14,4),
+    payload JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(batch_id,match_id,market_id,source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_decision_tickets_batch
+ON market_decision_tickets(batch_id,kickoff_utc);
+
+CREATE INDEX IF NOT EXISTS idx_market_decision_tickets_market
+ON market_decision_tickets(market_id,source,status);
+
+CREATE TABLE IF NOT EXISTS market_stats (
+    market_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    signals_total INTEGER NOT NULL DEFAULT 0,
+    pending INTEGER NOT NULL DEFAULT 0,
+    settled INTEGER NOT NULL DEFAULT 0,
+    priced_settled INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    staked_eur NUMERIC(14,2) NOT NULL DEFAULT 0,
+    profit_eur NUMERIC(14,4) NOT NULL DEFAULT 0,
+    win_rate DOUBLE PRECISION,
+    roi DOUBLE PRECISION,
+    sample_reliability TEXT NOT NULL DEFAULT ''''INSUFFICIENT_SAMPLE'''',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(market_id,source)
+);
+
+
+CREATE TABLE IF NOT EXISTS result_observations (
+    observation_id TEXT PRIMARY KEY,
+    match_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_match_id TEXT NOT NULL DEFAULT '''''''',
+    observed_at_utc TIMESTAMPTZ NOT NULL,
+    kickoff_utc TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT '''''''',
+    final_home_goals INTEGER,
+    final_away_goals INTEGER,
+    ht_home_goals INTEGER,
+    ht_away_goals INTEGER,
+    corners_home INTEGER,
+    corners_away INTEGER,
+    ht_corners_home INTEGER,
+    ht_corners_away INTEGER,
+    raw_sha256 TEXT NOT NULL DEFAULT '''''''',
+    payload JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    UNIQUE(match_id,provider,observed_at_utc)
+);
+
+CREATE INDEX IF NOT EXISTS idx_result_observations_match
+ON result_observations(match_id,provider,observed_at_utc DESC);
+
+CREATE TABLE IF NOT EXISTS result_consensus (
+    match_id TEXT PRIMARY KEY,
+    final_home_goals INTEGER,
+    final_away_goals INTEGER,
+    ht_home_goals INTEGER,
+    ht_away_goals INTEGER,
+    corners_home INTEGER,
+    corners_away INTEGER,
+    ht_corners_home INTEGER,
+    ht_corners_away INTEGER,
+    result_1x2 TEXT,
+    verification_status TEXT NOT NULL DEFAULT ''''UNVERIFIED'''',
+    field_verification JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    providers JSONB NOT NULL DEFAULT ''''[]''''::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+CREATE TABLE IF NOT EXISTS result_source_pilot_control (
+    pilot_id TEXT PRIMARY KEY,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    ends_at_utc TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT ''''RUNNING'''',
+    slots_expected INTEGER NOT NULL DEFAULT 16,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS result_source_pilot_runs (
+    run_id TEXT PRIMARY KEY,
+    pilot_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    slot_no INTEGER NOT NULL,
+    started_at_utc TIMESTAMPTZ NOT NULL,
+    finished_at_utc TIMESTAMPTZ,
+    status TEXT NOT NULL,
+    final_url TEXT NOT NULL DEFAULT '''''''',
+    http_status INTEGER,
+    browser_session_id TEXT NOT NULL DEFAULT '''''''',
+    browser_cost DOUBLE PRECISION,
+    proxy_cost DOUBLE PRECISION,
+    proxy_used_mb DOUBLE PRECISION,
+    captcha_cost DOUBLE PRECISION,
+    rows_found INTEGER NOT NULL DEFAULT 0,
+    capabilities JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    html_sha256 TEXT NOT NULL DEFAULT '''''''',
+    screenshot_sha256 TEXT NOT NULL DEFAULT '''''''',
+    html_gzip BYTEA,
+    screenshot_png BYTEA,
+    manifest JSONB NOT NULL DEFAULT ''''{}''''::jsonb,
+    UNIQUE (pilot_id, source, slot_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_result_source_pilot_runs
+ON result_source_pilot_runs (pilot_id, source, slot_no);
+
+-- Refuse to certify a pre-existing schema that lacks required baseline columns.
+DO $baseline_check$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM (VALUES
+        (''''model_snapshots'''',''''match_id''''),
+        (''''model_snapshots'''',''''snapshot_timestamp_utc''''),
+        (''''model_snapshots'''',''''kickoff_utc''''),
+        (''''model_snapshots'''',''''home_team''''),
+        (''''model_snapshots'''',''''away_team''''),
+        (''''model_snapshots'''',''''league''''),
+        (''''model_snapshots'''',''''source_match_id''''),
+        (''''model_snapshots'''',''''valid_prematch''''),
+        (''''model_snapshots'''',''''analysis_eligible''''),
+        (''''model_snapshots'''',''''model_pick''''),
+        (''''model_snapshots'''',''''model_pick_probability''''),
+        (''''model_snapshots'''',''''picked_odds''''),
+        (''''model_snapshots'''',''''picked_edge''''),
+        (''''model_snapshots'''',''''pin_favorite''''),
+        (''''model_snapshots'''',''''pin_favorite_odds''''),
+        (''''model_snapshots'''',''''same_as_favorite''''),
+        (''''model_snapshots'''',''''sha256_model_raw''''),
+        (''''model_snapshots'''',''''sha256_odds_raw''''),
+        (''''model_snapshots'''',''''payload''''),
+        (''''model_snapshots'''',''''imported_at''''),
+        (''''match_results'''',''''match_id''''),
+        (''''match_results'''',''''version''''),
+        (''''match_results'''',''''status''''),
+        (''''match_results'''',''''result_1x2''''),
+        (''''match_results'''',''''final_home_goals''''),
+        (''''match_results'''',''''final_away_goals''''),
+        (''''match_results'''',''''result_timestamp_utc''''),
+        (''''match_results'''',''''result_source''''),
+        (''''match_results'''',''''payload''''),
+        (''''match_results'''',''''imported_at''''),
+        (''''ingest_runs'''',''''id''''),
+        (''''ingest_runs'''',''''source''''),
+        (''''ingest_runs'''',''''source_sha256''''),
+        (''''ingest_runs'''',''''rows_seen''''),
+        (''''ingest_runs'''',''''rows_inserted''''),
+        (''''ingest_runs'''',''''created_at''''),
+        (''''runtime_state'''',''''key''''),
+        (''''runtime_state'''',''''value''''),
+        (''''runtime_state'''',''''updated_at''''),
+        (''''oauth_authorization_codes'''',''''code_hash''''),
+        (''''oauth_authorization_codes'''',''''client_id''''),
+        (''''oauth_authorization_codes'''',''''redirect_uri''''),
+        (''''oauth_authorization_codes'''',''''code_challenge''''),
+        (''''oauth_authorization_codes'''',''''resource''''),
+        (''''oauth_authorization_codes'''',''''scope''''),
+        (''''oauth_authorization_codes'''',''''expires_at''''),
+        (''''oauth_authorization_codes'''',''''used_at''''),
+        (''''oauth_access_tokens'''',''''token_hash''''),
+        (''''oauth_access_tokens'''',''''client_id''''),
+        (''''oauth_access_tokens'''',''''resource''''),
+        (''''oauth_access_tokens'''',''''scope''''),
+        (''''oauth_access_tokens'''',''''expires_at''''),
+        (''''oauth_access_tokens'''',''''revoked_at''''),
+        (''''oauth_access_tokens'''',''''created_at''''),
+        (''''oauth_refresh_tokens'''',''''token_hash''''),
+        (''''oauth_refresh_tokens'''',''''client_id''''),
+        (''''oauth_refresh_tokens'''',''''resource''''),
+        (''''oauth_refresh_tokens'''',''''scope''''),
+        (''''oauth_refresh_tokens'''',''''expires_at''''),
+        (''''oauth_refresh_tokens'''',''''revoked_at''''),
+        (''''oauth_refresh_tokens'''',''''created_at''''),
+        (''''decision_batches'''',''''batch_id''''),
+        (''''decision_batches'''',''''requested_at_utc''''),
+        (''''decision_batches'''',''''requested_date''''),
+        (''''decision_batches'''',''''timezone''''),
+        (''''decision_batches'''',''''mode''''),
+        (''''decision_batches'''',''''strategy_filter''''),
+        (''''decision_batches'''',''''label''''),
+        (''''decision_batches'''',''''created_at''''),
+        (''''decision_tickets'''',''''batch_id''''),
+        (''''decision_tickets'''',''''match_id''''),
+        (''''decision_tickets'''',''''snapshot_timestamp_utc''''),
+        (''''decision_tickets'''',''''kickoff_utc''''),
+        (''''decision_tickets'''',''''home_team''''),
+        (''''decision_tickets'''',''''away_team''''),
+        (''''decision_tickets'''',''''league''''),
+        (''''decision_tickets'''',''''model_pick''''),
+        (''''decision_tickets'''',''''model_probability''''),
+        (''''decision_tickets'''',''''picked_odds''''),
+        (''''decision_tickets'''',''''picked_edge''''),
+        (''''decision_tickets'''',''''strategies''''),
+        (''''decision_tickets'''',''''display_status''''),
+        (''''decision_tickets'''',''''snapshot_view''''),
+        (''''decision_tickets'''',''''shown_to_user''''),
+        (''''decision_tickets'''',''''created_at''''),
+        (''''source_pilot_runs'''',''''run_id''''),
+        (''''source_pilot_runs'''',''''pilot_id''''),
+        (''''source_pilot_runs'''',''''source''''),
+        (''''source_pilot_runs'''',''''slot_no''''),
+        (''''source_pilot_runs'''',''''started_at_utc''''),
+        (''''source_pilot_runs'''',''''finished_at_utc''''),
+        (''''source_pilot_runs'''',''''status''''),
+        (''''source_pilot_runs'''',''''final_url''''),
+        (''''source_pilot_runs'''',''''http_status''''),
+        (''''source_pilot_runs'''',''''browser_session_id''''),
+        (''''source_pilot_runs'''',''''browser_cost''''),
+        (''''source_pilot_runs'''',''''proxy_cost''''),
+        (''''source_pilot_runs'''',''''proxy_used_mb''''),
+        (''''source_pilot_runs'''',''''captcha_cost''''),
+        (''''source_pilot_runs'''',''''html_sha256''''),
+        (''''source_pilot_runs'''',''''screenshot_sha256''''),
+        (''''source_pilot_runs'''',''''html_gzip''''),
+        (''''source_pilot_runs'''',''''screenshot_png''''),
+        (''''source_pilot_runs'''',''''manifest''''),
+        (''''source_pilot_predictions'''',''''run_id''''),
+        (''''source_pilot_predictions'''',''''source''''),
+        (''''source_pilot_predictions'''',''''source_match_key''''),
+        (''''source_pilot_predictions'''',''''home_team''''),
+        (''''source_pilot_predictions'''',''''away_team''''),
+        (''''source_pilot_predictions'''',''''league''''),
+        (''''source_pilot_predictions'''',''''kickoff_raw''''),
+        (''''source_pilot_predictions'''',''''source_timezone''''),
+        (''''source_pilot_predictions'''',''''kickoff_utc''''),
+        (''''source_pilot_predictions'''',''''timezone_status''''),
+        (''''source_pilot_predictions'''',''''p1''''),
+        (''''source_pilot_predictions'''',''''px''''),
+        (''''source_pilot_predictions'''',''''p2''''),
+        (''''source_pilot_predictions'''',''''over25''''),
+        (''''source_pilot_predictions'''',''''under25''''),
+        (''''source_pilot_predictions'''',''''btts_yes''''),
+        (''''source_pilot_predictions'''',''''btts_no''''),
+        (''''source_pilot_predictions'''',''''xg_home''''),
+        (''''source_pilot_predictions'''',''''xg_away''''),
+        (''''source_pilot_predictions'''',''''correct_score''''),
+        (''''source_pilot_predictions'''',''''parse_status''''),
+        (''''source_pilot_predictions'''',''''payload''''),
+        (''''source_pilot_matches'''',''''run_id''''),
+        (''''source_pilot_matches'''',''''source_match_key''''),
+        (''''source_pilot_matches'''',''''anchor_match_id''''),
+        (''''source_pilot_matches'''',''''match_status''''),
+        (''''source_pilot_matches'''',''''match_confidence''''),
+        (''''source_pilot_matches'''',''''reason''''),
+        (''''source_pilot_control'''',''''pilot_id''''),
+        (''''source_pilot_control'''',''''started_at_utc''''),
+        (''''source_pilot_control'''',''''ends_at_utc''''),
+        (''''source_pilot_control'''',''''status''''),
+        (''''source_pilot_control'''',''''slots_expected''''),
+        (''''source_pilot_control'''',''''updated_at''''),
+        (''''strategy_simulations'''',''''batch_id''''),
+        (''''strategy_simulations'''',''''match_id''''),
+        (''''strategy_simulations'''',''''strategy_id''''),
+        (''''strategy_simulations'''',''''strategy_name''''),
+        (''''strategy_simulations'''',''''kickoff_utc''''),
+        (''''strategy_simulations'''',''''home_team''''),
+        (''''strategy_simulations'''',''''away_team''''),
+        (''''strategy_simulations'''',''''pick''''),
+        (''''strategy_simulations'''',''''probability''''),
+        (''''strategy_simulations'''',''''odds''''),
+        (''''strategy_simulations'''',''''edge''''),
+        (''''strategy_simulations'''',''''stake_eur''''),
+        (''''strategy_simulations'''',''''priced''''),
+        (''''strategy_simulations'''',''''status''''),
+        (''''strategy_simulations'''',''''result_1x2''''),
+        (''''strategy_simulations'''',''''correct''''),
+        (''''strategy_simulations'''',''''profit_eur''''),
+        (''''strategy_simulations'''',''''source_snapshot_timestamp_utc''''),
+        (''''strategy_simulations'''',''''updated_at''''),
+        (''''strategy_stats'''',''''strategy_id''''),
+        (''''strategy_stats'''',''''strategy_name''''),
+        (''''strategy_stats'''',''''description''''),
+        (''''strategy_stats'''',''''stake_eur''''),
+        (''''strategy_stats'''',''''signals_total''''),
+        (''''strategy_stats'''',''''pending''''),
+        (''''strategy_stats'''',''''settled''''),
+        (''''strategy_stats'''',''''priced_settled''''),
+        (''''strategy_stats'''',''''wins''''),
+        (''''strategy_stats'''',''''losses''''),
+        (''''strategy_stats'''',''''staked_eur''''),
+        (''''strategy_stats'''',''''profit_eur''''),
+        (''''strategy_stats'''',''''cumulative_profit_eur''''),
+        (''''strategy_stats'''',''''win_rate''''),
+        (''''strategy_stats'''',''''roi''''),
+        (''''strategy_stats'''',''''sample_reliability''''),
+        (''''strategy_stats'''',''''updated_at''''),
+        (''''market_decision_tickets'''',''''ticket_id''''),
+        (''''market_decision_tickets'''',''''batch_id''''),
+        (''''market_decision_tickets'''',''''match_id''''),
+        (''''market_decision_tickets'''',''''kickoff_utc''''),
+        (''''market_decision_tickets'''',''''home_team''''),
+        (''''market_decision_tickets'''',''''away_team''''),
+        (''''market_decision_tickets'''',''''league''''),
+        (''''market_decision_tickets'''',''''source''''),
+        (''''market_decision_tickets'''',''''market_id''''),
+        (''''market_decision_tickets'''',''''period''''),
+        (''''market_decision_tickets'''',''''selection''''),
+        (''''market_decision_tickets'''',''''line''''),
+        (''''market_decision_tickets'''',''''probability''''),
+        (''''market_decision_tickets'''',''''odds''''),
+        (''''market_decision_tickets'''',''''edge''''),
+        (''''market_decision_tickets'''',''''derivation''''),
+        (''''market_decision_tickets'''',''''source_snapshot_utc''''),
+        (''''market_decision_tickets'''',''''status''''),
+        (''''market_decision_tickets'''',''''result_value''''),
+        (''''market_decision_tickets'''',''''correct''''),
+        (''''market_decision_tickets'''',''''stake_eur''''),
+        (''''market_decision_tickets'''',''''profit_eur''''),
+        (''''market_decision_tickets'''',''''payload''''),
+        (''''market_decision_tickets'''',''''created_at''''),
+        (''''market_decision_tickets'''',''''updated_at''''),
+        (''''market_stats'''',''''market_id''''),
+        (''''market_stats'''',''''source''''),
+        (''''market_stats'''',''''signals_total''''),
+        (''''market_stats'''',''''pending''''),
+        (''''market_stats'''',''''settled''''),
+        (''''market_stats'''',''''priced_settled''''),
+        (''''market_stats'''',''''wins''''),
+        (''''market_stats'''',''''losses''''),
+        (''''market_stats'''',''''staked_eur''''),
+        (''''market_stats'''',''''profit_eur''''),
+        (''''market_stats'''',''''win_rate''''),
+        (''''market_stats'''',''''roi''''),
+        (''''market_stats'''',''''sample_reliability''''),
+        (''''market_stats'''',''''updated_at''''),
+        (''''result_observations'''',''''observation_id''''),
+        (''''result_observations'''',''''match_id''''),
+        (''''result_observations'''',''''provider''''),
+        (''''result_observations'''',''''provider_match_id''''),
+        (''''result_observations'''',''''observed_at_utc''''),
+        (''''result_observations'''',''''kickoff_utc''''),
+        (''''result_observations'''',''''status''''),
+        (''''result_observations'''',''''final_home_goals''''),
+        (''''result_observations'''',''''final_away_goals''''),
+        (''''result_observations'''',''''ht_home_goals''''),
+        (''''result_observations'''',''''ht_away_goals''''),
+        (''''result_observations'''',''''corners_home''''),
+        (''''result_observations'''',''''corners_away''''),
+        (''''result_observations'''',''''ht_corners_home''''),
+        (''''result_observations'''',''''ht_corners_away''''),
+        (''''result_observations'''',''''raw_sha256''''),
+        (''''result_observations'''',''''payload''''),
+        (''''result_consensus'''',''''match_id''''),
+        (''''result_consensus'''',''''final_home_goals''''),
+        (''''result_consensus'''',''''final_away_goals''''),
+        (''''result_consensus'''',''''ht_home_goals''''),
+        (''''result_consensus'''',''''ht_away_goals''''),
+        (''''result_consensus'''',''''corners_home''''),
+        (''''result_consensus'''',''''corners_away''''),
+        (''''result_consensus'''',''''ht_corners_home''''),
+        (''''result_consensus'''',''''ht_corners_away''''),
+        (''''result_consensus'''',''''result_1x2''''),
+        (''''result_consensus'''',''''verification_status''''),
+        (''''result_consensus'''',''''field_verification''''),
+        (''''result_consensus'''',''''providers''''),
+        (''''result_consensus'''',''''updated_at''''),
+        (''''result_source_pilot_control'''',''''pilot_id''''),
+        (''''result_source_pilot_control'''',''''started_at_utc''''),
+        (''''result_source_pilot_control'''',''''ends_at_utc''''),
+        (''''result_source_pilot_control'''',''''status''''),
+        (''''result_source_pilot_control'''',''''slots_expected''''),
+        (''''result_source_pilot_control'''',''''updated_at''''),
+        (''''result_source_pilot_runs'''',''''run_id''''),
+        (''''result_source_pilot_runs'''',''''pilot_id''''),
+        (''''result_source_pilot_runs'''',''''source''''),
+        (''''result_source_pilot_runs'''',''''slot_no''''),
+        (''''result_source_pilot_runs'''',''''started_at_utc''''),
+        (''''result_source_pilot_runs'''',''''finished_at_utc''''),
+        (''''result_source_pilot_runs'''',''''status''''),
+        (''''result_source_pilot_runs'''',''''final_url''''),
+        (''''result_source_pilot_runs'''',''''http_status''''),
+        (''''result_source_pilot_runs'''',''''browser_session_id''''),
+        (''''result_source_pilot_runs'''',''''browser_cost''''),
+        (''''result_source_pilot_runs'''',''''proxy_cost''''),
+        (''''result_source_pilot_runs'''',''''proxy_used_mb''''),
+        (''''result_source_pilot_runs'''',''''captcha_cost''''),
+        (''''result_source_pilot_runs'''',''''rows_found''''),
+        (''''result_source_pilot_runs'''',''''capabilities''''),
+        (''''result_source_pilot_runs'''',''''html_sha256''''),
+        (''''result_source_pilot_runs'''',''''screenshot_sha256''''),
+        (''''result_source_pilot_runs'''',''''html_gzip''''),
+        (''''result_source_pilot_runs'''',''''screenshot_png''''),
+        (''''result_source_pilot_runs'''',''''manifest'''')
+        ) AS required(table_name,column_name)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM information_schema.columns c
+            WHERE c.table_schema=current_schema()
+              AND c.table_name=required.table_name AND c.column_name=required.column_name
+        )
+    ) THEN
+        RAISE EXCEPTION ''''Existing schema is missing baseline columns; explicit repair migration required'''';
+    END IF;
+END; $baseline_check$;
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (1,''0001_baseline.sql'',''a6cd3bda6f1bfb8f029d4039b2c50d0ed8d444bc12470b28a382faac068f7287'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=2;
+        IF FOUND THEN
+            IF applied.name <> ''0002_decision_requests.sql'' OR applied.sha256 <> ''a4a889aaf87ef74a40fb8453b96cbea451b6673ab5dda3eed2e127d906b21012'' THEN
+                RAISE EXCEPTION ''Migration 2 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''CREATE TABLE decision_requests (
+    idempotency_key TEXT PRIMARY KEY,
+    request_sha256 TEXT NOT NULL,
+    batch_id TEXT NOT NULL UNIQUE REFERENCES decision_batches(batch_id) ON DELETE RESTRICT,
+    response JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (2,''0002_decision_requests.sql'',''a4a889aaf87ef74a40fb8453b96cbea451b6673ab5dda3eed2e127d906b21012'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=3;
+        IF FOUND THEN
+            IF applied.name <> ''0003_browser_session_leases.sql'' OR applied.sha256 <> ''4cb5e76853a41fad80ca8f5cb11f5415e3f7dec70a7e351548e00b51bd3e172e'' THEN
+                RAISE EXCEPTION ''Migration 3 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''CREATE TABLE browser_session_leases (
+    session_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until TIMESTAMPTZ NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (''''ACTIVE'''',''''STOPPING'''',''''STOP_FAILED'''',''''STOPPED'''')),
+    stop_error TEXT NOT NULL DEFAULT '''''''',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX browser_session_leases_reap
+ON browser_session_leases(lease_until,last_activity_at) WHERE state <> ''''STOPPED'''';
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (3,''0003_browser_session_leases.sql'',''4cb5e76853a41fad80ca8f5cb11f5415e3f7dec70a7e351548e00b51bd3e172e'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=4;
+        IF FOUND THEN
+            IF applied.name <> ''0004_canonical_entities.sql'' OR applied.sha256 <> ''483b2391d9b4af2823f3d74784562777a16e41c4e11c0d9415aea2cafa715a8f'' THEN
+                RAISE EXCEPTION ''Migration 4 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- Internal identities are separate from source eligibility and frozen snapshots.
+CREATE TABLE canonical_entities (
+    entity_id UUID PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN (''''TEAM'''',''''COMPETITION'''')),
+    canonical_name TEXT NOT NULL CHECK (length(trim(canonical_name)) > 0),
+    country_code TEXT NOT NULL CHECK (country_code ~ ''''^[A-Z]{2,3}$''''),
+    category TEXT NOT NULL CHECK (category ~ ''''^(MEN|WOMEN|MIXED):(SENIOR|U[0-9]{2}):(FIRST|B|II|RESERVE)$''''),
+    provenance JSONB NOT NULL CHECK (jsonb_typeof(provenance)=''''object'''' AND provenance <> ''''{}''''::jsonb),
+    external_ids JSONB NOT NULL DEFAULT ''''{}'''' CHECK (jsonb_typeof(external_ids)=''''object''''),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (entity_id,kind,country_code,category)
+);
+
+CREATE TABLE canonical_alias_versions (
+    alias_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version > 0),
+    entity_id UUID NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (length(trim(source)) > 0 AND source <> ''''*''''),
+    alias TEXT NOT NULL CHECK (length(trim(alias)) > 0),
+    normalized_alias TEXT NOT NULL CHECK (length(trim(normalized_alias)) > 0),
+    country_code TEXT NOT NULL,
+    category TEXT NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_until TIMESTAMPTZ,
+    state TEXT NOT NULL CHECK (state IN (''''ACTIVE'''',''''RETRACTED'''')),
+    provenance JSONB NOT NULL CHECK (jsonb_typeof(provenance)=''''object'''' AND provenance <> ''''{}''''::jsonb),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (alias_id,version),
+    FOREIGN KEY (entity_id,kind,country_code,category)
+        REFERENCES canonical_entities(entity_id,kind,country_code,category),
+    CHECK (valid_until IS NULL OR valid_until > valid_from)
+);
+CREATE INDEX canonical_alias_lookup ON canonical_alias_versions
+    (kind,source,normalized_alias,country_code,category,recorded_at);
+
+CREATE FUNCTION canonical_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION ''''Canonical registry is append-only; append an alias revision'''';
+END;
+$$;
+CREATE TRIGGER canonical_entities_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON canonical_entities FOR EACH STATEMENT EXECUTE FUNCTION canonical_reject_mutation();
+CREATE TRIGGER canonical_aliases_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON canonical_alias_versions FOR EACH STATEMENT EXECUTE FUNCTION canonical_reject_mutation();
+
+CREATE FUNCTION canonical_alias_revision_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous canonical_alias_versions%ROWTYPE;
+BEGIN
+    -- Serialize revisions, including two concurrent first inserts.
+    PERFORM pg_advisory_xact_lock(hashtextextended(NEW.alias_id,460244124));
+    SELECT * INTO previous FROM canonical_alias_versions
+        WHERE alias_id=NEW.alias_id ORDER BY version DESC LIMIT 1;
+    IF FOUND THEN
+        IF NEW.version <> previous.version+1 OR
+           ROW(NEW.entity_id,NEW.kind,NEW.source,NEW.alias,NEW.normalized_alias,NEW.country_code,NEW.category)
+           IS DISTINCT FROM
+           ROW(previous.entity_id,previous.kind,previous.source,previous.alias,previous.normalized_alias,previous.country_code,previous.category)
+        THEN RAISE EXCEPTION ''''Alias revision sequence or identity changed''''; END IF;
+    ELSIF NEW.version <> 1 THEN
+        RAISE EXCEPTION ''''Alias revisions must start at version 1'''';
+    END IF;
+    -- Knowledge time is server-owned; it cannot be backdated by an import.
+    NEW.recorded_at := clock_timestamp();
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER canonical_alias_version_insert BEFORE INSERT ON canonical_alias_versions
+    FOR EACH ROW EXECUTE FUNCTION canonical_alias_revision_guard();
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (4,''0004_canonical_entities.sql'',''483b2391d9b4af2823f3d74784562777a16e41c4e11c0d9415aea2cafa715a8f'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=5;
+        IF FOUND THEN
+            IF applied.name <> ''0005_pilot_server_sealing.sql'' OR applied.sha256 <> ''ee7ad29edc404f38608404216fd55da795eba597fcd6d6eddb7e7f80001fbd56'' THEN
+                RAISE EXCEPTION ''Migration 5 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- Existing rows deliberately remain NULL: no retroactive certification.
+ALTER TABLE source_pilot_runs ADD COLUMN sealed_at_utc TIMESTAMPTZ;
+ALTER TABLE source_pilot_predictions ADD COLUMN sealed_at_utc TIMESTAMPTZ;
+
+CREATE FUNCTION seal_pilot_row() RETURNS trigger LANGUAGE plpgsql AS $seal$
+BEGIN
+    IF TG_OP <> ''''INSERT'''' THEN
+        RAISE EXCEPTION ''''Pilot evidence is append-only; do not rewrite historical slots'''';
+    END IF;
+    IF NEW.sealed_at_utc IS NOT NULL THEN
+        RAISE EXCEPTION ''''Pilot sealing time is server-owned'''';
+    END IF;
+    NEW.sealed_at_utc := clock_timestamp();
+    RETURN NEW;
+END;
+$seal$;
+
+CREATE TRIGGER source_pilot_runs_seal
+    BEFORE INSERT OR UPDATE OR DELETE ON source_pilot_runs
+    FOR EACH ROW EXECUTE FUNCTION seal_pilot_row();
+CREATE TRIGGER source_pilot_predictions_seal
+    BEFORE INSERT OR UPDATE OR DELETE ON source_pilot_predictions
+    FOR EACH ROW EXECUTE FUNCTION seal_pilot_row();
+CREATE TRIGGER source_pilot_runs_no_truncate
+    BEFORE TRUNCATE ON source_pilot_runs
+    FOR EACH STATEMENT EXECUTE FUNCTION seal_pilot_row();
+CREATE TRIGGER source_pilot_predictions_no_truncate
+    BEFORE TRUNCATE ON source_pilot_predictions
+    FOR EACH STATEMENT EXECUTE FUNCTION seal_pilot_row();
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (5,''0005_pilot_server_sealing.sql'',''ee7ad29edc404f38608404216fd55da795eba597fcd6d6eddb7e7f80001fbd56'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=6;
+        IF FOUND THEN
+            IF applied.name <> ''0006_evaluation_protocols.sql'' OR applied.sha256 <> ''08253596be53ccc1273a7f956793b6c20ae28333c5dc7553c67d8d530acb13fb'' THEN
+                RAISE EXCEPTION ''Migration 6 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- New evidence only. No historical tickets/snapshots/results are modified.
+CREATE TABLE evaluation_protocols (
+    protocol_id TEXT PRIMARY KEY CHECK (length(trim(protocol_id)) > 0),
+    contract_version TEXT NOT NULL DEFAULT ''''frozen-ticket-v1'''' CHECK (contract_version=''''frozen-ticket-v1''''),
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL CHECK (window_end > window_start),
+    policy_json TEXT NOT NULL,
+    policy_sha256 TEXT NOT NULL,
+    sealed_at_utc TIMESTAMPTZ NOT NULL
+);
+
+CREATE FUNCTION seal_evaluation_protocol() RETURNS trigger LANGUAGE plpgsql AS $seal$
+DECLARE
+    p JSONB;
+    scoring JSONB;
+    field TEXT;
+BEGIN
+    IF TG_OP <> ''''INSERT'''' THEN
+        RAISE EXCEPTION ''''Evaluation protocols are append-only'''';
+    END IF;
+    IF NEW.sealed_at_utc IS NOT NULL OR NEW.policy_sha256 IS NOT NULL THEN
+        RAISE EXCEPTION ''''Evaluation seal and hash are server-owned'''';
+    END IF;
+    NEW.sealed_at_utc := clock_timestamp();
+    IF NEW.window_start <= NEW.sealed_at_utc THEN
+        RAISE EXCEPTION ''''Evaluation must be registered before its future window'''';
+    END IF;
+    p := NEW.policy_json::jsonb;
+    IF jsonb_typeof(p) <> ''''object'''' OR NOT p ?& ARRAY[''''window_start'''',''''window_end'''',''''strategy'''',
+        ''''min_fixtures'''',''''min_days'''',''''min_coverage'''',''''min_log_loss_gain'''',''''min_roi'''',
+        ''''result_grace_days'''',''''commission'''',''''score_policy''''] OR
+        (SELECT count(*) FROM jsonb_object_keys(p)) <> 11 THEN
+        RAISE EXCEPTION ''''Complete evaluation policy required'''';
+    END IF;
+    IF jsonb_typeof(p->''''window_start'''') <> ''''string'''' OR jsonb_typeof(p->''''window_end'''') <> ''''string'''' OR
+        jsonb_typeof(p->''''strategy'''') <> ''''string'''' OR
+        (p->>''''window_start'''') !~ ''''(Z|[+-][0-9]{2}:[0-9]{2})$'''' OR
+        (p->>''''window_end'''') !~ ''''(Z|[+-][0-9]{2}:[0-9]{2})$'''' OR
+        (p->>''''window_start'''')::timestamptz <> NEW.window_start OR
+        (p->>''''window_end'''')::timestamptz <> NEW.window_end OR
+        p->>''''strategy'''' !~ ''''^S[1-9]$'''' THEN
+        RAISE EXCEPTION ''''Evaluation window or strategy mismatch'''';
+    END IF;
+    FOREACH field IN ARRAY ARRAY[''''min_fixtures'''',''''min_days'''',''''min_coverage'''',''''min_log_loss_gain'''',
+                                 ''''min_roi'''',''''result_grace_days'''',''''commission''''] LOOP
+        IF jsonb_typeof(p->field) <> ''''number'''' THEN
+            RAISE EXCEPTION ''''Numeric evaluation threshold required: %'''',field;
+        END IF;
+    END LOOP;
+    FOREACH field IN ARRAY ARRAY[''''min_fixtures'''',''''min_days'''',''''result_grace_days''''] LOOP
+        IF (p->>field)::numeric <> trunc((p->>field)::numeric) OR (p->>field)::numeric > 1000000 THEN
+            RAISE EXCEPTION ''''Integer evaluation count required: %'''',field;
+        END IF;
+    END LOOP;
+    IF (p->>''''min_fixtures'''')::numeric < 2 OR (p->>''''min_days'''')::numeric < 2 OR
+        (p->>''''min_days'''')::numeric > (p->>''''min_fixtures'''')::numeric OR
+        (p->>''''result_grace_days'''')::numeric < 0 OR
+        (p->>''''min_coverage'''')::numeric <= 0 OR (p->>''''min_coverage'''')::numeric > 1 OR
+        (p->>''''min_log_loss_gain'''')::numeric <= 0 OR
+        (p->>''''min_roi'''')::numeric <= 0 OR (p->>''''min_roi'''')::numeric >= 1 OR
+        (p->>''''commission'''')::numeric < 0 OR (p->>''''commission'''')::numeric >= 1 THEN
+        RAISE EXCEPTION ''''Invalid evaluation thresholds'''';
+    END IF;
+    scoring := p->''''score_policy'''';
+    IF jsonb_typeof(scoring) <> ''''object'''' OR NOT scoring ?& ARRAY[''''epsilon'''',''''bin_edges'''',''''min_bin_count'''',
+        ''''bootstrap_replicates'''',''''bootstrap_seed'''',''''confidence_level''''] OR
+        (SELECT count(*) FROM jsonb_object_keys(scoring)) <> 6 THEN
+        RAISE EXCEPTION ''''Complete scoring policy required'''';
+    END IF;
+    FOREACH field IN ARRAY ARRAY[''''epsilon'''',''''min_bin_count'''',''''bootstrap_replicates'''',
+                                 ''''bootstrap_seed'''',''''confidence_level''''] LOOP
+        IF jsonb_typeof(scoring->field) <> ''''number'''' THEN
+            RAISE EXCEPTION ''''Numeric scoring parameter required: %'''',field;
+        END IF;
+    END LOOP;
+    FOREACH field IN ARRAY ARRAY[''''min_bin_count'''',''''bootstrap_replicates'''',''''bootstrap_seed''''] LOOP
+        IF (scoring->>field)::numeric <> trunc((scoring->>field)::numeric) THEN
+            RAISE EXCEPTION ''''Integer scoring parameter required: %'''',field;
+        END IF;
+    END LOOP;
+    IF (scoring->>''''epsilon'''')::numeric <= 0 OR (scoring->>''''epsilon'''')::numeric >= 0.5 OR
+        (scoring->>''''min_bin_count'''')::numeric < 1 OR (scoring->>''''min_bin_count'''')::numeric > 1000000 OR
+        (scoring->>''''bootstrap_replicates'''')::numeric < 1000 OR (scoring->>''''bootstrap_replicates'''')::numeric > 10000 OR
+        (scoring->>''''confidence_level'''')::numeric < 0.95 OR (scoring->>''''confidence_level'''')::numeric >= 1 OR
+        jsonb_typeof(scoring->''''bin_edges'''') <> ''''array'''' THEN
+        RAISE EXCEPTION ''''Invalid scoring or uncertainty policy'''';
+    END IF;
+    IF jsonb_array_length(scoring->''''bin_edges'''') < 2 OR
+        scoring->''''bin_edges''''->0 <> ''''0''''::jsonb OR scoring->''''bin_edges''''->-1 <> ''''1''''::jsonb OR
+        EXISTS (SELECT 1 FROM jsonb_array_elements(scoring->''''bin_edges'''') WITH ORDINALITY AS edges(value,pos)
+            WHERE jsonb_typeof(value) <> ''''number'''' OR
+                (pos>1 AND value::numeric <= (scoring->''''bin_edges''''->(pos::int-2))::numeric)) THEN
+        RAISE EXCEPTION ''''Invalid fixed calibration bins'''';
+    END IF;
+    NEW.policy_sha256 := encode(sha256(convert_to(NEW.policy_json,''''UTF8'''')),''''hex'''');
+    RETURN NEW;
+END;
+$seal$;
+
+CREATE TRIGGER evaluation_protocols_seal BEFORE INSERT OR UPDATE OR DELETE ON evaluation_protocols
+    FOR EACH ROW EXECUTE FUNCTION seal_evaluation_protocol();
+CREATE TRIGGER evaluation_protocols_no_truncate BEFORE TRUNCATE ON evaluation_protocols
+    FOR EACH STATEMENT EXECUTE FUNCTION seal_evaluation_protocol();
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (6,''0006_evaluation_protocols.sql'',''08253596be53ccc1273a7f956793b6c20ae28333c5dc7553c67d8d530acb13fb'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=7;
+        IF FOUND THEN
+            IF applied.name <> ''0007_sxbet_rate_limits.sql'' OR applied.sha256 <> ''3f3f06d34cf7e83e01a096bd7366eeeecac2edd5d05b1039c491ea64183b74e4'' THEN
+                RAISE EXCEPTION ''Migration 7 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- SX Bet shared rate coordinator (governance §2.4). Additive only.
+-- Source of truth for bridge/sxbet/ratelimit.py:_SCHEMA, which repeats these
+-- statements verbatim so a process can ensure them idempotently (IF NOT EXISTS
+-- makes either order safe). Bucket keys hold a SHA-256 of the API key, never the key.
+CREATE TABLE IF NOT EXISTS sxbet_rate_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    bucket_key TEXT NOT NULL CHECK (bucket_key LIKE ''''sxbet:v1:%'''' AND length(bucket_key) <= 256),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_sxbet_rate_attempts_bucket
+ON sxbet_rate_attempts(bucket_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_sxbet_rate_attempts_created
+ON sxbet_rate_attempts(created_at);
+CREATE TABLE IF NOT EXISTS sxbet_rate_cooldowns (
+    bucket_key TEXT PRIMARY KEY CHECK (bucket_key LIKE ''''sxbet:v1:%'''' AND length(bucket_key) <= 256),
+    cooldown_until TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (7,''0007_sxbet_rate_limits.sql'',''3f3f06d34cf7e83e01a096bd7366eeeecac2edd5d05b1039c491ea64183b74e4'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=8;
+        IF FOUND THEN
+            IF applied.name <> ''0008_runtime_tables.sql'' OR applied.sha256 <> ''2ee5a7bbe9ce1a8b55474ba73288c1dfda6c847f81b7277bf5956f080dab759d'' THEN
+                RAISE EXCEPTION ''Migration 8 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- FCB-WP-004: versioned home of the runtime-only tables (CLAUDE.md §5).
+-- Until now these were created only by the running code with CREATE TABLE IF NOT EXISTS.
+-- The DDL is byte-for-byte the runtime one, so this migration is a no-op on a database
+-- where the runtime already created them, and the runtime stays a no-op after it.
+-- Additive only: no DROP, ALTER, DELETE, UPDATE or data change.
+
+-- Shared API-FOOTBALL quota coordinator (bridge/api_football/quota.py _SCHEMA).
+CREATE TABLE IF NOT EXISTS api_football_quota_counters (
+         api_key_hash TEXT NOT NULL,
+         window_kind TEXT NOT NULL,
+         bucket BIGINT NOT NULL,
+         used INTEGER NOT NULL,
+         PRIMARY KEY (api_key_hash, window_kind, bucket)
+       );
+CREATE TABLE IF NOT EXISTS api_football_quota_leases (
+         lease_id TEXT PRIMARY KEY,
+         api_key_hash TEXT NOT NULL,
+         expires_at TIMESTAMPTZ NOT NULL
+       );
+CREATE INDEX IF NOT EXISTS idx_api_football_lease_expires
+       ON api_football_quota_leases(api_key_hash, expires_at);
+CREATE TABLE IF NOT EXISTS api_football_quota_attempts (
+         attempt_id TEXT PRIMARY KEY,
+         api_key_hash TEXT NOT NULL,
+         created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+       );
+CREATE INDEX IF NOT EXISTS idx_api_football_attempt_recent
+       ON api_football_quota_attempts(api_key_hash, created_at);
+
+-- OAuth dynamic client registration for Claude (bridge/oauth_store.py register_claude_dcr_client).
+CREATE TABLE IF NOT EXISTS oauth_claude_dcr_clients (
+               client_id_hash TEXT PRIMARY KEY,
+               redirect_uri TEXT NOT NULL,
+               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+               expires_at TIMESTAMPTZ NOT NULL
+            );
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (8,''0008_runtime_tables.sql'',''2ee5a7bbe9ce1a8b55474ba73288c1dfda6c847f81b7277bf5956f080dab759d'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=9;
+        IF FOUND THEN
+            IF applied.name <> ''0009_oauth_throttle_buckets.sql'' OR applied.sha256 <> ''2be8a8b2961b0516c9aba11cbddbcf8001e337de3d3bb46abf7cb932c7f5a56f'' THEN
+                RAISE EXCEPTION ''Migration 9 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- FCB OAuth persistent throttle (owner decisions D01-D12, 2026-11-11).
+-- Additive only: CREATE TABLE/INDEX IF NOT EXISTS. No DROP, ALTER, DELETE, UPDATE or data change.
+--
+-- oauth_throttle_buckets: one GCRA state row per (scope, key). key_hash is either ''''*'''' (the
+-- global bucket of the scope) or ''''<key id>:<HMAC-SHA256 hex>'''' of the normalised client address
+-- (IPv4, or the IPv6 /64), computed with a dedicated server secret: never a plain address.
+-- tat is the GCRA "theoretical arrival time", written only from the database clock.
+-- Rows are created only for requests that conform (denied keys leave no row) and are removed
+-- by bounded opportunistic cleanup once tat is in the past (a decayed row equals no row).
+CREATE TABLE IF NOT EXISTS oauth_throttle_buckets (
+    scope TEXT NOT NULL CHECK (scope IN (''''consent'''', ''''registration'''')),
+    key_hash TEXT NOT NULL CHECK (key_hash = ''''*'''' OR key_hash ~ ''''^[a-z0-9]{1,8}:[0-9a-f]{64}$''''),
+    tat TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (scope, key_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_throttle_buckets_tat ON oauth_throttle_buckets (tat);
+
+-- Emergency unlock evidence (D05, D11): the protected unlock workflow copies every bucket it
+-- removes here, in the same transaction, before deleting it. The runtime role gets no privilege
+-- on this table; nothing in the runtime reads or writes it.
+CREATE TABLE IF NOT EXISTS oauth_throttle_unlock_audit (
+    audit_id BIGSERIAL PRIMARY KEY,
+    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    scope TEXT NOT NULL,
+    target TEXT NOT NULL,
+    github_run_id TEXT NOT NULL,
+    github_actor TEXT NOT NULL,
+    removed_key_hash TEXT,
+    removed_tat TIMESTAMPTZ,
+    removed_updated_at TIMESTAMPTZ
+);
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (9,''0009_oauth_throttle_buckets.sql'',''2be8a8b2961b0516c9aba11cbddbcf8001e337de3d3bb46abf7cb932c7f5a56f'');
+        END IF;
+    END;';
+DO '
+    DECLARE applied schema_migrations%ROWTYPE;
+    BEGIN
+        SELECT * INTO applied FROM schema_migrations WHERE version=10;
+        IF FOUND THEN
+            IF applied.name <> ''0010_apifootball_cert_campaign_ledger.sql'' OR applied.sha256 <> ''64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8'' THEN
+                RAISE EXCEPTION ''Migration 10 checksum/name drift'';
+            END IF;
+        ELSE
+            EXECUTE ''-- AF-07 (owner approval 2026-11-11, offline development): persistent campaign ledger for the
+-- API-FOOTBALL certification campaigns (scripts/apifootball_cert_batch1.py). DEDICATED tables:
+-- the shared quota coordinator (api_football_quota_*) is neither reused nor altered.
+-- Additive only: new tables, functions and triggers. No DROP, ALTER, UPDATE, DELETE or data change
+-- on any existing object. Depends on 0009 (PR #198) only through the consecutive numbering.
+--
+-- The bridge runtime never reads or writes these tables and never applies migrations; this one is
+-- applied only by the owner-gated workflow fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml.
+--
+-- AF-15 (owner decision 2026-11-11): the budget belongs to an owner-APPROVED PLAN, not to a
+-- campaign. Every campaign_id of one plan shares the plan''''s budget: a new campaign_id, a restart or
+-- a new dispatch renews nothing. A plan row is written only by the owner-gated approval workflow
+-- (fcb-aiven-defaultdb-apifootball-cert-plan-approve.yml, as fcb_migrator); the runtime role only
+-- reads it. A plan never changes: a new budget needs a new plan (new sha256) and a new approval.
+
+-- api_football_cert_plans: append-only register of approved plans. plan_sha256 is the SHA-256 of
+-- the plan file committed on main (docs/certification/apifootball/batch1_plan.json or
+-- live_snapshot_plan.json). approved_by / github_run_id come from the GitHub context of the
+-- approval workflow; approved_role and approved_at are stamped by the server.
+CREATE TABLE IF NOT EXISTS api_football_cert_plans (
+    plan_sha256 TEXT PRIMARY KEY CHECK (plan_sha256 ~ ''''^[0-9a-f]{64}$''''),
+    plan_kind TEXT NOT NULL CHECK (plan_kind IN (''''BATCH1'''', ''''LIVE_FULL_MATCH_SNAPSHOT'''')),
+    budget INTEGER NOT NULL CHECK (budget BETWEEN 1 AND 78),
+    approved_by TEXT NOT NULL CHECK (approved_by ~ ''''^[A-Za-z0-9][A-Za-z0-9-]{0,38}$''''),
+    github_run_id BIGINT NOT NULL CHECK (github_run_id > 0),
+    approved_role TEXT NOT NULL DEFAULT session_user,
+    approved_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CHECK (plan_kind <> ''''LIVE_FULL_MATCH_SNAPSHOT'''' OR budget <= 8)
+);
+
+-- api_football_cert_plan_usage (review #199 P1, owner decision): the persistent per-plan counter
+-- of committed reservations. One row per approved plan (created with used = 0 when the plan is
+-- approved); used only grows, by exactly 1, and only through the SECURITY DEFINER budget trigger
+-- below, in the SAME transaction as the attempt it numbers: a rollback or a killed process undoes
+-- both. The runtime role has NO privilege on it. The guarantee does not depend on the isolation
+-- level: in READ COMMITTED a concurrent increment waits for the row lock and re-checks
+-- `used < budget` on the committed value; in REPEATABLE READ / SERIALIZABLE it fails with a
+-- serialization error (40001) and nothing is reserved.
+CREATE TABLE IF NOT EXISTS api_football_cert_plan_usage (
+    plan_sha256 TEXT PRIMARY KEY REFERENCES api_football_cert_plans (plan_sha256),
+    used INTEGER NOT NULL DEFAULT 0 CHECK (used BETWEEN 0 AND 78)
+);
+
+-- api_football_cert_campaigns: one row per campaign_id, bound to an approved plan at creation and
+-- immutable afterwards.
+CREATE TABLE IF NOT EXISTS api_football_cert_campaigns (
+    campaign_id TEXT PRIMARY KEY CHECK (campaign_id ~ ''''^[a-z0-9][a-z0-9-]{7,63}$''''),
+    plan_sha256 TEXT NOT NULL REFERENCES api_football_cert_plans (plan_sha256),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+-- api_football_cert_campaign_attempts: append-only, one row per provider HTTP attempt, written
+-- (committed) BEFORE the request leaves (write-ahead). seq is assigned by the server: it is the
+-- plan counter''''s value after the increment, so the seqs of all the campaigns of a plan are exactly
+-- 1..used, never reused, never above the plan''''s budget.
+CREATE TABLE IF NOT EXISTS api_football_cert_campaign_attempts (
+    campaign_id TEXT NOT NULL REFERENCES api_football_cert_campaigns (campaign_id),
+    seq INTEGER NOT NULL CHECK (seq BETWEEN 1 AND 78),
+    call_id TEXT NOT NULL CHECK (call_id ~ ''''^[A-Za-z0-9_-]{1,32}$''''),
+    reserved_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (campaign_id, seq)
+);
+
+-- api_football_cert_campaign_outcomes: append-only, at most one outcome per reserved attempt,
+-- written AFTER the provider exchange. A RESERVED attempt (row in _attempts) is not proof that a
+-- request was SENT: an attempt without an outcome is RESERVED_UNKNOWN (the process may have stopped
+-- before, during or after the send). It consumes budget and is never retried or recovered
+-- automatically. TRANSPORT_ERROR is ambiguous too (the request may have reached the provider).
+CREATE TABLE IF NOT EXISTS api_football_cert_campaign_outcomes (
+    campaign_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN (''''HTTP_RESPONSE'''', ''''TRANSPORT_ERROR'''')),
+    http_status INTEGER CHECK (http_status BETWEEN 100 AND 599),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (campaign_id, seq),
+    FOREIGN KEY (campaign_id, seq) REFERENCES api_football_cert_campaign_attempts (campaign_id, seq),
+    CHECK ((outcome = ''''HTTP_RESPONSE'''') = (http_status IS NOT NULL))
+);
+
+-- Every 0010 function pins its search_path (pg_catalog first, the session''''s temporary schema
+-- last) and reaches the ledger tables only through the schema of the table that fired it
+-- (TG_TABLE_SCHEMA: `public` in production, a throwaway schema in tests). A caller can therefore
+-- never redirect a check to an object of its own, e.g. a pg_temp.api_football_cert_plans or
+-- pg_temp.api_football_cert_campaigns with a larger budget, or to a planted operator or function.
+
+-- Rows never change and are never removed (plans, campaigns, attempts and outcomes alike). These
+-- statement-level triggers refuse UPDATE, DELETE and TRUNCATE for EVERY role, the table owner
+-- included; the runtime role holds no UPDATE/DELETE/TRUNCATE privilege either and, not being the
+-- owner, cannot ALTER the tables or DISABLE these triggers. The plan counter refuses DELETE and
+-- TRUNCATE the same way, and any UPDATE other than "+1 below the budget" (row trigger below).
+CREATE FUNCTION api_football_cert_reject_mutation() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION ''''API_FOOTBALL_CERT_LEDGER_APPEND_ONLY'''';
+END;
+$$;
+CREATE TRIGGER api_football_cert_plans_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON api_football_cert_plans FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_campaigns_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON api_football_cert_campaigns FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_attempts_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON api_football_cert_campaign_attempts FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_outcomes_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON api_football_cert_campaign_outcomes FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_plan_usage_kept BEFORE DELETE OR TRUNCATE
+    ON api_football_cert_plan_usage FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+
+-- The counter: created at 0 with its plan; afterwards only ever +1, never above the plan''''s budget.
+CREATE FUNCTION api_football_cert_plan_usage_rule() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    cap INTEGER;
+BEGIN
+    IF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_plans'''' THEN
+        EXECUTE pg_catalog.format(''''INSERT INTO %I.api_football_cert_plan_usage (plan_sha256, used) VALUES ($1, 0)'''',
+                                  TG_TABLE_SCHEMA) USING NEW.plan_sha256;
+        RETURN NULL;
+    END IF;
+    EXECUTE pg_catalog.format(''''SELECT p.budget FROM %I.api_football_cert_plans p ''''
+                              ''''WHERE p.plan_sha256 OPERATOR(pg_catalog.=) $1'''', TG_TABLE_SCHEMA)
+        INTO cap USING NEW.plan_sha256;
+    IF TG_OP OPERATOR(pg_catalog.=) ''''INSERT'''' THEN
+        IF cap IS NULL OR NEW.used OPERATOR(pg_catalog.<>) 0 THEN
+            RAISE EXCEPTION ''''API_FOOTBALL_CERT_PLAN_USAGE_RULE'''';
+        END IF;
+    ELSIF NEW.plan_sha256 OPERATOR(pg_catalog.<>) OLD.plan_sha256
+          OR NEW.used OPERATOR(pg_catalog.<>) (OLD.used OPERATOR(pg_catalog.+) 1)
+          OR NEW.used OPERATOR(pg_catalog.>) cap THEN
+        RAISE EXCEPTION ''''API_FOOTBALL_CERT_PLAN_USAGE_RULE'''';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER api_football_cert_plans_usage_init AFTER INSERT ON api_football_cert_plans
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_plan_usage_rule();
+CREATE TRIGGER api_football_cert_plan_usage_monotonic BEFORE INSERT OR UPDATE ON api_football_cert_plan_usage
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_plan_usage_rule();
+
+-- Audit values are the server''''s, never the writer''''s: whatever an INSERT or COPY supplies,
+-- approved_at / approved_role / created_at / reserved_at / recorded_at are overwritten here. (The
+-- runtime role also has no INSERT privilege on these columns, nor on the plans table at all.)
+CREATE FUNCTION api_football_cert_stamp() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_plans'''' THEN
+        NEW.approved_at := pg_catalog.clock_timestamp();
+        NEW.approved_role := SESSION_USER;
+    ELSIF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_campaigns'''' THEN
+        NEW.created_at := pg_catalog.clock_timestamp();
+    ELSIF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_campaign_attempts'''' THEN
+        NEW.reserved_at := pg_catalog.clock_timestamp();
+    ELSIF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_campaign_outcomes'''' THEN
+        NEW.recorded_at := pg_catalog.clock_timestamp();
+    ELSE
+        RAISE EXCEPTION ''''API_FOOTBALL_CERT_STAMP_UNKNOWN_TABLE'''';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER api_football_cert_plans_stamp BEFORE INSERT ON api_football_cert_plans
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+CREATE TRIGGER api_football_cert_campaigns_stamp BEFORE INSERT ON api_football_cert_campaigns
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+CREATE TRIGGER api_football_cert_attempts_stamp BEFORE INSERT ON api_football_cert_campaign_attempts
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+CREATE TRIGGER api_football_cert_outcomes_stamp BEFORE INSERT ON api_football_cert_campaign_outcomes
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+
+-- The database enforces the PLAN budget, independently of the isolation level (review #199 P1,
+-- owner decision): in the SAME transaction as the attempt, the plan counter is incremented with
+--   UPDATE ... SET used = used + 1 WHERE plan_sha256 = $1 AND used < budget RETURNING used
+-- and the attempt''''s seq is that value; no row updated -> refused (BUDGET_EXHAUSTED when the counter
+-- has reached the budget, PLAN_NOT_APPROVED when the plan has no counter). The function is
+-- SECURITY DEFINER (owner: the ledger owner, fcb_migrator in production) because the runtime role
+-- has no privilege on the counter; search_path is pinned (pg_catalog, then pg_temp LAST, as the
+-- PostgreSQL documentation prescribes for SECURITY DEFINER) and every table is qualified with the
+-- schema of the firing table. It refuses to run for anything but a BEFORE INSERT row trigger on an
+-- api_football_cert_campaign_attempts table owned by its own owner (GUARD_MISUSE), so it cannot be
+-- borrowed by another trigger (EXECUTE is also revoked from PUBLIC by the grant files). Whatever
+-- seq a writer supplies is overwritten. RESERVED_UNKNOWN attempts are committed rows: they count.
+CREATE FUNCTION api_football_cert_attempt_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    plan TEXT;
+    numbered INTEGER;
+BEGIN
+    IF TG_OP OPERATOR(pg_catalog.<>) ''''INSERT'''' OR TG_LEVEL OPERATOR(pg_catalog.<>) ''''ROW''''
+       OR TG_WHEN OPERATOR(pg_catalog.<>) ''''BEFORE''''
+       OR TG_TABLE_NAME OPERATOR(pg_catalog.<>) ''''api_football_cert_campaign_attempts''''
+       OR (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) TG_RELID)
+          OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER) THEN
+        RAISE EXCEPTION ''''API_FOOTBALL_CERT_GUARD_MISUSE'''';
+    END IF;
+    EXECUTE pg_catalog.format(''''SELECT c.plan_sha256 FROM %I.api_football_cert_campaigns c ''''
+                              ''''WHERE c.campaign_id OPERATOR(pg_catalog.=) $1'''', TG_TABLE_SCHEMA)
+        INTO plan USING NEW.campaign_id;
+    IF plan IS NULL THEN
+        RAISE EXCEPTION ''''API_FOOTBALL_CERT_CAMPAIGN_NOT_OPEN'''';
+    END IF;
+    EXECUTE pg_catalog.format(''''UPDATE %I.api_football_cert_plan_usage u SET used = u.used OPERATOR(pg_catalog.+) 1 ''''
+                              ''''FROM %I.api_football_cert_plans p ''''
+                              ''''WHERE u.plan_sha256 OPERATOR(pg_catalog.=) $1 AND p.plan_sha256 OPERATOR(pg_catalog.=) u.plan_sha256 ''''
+                              ''''AND u.used OPERATOR(pg_catalog.<) p.budget RETURNING u.used'''', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA)
+        INTO numbered USING plan;
+    IF numbered IS NULL THEN
+        EXECUTE pg_catalog.format(''''SELECT u.used FROM %I.api_football_cert_plan_usage u ''''
+                                  ''''WHERE u.plan_sha256 OPERATOR(pg_catalog.=) $1'''', TG_TABLE_SCHEMA)
+            INTO numbered USING plan;
+        IF numbered IS NULL THEN
+            RAISE EXCEPTION ''''API_FOOTBALL_CERT_PLAN_NOT_APPROVED'''';
+        END IF;
+        RAISE EXCEPTION ''''API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED'''';
+    END IF;
+    NEW.seq := numbered;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON api_football_cert_campaign_attempts
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_attempt_guard();
+'';
+            INSERT INTO schema_migrations(version,name,sha256)
+            VALUES (10,''0010_apifootball_cert_campaign_ledger.sql'',''64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8'');
+        END IF;
+    END;';

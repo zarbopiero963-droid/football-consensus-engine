@@ -1,0 +1,253 @@
+name: FCB Aiven defaultdb API-FOOTBALL cert plan approval (owner-gated)
+
+# AF-15 (owner decision 2026-11-11). Manual only. Registers ONE approved API-FOOTBALL certification
+# plan in api_football_cert_plans (bridge 0010) of the PRODUCTION database `defaultdb`, as
+# fcb_migrator. The plan's budget is then shared by every campaign_id of the plan: a new
+# campaign_id, a restart or a re-dispatch renews nothing; a new budget needs a new committed plan
+# (new sha256) and a new approval. Prepared, NOT run: approving a plan is an owner action and does
+# not dispatch any campaign. Gates, all required:
+#   1. protected GitHub Environment `aiven-production` (required reviewer, main only), checked;
+#   2. owner dispatch from main (scripts/require_owner_main_dispatch.sh);
+#   3. mode=approve AND the exact confirmation phrase; default mode=diagnose never writes;
+#   4. plan_sha256 input == SHA-256 of the plan file committed on main, and that file is exactly
+#      what the code renders (--check-plan); budget and kind come from that file, not from inputs;
+#   5. pinned target (host/port hashes, database), PostgreSQL 18, TLS verify-full with the
+#      authenticated Aiven CA, connection identity exactly fcb_migrator;
+#   6. precheck: schema_migrations equals the repository's 0001-0010 (0010 applied);
+#   7. ONE transaction (target guard + sql/aiven/apifootball_cert_plan_approve.sql, SHA-256
+#      pinned): append-only INSERT ... ON CONFLICT DO NOTHING, then assertions.
+# Rollback: none needed and none possible (append-only register, kept as evidence). Not
+# dispatching the campaign workflow stops every use. See docs/certification/apifootball/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: "Which committed plan: batch1 or live_full_match_snapshot"
+        type: choice
+        options: [batch1, live_full_match_snapshot]
+        default: batch1
+      plan_sha256:
+        description: "SHA-256 of the plan file committed on main (must match exactly)"
+        type: string
+        default: ''
+      mode:
+        description: "diagnose = read-only prechecks (default); approve = register the plan"
+        type: choice
+        options: [diagnose, approve]
+        default: diagnose
+      confirm:
+        description: "For mode=approve only: type exactly APPROVE API-FOOTBALL CERT PLAN ON defaultdb"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with the restore and roles workflows: never two writers against defaultdb.
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  certplanapprove:
+    # G-02: second layer; the environment (required reviewer + branch main) is the control.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_MIGRATOR_DB_URL
+      CONFIRM_PHRASE: APPROVE API-FOOTBALL CERT PLAN ON defaultdb
+      # SHA-256 of every SQL file this workflow runs (tests/test_apifootball_cert_ledger_workflow.py).
+      EXPECTED_SQL_SHA256: |
+        sql/aiven/apifootball_cert_plan_approve.sql=9461227d8b9ec83fd6c276579b3d3f587f7e8bb4459e1f50b14886336ed21a1f
+      PGCONNECT_TIMEOUT: '15'
+      # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+      # A URI sslmode overrides PGSSLMODE in libpq: the target check rejects anything but verify-full.
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            approve)
+              if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+                echo "::error::mode=approve requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: approve (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify the pinned SQL and that plan_sha256 is the plan file committed on main
+        env:
+          PLAN: ${{ inputs.plan }}
+          PLAN_SHA256_INPUT: ${{ inputs.plan_sha256 }}
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS='=' read -r path sha; do
+            [ -n "$path" ] || continue
+            test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_SQL_SHA256"
+          test "$n" -eq 1
+          printf '%s' "$PLAN_SHA256_INPUT" | grep -Eqx '[0-9a-f]{64}' || { echo "::error::plan_sha256 is not 64 lowercase hex"; exit 1; }
+          python -m pip install --quiet -r requirements.txt
+          # The committed plan file must be the one the code renders (PLAN_UP_TO_DATE), and its
+          # SHA-256 must equal the dispatch input: the owner approves exactly what is on main.
+          python scripts/apifootball_cert_batch1.py --check-plan
+          read -r sha budget kind <<< "$(python scripts/apifootball_cert_batch1.py --plan-approval-request "$PLAN")"
+          case "$PLAN" in
+            batch1) file=docs/certification/apifootball/batch1_plan.json ;;
+            live_full_match_snapshot) file=docs/certification/apifootball/live_snapshot_plan.json ;;
+            *) echo "::error::unknown plan"; exit 1 ;;
+          esac
+          test "$(sha256sum "$file" | cut -d' ' -f1)" = "$sha" || { echo "::error::plan file hash differs"; exit 1; }
+          test "$sha" = "$PLAN_SHA256_INPUT" || { echo "::error::plan_sha256 input is not the committed plan"; exit 1; }
+          { echo "PLAN_SHA256=$sha"; echo "PLAN_BUDGET=$budget"; echo "PLAN_KIND=$kind"; } >> "$GITHUB_ENV"
+          echo "## Plan: $PLAN sha256=$sha budget=$budget kind=$kind (committed on main)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_MIGRATOR_DB_URL:-}" ]; then
+            echo "::error::environment secret FCB_MIGRATOR_DB_URL is not set (owner action)"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || { echo "::error::Aiven CA checksum mismatch"; exit 1; }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+
+      - name: Install postgresql-client-18 from PGDG (pinned key fingerprint)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 60 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/psql --version
+
+      - name: Mask connection details and enforce the pinned target
+        env:
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          python3 -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prechecks (identity fcb_migrator, PostgreSQL 18, TLS, bridge 0001-0010 recorded)
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          q() {
+            local err out
+            err="$(mktemp)"
+            if out="$("$PSQL" "$FCB_MIGRATOR_DB_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>"$err")"; then
+              rm -f "$err"; printf '%s\n' "$out"
+            else
+              echo "::error::precheck query failed" >&2
+              echo "libpq (sanitized): $(python3 -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          test "$(q 'select pg_catalog.current_database()')" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
+          test "$(q 'select current_user')" = "fcb_migrator" || { echo "::error::identity is not fcb_migrator"; exit 1; }
+          ver="$(q "select pg_catalog.current_setting('server_version_num')::pg_catalog.int4")"
+          [ "$ver" -ge 180000 ] && [ "$ver" -lt 190000 ] || { echo "::error::server is not PostgreSQL 18"; exit 1; }
+          test "$(q 'select s.ssl from pg_catalog.pg_stat_ssl s where s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()')" = "t" || { echo "::error::not TLS"; exit 1; }
+          rows="$(q "select pg_catalog.string_agg(m.version::pg_catalog.text OPERATOR(pg_catalog.||) '=' OPERATOR(pg_catalog.||) m.name OPERATOR(pg_catalog.||) '=' OPERATOR(pg_catalog.||) m.sha256, ' ' order by m.version) from public.schema_migrations m")"
+          files10="$(for f in sql/migrations/bridge/00[01][0-9]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
+          test "$rows" = "$files10" || { echo "::error::bridge 0001-0010 is not exactly recorded; refusing"; exit 1; }
+          before="$(q "select pg_catalog.count(*) from public.api_football_cert_plans p where p.plan_sha256 OPERATOR(pg_catalog.=) '$PLAN_SHA256'")"
+          echo "## Precheck: bridge 0001-0010 recorded; plan already approved: $before" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode != 'approve' }}
+        run: |
+          echo "## Diagnose mode - prechecks only, nothing was written" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Register the approved plan (single transaction) and verify
+        if: ${{ inputs.mode == 'approve' && inputs.confirm == 'APPROVE API-FOOTBALL CERT PLAN ON defaultdb' }}
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+          APPROVED_BY: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR pg_catalog.current_schema() IS NULL OR pg_catalog.current_schema() OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR CURRENT_USER OPERATOR(pg_catalog.<>) 'fcb_migrator'::pg_catalog.name OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          sp() {
+            local err rc=0
+            err="$(mktemp)"
+            "$PSQL" "$FCB_MIGRATOR_DB_URL" "$@" 2>"$err" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::psql failed (exit $rc)" >&2
+              echo "psql (sanitized): $(python3 -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+            fi
+            rm -f "$err"; return "$rc"
+          }
+          sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" \
+             -v plan_sha256="$PLAN_SHA256" -v plan_kind="$PLAN_KIND" -v budget="$PLAN_BUDGET" \
+             -v approved_by="$APPROVED_BY" -v run_id="$RUN_ID" \
+             -f sql/aiven/apifootball_cert_plan_approve.sql >/dev/null
+          row="$(sp -X -A -t -F '|' -v ON_ERROR_STOP=1 -c "select p.plan_kind, p.budget, p.approved_by, p.github_run_id, p.approved_role from public.api_football_cert_plans p where p.plan_sha256 OPERATOR(pg_catalog.=) '$PLAN_SHA256'")"
+          echo "## Plan approved: $PLAN_SHA256 -> $row (append-only; an existing approval is never renewed)" >> "$GITHUB_STEP_SUMMARY"

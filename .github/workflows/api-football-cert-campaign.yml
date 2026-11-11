@@ -1,0 +1,133 @@
+name: api-football-cert-campaign
+# PREPARED ONLY - dispatch NOT authorized (owner decision 2026-11-11, AF-05).
+# Manual, owner-only, from main only, after the api-football-live Environment approval, and only
+# when the owner sets the repository variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true.
+# Campaigns:
+#   batch1                   - docs/certification/apifootball/batch1_plan.json, hard cap 78 attempts
+#   live_full_match_snapshot - docs/certification/apifootball/live_snapshot_plan.json, 8 attempts
+#                              shared by EVERY snapshot_id (run only during a match)
+# AF-15: the budget is the owner-APPROVED PLAN's (api_football_cert_plans, written only by
+# fcb-aiven-defaultdb-apifootball-cert-plan-approve.yml), shared by every campaign_id of the plan: a
+# new campaign_id, a restart or a re-dispatch never gets a new budget; an unapproved plan stops the
+# runner before any request (PLAN_NOT_APPROVED). Every attempt (first send, retry, timeout,
+# ambiguous reply) is reserved write-ahead in the persistent ledger. The ledger is bridge migration 0010, applied only by the owner-gated workflow
+# fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml; where it is missing the runner refuses with
+# CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any request. The runner itself re-checks the owner
+# variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED before every request. Every request also holds a
+# lease of the shared quota coordinator (CLAUDE.md §2.4). No secret is printed or stored in artefacts.
+on:
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "batch1 or live_full_match_snapshot"
+        type: choice
+        options: [batch1, live_full_match_snapshot]
+        default: batch1
+      campaign_id:
+        description: "Unique campaign/snapshot id (lowercase, digits, '-', 8-64 chars). Re-using an id continues its budget."
+        type: string
+        required: true
+      fixture_id:
+        description: "live_full_match_snapshot only: the live fixture id (empty = choose via live=all, +1 attempt)"
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: api-football-live-provider
+  cancel-in-progress: false
+jobs:
+  campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main'
+    environment: api-football-live
+    env:
+      PYTHONPATH: .
+      APIFOOTBALL_ENABLED: 'true'
+      APIFOOTBALL_LIVE_AUTHORIZED: 'true'
+      APIFOOTBALL_CACHE_ENABLED: 'false'
+      # Shared coordinator limits. The daily figure is the owner's (repository variable); none here.
+      APIFOOTBALL_MAX_DAILY_REQUESTS: ${{ vars.APIFOOTBALL_CERT_MAX_DAILY_REQUESTS }}
+      APIFOOTBALL_MAX_RPM: '4'
+      APIFOOTBALL_MAX_CONCURRENCY: '1'
+    steps:
+      - name: Refuse unless the owner authorized this campaign (repository variable)
+        env:
+          AUTHORIZED: ${{ vars.APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED }}
+          MAX_DAILY: ${{ vars.APIFOOTBALL_CERT_MAX_DAILY_REQUESTS }}
+        run: |
+          if [ "${AUTHORIZED:-}" != "true" ]; then
+            echo "DISPATCH_NOT_AUTHORIZED: APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED is not true"; exit 1
+          fi
+          case "${MAX_DAILY:-}" in ''|*[!0-9]*) echo "APIFOOTBALL_CERT_MAX_DAILY_REQUESTS not set by the owner"; exit 1 ;; esac
+      - name: Checkout exact workflow branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require a protected environment and a trusted dispatch (G-02), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" api-football-live)"
+          echo "## Gate: environment api-football-live protected (required reviewers: $reviewers), owner dispatch from main" >> "$GITHUB_STEP_SUMMARY"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Offline gate and plan check (no provider call)
+        run: |
+          python scripts/apifootball_cert_matrix.py --gate-offline
+          python scripts/apifootball_cert_batch1.py --check-plan
+      - name: Run the campaign (budget enforced in code and in the ledger)
+        env:
+          APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
+          DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
+          APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED: ${{ vars.APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED }}
+          CAMPAIGN: ${{ inputs.campaign }}
+          CAMPAIGN_ID: ${{ inputs.campaign_id }}
+          FIXTURE_ID: ${{ inputs.fixture_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${APIFOOTBALL_API_KEY}"
+          echo "::add-mask::${DATABASE_URL}"
+          # Also mask the DSN's password and host on their own (never printed either way).
+          python - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+          parts = urlsplit(os.environ.get("DATABASE_URL", ""))
+          for value in (parts.password, parts.hostname, parts.username):
+              if value:
+                  print(f"::add-mask::{value}")
+          PY
+          if [ -z "${APIFOOTBALL_API_KEY// /}" ] || [ -z "${DATABASE_URL// /}" ]; then
+            echo "SECRETS_OR_COORDINATOR_MISSING"; exit 1
+          fi
+          case "$CAMPAIGN_ID" in ''|*[!a-z0-9-]*) echo "INVALID_CAMPAIGN_ID"; exit 1 ;; esac
+          extra=()
+          if [ "$CAMPAIGN" = "live_full_match_snapshot" ] && [ -n "$FIXTURE_ID" ]; then
+            case "$FIXTURE_ID" in *[!0-9]*) echo "INVALID_FIXTURE_ID"; exit 1 ;; esac
+            extra=(--fixture-id "$FIXTURE_ID")
+          fi
+          python scripts/apifootball_cert_batch1.py --execute --authorize-live-campaign \
+            --campaign "$CAMPAIGN" --campaign-id "$CAMPAIGN_ID" "${extra[@]}" --out /tmp/af_cert_campaign
+      - name: Upload per-requirement JSON artefacts (leak-checked by the runner)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-football-cert-${{ inputs.campaign }}-${{ inputs.campaign_id }}
+          path: /tmp/af_cert_campaign
+          if-no-files-found: ignore
+          retention-days: 30

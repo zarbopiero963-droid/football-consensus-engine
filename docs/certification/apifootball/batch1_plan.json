@@ -1,0 +1,1336 @@
+{
+ "af02": {
+  "odds_bets_id_type": "no dedicated call: on the wire an integer and a string id are the same query text, so a real call cannot separate them; stays DOCS_UNVERIFIED (bets.id acceptance is covered by C73)",
+  "search_min_length": "C08 countries(search='En'): the provider answer decides whether the contract needs the documented minimum (separate PR)"
+ },
+ "attempt_model": "every HTTP attempt counts (first send, retry, timeout, ambiguous reply); RetryPolicy(max_attempts=1); write-ahead reservation in the campaign ledger",
+ "binding_rules": "a {'$bind': call, 'path': [...]} argument is read from that call's provider data; 'take'+'join' joins the first N values; 'add' adds to an integer; an unresolved binding SKIPS the call with 0 attempts (rows stay NOT_TESTED)",
+ "calls": [
+  {
+   "arguments": {},
+   "call_id": "C01",
+   "covers_rows": [
+    "apifootball_status|BEHAVIOUR|ROUTE_CALL"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_status"
+  },
+  {
+   "arguments": {},
+   "call_id": "C02",
+   "covers_rows": [
+    "apifootball_timezones|BEHAVIOUR|ROUTE_CALL"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_timezones"
+  },
+  {
+   "arguments": {},
+   "call_id": "C03",
+   "covers_rows": [
+    "apifootball_seasons|BEHAVIOUR|ROUTE_CALL"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_seasons"
+  },
+  {
+   "arguments": {},
+   "call_id": "C04",
+   "covers_rows": [
+    "apifootball_team_countries|BEHAVIOUR|ROUTE_CALL"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_team_countries"
+  },
+  {
+   "arguments": {
+    "name": "England"
+   },
+   "call_id": "C05",
+   "covers_rows": [
+    "apifootball_countries|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_countries|PARAMETER|name"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_countries"
+  },
+  {
+   "arguments": {
+    "code": "GB-ENG"
+   },
+   "call_id": "C06",
+   "covers_rows": [
+    "apifootball_countries|PARAMETER|code"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_countries"
+  },
+  {
+   "arguments": {
+    "search": "Eng"
+   },
+   "call_id": "C07",
+   "covers_rows": [
+    "apifootball_countries|PARAMETER|search"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_countries"
+  },
+  {
+   "arguments": {
+    "search": "En"
+   },
+   "call_id": "C08",
+   "covers_rows": [
+    "apifootball_countries|PARAMETER|search"
+   ],
+   "max_attempts": 1,
+   "tags": [
+    "AF-02_SEARCH_MIN_LENGTH_PROBE"
+   ],
+   "tool": "apifootball_countries"
+  },
+  {
+   "arguments": {
+    "id": 39
+   },
+   "call_id": "C09",
+   "covers_rows": [
+    "apifootball_leagues|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_leagues|PARAMETER|id"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_leagues"
+  },
+  {
+   "arguments": {
+    "country": "England"
+   },
+   "call_id": "C10",
+   "covers_rows": [
+    "apifootball_leagues|PARAMETER|country"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_leagues"
+  },
+  {
+   "arguments": {
+    "code": "GB-ENG",
+    "type": "league"
+   },
+   "call_id": "C11",
+   "covers_rows": [
+    "apifootball_leagues|PARAMETER|code",
+    "apifootball_leagues|PARAMETER|type"
+   ],
+   "max_attempts": 1,
+   "tags": [
+    "JOINT_ATTRIBUTION"
+   ],
+   "tool": "apifootball_leagues"
+  },
+  {
+   "arguments": {
+    "id": 39,
+    "season": 2025
+   },
+   "call_id": "C12",
+   "covers_rows": [
+    "apifootball_leagues|PARAMETER|id",
+    "apifootball_leagues|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_leagues"
+  },
+  {
+   "arguments": {
+    "current": true,
+    "team": 33
+   },
+   "call_id": "C13",
+   "covers_rows": [
+    "apifootball_leagues|PARAMETER|current",
+    "apifootball_leagues|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [
+    "JOINT_ATTRIBUTION"
+   ],
+   "tool": "apifootball_leagues"
+  },
+  {
+   "arguments": {
+    "search": "Premier"
+   },
+   "call_id": "C14",
+   "covers_rows": [
+    "apifootball_leagues|PARAMETER|search"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_leagues"
+  },
+  {
+   "arguments": {
+    "id": 39,
+    "season": 2025
+   },
+   "call_id": "C15",
+   "covers_rows": [
+    "apifootball_coverage_report|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_coverage_report|PARAMETER|id",
+    "apifootball_coverage_report|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_coverage_report"
+  },
+  {
+   "arguments": {
+    "id": 33
+   },
+   "call_id": "C16",
+   "covers_rows": [
+    "apifootball_teams|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_teams|PARAMETER|id"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_teams"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C17",
+   "covers_rows": [
+    "apifootball_teams|PARAMETER|league",
+    "apifootball_teams|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_teams"
+  },
+  {
+   "arguments": {
+    "search": "Manchester"
+   },
+   "call_id": "C18",
+   "covers_rows": [
+    "apifootball_teams|PARAMETER|search"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_teams"
+  },
+  {
+   "arguments": {
+    "venue": 556
+   },
+   "call_id": "C19",
+   "covers_rows": [
+    "apifootball_teams|PARAMETER|venue"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_teams"
+  },
+  {
+   "arguments": {
+    "team": 33
+   },
+   "call_id": "C20",
+   "covers_rows": [
+    "apifootball_team_seasons|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_team_seasons|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_team_seasons"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C21",
+   "covers_rows": [
+    "apifootball_team_statistics|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_team_statistics|PARAMETER|league",
+    "apifootball_team_statistics|PARAMETER|season",
+    "apifootball_team_statistics|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_team_statistics"
+  },
+  {
+   "arguments": {
+    "date": "2026-01-31",
+    "league": 39,
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C22",
+   "covers_rows": [
+    "apifootball_team_statistics|PARAMETER|date",
+    "apifootball_team_statistics|PARAMETER|league",
+    "apifootball_team_statistics|PARAMETER|season",
+    "apifootball_team_statistics|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_team_statistics"
+  },
+  {
+   "arguments": {
+    "id": 556
+   },
+   "call_id": "C23",
+   "covers_rows": [
+    "apifootball_venues|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_venues|PARAMETER|id"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_venues"
+  },
+  {
+   "arguments": {
+    "city": "Manchester"
+   },
+   "call_id": "C24",
+   "covers_rows": [
+    "apifootball_venues|PARAMETER|city"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_venues"
+  },
+  {
+   "arguments": {
+    "search": "Trafford"
+   },
+   "call_id": "C25",
+   "covers_rows": [
+    "apifootball_venues|PARAMETER|search"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_venues"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C26",
+   "covers_rows": [
+    "apifootball_standings|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_standings|PARAMETER|league",
+    "apifootball_standings|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_standings"
+  },
+  {
+   "arguments": {
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C27",
+   "covers_rows": [
+    "apifootball_standings|PARAMETER|season",
+    "apifootball_standings|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_standings"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C28",
+   "covers_rows": [
+    "apifootball_fixture_rounds|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixture_rounds|PARAMETER|league",
+    "apifootball_fixture_rounds|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_rounds"
+  },
+  {
+   "arguments": {
+    "current": true,
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C29",
+   "covers_rows": [
+    "apifootball_fixture_rounds|PARAMETER|current",
+    "apifootball_fixture_rounds|PARAMETER|league",
+    "apifootball_fixture_rounds|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_rounds"
+  },
+  {
+   "arguments": {
+    "dates": true,
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C30",
+   "covers_rows": [
+    "apifootball_fixture_rounds|PARAMETER|dates",
+    "apifootball_fixture_rounds|PARAMETER|league",
+    "apifootball_fixture_rounds|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_rounds"
+  },
+  {
+   "arguments": {
+    "h2h": "33-34"
+   },
+   "call_id": "C31",
+   "covers_rows": [
+    "apifootball_fixture_headtohead|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixture_headtohead|PARAMETER|h2h"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_headtohead"
+  },
+  {
+   "arguments": {
+    "h2h": "33-34",
+    "last": 5
+   },
+   "call_id": "C32",
+   "covers_rows": [
+    "apifootball_fixture_headtohead|PARAMETER|h2h",
+    "apifootball_fixture_headtohead|PARAMETER|last"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_headtohead"
+  },
+  {
+   "arguments": {
+    "from_date": "2026-05-01",
+    "league": 39,
+    "season": 2025,
+    "to_date": "2026-05-31"
+   },
+   "call_id": "C33",
+   "covers_rows": [
+    "apifootball_fixtures|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixtures|PARAMETER|from",
+    "apifootball_fixtures|PARAMETER|league",
+    "apifootball_fixtures|PARAMETER|season",
+    "apifootball_fixtures|PARAMETER|to",
+    "apifootball_fixtures|RULE|F-LEAGUE-SEASON-RANGE"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "id": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C34",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|id",
+    "apifootball_fixtures|RULE|F-ID"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "ids": {
+     "$bind": "C33",
+     "join": "-",
+     "path": [
+      "response",
+      "*",
+      "fixture",
+      "id"
+     ],
+     "take": 2
+    }
+   },
+   "call_id": "C35",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|ids",
+    "apifootball_fixtures|RULE|F-IDS"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "date": "2026-05-24",
+    "timezone": "Europe/Rome"
+   },
+   "call_id": "C36",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|date",
+    "apifootball_fixtures|PARAMETER|timezone",
+    "apifootball_fixtures|RULE|F-DATE"
+   ],
+   "max_attempts": 1,
+   "tags": [
+    "JOINT_ATTRIBUTION"
+   ],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C37",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|league",
+    "apifootball_fixtures|PARAMETER|season",
+    "apifootball_fixtures|RULE|F-LEAGUE-SEASON"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "last": 5,
+    "team": 33
+   },
+   "call_id": "C38",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|last",
+    "apifootball_fixtures|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "next": 5,
+    "team": 33
+   },
+   "call_id": "C39",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|next",
+    "apifootball_fixtures|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "round": "Regular Season - 38",
+    "season": 2025
+   },
+   "call_id": "C40",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|league",
+    "apifootball_fixtures|PARAMETER|round",
+    "apifootball_fixtures|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "season": 2025,
+    "status": "FT",
+    "team": 33
+   },
+   "call_id": "C41",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|season",
+    "apifootball_fixtures|PARAMETER|status",
+    "apifootball_fixtures|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "from_date": "2026-01-01",
+    "to_date": "2026-05-31",
+    "venue": 556
+   },
+   "call_id": "C42",
+   "covers_rows": [
+    "apifootball_fixtures|PARAMETER|from",
+    "apifootball_fixtures|PARAMETER|to",
+    "apifootball_fixtures|PARAMETER|venue"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixtures"
+  },
+  {
+   "arguments": {
+    "h2h": "33-34",
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C43",
+   "covers_rows": [
+    "apifootball_fixture_headtohead|PARAMETER|h2h",
+    "apifootball_fixture_headtohead|PARAMETER|league",
+    "apifootball_fixture_headtohead|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [
+    "JOINT_ATTRIBUTION"
+   ],
+   "tool": "apifootball_fixture_headtohead"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C44",
+   "covers_rows": [
+    "apifootball_fixture_statistics|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixture_statistics|PARAMETER|fixture"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_statistics"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    },
+    "half": true
+   },
+   "call_id": "C45",
+   "covers_rows": [
+    "apifootball_fixture_statistics|PARAMETER|fixture",
+    "apifootball_fixture_statistics|PARAMETER|half"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_statistics"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    },
+    "team": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "teams",
+      "home",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C46",
+   "covers_rows": [
+    "apifootball_fixture_statistics|PARAMETER|fixture",
+    "apifootball_fixture_statistics|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_statistics"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C47",
+   "covers_rows": [
+    "apifootball_fixture_events|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixture_events|PARAMETER|fixture"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_events"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C48",
+   "covers_rows": [
+    "apifootball_fixture_lineups|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixture_lineups|PARAMETER|fixture"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_lineups"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    },
+    "team": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "teams",
+      "home",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C49",
+   "covers_rows": [
+    "apifootball_fixture_lineups|PARAMETER|fixture",
+    "apifootball_fixture_lineups|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_lineups"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C50",
+   "covers_rows": [
+    "apifootball_fixture_players|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_fixture_players|PARAMETER|fixture"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_players"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C51",
+   "covers_rows": [
+    "apifootball_predictions|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_predictions|PARAMETER|fixture"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_predictions"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C52",
+   "covers_rows": [
+    "apifootball_injuries|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_injuries|PARAMETER|fixture"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_injuries"
+  },
+  {
+   "arguments": {
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C53",
+   "covers_rows": [
+    "apifootball_injuries|PARAMETER|season",
+    "apifootball_injuries|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_injuries"
+  },
+  {
+   "arguments": {
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C54",
+   "covers_rows": [
+    "apifootball_players|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_players|PARAMETER|season",
+    "apifootball_players|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_players"
+  },
+  {
+   "arguments": {
+    "page": 2,
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C55",
+   "covers_rows": [
+    "apifootball_players|PARAMETER|page",
+    "apifootball_players|PARAMETER|season",
+    "apifootball_players|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_players"
+  },
+  {
+   "arguments": {
+    "page": {
+     "$bind": "C54",
+     "add": 1,
+     "path": [
+      "paging",
+      "total"
+     ]
+    },
+    "season": 2025,
+    "team": 33
+   },
+   "call_id": "C56",
+   "covers_rows": [
+    "apifootball_players|PARAMETER|page",
+    "apifootball_players|PARAMETER|season",
+    "apifootball_players|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_players"
+  },
+  {
+   "arguments": {
+    "id": {
+     "$bind": "C54",
+     "path": [
+      "response",
+      0,
+      "player",
+      "id"
+     ]
+    },
+    "season": 2025
+   },
+   "call_id": "C57",
+   "covers_rows": [
+    "apifootball_players|PARAMETER|id",
+    "apifootball_players|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_players"
+  },
+  {
+   "arguments": {
+    "search": "Fernandes",
+    "team": 33
+   },
+   "call_id": "C58",
+   "covers_rows": [
+    "apifootball_players|BEHAVIOUR|PAGINATION",
+    "apifootball_players|PARAMETER|search",
+    "apifootball_players|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_players"
+  },
+  {
+   "arguments": {
+    "player": {
+     "$bind": "C54",
+     "path": [
+      "response",
+      0,
+      "player",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C59",
+   "covers_rows": [
+    "apifootball_player_profiles|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_player_profiles|PARAMETER|player"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_player_profiles"
+  },
+  {
+   "arguments": {
+    "page": 2
+   },
+   "call_id": "C60",
+   "covers_rows": [
+    "apifootball_player_profiles|PARAMETER|page"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_player_profiles"
+  },
+  {
+   "arguments": {
+    "page": {
+     "$bind": "C60",
+     "add": 1,
+     "path": [
+      "paging",
+      "total"
+     ]
+    }
+   },
+   "call_id": "C61",
+   "covers_rows": [
+    "apifootball_player_profiles|BEHAVIOUR|PAGINATION",
+    "apifootball_player_profiles|PARAMETER|page"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_player_profiles"
+  },
+  {
+   "arguments": {
+    "player": {
+     "$bind": "C54",
+     "path": [
+      "response",
+      0,
+      "player",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C62",
+   "covers_rows": [
+    "apifootball_player_seasons|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_player_seasons|PARAMETER|player"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_player_seasons"
+  },
+  {
+   "arguments": {
+    "team": 33
+   },
+   "call_id": "C63",
+   "covers_rows": [
+    "apifootball_player_squads|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_player_squads|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_player_squads"
+  },
+  {
+   "arguments": {
+    "player": {
+     "$bind": "C54",
+     "path": [
+      "response",
+      0,
+      "player",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C64",
+   "covers_rows": [
+    "apifootball_player_teams|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_player_teams|PARAMETER|player"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_player_teams"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C65",
+   "covers_rows": [
+    "apifootball_top_scorers|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_top_scorers|PARAMETER|league",
+    "apifootball_top_scorers|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_top_scorers"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C66",
+   "covers_rows": [
+    "apifootball_top_assists|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_top_assists|PARAMETER|league",
+    "apifootball_top_assists|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_top_assists"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C67",
+   "covers_rows": [
+    "apifootball_top_yellow_cards|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_top_yellow_cards|PARAMETER|league",
+    "apifootball_top_yellow_cards|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_top_yellow_cards"
+  },
+  {
+   "arguments": {
+    "league": 39,
+    "season": 2025
+   },
+   "call_id": "C68",
+   "covers_rows": [
+    "apifootball_top_red_cards|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_top_red_cards|PARAMETER|league",
+    "apifootball_top_red_cards|PARAMETER|season"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_top_red_cards"
+  },
+  {
+   "arguments": {
+    "team": 33
+   },
+   "call_id": "C69",
+   "covers_rows": [
+    "apifootball_transfers|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_transfers|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_transfers"
+  },
+  {
+   "arguments": {
+    "player": {
+     "$bind": "C54",
+     "path": [
+      "response",
+      0,
+      "player",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C70",
+   "covers_rows": [
+    "apifootball_trophies|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_trophies|PARAMETER|player"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_trophies"
+  },
+  {
+   "arguments": {
+    "player": {
+     "$bind": "C54",
+     "path": [
+      "response",
+      0,
+      "player",
+      "id"
+     ]
+    }
+   },
+   "call_id": "C71",
+   "covers_rows": [
+    "apifootball_sidelined|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_sidelined|PARAMETER|player"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_sidelined"
+  },
+  {
+   "arguments": {
+    "team": 33
+   },
+   "call_id": "C72",
+   "covers_rows": [
+    "apifootball_coaches|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_coaches|PARAMETER|team"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_coaches"
+  },
+  {
+   "arguments": {
+    "id": 1
+   },
+   "call_id": "C73",
+   "covers_rows": [
+    "apifootball_bets|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_bets|PARAMETER|id"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_bets"
+  },
+  {
+   "arguments": {
+    "id": 7
+   },
+   "call_id": "C74",
+   "covers_rows": [
+    "apifootball_bookmakers|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_bookmakers|PARAMETER|id"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_bookmakers"
+  },
+  {
+   "arguments": {
+    "search": "Win"
+   },
+   "call_id": "C75",
+   "covers_rows": [
+    "apifootball_live_bets|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_live_bets|PARAMETER|search"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_live_bets"
+  },
+  {
+   "arguments": {
+    "page": 2
+   },
+   "call_id": "C76",
+   "covers_rows": [
+    "apifootball_odds_mapping|BEHAVIOUR|ROUTE_CALL",
+    "apifootball_odds_mapping|PARAMETER|page"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_odds_mapping"
+  },
+  {
+   "arguments": {
+    "page": {
+     "$bind": "C76",
+     "add": 1,
+     "path": [
+      "paging",
+      "total"
+     ]
+    }
+   },
+   "call_id": "C77",
+   "covers_rows": [
+    "apifootball_odds_mapping|BEHAVIOUR|PAGINATION",
+    "apifootball_odds_mapping|PARAMETER|page"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_odds_mapping"
+  },
+  {
+   "arguments": {
+    "fixture": {
+     "$bind": "C33",
+     "path": [
+      "response",
+      0,
+      "fixture",
+      "id"
+     ]
+    },
+    "type": "Goal"
+   },
+   "call_id": "C78",
+   "covers_rows": [
+    "apifootball_fixture_events|PARAMETER|fixture",
+    "apifootball_fixture_events|PARAMETER|type"
+   ],
+   "max_attempts": 1,
+   "tags": [],
+   "tool": "apifootball_fixture_events"
+  }
+ ],
+ "hard_cap_attempts": 78,
+ "mandatory_pending_not_covered": [
+  "apifootball_bets|PARAMETER|search",
+  "apifootball_bookmakers|PARAMETER|search",
+  "apifootball_coaches|PARAMETER|id",
+  "apifootball_coaches|PARAMETER|search",
+  "apifootball_fixture_events|PARAMETER|player",
+  "apifootball_fixture_events|PARAMETER|team",
+  "apifootball_fixture_headtohead|PARAMETER|date",
+  "apifootball_fixture_headtohead|PARAMETER|from",
+  "apifootball_fixture_headtohead|PARAMETER|next",
+  "apifootball_fixture_headtohead|PARAMETER|status",
+  "apifootball_fixture_headtohead|PARAMETER|timezone",
+  "apifootball_fixture_headtohead|PARAMETER|to",
+  "apifootball_fixture_headtohead|PARAMETER|venue",
+  "apifootball_fixture_lineups|PARAMETER|player",
+  "apifootball_fixture_lineups|PARAMETER|type",
+  "apifootball_fixture_players|PARAMETER|team",
+  "apifootball_fixture_rounds|PARAMETER|timezone",
+  "apifootball_fixture_statistics|PARAMETER|type",
+  "apifootball_injuries|PARAMETER|date",
+  "apifootball_injuries|PARAMETER|ids",
+  "apifootball_injuries|PARAMETER|league",
+  "apifootball_injuries|PARAMETER|player",
+  "apifootball_injuries|PARAMETER|timezone",
+  "apifootball_leagues|PARAMETER|last",
+  "apifootball_leagues|PARAMETER|name",
+  "apifootball_live_bets|PARAMETER|id",
+  "apifootball_player_profiles|PARAMETER|search",
+  "apifootball_player_squads|PARAMETER|player",
+  "apifootball_players|PARAMETER|league",
+  "apifootball_sidelined|PARAMETER|coach",
+  "apifootball_sidelined|PARAMETER|coachs",
+  "apifootball_sidelined|PARAMETER|players",
+  "apifootball_teams|PARAMETER|code",
+  "apifootball_teams|PARAMETER|country",
+  "apifootball_teams|PARAMETER|name",
+  "apifootball_transfers|PARAMETER|player",
+  "apifootball_trophies|PARAMETER|coach",
+  "apifootball_trophies|PARAMETER|coachs",
+  "apifootball_trophies|PARAMETER|players",
+  "apifootball_venues|PARAMETER|country",
+  "apifootball_venues|PARAMETER|name"
+ ],
+ "max_attempts_total": 78,
+ "not_in_batch": "DATA_DEPENDENT rows (pre-match/in-play odds, fixtures.live, payload cap, null handling) and the MANDATORY rows listed in mandatory_pending_not_covered",
+ "schema": "apifootball-cert-batch1/v1",
+ "status": "PREPARED_NOT_AUTHORIZED",
+ "summary": {
+  "calls": 78,
+  "mandatory_pending_before": 174,
+  "mandatory_pending_covered": 133,
+  "mandatory_pending_not_covered": 41,
+  "rows_covered": 135
+ },
+ "verdict_rules": {
+  "PARTIAL_*": "PARTIAL",
+  "PROVIDER_DECLARED_ERRORS category PLAN_NOT_INCLUDED": "PLAN_EXCLUDED",
+  "REAL_API_RESPONSE with results == 0": "EMPTY_VALID",
+  "REAL_API_RESPONSE with results > 0": "DATA_PRESENT",
+  "any other status or error": "ERROR",
+  "not sent (budget, binding, ledger)": "NOT_TESTED"
+ }
+}

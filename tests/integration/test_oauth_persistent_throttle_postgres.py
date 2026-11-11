@@ -558,7 +558,8 @@ def test_0009_concurrent_appliers_on_an_initialised_database(bare, tmp_path):
         t.start()
     for t in threads:
         t.join(60)
-    assert errors == [] and [r["version"] for r in _tracking(connect)] == list(range(1, 10))
+    # Intentional change (AF-07): the full series now also applies 0010 (cert campaign ledger).
+    assert errors == [] and [r["version"] for r in _tracking(connect)] == list(range(1, 11))
 
 
 def test_0009_is_a_noop_where_the_tables_already_exist(bare, tmp_path):
@@ -586,15 +587,16 @@ def test_readiness_off_defers_0009_and_shadow_requires_it(bare, tmp_path, monkey
     schema, connect = bare
     migrations.apply_migrations(connect, _series_dir(tmp_path, 8))
     monkeypatch.delenv(pt.MODE_ENV, raising=False)
-    assert evaluate(connect) == {"state": "READY", "missing_tables": [], "bridge_versions": 9,
-                                 "deferred_versions": [9]}
+    # Intentional change (AF-07): 0010 (cert campaign ledger) is always deferred, never a runtime need.
+    assert evaluate(connect) == {"state": "READY", "missing_tables": [], "bridge_versions": 10,
+                                 "deferred_versions": [9, 10]}
     for m in ("shadow", "enforce", "bogus"):
         monkeypatch.setenv(pt.MODE_ENV, m)
         assert evaluate(connect)["state"] == "OUTDATED"
     migrations.apply_migrations(connect)
     for m in ("off", "shadow", "enforce"):
         monkeypatch.setenv(pt.MODE_ENV, m)
-        assert evaluate(connect) == {"state": "READY", "missing_tables": [], "bridge_versions": 9,
+        assert evaluate(connect) == {"state": "READY", "missing_tables": [], "bridge_versions": 10,
                                      "deferred_versions": []}
     with connect() as conn:
         conn.execute("DROP TABLE oauth_throttle_buckets")

@@ -36,8 +36,8 @@ def test_empty_then_ready(connect):
     assert evaluate(connect)["state"] == "EMPTY"
     migrations.apply_migrations(connect)
     result = evaluate(connect)
-    # Intentional change (OAuth persistent throttle): 9 bridge versions; deferred_versions added.
-    assert result == {"state": "READY", "missing_tables": [], "bridge_versions": 9, "deferred_versions": []}
+    # Intentional change (OAuth persistent throttle; AF-07 cert ledger 0010): 10 bridge versions.
+    assert result == {"state": "READY", "missing_tables": [], "bridge_versions": 10, "deferred_versions": []}
 
 
 def test_outdated_database(connect, tmp_path):
