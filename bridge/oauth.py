@@ -20,7 +20,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from bridge import oauth_store, oauth_throttle
+from bridge import oauth_persistent_throttle, oauth_store, oauth_throttle
 
 SCOPE = "browser:use"
 OFFLINE = "offline_access"
@@ -54,6 +54,16 @@ class StorageUnavailable(Exception):
 def _unavailable(stage: str) -> JSONResponse:
     # WP-007: fixed code; the exception text, DSN and host never reach the client or the log.
     LOG.error("oauth_storage_error stage=%s", stage)
+    return JSONResponse({"error": "temporarily_unavailable"}, status_code=503,
+                        headers={**NO_STORE, "Retry-After": "5"})
+
+
+def _refused_new_operation(stage: str) -> JSONResponse:
+    # The persistent protection cannot run (CONFIG_INVALID, missing/invalid secret in enforce,
+    # store unavailable or busy in enforce): the same body as a storage outage, so the response
+    # reveals nothing about the cause or about the credentials (D04). Fixed codes are logged by
+    # bridge/oauth_persistent_throttle.py.
+    LOG.error("oauth_new_operation_refused stage=%s", stage)
     return JSONResponse({"error": "temporarily_unavailable"}, status_code=503,
                         headers={**NO_STORE, "Retry-After": "5"})
 
@@ -338,6 +348,14 @@ async def register_claude_client(request: Request):
         _reject("", "registration", "throttled")
         return _throttled(wait)
     oauth_throttle.REGISTRATIONS.record(address)
+    # Layer 2 (persistent, D03): observe-only; refuses only when the protection is misconfigured
+    # (CONFIG_INVALID, or enforce without a usable secret): the uniform fixed 503.
+    persistent = await oauth_persistent_throttle.check(oauth_persistent_throttle.REGISTRATION, request)
+    if persistent.action == "refuse":
+        return _refused_new_operation("registration")
+    if persistent.action == "deny":
+        _reject("", "registration", "throttled")
+        return _throttled(persistent.retry_after)
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
     chunks = []
@@ -471,12 +489,22 @@ async def authorize_post(request: Request):
     if wait:
         _reject(p["client_id"], "authorize_post", "consent_throttled")
         return _throttled(wait)
+    # Layer 2 (persistent, D04): also BEFORE the compare. In enforce, a deny is the same 429 and
+    # an unavailable check the uniform 503, whatever the password: no 401/503 oracle.
+    persistent = await oauth_persistent_throttle.check(oauth_persistent_throttle.CONSENT, request)
+    if persistent.action == "refuse":
+        return _refused_new_operation("authorize_post")
+    if persistent.action == "deny":
+        _reject(p["client_id"], "authorize_post", "consent_throttled")
+        return _throttled(persistent.retry_after)
     expected = os.environ.get("MCP_OAUTH_PASSWORD", "")
     supplied = str(form.get("password", ""))
     if not expected or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
         oauth_throttle.CONSENT_FAILURES.record(address)
         _reject(p["client_id"], "authorize_post", "consent_password_invalid")
         return HTMLResponse("Password non valida", status_code=401, headers=CONSENT_HEADERS)
+    # Only failures count: the event acquired before the compare is given back.
+    await oauth_persistent_throttle.refund_after_success(oauth_persistent_throttle.CONSENT, persistent)
     failure = _authorization_request_failure(p)
     if failure is not None:
         _reject(p["client_id"], "authorize_post", failure)

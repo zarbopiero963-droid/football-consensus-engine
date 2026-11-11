@@ -40,6 +40,17 @@ REQUIRED_TABLES = (
     "api_football_quota_counters", "api_football_quota_leases", "api_football_quota_attempts",
 )
 
+# Versions (and their tables) that a database may still lack while the feature that needs them
+# is OFF: the persistent OAuth throttle (0009) ships disabled and its migration is a separate
+# owner action. While MCP_OAUTH_THROTTLE_MODE is off they are reported in `deferred_versions`
+# instead of turning READY into OUTDATED; in shadow, enforce or an invalid mode they are required.
+DEFERRED_WHILE_THROTTLE_OFF = {9: ("oauth_throttle_buckets", "oauth_throttle_unlock_audit")}
+
+
+def _deferrable() -> dict[int, tuple[str, ...]]:
+    from bridge.oauth_persistent_throttle import mode
+    return DEFERRED_WHILE_THROTTLE_OFF if mode() == "off" else {}
+
 
 def _default_connect():
     import psycopg
@@ -52,8 +63,11 @@ def _default_connect():
 def evaluate(connect: Callable = _default_connect) -> dict[str, Any]:
     """Synchronous, read-only check. Returns {"state", "missing_tables", "bridge_versions"}."""
     expected = {m.version: (m.name, m.checksum) for m in load_migrations(BRIDGE.directory)}
+    deferrable = _deferrable()
+    checked = tuple(REQUIRED_TABLES) + tuple(t for _v, ts in sorted(DEFERRED_WHILE_THROTTLE_OFF.items())
+                                             for t in ts)
     result: dict[str, Any] = {"state": "DB_UNAVAILABLE", "missing_tables": None,
-                              "bridge_versions": len(expected)}
+                              "bridge_versions": len(expected), "deferred_versions": []}
     try:
         with connect() as conn:
             with conn.cursor() as cur:
@@ -73,21 +87,25 @@ def evaluate(connect: Callable = _default_connect) -> dict[str, Any]:
                 # A view or sequence with a required name does not count as the table.
                 cur.execute("SELECT t FROM unnest(%s::text[]) AS t WHERE NOT EXISTS ("
                             "SELECT 1 FROM pg_class c WHERE c.oid = to_regclass(t) AND c.relkind IN ('r', 'p'))",
-                            (list(REQUIRED_TABLES),))
+                            (list(checked),))
                 missing = sorted((r["t"] if isinstance(r, dict) else r[0]) for r in cur.fetchall())
     except Exception:
         return result
+    # A deferred version's tables are required as soon as the version is recorded.
+    excused = {t for v, ts in deferrable.items() if v not in recorded for t in ts}
+    missing = [t for t in missing if t not in excused]
     if any(v in expected and recorded[v] != expected[v] for v in recorded):
         state = "DRIFT"  # most serious first: a recorded migration differs from the repository
     elif set(recorded) - set(expected):
         state = "AHEAD"
-    elif set(expected) - set(recorded):
+    elif set(expected) - set(recorded) - set(deferrable):
         state = "OUTDATED"
     elif missing:
         state = "MISSING_TABLES"
     else:
         state = "READY"
-    result.update(state=state, missing_tables=missing)
+    result.update(state=state, missing_tables=missing,
+                  deferred_versions=sorted(set(deferrable) - set(recorded)))
     return result
 
 

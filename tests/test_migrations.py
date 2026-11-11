@@ -122,7 +122,8 @@ LEGACY_SHA256={
 
 def test_bridge_series_keeps_0001_0007_bytes_and_adds_runtime_tables():
     items=migrations.load_migrations()
-    assert [m.version for m in items]==list(range(1,9))
+    # Intentional change (OAuth persistent throttle): the series now ends at 0009 (was 1..8).
+    assert [m.version for m in items]==list(range(1,10))
     assert {m.version:m.checksum for m in items[:7]}==LEGACY_SHA256
     m8=items[7]
     assert m8.name=='0008_runtime_tables.sql'
@@ -173,3 +174,22 @@ def test_a_shipped_series_directory_cannot_be_applied_through_the_other_series()
 def test_pre_split_guard_only_in_the_bridge_series():
     assert 'PRE_SPLIT_SIGNER_0008' in ' '.join(migrations.migration_statements())
     assert 'PRE_SPLIT_SIGNER_0008' not in ' '.join(migrations.migration_statements(series=migrations.SIGNER))
+
+
+# Pinned checksum of bridge 0008 (unchanged by the OAuth persistent throttle PR).
+SHA256_0008='2ee5a7bbe9ce1a8b55474ba73288c1dfda6c847f81b7277bf5956f080dab759d'
+
+
+def test_oauth_throttle_migration_0009_is_additive_and_keeps_0001_0008_bytes():
+    items=migrations.load_migrations()
+    assert {m.version:m.checksum for m in items[:7]}==LEGACY_SHA256 and items[7].checksum==SHA256_0008
+    m9=items[8]
+    assert m9.version==9 and m9.name=='0009_oauth_throttle_buckets.sql'
+    code='\n'.join(l for l in m9.sql.upper().splitlines() if not l.strip().startswith('--'))
+    assert 'CREATE TABLE IF NOT EXISTS OAUTH_THROTTLE_BUCKETS' in code
+    assert 'CREATE TABLE IF NOT EXISTS OAUTH_THROTTLE_UNLOCK_AUDIT' in code
+    assert 'CREATE INDEX IF NOT EXISTS IDX_OAUTH_THROTTLE_BUCKETS_TAT' in code
+    for word in ('DROP ','TRUNCATE','DELETE ','ALTER ','UPDATE ','INSERT ','GRANT ','REVOKE ','SIGNER','CREATE ROLE','FUNCTION','TRIGGER'):
+        assert word not in code, word
+    statements=[st.strip() for st in code.split(';') if st.strip()]
+    assert all(st.startswith(('CREATE TABLE IF NOT EXISTS','CREATE INDEX IF NOT EXISTS')) for st in statements)

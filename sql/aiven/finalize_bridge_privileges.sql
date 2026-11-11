@@ -99,5 +99,16 @@ GRANT SELECT, INSERT, DELETE ON TABLE
 TO fcb_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE sxbet_rate_cooldowns TO fcb_app;
 
+-- OAuth persistent throttle (bridge 0009, applied by its own owner-gated workflow): S I U D on
+-- oauth_throttle_buckets only, granted only where 0009 is already applied, so on a 0001-0008
+-- database this block changes nothing. oauth_throttle_unlock_audit gets no runtime privilege.
+--   oauth_throttle_buckets         S I U D  bridge/oauth_persistent_throttle.py acquire (UPSERT) / refund (UPDATE) / GC (DELETE)
+DO $throttle$
+BEGIN
+    IF pg_catalog.to_regclass('public.oauth_throttle_buckets') IS NOT NULL THEN
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.oauth_throttle_buckets TO fcb_app';
+    END IF;
+END $throttle$;
+
 -- The signer remains isolated from bridge objects. No signer migration or signer
 -- privilege is introduced by this script.

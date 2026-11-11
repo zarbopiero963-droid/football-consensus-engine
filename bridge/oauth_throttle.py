@@ -5,9 +5,9 @@ Two independent windows are checked for every guarded event:
 - global: the backstop, also when the address is spoofed or rotated (IPv6, proxies).
 
 The production bridge runs as ONE process (Render, numInstances=1), so in-process state is
-authoritative there; it is reset by a restart. A PostgreSQL-backed limiter (survives restarts,
-works across workers) is planned with the next owner-gated migration batch (0009), together
-with refresh-token families; until then a restart grants at most one extra window.
+authoritative there; it is reset by a restart. The PostgreSQL-backed layer 2 (survives restarts,
+works across workers) is bridge/oauth_persistent_throttle.py (migration 0009); it ships OFF and
+this module stays the first filter in every mode.
 
 Values are never logged; keys are client addresses only (no password, token or client id).
 """

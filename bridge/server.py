@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
-from bridge import oauth, oauth_store
+from bridge import oauth, oauth_persistent_throttle, oauth_store
 from bridge.browser_use import BrowserUseBridge, browser_error_code, browser_tools_enabled
 from bridge.schema_readiness import SchemaReadiness
 
@@ -466,6 +466,9 @@ async def healthz(_request: Request):
             "schema_missing_tables": schema["missing_tables"],
             "cloak_enabled": BrowserUseBridge._cloak_enabled(),
             "oauth_password_configured": bool(os.environ.get("MCP_OAUTH_PASSWORD", "").strip()),
+            # Persistent OAuth throttle (D01-D12): fixed codes only, never a secret or address.
+            **oauth_persistent_throttle.status(),
+            "schema_deferred_versions": schema.get("deferred_versions"),
             "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
             "apifootball_enabled": os.environ.get("APIFOOTBALL_ENABLED", "false").strip().lower() in ("true", "1"),
             "apifootball_key_configured": bool(os.environ.get("APIFOOTBALL_API_KEY", "").strip()),
@@ -515,6 +518,14 @@ async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         "MCP_TOOL_REGISTRY total=%d browser=%d apifootball=%d sxbet=%d other=%d commit=%s",
         total, by_component["browser"], by_component["apifootball"], by_component["sxbet"],
         by_component["other"], _deploy_commit() or "unknown")
+    throttle = oauth_persistent_throttle.status()
+    logging.getLogger(__name__).info(
+        "OAUTH_THROTTLE mode=%s registration_mode=%s key_state=%s new_authorizations_ready=%s",
+        throttle["oauth_throttle_mode"], throttle["oauth_throttle_registration_mode"],
+        throttle["oauth_throttle_key_state"], throttle["oauth_new_authorizations_ready"])
+    if not oauth_persistent_throttle.password_meets_policy():
+        # D06: non-blocking. Only the boolean is logged, never the password or its length.
+        logging.getLogger(__name__).warning("OAUTH_PASSWORD_POLICY meets_policy=false")
     schema = await schema_readiness.refresh()  # bounded; fixed codes only
     logging.getLogger(__name__).info(
         "SCHEMA_READINESS state=%s missing_tables=%s bridge_versions=%s",

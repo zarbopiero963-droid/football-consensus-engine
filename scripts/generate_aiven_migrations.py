@@ -42,11 +42,41 @@ BRIDGE_VERSIONS = list(range(1, 9))
 
 
 def render_bridge():
+    # Bridge 0009+ (e.g. the OAuth persistent throttle) is applied by its own owner-gated
+    # workflow; the pinned restore script stays exactly 0001-0008 (byte-identical output).
     from app.migrations import BRIDGE, load_migrations
     migrations = load_migrations(BRIDGE.directory)
-    if [m.version for m in migrations] != BRIDGE_VERSIONS:
+    if [m.version for m in migrations][:len(BRIDGE_VERSIONS)] != BRIDGE_VERSIONS:
         raise SystemExit(f'expected bridge versions {BRIDGE_VERSIONS}')
-    text = BRIDGE_HEADER + ';\n'.join(migration_statements(series=BRIDGE)) + ';\n'
+    with tempfile.TemporaryDirectory() as tmp:
+        for m in migrations[:len(BRIDGE_VERSIONS)]:
+            shutil.copyfile(BRIDGE.directory / m.name, Path(tmp) / m.name)
+        statements = migration_statements(tmp, series=BRIDGE)
+    text = BRIDGE_HEADER + ';\n'.join(statements) + ';\n'
+    for marker in ('signer_ledger_anchors', 'signer_ledger_writer_leases', 'signer_schema_migrations'):
+        if marker in text:
+            raise SystemExit('signer content leaked into the bridge script')
+    return text
+
+
+# OAuth persistent throttle: bridge 0001-0009 for the owner-gated 0009 workflow
+# (.github/workflows/fcb-aiven-defaultdb-oauth-throttle-0009.yml), run as fcb_migrator. On a
+# database at 0001-0008 the blocks of 0001-0008 only verify name and checksum; 0009 is applied.
+BRIDGE_0009_TARGET = ROOT / 'sql' / 'aiven' / 'aiven_migrations_bridge_0001_0009.sql'
+BRIDGE_0009_HEADER = '-- FCB bridge migrations 0001-0009 only (no signer series), regenerated from main\n'
+BRIDGE_0009_VERSIONS = list(range(1, 10))
+
+
+def render_bridge_0009():
+    from app.migrations import BRIDGE, load_migrations
+    migrations = load_migrations(BRIDGE.directory)
+    if [m.version for m in migrations][:len(BRIDGE_0009_VERSIONS)] != BRIDGE_0009_VERSIONS:
+        raise SystemExit(f'expected bridge versions {BRIDGE_0009_VERSIONS}')
+    with tempfile.TemporaryDirectory() as tmp:
+        for m in migrations[:len(BRIDGE_0009_VERSIONS)]:
+            shutil.copyfile(BRIDGE.directory / m.name, Path(tmp) / m.name)
+        statements = migration_statements(tmp, series=BRIDGE)
+    text = BRIDGE_0009_HEADER + ';\n'.join(statements) + ';\n'
     for marker in ('signer_ledger_anchors', 'signer_ledger_writer_leases', 'signer_schema_migrations'):
         if marker in text:
             raise SystemExit('signer content leaked into the bridge script')
@@ -234,11 +264,14 @@ def render_post_guard():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'restore-guard', 'restore-post-guard'),
+    parser.add_argument('--target', choices=('aiven-0001-0007', 'bridge-0001-0008', 'bridge-0001-0009', 'restore-guard',
+                                                   'restore-post-guard'),
                         default='aiven-0001-0007')
     args = parser.parse_args()
     if args.target == 'bridge-0001-0008':
         text, target = render_bridge(), BRIDGE_TARGET
+    elif args.target == 'bridge-0001-0009':
+        text, target = render_bridge_0009(), BRIDGE_0009_TARGET
     elif args.target == 'restore-guard':
         text, target = render_guard(), GUARD_TARGET
     elif args.target == 'restore-post-guard':
