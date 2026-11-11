@@ -61,8 +61,8 @@ _STARTS = frozenset(b'"-0123456789tfn')
 _INT = re.compile(rb"-?[0-9]{1,12}$")
 _MAX_FIELD_TEXT = 128
 _MAX_ERROR_KEYS = 64
-_DUP = "DUPLICATE_FIELD"
-_BAD = "NOT_A_SCALAR"
+# A grouping string copied from a row: printable, no surrogates, bounded. Ids are ints only.
+SAFE_TEXT = re.compile(r"^[^\x00-\x1f\x7f\ud800-\udfff]{1,128}$")
 
 
 def _malformed() -> ProviderDataError:
@@ -100,6 +100,7 @@ class IdScanner:
         self.error_keys: list[str] = []
         self.rows: list[dict[str, Any]] = []
         self.row: dict[str, Any] | None = None
+        self.row_invalid: set[str] = set()
         self.row_start = 0
         self._max_field_depth = max((len(p) for p in self.fields.values()), default=0)
 
@@ -277,7 +278,7 @@ class IdScanner:
         elif self._in_errors(d):
             self.errors_nonempty = True
         elif top == "response" and d == 2:
-            self._row_append({"id": None, "size": None})  # a scalar row has no identifier
+            self._row_append({"id": None, "size": None, "invalid": []})  # a scalar row has no identifier
         elif top == "response" and self.row is not None and d - 2 <= self._max_field_depth:
             self._field(tuple(f.key for f in self.stack[2:]), value)
         self._value_done()
@@ -288,12 +289,18 @@ class IdScanner:
     def _field(self, rel: tuple, value: Any) -> None:
         for name, path in self.fields.items():
             if rel == path:
-                if name in self.row:
-                    self.row[name] = _DUP
-                elif isinstance(value, tuple):
-                    self.row[name] = _BAD if value[0] == "NUMBER" else None
+                if name in self.row or name in self.row_invalid:
+                    self._invalidate(name)  # a duplicate key: neither value is trusted
+                elif isinstance(value, tuple) or (isinstance(value, str) and (
+                        name == "id" or not SAFE_TEXT.fullmatch(value))):
+                    self._invalidate(name)  # a non-integer number, an unread or unsafe string
                 else:
                     self.row[name] = value
+
+    def _invalidate(self, name: str) -> None:
+        """A flag, never a value: the field is unusable for ids and for splits."""
+        self.row.pop(name, None)
+        self.row_invalid.add(name)
 
     def _begin_container(self, c: bytes, start: int) -> None:
         d = len(self.stack)
@@ -316,20 +323,22 @@ class IdScanner:
         if top == "response":
             if d == 2:
                 self.row = {} if c == b"{" else None
+                self.row_invalid = set()
                 self.row_start = start
                 if self.row is None:
-                    self._row_append({"id": None, "size": None})
+                    self._row_append({"id": None, "size": None, "invalid": []})
             elif self.row is not None and d - 2 <= self._max_field_depth:
                 rel = tuple(f.key for f in self.stack[2:])
                 for name, path in self.fields.items():
                     if rel == path:
-                        self.row[name] = _BAD  # an id must be a scalar
+                        self._invalidate(name)  # a field must be a scalar
 
     def _end_container(self, end: int) -> None:
         d = len(self.stack)  # depth after the pop
         if d == 2 and self.stack[0].key == "response" and self.row is not None:
             row = {name: self.row.get(name) for name in self.fields}
             row["size"] = end - self.row_start
+            row["invalid"] = sorted(self.row_invalid)
             self.row = None
             self._row_append(row)
 

@@ -166,9 +166,11 @@ def test_duplicate_and_missing_ids():
     del rows[2]["fixture"]["id"]
     rows[3]["fixture"]["id"] = {"nested": 1}
     out = scan(doc(rows))
-    assert [r["id"] for r in out["rows"]] == [10_000, 10_000, None, "NOT_A_SCALAR"]
+    # Re-review P2 (declared change): markers are flags, never values.
+    assert [r["id"] for r in out["rows"]] == [10_000, 10_000, None, None]
+    assert [r["invalid"] for r in out["rows"]] == [[], [], [], ["id"]]
     twice = b'{"response":[{"fixture":{"id":1,"id":2}}]}'
-    assert scan(twice)["rows"][0]["id"] == "DUPLICATE_FIELD"
+    assert scan(twice)["rows"][0]["id"] is None and scan(twice)["rows"][0]["invalid"] == ["id"]
     from bridge.api_football.continuation import scan_manifest
     m = scan_manifest("apifootball_fixtures", {"date": D}, out)
     assert m["rows_without_id"] == 2 and m["complete_retrieval_available"] is False
@@ -219,7 +221,7 @@ def test_depth_bound_without_recursion():
         scan(nested, chunk=65_536)
     assert info.value.bound == "MAX_DEPTH"
     ok = b'{"response":[' + b"[" * 29 + b"]" * 29 + b"]}"
-    assert scan(ok)["rows"] == [{"id": None, "size": None}]
+    assert scan(ok)["rows"] == [{"id": None, "size": None, "invalid": []}]
 
 
 def test_token_bound():
@@ -289,3 +291,67 @@ def test_a_reply_under_the_cap_is_not_scanned():
             return await InjectedHTTPXTransport(http, api_key=KEY).get("/fixtures", {"date": D})
     reply = asyncio.run(go())
     assert not isinstance(reply, ScannedReply) and len(reply.data["response"]) == 2
+
+
+# ---- re-review P2: scanner markers never become follow-up arguments ---------------------------
+
+def _round_rows(bad):
+    rows = [fixture_row(i, D, 39, 2023, f"Regular Season - {1 + i % 3}") for i in range(1, 31)]
+    rows[4]["league"]["round"] = "MARK"
+    raw = doc(rows).decode()
+    target = json.dumps(rows[4]["league"])
+    if bad == "object":
+        repl = target.replace('"round": "MARK"', '"round": {"x": 1}')
+    elif bad == "duplicate":
+        repl = target.replace('"round": "MARK"', '"round": "Regular Season - 2", "round": "Regular Season - 9"')
+    elif bad == "number":
+        repl = target.replace('"round": "MARK"', '"round": 1.5')
+    else:
+        repl = target.replace('"round": "MARK"', '"round": "Bad\\ud800"')
+    assert repl != target
+    return raw.replace(target, repl, 1).encode()
+
+
+@pytest.mark.parametrize("bad", ["object", "duplicate", "number", "surrogate"])
+def test_a_marked_round_blocks_the_round_split_and_completeness(bad):
+    from bridge.api_football.continuation import scan_manifest
+    raw = _round_rows(bad)
+    out = scan(raw, chunk=len(raw))  # chunking is covered by test_numbers_split_anywhere_are_read_exactly
+    m = scan_manifest("apifootball_fixtures", {"league": 39, "season": 2023}, out)
+    assert m["follow_up"]["split_by"] != "round" and m["complete_retrieval_available"] is False
+    blob = json.dumps(m)
+    assert "NOT_A_SCALAR" not in blob and "DUPLICATE_FIELD" not in blob and "Regular Season - 9" not in blob
+
+
+@pytest.mark.parametrize("field,repl", [("league", '{"id": [39]'), ("season", '"season": {"y": 1}')])
+def test_a_marked_league_or_season_blocks_the_league_split(field, repl):
+    from bridge.api_football.continuation import scan_manifest
+    rows = [fixture_row(i, D, 39 + i % 2) for i in range(1, 21)]
+    raw = doc(rows).decode()
+    if field == "league":
+        raw = raw.replace('{"id": 39', repl, 1)
+    else:
+        raw = raw.replace('"season": 2026', repl, 1)
+    m = scan_manifest("apifootball_fixtures", {"date": D}, scan(raw.encode()))
+    assert m["follow_up"]["split_by"] != "league_season" and m["complete_retrieval_available"] is False
+
+
+@pytest.mark.parametrize("bad_id", ['"123"', '"x\\u0000"', '"\\ud800"', "1.0", "true", '{"a": 1}'])
+def test_non_integer_ids_are_rows_without_id_and_never_copied(bad_id):
+    from bridge.api_football.continuation import scan_manifest
+    raw = b'{"get":"fixtures","errors":[],"results":2,"paging":{"current":1,"total":1},"response":[' \
+          b'{"fixture":{"id":1}},{"fixture":{"id":' + bad_id.encode() + b'}}]}'
+    m = scan_manifest("apifootball_fixtures", {"date": D}, scan(raw))
+    assert m["rows_without_id"] == 1 and m["row_ids"] == [1, None] and m["complete_retrieval_available"] is False
+
+
+def test_in_memory_rows_apply_the_same_rule():
+    from bridge.api_football.continuation import id_manifest
+    rows = [fixture_row(i, D, 39, 2023, f"Regular Season - {1 + i % 3}") for i in range(1, 31)]
+    rows[4]["league"]["round"] = {"x": 1}
+    m = id_manifest("apifootball_fixtures", {"league": 39, "season": 2023}, {"response": rows, "results": 30})
+    assert m["follow_up"]["split_by"] != "round" and m["complete_retrieval_available"] is False
+    rows[4]["league"]["round"] = "Regular Season - 2"
+    rows[5]["fixture"]["id"] = "6"
+    m = id_manifest("apifootball_fixtures", {"date": D}, {"response": rows, "results": 30})
+    assert m["rows_without_id"] == 1 and "6" not in m["row_ids"]

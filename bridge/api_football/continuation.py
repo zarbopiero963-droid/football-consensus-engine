@@ -89,6 +89,12 @@ class Row:
     id: Any
     fields: dict[str, Any] = field(default_factory=dict)
     size: int | None = None
+    invalid: frozenset = frozenset()  # fields that are unusable (duplicate, not a scalar, unsafe)
+
+
+def _safe_text(value: Any) -> bool:
+    from .stream_scan import SAFE_TEXT
+    return isinstance(value, str) and SAFE_TEXT.fullmatch(value) is not None
 
 
 def valid_id(value: Any) -> bool:
@@ -200,8 +206,9 @@ def _plan_fixtures(plan: _Plan, request: Mapping[str, Any], rows: list[Row]) -> 
     if group is not None:
         name, key, extra = group
         groups = _groups(rows, key)
-        keys_ok = all((valid_id(k[0]) and valid_id(k[1])) if name == "league_season" else
-                      (isinstance(k, str) and 0 < len(k) <= 128) for k in groups)
+        used = ("league", "season") if name == "league_season" else ("round",)
+        keys_ok = all((valid_id(k[0]) and valid_id(k[1])) if name == "league_season" else _safe_text(k)
+                      for k in groups) and not any(f in r.invalid for r in rows for f in used)
         if keys_ok and len(groups) > 1:
             plan.split_by = name
             for k, members in groups.items():
@@ -238,7 +245,7 @@ def build_manifest(tool: str, request: Mapping[str, Any], rows: list[Row], *, mo
                    bytes_scanned: int | None = None) -> dict[str, Any]:
     strategy = STRATEGIES.get(tool)
     plan = _Plan(tool, mode)
-    without_id = sum(1 for r in rows if not valid_id(r.id))
+    without_id = sum(1 for r in rows if not valid_id(r.id) or "id" in r.invalid)
     results_match = (results == len(rows)) if type(results) is int else None
     if strategy is None:
         plan.reason = "NO_DOCUMENTED_SPLIT_FOR_THIS_ENDPOINT"
@@ -254,7 +261,7 @@ def build_manifest(tool: str, request: Mapping[str, Any], rows: list[Row], *, mo
         plan.reason = ("RESULTS_COUNT_MISMATCH" if results_match is False else
                        "FOLLOW_UP_MAY_EXCEED_READ_CAP" if not plan.size_provable else "ROWS_NOT_COVERED")
     unverified = sorted({c["combination_status"] for c in plan.calls} - {"DOCUMENTED_VALID"})
-    ids = [r.id for r in rows]
+    ids = [r.id if valid_id(r.id) and "id" not in r.invalid else None for r in rows]  # never a raw string
     manifest = {
         "manifest": "PARTIAL_ID_MANIFEST", "mode": mode, "partial": True, "data_included": False,
         "prices_included": False, "reason": "RESPONSE_EXCEEDS_MCP_SIZE_LIMIT" if mode == "IN_MEMORY"
@@ -297,8 +304,11 @@ def id_manifest(tool: str, request: Mapping[str, Any], envelope: Any, *, with_ro
     rows = []
     for r in envelope["response"]:
         values = {name: _dig(r, p) for name, p in fields.items()}
+        invalid = frozenset(name for name, v in values.items()
+                            if isinstance(v, (dict, list)) or (isinstance(v, str) and (name == "id" or not _safe_text(v))))
+        values = {k: (None if k in invalid else v) for k, v in values.items()}
         rows.append(Row(values.pop("id", None), values,
-                        len(json.dumps(r, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))))
+                        len(json.dumps(r, separators=(",", ":"), ensure_ascii=False).encode("utf-8")), invalid))
     return build_manifest(tool, request, rows, mode="IN_MEMORY", results=envelope.get("results"),
                           paging=envelope.get("paging"), body_hash=response_sha256(envelope["response"]),
                           hash_basis="CANONICAL_JSON_OF_RESPONSE", with_row_ids=with_row_ids)
@@ -307,7 +317,8 @@ def id_manifest(tool: str, request: Mapping[str, Any], envelope: Any, *, with_ro
 def scan_manifest(tool: str, request: Mapping[str, Any], scan: Mapping[str, Any], *,
                   with_row_ids: bool = True) -> dict[str, Any]:
     """STREAMED_SCAN manifest built from stream_scan.IdScanner output (ids and row sizes only)."""
-    rows = [Row(r.get("id"), {k: v for k, v in r.items() if k not in ("id", "size")}, r.get("size"))
+    rows = [Row(r.get("id"), {k: v for k, v in r.items() if k not in ("id", "size", "invalid")}, r.get("size"),
+                frozenset(r.get("invalid") or ()))
             for r in scan.get("rows", [])]
     return build_manifest(tool, request, rows, mode="STREAMED_SCAN", results=scan.get("results"),
                           paging=scan.get("paging"), body_hash=scan.get("body_sha256"),
