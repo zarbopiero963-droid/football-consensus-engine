@@ -160,7 +160,7 @@ def test_postgres_ledger_fails_closed_without_the_owner_migration():
 
     ledger = batch.PostgresCampaignLedger(connect=lambda: Conn())
     with pytest.raises(batch.LedgerUnavailable) as exc:
-        asyncio.run(ledger.open("cert-batch1-test-0001", 78, "x"))
+        asyncio.run(ledger.open("cert-batch1-test-0001", 78, "a" * 64))  # a well-formed plan sha (AF-15)
     assert str(exc.value) == "CAMPAIGN_LEDGER_MIGRATION_REQUIRED"
 
 
@@ -320,3 +320,63 @@ def test_snapshot_refused_before_the_send_stops_with_the_code_and_sends_nothing(
                                                 quota=Quota()))
     assert provider.sent == [] and store.attempts == []
     assert report["incomplete_reasons"] == ["STOPPED:REFUSED_BEFORE_SEND:CAMPAIGN_NOT_AUTHORIZED_BY_OWNER"]
+
+
+# ---- AF-15: the budget belongs to the owner-approved PLAN, shared by all its campaign_ids --------
+
+def test_a_new_campaign_id_of_the_same_plan_gets_no_new_budget():
+    store = Store()
+    store.plans[batch.plan_sha256(PLAN_TEXT)] = 10  # approved plan budget
+    first, second = Provider(), Provider()
+    run1 = _run(store, first, campaign="cert-plan-shared-01")
+    run2 = _run(store, second, campaign="cert-plan-shared-02")
+    assert len(first.sent) == 10 and second.sent == []
+    assert run2["plan_budget"] == {"plan_sha256": batch.plan_sha256(PLAN_TEXT), "budget": 10, "used": 10}
+    assert all(c["verdict"] == "NOT_TESTED" for c in run2["calls"]) and run1["plan_budget"]["used"] == 10
+
+
+def test_an_unapproved_plan_stops_the_runner_before_any_request():
+    from apifootball_campaign_kit import PlanNotApproved
+    store, provider = Store(auto_approve=False), Provider()
+    with pytest.raises(PlanNotApproved, match="PLAN_NOT_APPROVED"):
+        _run(store, provider)
+    assert provider.sent == [] and store.attempts == [] and store.campaigns == {}
+
+
+def test_snapshot_plan_is_fixed_committed_and_shared_by_every_snapshot_id():
+    text = batch.render_snapshot_plan()
+    assert batch.SNAPSHOT_PLAN_PATH.read_text(encoding="utf-8") == text
+    assert "fixture" not in json.loads(text) and json.loads(text)["cap"] == batch.SNAPSHOT_CAP == 8
+    store = Store()
+    store.plans[batch.plan_sha256(text)] = 8
+    sent = []
+    for sid in ("snap-shared-0001", "snap-shared-0002"):
+        provider = Provider()
+        asyncio.run(batch.execute_snapshot(snapshot_id=sid, fixture_id=101, settings=settings(),
+                                           ledger=FakeLedger(store), inner_transport=provider.transport(),
+                                           quota=Quota()))
+        sent.append(len(provider.sent))
+    assert sum(sent) <= 8 and {c["plan_sha"] for c in store.campaigns.values()} == {batch.plan_sha256(text)}
+
+
+def test_plan_approval_request_prints_the_committed_plan_sha_budget_and_kind(capsys):
+    import hashlib
+    assert batch.main(["--plan-approval-request", "batch1"]) == 0
+    sha, budget, kind = capsys.readouterr().out.split()
+    assert sha == hashlib.sha256(batch.PLAN_PATH.read_bytes()).hexdigest() and budget == "78" and kind == "BATCH1"
+    assert batch.main(["--plan-approval-request", "live_full_match_snapshot"]) == 0
+    sha, budget, kind = capsys.readouterr().out.split()
+    assert sha == hashlib.sha256(batch.SNAPSHOT_PLAN_PATH.read_bytes()).hexdigest()
+    assert (budget, kind) == ("8", "LIVE_FULL_MATCH_SNAPSHOT")
+
+
+def test_execute_refuses_when_the_committed_plan_file_differs_from_the_code(monkeypatch, tmp_path, capsys):
+    """INVARIANT 1 (runner side): the sha that is looked up among approved plans is the committed
+    file's; a file that is not exactly what the code renders stops everything before any request."""
+    edited = tmp_path / "batch1_plan.json"
+    edited.write_text(PLAN_TEXT.replace("PREPARED_NOT_AUTHORIZED", "EDITED"), encoding="utf-8")
+    monkeypatch.setattr(batch, "PLAN_PATH", edited)
+    assert batch.main(["--execute", "--authorize-live-campaign", "--campaign-id", "cert-edited-0001",
+                       "--out", str(tmp_path / "out")]) == 2
+    assert capsys.readouterr().out.strip() == "PLAN_OUT_OF_DATE"
+    assert batch.main(["--plan-approval-request", "batch1"]) == 2  # nothing to approve either

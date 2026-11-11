@@ -17,7 +17,10 @@ SCRIPT = ROOT / "sql" / "aiven" / "aiven_migrations_bridge_0001_0010.sql"
 GRANT = ROOT / "sql" / "aiven" / "apifootball_cert_ledger_0010_grant.sql"
 REQUIRE_0009 = ROOT / "sql" / "aiven" / "apifootball_cert_ledger_0010_require_0009.sql"
 WP009_FILES = (ROOT / "sql" / "aiven" / "grant_bridge_runtime.sql", ROOT / "sql" / "aiven" / "finalize_bridge_privileges.sql")
-LEDGER = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts", "api_football_cert_campaign_outcomes")
+LEDGER = ("api_football_cert_plans", "api_football_cert_campaigns", "api_football_cert_campaign_attempts",
+          "api_football_cert_campaign_outcomes")
+APPROVE_WORKFLOW = ROOT / ".github" / "workflows" / "fcb-aiven-defaultdb-apifootball-cert-plan-approve.yml"
+APPROVE_SQL = ROOT / "sql" / "aiven" / "apifootball_cert_plan_approve.sql"
 SHA256_0009 = "2be8a8b2961b0516c9aba11cbddbcf8001e337de3d3bb46abf7cb932c7f5a56f"
 SHA256_0008 = "2ee5a7bbe9ce1a8b55474ba73288c1dfda6c847f81b7277bf5956f080dab759d"
 PHRASE = "APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb"
@@ -51,7 +54,8 @@ def test_0010_is_additive_dedicated_and_append_only():
                for s in statements), statements
     assert "CHECK (BUDGET BETWEEN 1 AND 78)" in upper and "CHECK (SEQ BETWEEN 1 AND 78)" in upper
     assert "PRIMARY KEY (CAMPAIGN_ID, SEQ)" in upper
-    assert upper.count("BEFORE UPDATE OR DELETE OR TRUNCATE") == 3  # campaigns, attempts, outcomes
+    assert upper.count("BEFORE UPDATE OR DELETE OR TRUNCATE") == 4  # plans, campaigns, attempts, outcomes
+    assert "PLAN_SHA256 TEXT NOT NULL REFERENCES API_FOOTBALL_CERT_PLANS (PLAN_SHA256)" in upper  # AF-15
     assert "FOREIGN KEY (CAMPAIGN_ID, SEQ) REFERENCES API_FOOTBALL_CERT_CAMPAIGN_ATTEMPTS" in upper
 
 
@@ -108,7 +112,7 @@ def test_workflow_is_manual_owner_gated_pinned_and_backs_up_first():
 
 
 WRITABLE = {  # review #199 P3-2: INSERT is column-level, never on an audit timestamp
-    "api_football_cert_campaigns": ("campaign_id", "budget", "plan_sha256"),
+    "api_football_cert_campaigns": ("campaign_id", "plan_sha256"),
     "api_football_cert_campaign_attempts": ("campaign_id", "seq", "call_id"),
     "api_football_cert_campaign_outcomes": ("campaign_id", "seq", "outcome", "http_status"),
 }
@@ -120,8 +124,8 @@ def _grants(text):
     return [g for g in (" ".join(x.split()) for x in flat.split(";")) if g.startswith("GRANT ")]
 
 
-EXPECTED_GRANTS = ["GRANT SELECT ON TABLE public.api_football_cert_campaigns, public.api_football_cert_campaign_attempts, "
-                   "public.api_football_cert_campaign_outcomes TO fcb_app"] + [
+EXPECTED_GRANTS = ["GRANT SELECT ON TABLE public.api_football_cert_plans, public.api_football_cert_campaigns, "
+                   "public.api_football_cert_campaign_attempts, public.api_football_cert_campaign_outcomes TO fcb_app"] + [
     f"GRANT INSERT ({', '.join(cols)}) ON TABLE public.{t} TO fcb_app" for t, cols in WRITABLE.items()]
 
 
@@ -135,6 +139,7 @@ def test_grant_is_select_plus_column_insert_and_asserted():
     assert "HAS_COLUMN_PRIVILEGE('FCB_APP', A.ATTRELID, A.ATTNUM, 'INSERT')" in upper
     for cols in WRITABLE.values():
         assert f"'{','.join(cols)}'" in code
+    assert "ARRAY['', 'campaign_id,plan_sha256'" in code  # AF-15: no INSERT column at all on plans
     assert "PG_HAS_ROLE('FCB_APP', 'FCB_MIGRATOR', 'MEMBER')" in upper
     assert "FCB_CERT_LEDGER_GRANTS_UNEXPECTED" in upper and "FCB_CERT_LEDGER_NOT_MIGRATOR" in upper
     assert "API_FOOTBALL_QUOTA" not in upper
@@ -153,7 +158,7 @@ def test_0010_functions_pin_search_path_and_never_resolve_tables_through_the_cal
         for table in LEDGER:
             for m in re.finditer(r"FROM\s+\S*" + table, body):
                 assert "%I." + table in m.group(0), m.group(0)
-    assert sql.count("FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp()") == 3
+    assert sql.count("FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp()") == 4
 
 
 def test_0010_transaction_requires_0009_with_the_repository_checksum():
@@ -193,3 +198,37 @@ def test_readiness_defers_exactly_the_tables_0010_creates():
     created = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", migrations.load_migrations()[9].sql)
     assert set(schema_readiness.ALWAYS_DEFERRED) == {10}
     assert sorted(schema_readiness.ALWAYS_DEFERRED[10]) == sorted(created) == sorted(LEDGER)
+
+
+def test_af15_budget_trigger_counts_the_whole_plan_under_a_plan_lock():
+    sql = _code(migrations.load_migrations()[9].sql)
+    guard = sql[sql.index("CREATE FUNCTION api_football_cert_attempt_guard"):]
+    assert "pg_catalog.pg_advisory_xact_lock(460244131, pg_catalog.hashtext(plan))" in guard
+    assert "JOIN %I.api_football_cert_campaigns c" in guard and "c.plan_sha256 OPERATOR(pg_catalog.=) $1" in guard
+    assert "API_FOOTBALL_CERT_PLAN_NOT_APPROVED" in guard
+    assert "CHECK (PLAN_KIND <> 'LIVE_FULL_MATCH_SNAPSHOT' OR BUDGET <= 8)" in sql.upper()
+
+
+def test_af15_plan_approval_workflow_is_owner_gated_pinned_and_binds_the_committed_plan():
+    text = APPROVE_WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(r"^on:\n  workflow_dispatch:", text, re.M)
+    for forbidden in ("pull_request", "push:", "schedule:", "workflow_run"):
+        assert forbidden not in text
+    assert "environment: aiven-production" in text and "if: github.ref == 'refs/heads/main'" in text
+    assert "require_protected_environment.sh" in text and "require_owner_main_dispatch.sh" in text
+    phrase = "APPROVE API-FOOTBALL CERT PLAN ON defaultdb"
+    assert f"CONFIRM_PHRASE: {phrase}" in text and "default: diagnose" in text
+    assert f"inputs.mode == 'approve' && inputs.confirm == '{phrase}'" in text
+    assert f"sql/aiven/apifootball_cert_plan_approve.sql={hashlib.sha256(APPROVE_SQL.read_bytes()).hexdigest()}" in text
+    assert "--check-plan" in text and '--plan-approval-request "$PLAN"' in text
+    assert 'test "$sha" = "$PLAN_SHA256_INPUT"' in text  # input must be the committed plan
+    assert 'test "$rows" = "$files10"' in text  # 0010 recorded
+    assert "APPROVED_BY: ${{ github.actor }}" in text and "RUN_ID: ${{ github.run_id }}" in text
+
+
+def test_af15_approval_sql_is_append_only_and_never_renews_a_plan():
+    code = _code(APPROVE_SQL.read_text(encoding="utf-8"))
+    assert "ON CONFLICT (plan_sha256) DO NOTHING" in code and "FCB_CERT_PLAN_CONFLICT" in code
+    assert "FCB_CERT_PLAN_NOT_MIGRATOR" in code and "FCB_CERT_PLAN_INPUT_INVALID" in code
+    for word in ("UPDATE public", "DELETE FROM", "TRUNCATE ", "GRANT ", "ALTER ", "DROP "):
+        assert word not in code, word

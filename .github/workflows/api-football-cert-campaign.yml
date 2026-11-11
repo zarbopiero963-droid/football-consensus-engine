@@ -4,10 +4,13 @@ name: api-football-cert-campaign
 # when the owner sets the repository variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true.
 # Campaigns:
 #   batch1                   - docs/certification/apifootball/batch1_plan.json, hard cap 78 attempts
-#   live_full_match_snapshot - one live match, ceiling 8 attempts per snapshot (run only during a match)
-# Every attempt (first send, retry, timeout, ambiguous reply) is reserved write-ahead in a persistent
-# campaign ledger in PostgreSQL keyed by campaign_id: a restart or re-run with the same id never gets
-# a new budget. The ledger is bridge migration 0010, applied only by the owner-gated workflow
+#   live_full_match_snapshot - docs/certification/apifootball/live_snapshot_plan.json, 8 attempts
+#                              shared by EVERY snapshot_id (run only during a match)
+# AF-15: the budget is the owner-APPROVED PLAN's (api_football_cert_plans, written only by
+# fcb-aiven-defaultdb-apifootball-cert-plan-approve.yml), shared by every campaign_id of the plan: a
+# new campaign_id, a restart or a re-dispatch never gets a new budget; an unapproved plan stops the
+# runner before any request (PLAN_NOT_APPROVED). Every attempt (first send, retry, timeout,
+# ambiguous reply) is reserved write-ahead in the persistent ledger. The ledger is bridge migration 0010, applied only by the owner-gated workflow
 # fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml; where it is missing the runner refuses with
 # CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any request. The runner itself re-checks the owner
 # variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED before every request. Every request also holds a

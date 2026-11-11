@@ -120,7 +120,7 @@ def _runner_guard_failures(runner) -> list[str]:
         if provider.sent:
             failures.append("SENDS_WITHOUT_BUDGET_RESERVATION")
         provider, store = Provider(), Store()
-        store.campaigns["guard-tracked-01"] = {"budget": 5, "plan_sha": runner.plan_sha256(plan_text)}
+        store.plans[runner.plan_sha256(plan_text)] = 5  # AF-15: an approved plan of 5 attempts
         run(FakeLedger(store), provider, "guard-tracked-01")
         calls = [c for _, _, c in store.attempts]
         if len(provider.sent) != len(store.attempts) or len(store.attempts) > 5 or "UNKNOWN" in calls:

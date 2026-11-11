@@ -25,36 +25,54 @@ def load(name: str, file: str):
 
 
 class Store:
-    """The 'database': survives every FakeLedger instance (= process restart / workflow re-run)."""
+    """The 'database': survives every FakeLedger instance (= process restart / workflow re-run).
 
-    def __init__(self):
+    AF-15: `plans` is the approved-plan register (plan_sha256 -> budget). With auto_approve (the
+    default for offline tests) the first open() of a plan approves it with the requested budget;
+    with auto_approve=False an unknown plan is refused, like PostgresCampaignLedger."""
+
+    def __init__(self, auto_approve: bool = True):
+        self.auto_approve = auto_approve
+        self.plans: dict[str, int] = {}
         self.campaigns: dict[str, dict] = {}
         self.attempts: list[tuple[str, int, str]] = []
         self.outcomes: dict[tuple[str, int], tuple[str, int | None]] = {}  # append-only, first wins
 
 
 class FakeLedger:
-    """Same semantics as PostgresCampaignLedger: write-ahead, budget fixed at open, append-only."""
+    """Same semantics as PostgresCampaignLedger: write-ahead, PLAN budget shared by every campaign
+    of the plan, append-only."""
 
     def __init__(self, store: Store, hard_cap: int = 78):
         self.store = store
         self.hard_cap = hard_cap
 
     async def open(self, campaign_id, budget, plan_sha):
-        stored = self.store.campaigns.setdefault(campaign_id, {"budget": budget, "plan_sha": plan_sha})
-        if stored["plan_sha"] != plan_sha or stored["budget"] > self.hard_cap:
+        if plan_sha not in self.store.plans:
+            if not self.store.auto_approve:
+                raise PlanNotApproved("PLAN_NOT_APPROVED")
+            self.store.plans[plan_sha] = budget
+        stored = self.store.campaigns.setdefault(campaign_id, {"plan_sha": plan_sha})
+        if stored["plan_sha"] != plan_sha:
             raise RuntimeError("CAMPAIGN_PLAN_MISMATCH")
 
+    def _plan_used(self, plan):
+        return sum(1 for c, _, _ in self.store.attempts if self.store.campaigns[c]["plan_sha"] == plan)
+
     async def reserve(self, campaign_id, call_id):
-        from_cap = min(self.store.campaigns[campaign_id]["budget"], self.hard_cap)
-        used = sum(1 for c, _, _ in self.store.attempts if c == campaign_id)
-        if used >= from_cap:
+        plan = self.store.campaigns[campaign_id]["plan_sha"]
+        if self._plan_used(plan) >= min(self.store.plans[plan], self.hard_cap):
             raise BudgetError("CAMPAIGN_BUDGET_EXHAUSTED")
+        used = sum(1 for c, _, _ in self.store.attempts if c == campaign_id)
         self.store.attempts.append((campaign_id, used + 1, call_id))
         return used + 1
 
     async def used(self, campaign_id):
         return sum(1 for c, _, _ in self.store.attempts if c == campaign_id)
+
+    async def plan_usage(self, campaign_id):
+        plan = self.store.campaigns[campaign_id]["plan_sha"]
+        return {"plan_sha256": plan, "budget": self.store.plans[plan], "used": self._plan_used(plan)}
 
     async def attempted_calls(self, campaign_id):
         return {k for c, _, k in self.store.attempts if c == campaign_id}
@@ -76,6 +94,10 @@ class FakeLedger:
 
 
 class BudgetError(RuntimeError):
+    pass
+
+
+class PlanNotApproved(RuntimeError):
     pass
 
 

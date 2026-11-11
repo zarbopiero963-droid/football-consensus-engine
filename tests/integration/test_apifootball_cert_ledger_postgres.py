@@ -23,7 +23,7 @@ import pytest
 
 psycopg = pytest.importorskip("psycopg")
 from psycopg.rows import dict_row  # noqa: E402
-from psycopg.sql import SQL, Identifier  # noqa: E402
+from psycopg.sql import SQL, Identifier, Literal  # noqa: E402
 
 from app import migrations  # noqa: E402
 
@@ -37,7 +37,18 @@ sys.path.insert(0, str(ROOT / "tests"))
 from apifootball_campaign_kit import Provider, Quota, load, settings  # noqa: E402
 
 batch = load("apifootball_cert_batch1_pg", "apifootball_cert_batch1.py")
-SHA = "a" * 64
+SHA = "a" * 64  # a well-formed plan sha256 that is never approved unless a test approves it
+
+
+def _approve(connect, budget, tag="", kind="BATCH1", sha=None):
+    """AF-15: register an approved plan the way the approval workflow does (owner side, here the
+    test superuser). Returns its plan_sha256. Idempotent for the same (sha, budget)."""
+    import hashlib
+    sha = sha or hashlib.sha256(f"plan-{budget}-{tag}".encode()).hexdigest()
+    with connect() as conn:
+        conn.execute("INSERT INTO api_football_cert_plans (plan_sha256, plan_kind, budget, approved_by, github_run_id) "
+                     "VALUES (%s, %s, %s, 'owner-test', 1) ON CONFLICT (plan_sha256) DO NOTHING", (sha, kind, budget))
+    return sha
 
 
 @pytest.fixture
@@ -92,14 +103,22 @@ def test_0010_on_an_initialized_database_keeps_history_and_data(schema, tmp_path
 def test_ledger_is_append_only_and_the_database_enforces_the_budget(schema):
     name, connect = schema
     migrations.apply_migrations(connect)
+    sha2 = _approve(connect, 2)
     with connect() as conn:
-        conn.execute("INSERT INTO api_football_cert_campaigns VALUES ('camp-db-00001', 2, %s)", (SHA,))
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES ('camp-db-00001', %s)", (sha2,))
         conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-db-00001', 1, 'C01')")
     for statement in ("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-db-00001', 3, 'C03')",
-                      "UPDATE api_football_cert_campaigns SET budget = 78",
+                      "UPDATE api_football_cert_plans SET budget = 78",
+                      "UPDATE api_football_cert_campaigns SET plan_sha256 = plan_sha256",
                       "DELETE FROM api_football_cert_campaign_attempts",
+                      "DELETE FROM api_football_cert_plans",
                       "TRUNCATE api_football_cert_campaign_attempts",
-                      "INSERT INTO api_football_cert_campaigns VALUES ('camp-db-00002', 79, '" + SHA + "')"):
+                      "TRUNCATE api_football_cert_plans CASCADE",
+                      "INSERT INTO api_football_cert_plans (plan_sha256, plan_kind, budget, approved_by, github_run_id) "
+                      "VALUES ('" + "b" * 64 + "', 'BATCH1', 79, 'o', 1)",
+                      "INSERT INTO api_football_cert_plans (plan_sha256, plan_kind, budget, approved_by, github_run_id) "
+                      "VALUES ('" + "c" * 64 + "', 'LIVE_FULL_MATCH_SNAPSHOT', 9, 'o', 1)",
+                      "INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES ('camp-db-00002', '" + SHA + "')"):
         with pytest.raises(psycopg.Error):
             with connect() as conn:
                 conn.execute(statement)
@@ -113,19 +132,22 @@ def test_ledger_is_append_only_and_the_database_enforces_the_budget(schema):
 def test_reservations_survive_restart_and_rerun(schema):
     name, connect = schema
     migrations.apply_migrations(connect)
+    sha5, other = _approve(connect, 5), _approve(connect, 5, "other")
     first = batch.PostgresCampaignLedger(connect, schema=name)
-    asyncio.run(first.open("camp-restart-01", 5, SHA))
+    asyncio.run(first.open("camp-restart-01", 5, sha5))
     for i in range(3):
         assert asyncio.run(first.reserve("camp-restart-01", f"C0{i}")) == i + 1
     second = batch.PostgresCampaignLedger(connect, schema=name)  # a new process / a new dispatch
-    asyncio.run(second.open("camp-restart-01", 5, SHA))
+    asyncio.run(second.open("camp-restart-01", 5, sha5))
     assert asyncio.run(second.used("camp-restart-01")) == 3
     assert asyncio.run(second.reserve("camp-restart-01", "C10")) == 4
     assert asyncio.run(second.reserve("camp-restart-01", "C11")) == 5
     with pytest.raises(batch.BudgetExhausted):
         asyncio.run(second.reserve("camp-restart-01", "C12"))
-    with pytest.raises(batch.LedgerUnavailable):  # same id, another plan or budget: refused
-        asyncio.run(second.open("camp-restart-01", 78, SHA))
+    with pytest.raises(batch.LedgerUnavailable, match="CAMPAIGN_PLAN_MISMATCH"):  # same id, another plan
+        asyncio.run(second.open("camp-restart-01", 78, other))
+    with pytest.raises(batch.LedgerUnavailable, match="PLAN_NOT_APPROVED"):  # an unapproved plan
+        asyncio.run(second.open("camp-restart-02", 78, SHA))
     assert asyncio.run(second.attempted_calls("camp-restart-01")) == {"C00", "C01", "C02", "C10", "C11"}
 
 
@@ -152,7 +174,7 @@ def test_concurrent_processes_never_exceed_the_cap(schema):
     name, connect = schema
     migrations.apply_migrations(connect)
     ledger = batch.PostgresCampaignLedger(connect, schema=name)
-    asyncio.run(ledger.open("camp-concurrent-1", 20, SHA))
+    asyncio.run(ledger.open("camp-concurrent-1", 20, _approve(connect, 20)))
     ctx = multiprocessing.get_context("spawn")
     out = ctx.Queue()
     procs = [ctx.Process(target=_worker, args=(os.environ["TEST_DATABASE_URL"], name, "camp-concurrent-1", out))
@@ -186,6 +208,7 @@ def test_runner_on_the_real_ledger_counts_every_attempt_and_reruns_send_nothing(
     name, connect = schema
     migrations.apply_migrations(connect)
     plan_text = batch.render_plan(batch.build_plan())
+    _approve(connect, 78, sha=batch.plan_sha256(plan_text))
     first = Provider()
     run = asyncio.run(batch.execute(json.loads(plan_text), campaign_id="camp-runner-0001", settings=settings(),
                                     ledger=batch.PostgresCampaignLedger(connect, schema=name),
@@ -215,6 +238,7 @@ def test_least_privilege_role_can_only_append(schema):
             conn.execute(SQL("GRANT SELECT, INSERT ON {}.api_football_cert_campaigns, {}.api_football_cert_campaign_attempts, "
                              "{}.api_football_cert_campaign_outcomes TO {}")
                          .format(Identifier(name), Identifier(name), Identifier(name), Identifier(role)))
+            conn.execute(SQL("GRANT SELECT ON {}.api_football_cert_plans TO {}").format(Identifier(name), Identifier(role)))
             conn.execute(SQL("REVOKE ALL ON FUNCTION {}.api_football_cert_reject_mutation(), {}.api_football_cert_attempt_guard() FROM PUBLIC")
                          .format(Identifier(name), Identifier(name)))
 
@@ -223,7 +247,7 @@ def test_least_privilege_role_can_only_append(schema):
             conn.execute(SQL("SET ROLE {}").format(Identifier(role)))
             return conn
         ledger = batch.PostgresCampaignLedger(as_role, schema=name)
-        asyncio.run(ledger.open("camp-privilege-1", 2, SHA))
+        asyncio.run(ledger.open("camp-privilege-1", 2, _approve(connect, 2)))
         assert asyncio.run(ledger.reserve("camp-privilege-1", "C01")) == 1
         with pytest.raises(psycopg.Error):
             with as_role() as conn:
@@ -269,6 +293,7 @@ def test_a_killed_process_leaves_reserved_unknown_counted_and_never_retried(sche
     name, connect = schema
     migrations.apply_migrations(connect)
     marker = tmp_path / "sent.txt"
+    _approve(connect, 78, sha=batch.plan_sha256(batch.render_plan(batch.build_plan())))
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(target=_crash_worker, args=(os.environ["TEST_DATABASE_URL"], name, where, str(marker)))
     proc.start()
@@ -295,7 +320,7 @@ def test_outcomes_are_append_only_one_per_reserved_attempt(schema):
     name, connect = schema
     migrations.apply_migrations(connect)
     ledger = batch.PostgresCampaignLedger(connect, schema=name)
-    asyncio.run(ledger.open("camp-outcome-001", 3, SHA))
+    asyncio.run(ledger.open("camp-outcome-001", 3, _approve(connect, 3)))
     seq = asyncio.run(ledger.reserve("camp-outcome-001", "C01"))
     asyncio.run(ledger.record_outcome("camp-outcome-001", seq, "HTTP_RESPONSE", 200))
     asyncio.run(ledger.record_outcome("camp-outcome-001", seq, "TRANSPORT_ERROR", None))  # first one stays
@@ -316,8 +341,10 @@ def test_outcomes_are_append_only_one_per_reserved_attempt(schema):
 # ------------------------------------------------ AF-12 / AF-13: real fcb_app and the WP-009 grant files
 
 AIVEN = ROOT / "sql" / "aiven"
-LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts", "api_football_cert_campaign_outcomes")
+LEDGER_TABLES = ("api_football_cert_plans", "api_football_cert_campaigns", "api_football_cert_campaign_attempts",
+                 "api_football_cert_campaign_outcomes")
 WP009_ROLES = ("fcb_app", "fcb_signer", "fcb_migrator")
+APP_TEST_PASSWORD = "af16-" + uuid.uuid4().hex  # throwaway; the role is dropped after each test
 
 
 def _dsn(dbname):
@@ -335,11 +362,15 @@ def wp009(tmp_path):
     created, databases = [], []
     try:
         with psycopg.connect(admin, autocommit=True) as conn:
+            if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = ANY(%s)", (list(WP009_ROLES),)).fetchone():
+                pytest.skip("WP-009 roles already exist on this server; not touching them")
             for role in WP009_ROLES:
-                if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is None:
+                if role == "fcb_app":  # a REAL login for the runtime role (random test password)
+                    conn.execute(SQL("CREATE ROLE fcb_app LOGIN PASSWORD {}").format(Literal(APP_TEST_PASSWORD)))
+                else:
                     conn.execute(SQL("CREATE ROLE {} NOLOGIN").format(Identifier(role)))
-                    created.append(role)
-    except psycopg.Error:
+                created.append(role)
+    except psycopg.errors.InsufficientPrivilege:
         pytest.skip("cannot create roles on this test database")
 
     def make(upto):
@@ -382,8 +413,12 @@ def _acl(connect):
 
 
 def _as_app(db):
-    conn = psycopg.connect(_dsn(db), row_factory=dict_row, options="-c lock_timeout=2000")
-    conn.execute("SET ROLE fcb_app")
+    """A REAL login as fcb_app with its own test credentials: no superuser session, no SET ROLE."""
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    params = conninfo_to_dict(os.environ["TEST_DATABASE_URL"])
+    params.update(dbname=db, user="fcb_app", password=APP_TEST_PASSWORD)
+    conn = psycopg.connect(make_conninfo(**params), row_factory=dict_row, options="-c lock_timeout=2000")
+    assert conn.execute("SELECT session_user = 'fcb_app' AND current_user = 'fcb_app' AS ok").fetchone()["ok"]
     return conn
 
 
@@ -402,7 +437,8 @@ def _app_ledger_privileges(db):
         return out
 
 
-WRITABLE = {"api_football_cert_campaigns": ("campaign_id", "budget", "plan_sha256"),
+WRITABLE = {"api_football_cert_plans": (),  # AF-15/AF-16: SELECT only
+            "api_football_cert_campaigns": ("campaign_id", "plan_sha256"),
             "api_football_cert_campaign_attempts": ("campaign_id", "seq", "call_id"),
             "api_football_cert_campaign_outcomes": ("campaign_id", "seq", "outcome", "http_status")}
 # Review #199 P3-2: SELECT on the table, INSERT only on the writer's columns (never the audit stamps).
@@ -413,7 +449,8 @@ EXPECTED_APP = {t: {"SELECT": True, "INSERT": False, "UPDATE": False, "DELETE": 
 
 def _app_cannot_change_the_ledger(db):
     """As fcb_app: every way to change existing rows or switch the guards off is refused."""
-    for statement in ("UPDATE api_football_cert_campaigns SET budget = 78",
+    for statement in ("UPDATE api_football_cert_plans SET budget = 78",
+                      "UPDATE api_football_cert_campaigns SET plan_sha256 = plan_sha256",
                       "UPDATE api_football_cert_campaign_attempts SET call_id = 'X'",
                       "DELETE FROM api_football_cert_campaign_attempts",
                       "DELETE FROM api_football_cert_campaign_outcomes",
@@ -424,11 +461,13 @@ def _app_cannot_change_the_ledger(db):
                       "ALTER TABLE api_football_cert_campaigns ADD COLUMN x int",
                       "DROP TABLE api_football_cert_campaign_outcomes",
                       "DROP TRIGGER api_football_cert_attempts_immutable ON api_football_cert_campaign_attempts",
-                      "SET session_replication_role = replica"):
+                      "SET session_replication_role = replica",
+                      "SET ROLE fcb_migrator",
+                      "SET SESSION AUTHORIZATION fcb_migrator"):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             with _as_app(db) as conn:
                 conn.execute(statement)
-    with _as_app(db) as conn:  # no path to the owner (SET ROLE is judged on the session user here)
+    with _as_app(db) as conn:  # no path to the owner
         assert conn.execute("SELECT pg_has_role('fcb_app', 'fcb_migrator', 'MEMBER') AS m").fetchone()["m"] is False
 
 
@@ -439,24 +478,28 @@ def _app_cannot_forge_timestamps_or_shadow_the_budget(db, admin_connect):
     * the audit timestamps cannot be set (INSERT and COPY: no column privilege), and a writer that
       does hold the privilege (the owner) gets them overwritten server-side."""
     campaign = "camp-shadow-" + uuid.uuid4().hex[:6]
+    plan1 = _approve(admin_connect, 1, campaign)
     with _as_app(db) as conn:
-        conn.execute("INSERT INTO public.api_football_cert_campaigns (campaign_id, budget, plan_sha256) "
-                     "VALUES (%s, 1, %s)", (campaign, SHA))
+        conn.execute("INSERT INTO public.api_football_cert_campaigns (campaign_id, plan_sha256) "
+                     "VALUES (%s, %s)", (campaign, plan1))
         conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
                      "VALUES (%s, 1, 'C01')", (campaign,))
     with pytest.raises(psycopg.errors.RaiseException, match="API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED"):
         with _as_app(db) as conn:
-            conn.execute("CREATE TEMP TABLE api_football_cert_campaigns (campaign_id text, budget int)")
+            # every table the trigger reads, shadowed in pg_temp with a larger budget / no attempts
+            conn.execute("CREATE TEMP TABLE api_football_cert_plans (plan_sha256 text, budget int)")
+            conn.execute("CREATE TEMP TABLE api_football_cert_campaigns (campaign_id text, plan_sha256 text)")
             conn.execute("CREATE TEMP TABLE api_football_cert_campaign_attempts (campaign_id text, seq int)")
-            conn.execute("INSERT INTO pg_temp.api_football_cert_campaigns VALUES (%s, 78)", (campaign,))
+            conn.execute("INSERT INTO pg_temp.api_football_cert_plans VALUES (%s, 78)", (plan1,))
+            conn.execute("INSERT INTO pg_temp.api_football_cert_campaigns VALUES (%s, %s)", (campaign, plan1))
             conn.execute("SET search_path = pg_temp, public")
             conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
                          "VALUES (%s, 2, 'C02')", (campaign,))
     for statement in (
             "INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id, reserved_at) "
             f"VALUES ('{campaign}', 2, 'C02', '2000-01-01')",
-            "INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256, created_at) "
-            f"VALUES ('camp-forged-0001', 1, '{SHA}', '2000-01-01')",
+            "INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256, created_at) "
+            f"VALUES ('camp-forged-0001', '{plan1}', '2000-01-01')",
             "INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status, recorded_at) "
             f"VALUES ('{campaign}', 1, 'HTTP_RESPONSE', 200, '2000-01-01')"):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -471,8 +514,8 @@ def _app_cannot_forge_timestamps_or_shadow_the_budget(db, admin_connect):
         with conn.cursor().copy("COPY api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status, "
                                 "recorded_at) FROM STDIN") as copy:
             copy.write_row((campaign, 1, "HTTP_RESPONSE", 200, "2000-01-01"))
-        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256, created_at) "
-                     "VALUES (%s, 1, %s, '2000-01-01')", (campaign + "-o",  SHA))
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256, created_at) "
+                     "VALUES (%s, %s, '2000-01-01')", (campaign + "-o", plan1))
         stamps = conn.execute(
             "SELECT (SELECT created_at FROM api_football_cert_campaigns WHERE campaign_id = %s) AS c, "
             "(SELECT reserved_at FROM api_football_cert_campaign_attempts WHERE campaign_id = %s) AS r, "
@@ -485,7 +528,7 @@ def _app_can_append(db, campaign):
     def connect():
         return _as_app(db)
     ledger = batch.PostgresCampaignLedger(connect, schema="public")
-    asyncio.run(ledger.open(campaign, 3, SHA))
+    asyncio.run(ledger.open(campaign, 3, _approve(lambda: psycopg.connect(_dsn(db)), 3, campaign)))
     seq = asyncio.run(ledger.reserve(campaign, "C01"))
     asyncio.run(ledger.record_outcome(campaign, seq, "HTTP_RESPONSE", 200))
     return asyncio.run(ledger.attempt_states(campaign))
@@ -598,12 +641,299 @@ def test_stamp_and_guard_hold_with_a_hostile_search_path_in_any_schema(schema):
     name, connect = schema
     migrations.apply_migrations(connect)
     with connect() as conn:
-        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256) VALUES ('camp-temp-0001', 1, %s)", (SHA,))
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES ('camp-temp-0001', %s)",
+                     (_approve(connect, 1),))
         conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-temp-0001', 1, 'C01')")
     with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):
         with connect() as conn:
-            conn.execute("CREATE TEMP TABLE api_football_cert_campaigns (campaign_id text, budget int)")
-            conn.execute("INSERT INTO pg_temp.api_football_cert_campaigns VALUES ('camp-temp-0001', 78)")
+            conn.execute("CREATE TEMP TABLE api_football_cert_plans (plan_sha256 text, budget int)")
+            conn.execute("INSERT INTO pg_temp.api_football_cert_plans SELECT plan_sha256, 78 FROM api_football_cert_campaigns")
             conn.execute(SQL("SET search_path = pg_temp, {}").format(Identifier(name)))
             conn.execute(SQL("INSERT INTO {}.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
                              "VALUES ('camp-temp-0001', 2, 'C02')").format(Identifier(name)))
+
+
+# ------------------------------------------------ AF-15: one budget per APPROVED PLAN, shared by its campaigns
+
+def _plan_worker(dsn, name, campaign, plan, mode, out):
+    """One process, its own campaign_id of the shared plan. mode:
+    normal  reserve until the plan budget refuses;
+    abort   before each reservation, an INSERT of an attempt in a transaction that is rolled back;
+    kill    killed (os._exit) right after its 3rd COMMITTED reservation, before any outcome;
+    kill_uncommitted  2 committed reservations, then an attempt INSERTed (guard passed, plan lock
+            held) in an open transaction, and the process is killed BEFORE the commit."""
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "tests"))
+    from apifootball_campaign_kit import load as _load
+    mod = _load("apifootball_cert_batch1_plan_worker", "apifootball_cert_batch1.py")
+
+    def connect():
+        return psycopg.connect(dsn, row_factory=dict_row, options=f"-c search_path={name}")
+    ledger = mod.PostgresCampaignLedger(connect, schema=name)
+    asyncio.run(ledger.open(campaign, 78, plan))
+    got = 0
+    for i in range(80):
+        if mode == "abort":
+            conn = connect()
+            try:
+                conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                             "VALUES (%s, %s, 'ABORTED')", (campaign, got + 1))
+            except psycopg.Error:
+                pass
+            conn.rollback()  # never committed: never sent, never counted
+            conn.close()
+        try:
+            asyncio.run(ledger.reserve(campaign, f"P{i}"))
+            got += 1
+        except mod.BudgetExhausted:
+            break
+        if mode == "kill" and got == 3:
+            os._exit(9)
+        if mode == "kill_uncommitted" and got == 2:
+            conn = connect()
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                         "VALUES (%s, 3, 'UNCOMMITTED')", (campaign,))
+            os._exit(9)  # no commit: the server rolls the transaction back
+    out.put(got)
+
+
+def _plan_counts(connect, plan):
+    with connect() as conn:
+        rows = conn.execute("SELECT a.campaign_id, array_agg(a.seq ORDER BY a.seq) AS seqs, "
+                            "bool_or(a.call_id = 'ABORTED') AS aborted FROM api_football_cert_campaign_attempts a "
+                            "JOIN api_football_cert_campaigns c USING (campaign_id) WHERE c.plan_sha256 = %s "
+                            "GROUP BY a.campaign_id", (plan,)).fetchall()
+    return rows
+
+
+def test_af15_concurrent_campaigns_of_one_plan_never_exceed_the_plan_budget_with_kills_and_aborts(schema):
+    """INVARIANT 2 (atomic budget), real processes on PostgreSQL 18, one approved plan (budget 25):
+    phase A: three processes KILLED - two after 3 COMMITTED reservations each, one after 2 committed
+    reservations and a 3rd INSERTed in a transaction that never commits;
+    phase B: six concurrent processes (own campaign_ids) race for the rest, two of them interleaving
+    rolled-back inserts; then restarts / new campaign_ids of the plan get nothing.
+    Committed reservations stay and count; uncommitted / aborted ones leave no row and no budget."""
+    name, connect = schema
+    migrations.apply_migrations(connect)
+    plan = _approve(connect, 25, "concurrent")
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    dsn = os.environ["TEST_DATABASE_URL"]
+
+    def spawn(modes, offset):
+        procs = [ctx.Process(target=_plan_worker, args=(dsn, name, f"camp-plan-{offset + i:04d}", plan, mode, out))
+                 for i, mode in enumerate(modes)]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(180)
+        return [p.exitcode for p in procs]
+    assert spawn(["kill", "kill", "kill_uncommitted"], 0) == [9, 9, 9]
+    rows = {r["campaign_id"]: r for r in _plan_counts(connect, plan)}
+    assert {c: r["seqs"] for c, r in rows.items()} == {"camp-plan-0000": [1, 2, 3], "camp-plan-0001": [1, 2, 3],
+                                                       "camp-plan-0002": [1, 2]}  # committed stay, uncommitted gone
+    assert spawn(["normal", "abort", "normal", "abort", "normal", "normal"], 10) == [0] * 6
+    granted = sum(out.get(timeout=5) for _ in range(6))
+    rows = _plan_counts(connect, plan)
+    assert sum(len(r["seqs"]) for r in rows) == 25 and granted == 25 - 8  # never above the plan budget
+    assert all(r["seqs"] == list(range(1, len(r["seqs"]) + 1)) and not r["aborted"] for r in rows)
+    with connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts "
+                            "WHERE call_id IN ('UNCOMMITTED', 'ABORTED')").fetchone()["n"] == 0
+    # restart / re-dispatch / new campaign_id of the same plan: nothing renewed
+    ledger = batch.PostgresCampaignLedger(connect, schema=name)
+    for campaign in ("camp-plan-0002", "camp-plan-new-01"):
+        asyncio.run(ledger.open(campaign, 78, plan))
+        with pytest.raises(batch.BudgetExhausted):
+            asyncio.run(ledger.reserve(campaign, "AGAIN"))
+    assert asyncio.run(ledger.plan_usage("camp-plan-new-01")) == {"plan_sha256": plan, "budget": 25, "used": 25}
+    with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):  # the database alone refuses too
+        with connect() as conn:
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                         "VALUES ('camp-plan-new-01', 1, 'DIRECT')")
+
+
+def test_af15_a_new_campaign_id_of_an_approved_plan_gets_no_new_budget_and_unapproved_plans_send_nothing(schema):
+    name, connect = schema
+    migrations.apply_migrations(connect)
+    plan_text = batch.render_plan(batch.build_plan())
+    provider = Provider()
+    with pytest.raises(batch.LedgerUnavailable, match="PLAN_NOT_APPROVED"):  # the committed plan, not approved
+        asyncio.run(batch.execute(json.loads(plan_text), campaign_id="camp-unapproved-1", settings=settings(),
+                                  ledger=batch.PostgresCampaignLedger(connect, schema=name),
+                                  inner_transport=provider.transport(), quota=Quota(), plan_text=plan_text,
+                                  source_sha="x"))
+    assert provider.sent == []
+    with connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM api_football_cert_campaigns").fetchone()["n"] == 0
+    _approve(connect, 5, sha=batch.plan_sha256(plan_text))  # approved with a budget of 5
+    sent = []
+    for campaign in ("camp-approved-01", "camp-approved-02", "camp-approved-01"):
+        provider = Provider()
+        run = asyncio.run(batch.execute(json.loads(plan_text), campaign_id=campaign, settings=settings(),
+                                        ledger=batch.PostgresCampaignLedger(connect, schema=name),
+                                        inner_transport=provider.transport(), quota=Quota(), plan_text=plan_text,
+                                        source_sha="x"))
+        sent.append(len(provider.sent))
+        assert run["plan_budget"]["budget"] == 5 and run["plan_budget"]["used"] <= 5
+    assert sent == [5, 0, 0]
+    # a regenerated / edited plan text is another sha: not approved, nothing sent
+    edited = plan_text.replace('"PREPARED_NOT_AUTHORIZED"', '"EDITED"')
+    provider = Provider()
+    with pytest.raises(batch.LedgerUnavailable, match="PLAN_NOT_APPROVED"):
+        asyncio.run(batch.execute(json.loads(edited), campaign_id="camp-edited-001", settings=settings(),
+                                  ledger=batch.PostgresCampaignLedger(connect, schema=name),
+                                  inner_transport=provider.transport(), quota=Quota(), plan_text=edited, source_sha="x"))
+    assert provider.sent == []
+
+
+def test_af15_snapshot_budget_belongs_to_its_approved_plan_and_is_not_renewed_by_a_new_snapshot_id(schema):
+    name, connect = schema
+    migrations.apply_migrations(connect)
+    text = batch.render_snapshot_plan()
+    provider = Provider()
+    with pytest.raises(batch.LedgerUnavailable, match="PLAN_NOT_APPROVED"):
+        asyncio.run(batch.execute_snapshot(snapshot_id="snap-unapproved-1", fixture_id=101, settings=settings(),
+                                           ledger=batch.PostgresCampaignLedger(connect, schema=name),
+                                           inner_transport=provider.transport(), quota=Quota()))
+    assert provider.sent == []
+    _approve(connect, 8, kind="LIVE_FULL_MATCH_SNAPSHOT", sha=batch.plan_sha256(text))
+    total = 0
+    for sid in ("snap-approved-01", "snap-approved-02", "snap-approved-03"):
+        provider = Provider()
+        asyncio.run(batch.execute_snapshot(snapshot_id=sid, fixture_id=101, settings=settings(),
+                                           ledger=batch.PostgresCampaignLedger(connect, schema=name),
+                                           inner_transport=provider.transport(), quota=Quota()))
+        total += len(provider.sent)
+    assert total <= 8
+
+
+# ------------------------------------------------ INVARIANT 1: approved plans are immutable for fcb_app
+
+def _setup_phase2(wp009_make):
+    db, connect = wp009_make(10)
+    for name in ("grant_bridge_runtime.sql", "prepare_bridge_roles.sql", "finalize_bridge_privileges.sql"):
+        _run_file(connect, name)
+    _run_file(connect, "apifootball_cert_ledger_0010_grant.sql", session_authorization="fcb_migrator")
+    return db, connect
+
+
+def _run_approval(connect, sha, kind, budget, actor="owner", run_id="42", as_role="fcb_migrator"):
+    text = (AIVEN / "apifootball_cert_plan_approve.sql").read_text(encoding="utf-8")
+    for var, value in (("plan_sha256", sha), ("plan_kind", kind), ("budget", str(budget)),
+                       ("approved_by", actor), ("run_id", run_id)):
+        text = text.replace(f":'{var}'", "'" + value.replace("'", "''") + "'")
+    with connect() as conn:
+        conn.execute(SQL("SET SESSION AUTHORIZATION {}").format(Identifier(as_role)))
+        conn.execute(text)
+
+
+def test_invariant1_plan_approval_sql_registers_once_never_renews_and_only_as_fcb_migrator(wp009):
+    db, connect = _setup_phase2(wp009)
+    plan_text = batch.render_plan(batch.build_plan())
+    sha = batch.plan_sha256(plan_text)
+    assert sha == __import__("hashlib").sha256(batch.PLAN_PATH.read_bytes()).hexdigest()  # = the committed file
+    with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PLAN_NOT_MIGRATOR"):
+        _run_approval(connect, sha, "BATCH1", 78, as_role="fcb_app")
+    _run_approval(connect, sha, "BATCH1", 78)
+    _run_approval(connect, sha, "BATCH1", 78)  # re-approval: no-op, nothing renewed
+    with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PLAN_CONFLICT"):
+        _run_approval(connect, sha, "BATCH1", 40)  # another budget for the same plan: refused
+    with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PLAN_INPUT_INVALID"):
+        _run_approval(connect, "not-a-sha", "BATCH1", 78)
+    with connect() as conn:
+        rows = conn.execute("SELECT plan_kind, budget, approved_by, github_run_id, approved_role, "
+                            "approved_at > now() - interval '1 hour' AS fresh FROM api_football_cert_plans").fetchall()
+    assert rows == [{"plan_kind": "BATCH1", "budget": 78, "approved_by": "owner", "github_run_id": 42,
+                     "approved_role": "fcb_migrator", "fresh": True}]
+
+
+def test_invariant1_fcb_app_cannot_create_change_delete_or_replace_an_approved_plan(wp009):
+    db, connect = _setup_phase2(wp009)
+    sha = _approve(connect, 2, "immutable")
+    other = "d" * 64
+    for statement in (
+            f"INSERT INTO api_football_cert_plans (plan_sha256, plan_kind, budget, approved_by, github_run_id) VALUES ('{other}', 'BATCH1', 78, 'x', 1)",
+            f"INSERT INTO api_football_cert_plans (plan_sha256, plan_kind, budget, approved_by, github_run_id) VALUES ('{sha}', 'BATCH1', 78, 'x', 1) "
+            "ON CONFLICT (plan_sha256) DO UPDATE SET budget = 78",
+            "UPDATE api_football_cert_plans SET budget = 78",
+            "DELETE FROM api_football_cert_plans",
+            "TRUNCATE api_football_cert_plans CASCADE",
+            "ALTER TABLE api_football_cert_plans DISABLE TRIGGER ALL",
+            "ALTER TABLE api_football_cert_plans DROP CONSTRAINT api_football_cert_plans_budget_check",
+            "DROP TABLE api_football_cert_plans CASCADE",
+            "COPY api_football_cert_plans (plan_sha256, plan_kind, budget, approved_by, github_run_id) FROM STDIN"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with _as_app(db) as conn:
+                conn.execute(statement)
+    with pytest.raises(psycopg.errors.RaiseException, match="APPEND_ONLY"):  # even the owner (delete+insert)
+        with connect() as conn:
+            conn.execute("SET ROLE fcb_migrator")
+            conn.execute("DELETE FROM api_football_cert_plans")
+    # a pg_temp plan with a larger budget does not lift the approved one (2)
+    campaign = "camp-immut-0001"
+    with _as_app(db) as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)", (campaign, sha))
+        for seq in (1, 2):
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES (%s, %s, 'C')",
+                         (campaign, seq))
+    with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):
+        with _as_app(db) as conn:
+            conn.execute("CREATE TEMP TABLE api_football_cert_plans (plan_sha256 text, budget int)")
+            conn.execute("INSERT INTO pg_temp.api_football_cert_plans VALUES (%s, 78)", (sha,))
+            conn.execute("SET search_path = pg_temp, public")
+            conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                         "VALUES (%s, 3, 'C')", (campaign,))
+    with connect() as conn:
+        assert conn.execute("SELECT budget FROM api_football_cert_plans WHERE plan_sha256 = %s", (sha,)).fetchone()["budget"] == 2
+
+
+# ------------------------------------------------ INVARIANT 3: a reserved attempt is evidence for good
+
+def test_invariant3_a_reserved_attempt_cannot_vanish_be_reused_or_be_rewritten_as_never_made(wp009):
+    db, connect = _setup_phase2(wp009)
+    sha = _approve(connect, 5, "evidence")
+    campaign = "camp-evidence-01"
+    with _as_app(db) as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)", (campaign, sha))
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES (%s, 1, 'C01')", (campaign,))
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES (%s, 2, 'C02')", (campaign,))
+        conn.execute("INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) "
+                     "VALUES (%s, 1, 'HTTP_RESPONSE', 200)", (campaign,))
+    refused = {  # statement -> expected error class
+        f"INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('{campaign}', 1, 'OTHER')":
+            psycopg.errors.RaiseException,    # same seq for another call: refused (guard; PK backstop)
+        f"INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('{campaign}', 2, 'C02')":
+            psycopg.errors.RaiseException,
+        f"INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) VALUES ('{campaign}', 1, 'TRANSPORT_ERROR', NULL)":
+            psycopg.errors.UniqueViolation,   # one outcome per attempt
+        f"INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) VALUES ('{campaign}', 1, 'TRANSPORT_ERROR', NULL) "
+        "ON CONFLICT (campaign_id, seq) DO UPDATE SET outcome = 'TRANSPORT_ERROR'":
+            psycopg.errors.InsufficientPrivilege,
+        "UPDATE api_football_cert_campaign_outcomes SET http_status = 500": psycopg.errors.InsufficientPrivilege,
+        "DELETE FROM api_football_cert_campaign_outcomes": psycopg.errors.InsufficientPrivilege,
+        "DELETE FROM api_football_cert_campaign_attempts WHERE seq = 2": psycopg.errors.InsufficientPrivilege,
+        "UPDATE api_football_cert_campaign_attempts SET call_id = 'X' WHERE seq = 2": psycopg.errors.InsufficientPrivilege,
+        "TRUNCATE api_football_cert_campaign_attempts CASCADE": psycopg.errors.InsufficientPrivilege,
+        f"INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) VALUES ('{campaign}', 9, 'TRANSPORT_ERROR', NULL)":
+            psycopg.errors.ForeignKeyViolation,   # no outcome without a reserved attempt
+    }
+    for statement, error in refused.items():
+        with pytest.raises(error):
+            with _as_app(db) as conn:
+                conn.execute(statement)
+    for statement in ("DELETE FROM api_football_cert_campaign_attempts WHERE seq = 2",
+                      "UPDATE api_football_cert_campaign_outcomes SET outcome = 'TRANSPORT_ERROR', http_status = NULL"):
+        with pytest.raises(psycopg.errors.RaiseException, match="APPEND_ONLY"):  # even the owner
+            with connect() as conn:
+                conn.execute("SET ROLE fcb_migrator")
+                conn.execute(statement)
+
+    def as_app():
+        return _as_app(db)
+    ledger = batch.PostgresCampaignLedger(as_app, schema="public")
+    states = asyncio.run(ledger.attempt_states(campaign))
+    assert states == [{"seq": 1, "call_id": "C01", "state": "RESPONSE_RECEIVED", "http_status": 200},
+                      {"seq": 2, "call_id": "C02", "state": "RESERVED_UNKNOWN", "http_status": None}]
+    asyncio.run(ledger.record_outcome(campaign, 1, "TRANSPORT_ERROR", None))  # runner path: first outcome stays
+    assert asyncio.run(ledger.attempt_states(campaign))[0]["state"] == "RESPONSE_RECEIVED"

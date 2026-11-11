@@ -117,6 +117,9 @@ def test_the_policy_sees_the_known_privileged_workflows():
     # OAuth persistent throttle: 0009 apply and emergency unlock (fcb_migrator URI).
     assert ("fcb-aiven-defaultdb-oauth-throttle-0009.yml", "throttle0009") in found
     assert ("fcb-aiven-defaultdb-oauth-throttle-unlock.yml", "unlock") in found
+    # AF-07/AF-15: cert ledger 0010 apply and plan approval (fcb_migrator URI).
+    assert ("fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml", "certledger0010") in found
+    assert ("fcb-aiven-defaultdb-apifootball-cert-plan-approve.yml", "certplanapprove") in found
 
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)

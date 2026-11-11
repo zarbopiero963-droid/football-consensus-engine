@@ -121,13 +121,15 @@ Se la 0009 non risultasse applicata in produzione, la 0010 non si applica. Una e
 
 **Contenuto della migration:**
 - è additiva e non tocca tabelle esistenti, in particolare `api_football_quota_*`;
-- crea tre tabelle dedicate:
-  - `api_football_cert_campaigns`: budget 1..78, fisso alla creazione;
+- crea quattro tabelle dedicate:
+  - `api_football_cert_plans` (AF-15): registro append-only dei piani **approvati dall'owner**. Contiene `plan_sha256` (chiave), il tipo (`BATCH1` o `LIVE_FULL_MATCH_SNAPSHOT`), il budget 1..78 (al massimo 8 per lo snapshot), `approved_by`, `github_run_id`, e infine `approved_role` e `approved_at` impostati dal server;
+  - `api_football_cert_campaigns`: ogni `campaign_id` è legato a un piano approvato (FK) e non cambia più;
   - `api_football_cert_campaign_attempts`: `seq` 1..78, chiave `(campaign_id, seq)`;
   - `api_football_cert_campaign_outcomes`: al massimo un esito per tentativo, con FK sul tentativo;
-- trigger append-only su tutte e tre: UPDATE, DELETE e TRUNCATE sono rifiutati per **ogni** ruolo, owner compreso;
-- timestamp di audit (`created_at`, `reserved_at`, `recorded_at`) imposti dal server: un trigger `BEFORE INSERT` li sovrascrive con `clock_timestamp()`, anche via COPY;
-- le tre funzioni hanno `SET search_path = pg_catalog, pg_temp` e raggiungono le tabelle solo tramite lo schema della tabella che le ha attivate (`TG_TABLE_SCHEMA`, cioè `public` in produzione). Una tabella `pg_temp.api_football_cert_campaigns` con budget più alto non può quindi aggirare il budget reale;
+- trigger append-only su tutte e quattro: UPDATE, DELETE e TRUNCATE sono rifiutati per **ogni** ruolo, owner compreso;
+- timestamp di audit (`approved_at`, `created_at`, `reserved_at`, `recorded_at`) e `approved_role` imposti dal server: un trigger `BEFORE INSERT` li sovrascrive con `clock_timestamp()`, anche via COPY;
+- **budget per piano (AF-15)**: il trigger di prenotazione prende un lock advisory deterministico sul piano (`460244131`, `hashtext(plan_sha256)`, lo stesso del runner). Poi conta i tentativi di **tutte** le campagne del piano, `RESERVED_UNKNOWN` compresi, e rifiuta oltre il budget del piano. Un nuovo `campaign_id`, un riavvio o un nuovo dispatch non azzerano nulla. Una prenotazione in una transazione annullata non viene mai committata: non è stata inviata e non conta;
+- le tre funzioni hanno `SET search_path = pg_catalog, pg_temp` e raggiungono le tabelle solo tramite lo schema della tabella che le ha attivate (`TG_TABLE_SCHEMA`, cioè `public` in produzione). Tabelle omonime in `pg_temp` (piani, campagne, tentativi) con budget più alto non possono quindi aggirare il budget reale;
 - trigger di budget: `seq` deve essere il numero successivo ed entro il budget.
 
 **Tentativo PRENOTATO e richiesta INVIATA sono distinti.** La prenotazione è committata prima dell'invio. L'esito si registra dopo lo scambio, in una tabella separata e append-only, senza nessun UPDATE. Ogni tentativo prenotato finisce in uno di tre stati:
@@ -147,9 +149,24 @@ Se la scrittura dell'esito fallisce, il tentativo resta `RESERVED_UNKNOWN`: è l
 
 Una chiamata che non ha prenotato nulla (rifiutata prima dell'invio per autorizzazione, ledger o budget, oppure fermata prima dal client, per esempio `CIRCUIT_OPEN`) non ha inviato nulla. È `NOT_TESTED` con `outcome=REFUSED_BEFORE_SEND` e `refusal_code`, mai `ERROR`. Le chiamate con almeno un tentativo prenotato hanno `outcome=ATTEMPTED`.
 
-**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Una volta registrata la 0010, sono richieste tutte e tre le tabelle. Il runtime non applica mai le migration, e un test lo verifica.
+**Piani approvati (AF-15).**
+- **Identità del piano.** Il piano è identificato dallo SHA-256 del file committato su main: `docs/certification/apifootball/batch1_plan.json` oppure `live_snapshot_plan.json`. Il runner calcola lo SHA dal file committato. Se il file non è esattamente quello che il codice genera, rifiuta con `PLAN_OUT_OF_DATE`.
+- **Piano non approvato.** Se il piano non è nel registro, il runner si ferma prima di qualunque richiesta con `PLAN_NOT_APPROVED`. Rigenerare o modificare il piano dà un altro SHA, che non è approvato: non serve a ottenere budget.
+- **Approvazione.** `.github/workflows/fcb-aiven-defaultdb-apifootball-cert-plan-approve.yml` (preparato, NON eseguito) ha gli stessi gate del workflow 0010:
+  - Environment `aiven-production` e dispatch dell'owner da main;
+  - `mode=approve` con la frase `APPROVE API-FOOTBALL CERT PLAN ON defaultdb`;
+  - target pinnato, verify-full, identità `fcb_migrator`, 0001-0010 registrate;
+  - SQL pinnato `sql/aiven/apifootball_cert_plan_approve.sql`.
+- **Controlli dell'approvazione.** L'input `plan_sha256` deve coincidere con lo SHA del file committato, e quel file deve essere aggiornato (`--check-plan`). Budget e tipo vengono dal file, non dagli input. L'inserimento è append-only (`ON CONFLICT DO NOTHING`): un piano già approvato non viene mai rinnovato, e un budget diverso per lo stesso SHA viene rifiutato (`FCB_CERT_PLAN_CONFLICT`).
+- **Perché un workflow separato.** È la soluzione più semplice e sicura: l'applicazione della 0010 resta una sola operazione, e ogni nuova autorizzazione di budget è un atto owner distinto e verificabile.
+- **Snapshot live.** Lo snapshot ha un suo piano fisso, `live_snapshot_plan.json`, senza fixture né `snapshot_id`. Il suo budget approvato (8) è condiviso da **tutti** gli `snapshot_id`: un nuovo snapshot non rinnova nulla. Per un altro budget serve un nuovo piano committato, con un nuovo SHA, e una nuova approvazione.
+- **Ruolo runtime.** `fcb_app` ha solo `SELECT` sui piani.
 
-**Privilegi (AF-12, decisione owner).** `fcb_app` ha `SELECT` sulle tre tabelle e `INSERT` **a livello di colonna** solo sulle colonne che scrive, mai sui timestamp di audit. Non ha UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ALTER o DROP.
+**Rifiuti prima dell'invio (AF-18).** Una chiamata che non ha prenotato nulla è `NOT_TESTED` con `refusal_code`, mai `ERROR`. Può essere stata rifiutata dal transport (autorizzazione, ledger, budget, piano) oppure fermata prima dal client, per esempio `CIRCUIT_OPEN`.
+
+**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Una volta registrata la 0010, sono richieste tutte e quattro le tabelle (AF-19). Il runtime non applica mai le migration, e un test lo verifica.
+
+**Privilegi (AF-12, decisione owner).** `fcb_app` ha `SELECT` sulle quattro tabelle e `INSERT` **a livello di colonna** solo sulle colonne che scrive, mai sui timestamp di audit e mai sui piani. Non ha UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ALTER o DROP.
 - `fcb_app` non è owner delle tabelle (lo è `fcb_migrator`) e non è membro di `fcb_migrator`. Quindi non può fare ALTER né disabilitare i trigger, e non può impostare `session_replication_role`.
 - I trigger rifiutano le modifiche anche a chi ha i privilegi, owner compreso.
 - Limite dichiarato: `fcb_app` è **condiviso** con gli altri componenti del runtime. Un ruolo dedicato al ledger resta un obiettivo futuro.
@@ -194,6 +211,25 @@ L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restan
   - i file WP-009 su un database 0009 senza 0010, senza errori;
   - il controllo 0009 (rifiuta 0008, accetta 0009 e 0010);
   - il differenziale del modello di verifica WP-009.
+
+**Test delle tre invarianti owner** (`tests/integration/test_apifootball_cert_ledger_postgres.py`, salvo dove indicato):
+
+1. **Piani immutabili e legati al file committato:**
+   - `test_invariant1_fcb_app_cannot_create_change_delete_or_replace_an_approved_plan`, eseguito con un **login reale** come `fcb_app` (credenziali di test, niente `SET ROLE`). Copre INSERT, `ON CONFLICT DO UPDATE`, UPDATE, DELETE, TRUNCATE, ALTER, DROP, COPY, delete+insert da parte dell'owner e un piano ombra in `pg_temp`;
+   - `test_invariant1_plan_approval_sql_registers_once_never_renews_and_only_as_fcb_migrator`;
+   - `test_af15_a_new_campaign_id_of_an_approved_plan_gets_no_new_budget_and_unapproved_plans_send_nothing`, con il piano modificato e quindi non approvato;
+   - unit (`tests/test_apifootball_cert_batch1.py`): `test_execute_refuses_when_the_committed_plan_file_differs_from_the_code`, `test_plan_approval_request_prints_the_committed_plan_sha_budget_and_kind`;
+   - unit (`tests/test_apifootball_cert_ledger_workflow.py`): `test_af15_plan_approval_workflow_is_owner_gated_pinned_and_binds_the_committed_plan`, `test_af15_approval_sql_is_append_only_and_never_renews_a_plan`.
+2. **Budget atomico:**
+   - `test_af15_concurrent_campaigns_of_one_plan_never_exceed_the_plan_budget_with_kills_and_aborts`, con processi reali. Distingue le prenotazioni committate, che restano e contano, da quelle in transazioni mai committate o annullate, che non lasciano righe né consumano budget;
+   - `test_concurrent_processes_never_exceed_the_cap`;
+   - `test_a_killed_process_leaves_reserved_unknown_counted_and_never_retried`;
+   - `test_af15_snapshot_budget_belongs_to_its_approved_plan_and_is_not_renewed_by_a_new_snapshot_id`.
+3. **Evidenze preservate:**
+   - `test_invariant3_a_reserved_attempt_cannot_vanish_be_reused_or_be_rewritten_as_never_made`, con login reale come `fcb_app`;
+   - `test_outcomes_are_append_only_one_per_reserved_attempt`;
+   - `test_ledger_is_append_only_and_the_database_enforces_the_budget`;
+   - `test_a_killed_process_leaves_reserved_unknown_counted_and_never_retried`.
 
 **Decisioni owner aperte:**
 1. Ruolo dedicato al ledger al posto di `fcb_app` condiviso (obiettivo futuro).

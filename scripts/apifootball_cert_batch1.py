@@ -43,10 +43,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 PLAN_PATH = ROOT / "docs" / "certification" / "apifootball" / "batch1_plan.json"
+SNAPSHOT_PLAN_PATH = ROOT / "docs" / "certification" / "apifootball" / "live_snapshot_plan.json"
+# AF-15: the budget is the owner-APPROVED PLAN's (api_football_cert_plans, bridge 0010), shared by
+# every campaign_id of the plan. The plan is identified by the SHA-256 of the file committed on main;
+# a plan that is not approved stops the runner before any request (PLAN_NOT_APPROVED).
+PLAN_LOCK_NAMESPACE = 460244131  # advisory lock per plan, also taken by the 0010 budget trigger
 HARD_CAP = 78  # owner decision 2026-11-11: initial requests + retries + timeouts + ambiguous replies
 ATTEMPTS_PER_CALL = 1  # RetryPolicy(max_attempts=1)
 CAMPAIGN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
-LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts",
+LEDGER_TABLES = ("api_football_cert_plans", "api_football_cert_campaigns", "api_football_cert_campaign_attempts",
                  "api_football_cert_campaign_outcomes")  # bridge migration 0010
 # A RESERVED attempt is not a SENT request. Each reserved attempt ends in exactly one state:
 #   RESPONSE_RECEIVED  the provider answered (HTTP status recorded after the exchange);
@@ -289,6 +294,7 @@ class CampaignLedger(Protocol):
     async def attempted_calls(self, campaign_id: str) -> set[str]: ...
     async def record_outcome(self, campaign_id: str, seq: int, outcome: str, http_status: int | None) -> None: ...
     async def attempt_states(self, campaign_id: str) -> list[dict[str, Any]]: ...
+    async def plan_usage(self, campaign_id: str) -> dict[str, Any]: ...  # {plan_sha256, budget, used}
 
 
 def state_counts(states: list[Mapping[str, Any]]) -> dict[str, int]:
@@ -307,7 +313,7 @@ class PostgresCampaignLedger:
     count, INSERT of seq = used + 1 (the 0010 trigger re-checks seq and budget; the primary key is
     the backstop). Database errors become fixed codes; no message, DSN or value is surfaced."""
 
-    LOCK_NAMESPACE = 460244130  # bridge 460244120 / signer 460244121 are the migration locks
+    LOCK_NAMESPACE = PLAN_LOCK_NAMESPACE  # bridge 460244120 / signer 460244121 are the migration locks
 
     def __init__(self, connect=None, schema: str = "public"):
         if connect is None:
@@ -316,6 +322,7 @@ class PostgresCampaignLedger:
             raise ValueError("INVALID_SCHEMA")
         self._connect = connect
         self._schema = schema  # "public" in production; a throwaway schema in integration tests
+        self._plans = f"{schema}.api_football_cert_plans"
         self._campaigns = f"{schema}.api_football_cert_campaigns"
         self._attempts = f"{schema}.api_football_cert_campaign_attempts"
         self._outcomes = f"{schema}.api_football_cert_campaign_outcomes"
@@ -342,40 +349,62 @@ class PostgresCampaignLedger:
             text = type(exc).__name__ + ":" + (getattr(getattr(exc, "diag", None), "message_primary", "") or "")
             if "API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED" in text or "UniqueViolation" in text:
                 raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED") from None
+            if "API_FOOTBALL_CERT_PLAN_NOT_APPROVED" in text:
+                raise LedgerUnavailable("PLAN_NOT_APPROVED") from None
             raise LedgerUnavailable("CAMPAIGN_LEDGER_UNAVAILABLE") from None
 
     def _open(self, campaign_id: str, budget: int, plan_sha: str) -> None:
-        if not 1 <= budget <= HARD_CAP:
+        """Bind campaign_id to an APPROVED plan (AF-15). `budget` is only the runner's own ceiling:
+        the budget that counts is the plan's, in the database, shared by all its campaigns."""
+        if not 1 <= budget <= HARD_CAP or not re.fullmatch(r"[0-9a-f]{64}", plan_sha or ""):
             raise LedgerUnavailable("CAMPAIGN_BUDGET_OUT_OF_RANGE")
         with self._connect() as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute(f"INSERT INTO {self._campaigns} (campaign_id, budget, plan_sha256) "
-                        "VALUES (%s, %s, %s) ON CONFLICT (campaign_id) DO NOTHING", (campaign_id, budget, plan_sha))
-            cur.execute(f"SELECT budget, plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s",
-                        (campaign_id,))
-            row = cur.fetchone()
-            stored_budget = row["budget"] if isinstance(row, dict) else row[0]
-            stored_sha = row["plan_sha256"] if isinstance(row, dict) else row[1]
-            if stored_sha != plan_sha or stored_budget != budget:
+            cur.execute(f"SELECT budget FROM {self._plans} WHERE plan_sha256=%s", (plan_sha,))
+            if self._one(cur, "budget") is None:
+                raise LedgerUnavailable("PLAN_NOT_APPROVED")  # before any request
+            cur.execute(f"INSERT INTO {self._campaigns} (campaign_id, plan_sha256) "
+                        "VALUES (%s, %s) ON CONFLICT (campaign_id) DO NOTHING", (campaign_id, plan_sha))
+            cur.execute(f"SELECT plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
+            if self._one(cur, "plan_sha256") != plan_sha:
                 raise LedgerUnavailable("CAMPAIGN_PLAN_MISMATCH")
 
     def _reserve(self, campaign_id: str, call_id: str) -> int:
         with self._connect() as conn, conn.cursor() as cur:
             self._require_schema(cur)
+            cur.execute(f"SELECT plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
+            plan = self._one(cur, "plan_sha256")
+            if plan is None:
+                raise LedgerUnavailable("CAMPAIGN_NOT_OPEN")
+            # One plan at a time (all its campaigns): the same lock the 0010 trigger takes.
             cur.execute("SELECT pg_catalog.pg_advisory_xact_lock(%s::pg_catalog.int4, pg_catalog.hashtext(%s))",
-                        (self.LOCK_NAMESPACE, campaign_id))
-            cur.execute(f"SELECT budget FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
+                        (self.LOCK_NAMESPACE, plan))
+            cur.execute(f"SELECT budget FROM {self._plans} WHERE plan_sha256=%s", (plan,))
             budget = self._one(cur, "budget")
             if budget is None:
-                raise LedgerUnavailable("CAMPAIGN_NOT_OPEN")
-            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} WHERE campaign_id=%s",
-                        (campaign_id,))
-            used = int(self._one(cur, "n"))
-            if used >= min(int(budget), HARD_CAP):
+                raise LedgerUnavailable("PLAN_NOT_APPROVED")
+            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} a JOIN {self._campaigns} c "
+                        "ON c.campaign_id = a.campaign_id WHERE c.plan_sha256=%s", (plan,))
+            if int(self._one(cur, "n")) >= min(int(budget), HARD_CAP):
                 raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")
+            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} WHERE campaign_id=%s", (campaign_id,))
+            used = int(self._one(cur, "n"))
             cur.execute(f"INSERT INTO {self._attempts} (campaign_id, seq, call_id) "
                         "VALUES (%s, %s, %s)", (campaign_id, used + 1, call_id))
             return used + 1  # committed on leaving the block, BEFORE the request is sent
+
+    def _plan_usage(self, campaign_id: str) -> dict[str, Any]:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            cur.execute(f"SELECT p.plan_sha256, p.budget, (SELECT count(*) FROM {self._attempts} a JOIN "
+                        f"{self._campaigns} k ON k.campaign_id = a.campaign_id WHERE k.plan_sha256 = p.plan_sha256) AS used "
+                        f"FROM {self._campaigns} c JOIN {self._plans} p ON p.plan_sha256 = c.plan_sha256 "
+                        "WHERE c.campaign_id=%s", (campaign_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise LedgerUnavailable("CAMPAIGN_NOT_OPEN")
+            sha, budget, used = (row["plan_sha256"], row["budget"], row["used"]) if isinstance(row, dict) else row
+            return {"plan_sha256": sha, "budget": int(budget), "used": int(used)}
 
     def _used(self, campaign_id: str) -> int:
         with self._connect() as conn, conn.cursor() as cur:
@@ -420,6 +449,9 @@ class PostgresCampaignLedger:
 
     async def attempt_states(self, campaign_id):
         return await asyncio.to_thread(self._guarded, self._states, campaign_id)
+
+    async def plan_usage(self, campaign_id):
+        return await asyncio.to_thread(self._guarded, self._plan_usage, campaign_id)
 
     async def open(self, campaign_id, budget, plan_sha):
         await asyncio.to_thread(self._guarded, self._open, campaign_id, budget, plan_sha)
@@ -656,6 +688,7 @@ async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger
         "schema": "apifootball-cert-batch1-run/v1", "campaign_id": campaign_id, "source_sha": source_sha,
         "plan_sha256": plan_sha256(plan_text), "hard_cap_attempts": HARD_CAP,
         "ledger_attempts_used": await ledger.used(campaign_id),
+        "plan_budget": await ledger.plan_usage(campaign_id),  # AF-15: shared by every campaign of the plan
         "ledger_attempt_states": state_counts(states := await ledger.attempt_states(campaign_id)),
         "ledger_attempts": states, "calls": results,
     }
@@ -720,6 +753,15 @@ SNAPSHOT_STEPS = (  # (source, tool, argument builder from the fixture reply)
 )
 
 
+def render_snapshot_plan() -> str:
+    """AF-15: the snapshot's committed plan. Fixed (no fixture, no snapshot_id): its approved budget
+    (at most SNAPSHOT_CAP) is shared by every snapshot_id; a new snapshot_id renews nothing."""
+    return json.dumps({"schema": "apifootball-live-full-match-snapshot-plan/v1", "campaign": "live_full_match_snapshot",
+                       "plan_kind": "LIVE_FULL_MATCH_SNAPSHOT", "cap": SNAPSHOT_CAP,
+                       "steps": [s for s, _ in SNAPSHOT_STEPS], "status": "PREPARED_NOT_AUTHORIZED"},
+                      indent=1, sort_keys=True) + "\n"
+
+
 def _utc_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
@@ -734,8 +776,7 @@ async def execute_snapshot(*, snapshot_id: str, fixture_id: int | None, settings
         raise ValueError("INVALID_SNAPSHOT_ID")
     if not 1 <= cap <= SNAPSHOT_CAP:
         raise ValueError("SNAPSHOT_CAP_OUT_OF_RANGE")
-    plan_text = json.dumps({"campaign": "live_full_match_snapshot", "fixture_id": fixture_id, "cap": cap,
-                            "steps": [s for s, _ in SNAPSHOT_STEPS]}, sort_keys=True)
+    plan_text = render_snapshot_plan()  # committed as SNAPSHOT_PLAN_PATH; approved in the database
     await ledger.open(snapshot_id, cap, plan_sha256(plan_text))
     already = await ledger.attempted_calls(snapshot_id)
     capture: dict[str, str] = {}
@@ -827,16 +868,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--campaign-id", default="")
     parser.add_argument("--fixture-id", type=int, default=None)
     parser.add_argument("--out", default="")
+    mode.add_argument("--plan-approval-request", choices=("batch1", "live_full_match_snapshot"),
+                      help="print '<plan_sha256> <budget> <plan_kind>' of the committed plan (approval workflow)")
     args = parser.parse_args(argv)
     text = render_plan(build_plan())
+    snapshot_text = render_snapshot_plan()
     if args.write_plan:
         PLAN_PATH.write_text(text, encoding="utf-8")
+        SNAPSHOT_PLAN_PATH.write_text(snapshot_text, encoding="utf-8")
         print(f"PLAN_WRITTEN calls={len(json.loads(text)['calls'])} attempts={json.loads(text)['max_attempts_total']}")
         return 0
+    committed = {p: p.read_text(encoding="utf-8") if p.is_file() else None for p in (PLAN_PATH, SNAPSHOT_PLAN_PATH)}
+    up_to_date = committed[PLAN_PATH] == text and committed[SNAPSHOT_PLAN_PATH] == snapshot_text
     if args.check_plan:
-        ok = PLAN_PATH.is_file() and PLAN_PATH.read_text(encoding="utf-8") == text
-        print("PLAN_UP_TO_DATE" if ok else "PLAN_OUT_OF_DATE")
-        return 0 if ok else 1
+        print("PLAN_UP_TO_DATE" if up_to_date else "PLAN_OUT_OF_DATE")
+        return 0 if up_to_date else 1
+    if not up_to_date:  # the plan that runs (and is approved) is exactly the committed file
+        print("PLAN_OUT_OF_DATE")
+        return 2
+    if args.plan_approval_request:
+        if args.plan_approval_request == "batch1":
+            print(f"{plan_sha256(text)} {json.loads(text)['max_attempts_total']} BATCH1")
+        else:
+            print(f"{plan_sha256(snapshot_text)} {SNAPSHOT_CAP} LIVE_FULL_MATCH_SNAPSHOT")
+        return 0
     # --execute: owner-dispatched workflow only. Fails closed on every missing precondition.
     if not args.authorize_live_campaign or not args.out or os.environ.get(AUTH_VAR, "") != "true":
         print("LIVE_CAMPAIGN_NOT_AUTHORIZED")
