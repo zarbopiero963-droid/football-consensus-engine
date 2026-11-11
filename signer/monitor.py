@@ -6,7 +6,10 @@ What one `Monitor.tick()` does:
    matched amount until settlement) is re-read through the INJECTED read functions (`get_order`,
    `get_order_by_client_id`, `get_fills`, the shapes of signer.gateway.SubmissionTransport) and the evidence is
    applied with the same `evidence_from_exchange` / `OrderLedger.apply_evidence` the gateway uses, re-reading
-   the order, reading the exchange and applying all under the MANDATORY shared gateway lock. Only the
+   the order, reading the exchange and applying all under the MANDATORY shared gateway lock. The monitor is
+   bound to THE gateway of THIS ledger (`gateway=`; review #195 P3): it takes `gateway._lock` itself, so an
+   arbitrary context manager can no longer be passed as "the lock" (MONITOR_GATEWAY_REQUIRED /
+   MONITOR_GATEWAY_FOREIGN). Only the
    three read methods are reachable from here (`_ReadOnly`): a sender, an adapter's `send`, `submit_*` or a
    cancel are never called;
 2. expiry handling: alerts for orders past expiry that are still reserved, EXPIRED_UNCONFIRMED orders and the
@@ -19,6 +22,8 @@ What one `Monitor.tick()` does:
    position / market / prices / hedge simulation, and an injected `evaluate_rules` (e.g.
    bridge.sxbet.rules.evaluate, which signer/ must not import) evaluates the owner's rules. The trailing-stop
    PEAK is persisted here (monotonic, saved BEFORE any proposal is emitted), so a restart never forgets it.
+   With no stored peak and no integer mark-to-market the peak is passed as None, never invented as 0
+   (review #195 P3): an evaluator that refuses None yields RULES_EVALUATION_REFUSED, not a fake value.
    A proposal is only a proposal: `executable`, `signed` and `submitted` must be False (else MONITOR_PROPOSAL_
    CLAIMS_EXECUTABLE); executing it needs a fresh owner approval through the normal signer path.
 
@@ -26,17 +31,31 @@ Persistence: `MonitorState` is one JSON file written atomically (temp file + fsy
 fsync) with a sha256 over the canonical body, bound to one ledger_id. A missing file is created only by the
 explicit `MonitorState.create`; a corrupt or foreign file fails closed (MonitorError). Order state is never
 kept here: after a restart it is rebuilt from the ledger replay.
+Integrity (review #195 P3): every field is type-checked on open (exact key set; trailing rows exactly
+{peak: int, updated_at: int}; heartbeat_ack_at int or null; proposals_seen a list of strings; ticks a
+non-negative int) => MONITOR_STATE_CORRUPT otherwise. With `mac_key` (>= 32 bytes, from the signer host's
+own configuration) the body is protected by HMAC-SHA256 instead of a bare sha256, so someone who can write
+the file but does not hold the key cannot forge a peak; a keyed file opened without the key, or a plain file
+opened with a key (downgrade), fails closed. WITHOUT a key the sha256 only detects accidental corruption,
+not deliberate tampering by someone with write access to the file: that is a documented residual risk (the
+trailing peak only feeds proposals, never an order).
+
+Tick report: `orders_submitted`, `orders_cancelled` and `network_writes` are always 0 BY CONSTRUCTION (the
+monitor holds only the three read methods); the report says so (`write_counters:
+CONSTANT_BY_CONSTRUCTION`). `exchange_reads` is measured.
 """
 from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
+from .gateway import SubmissionGateway
 from .orders import (AUTHORIZED, CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED, EXPIRY_CONFIRM_SECONDS, EXPIRY_GRACE_SECONDS,
                      FILLED, OPEN, PARTIALLY_FILLED, REJECTED, SIGNED, SUBMITTED, UNKNOWN, LedgerError, OrderLedger,
                      OrderStateError, evidence_from_exchange)
@@ -46,6 +65,7 @@ INFO, WARN, CRITICAL = "INFO", "WARN", "CRITICAL"
 _LIVE = frozenset({SUBMITTED, OPEN, PARTIALLY_FILLED, UNKNOWN, EXPIRED_UNCONFIRMED})
 _HOLDING = frozenset({FILLED, CANCELLED, EXPIRED})
 _MAX_SEEN = 1000
+_BODY_KEYS = frozenset({"schema", "ledger_id", "trailing", "heartbeat_ack_at", "proposals_seen", "ticks"})
 
 
 class MonitorError(RuntimeError):
@@ -100,21 +120,23 @@ def _canon(obj: Any) -> bytes:
 class MonitorState:
     """Persisted monitor memory: trailing peaks, last heartbeat ack, proposals already emitted, tick count."""
 
-    def __init__(self, path: str, body: dict[str, Any]):
+    def __init__(self, path: str, body: dict[str, Any], mac_key: bytes | None = None):
         self._path = path
         self._body = body
+        self._mac_key = _check_key(mac_key)
 
     @classmethod
-    def create(cls, path: str, *, ledger_id: str) -> "MonitorState":
+    def create(cls, path: str, *, ledger_id: str, mac_key: bytes | None = None) -> "MonitorState":
         if os.path.exists(path):
             raise MonitorError("MONITOR_STATE_ALREADY_EXISTS")
         st = cls(path, {"schema": MONITOR_SCHEMA, "ledger_id": ledger_id, "trailing": {}, "heartbeat_ack_at": None,
-                        "proposals_seen": [], "ticks": 0})
+                        "proposals_seen": [], "ticks": 0}, mac_key)
         st.save()
         return st
 
     @classmethod
-    def open(cls, path: str, *, ledger_id: str) -> "MonitorState":
+    def open(cls, path: str, *, ledger_id: str, mac_key: bytes | None = None) -> "MonitorState":
+        key = _check_key(mac_key)
         try:
             with open(path, "rb") as fh:
                 doc = json.loads(fh.read().decode("ascii"))
@@ -122,23 +144,32 @@ class MonitorState:
             raise MonitorError("MONITOR_STATE_MISSING") from None
         except (OSError, ValueError, UnicodeDecodeError):
             raise MonitorError("MONITOR_STATE_CORRUPT") from None
-        if not isinstance(doc, dict) or set(doc) != {"body", "sha256"} or not isinstance(doc["body"], dict):
+        if not isinstance(doc, dict) or not isinstance(doc.get("body"), dict):
             raise MonitorError("MONITOR_STATE_CORRUPT")
         body = doc["body"]
-        if doc["sha256"] != hashlib.sha256(_canon(body)).hexdigest():
-            raise MonitorError("MONITOR_STATE_CORRUPT")
-        if body.get("schema") != MONITOR_SCHEMA:
-            raise MonitorError("MONITOR_STATE_CORRUPT")
-        if body.get("ledger_id") != ledger_id:
+        if key is None:
+            if set(doc) == {"body", "hmac_sha256"}:
+                raise MonitorError("MONITOR_STATE_MAC_KEY_REQUIRED")
+            if set(doc) != {"body", "sha256"} or doc["sha256"] != hashlib.sha256(_canon(body)).hexdigest():
+                raise MonitorError("MONITOR_STATE_CORRUPT")
+        else:
+            if set(doc) != {"body", "hmac_sha256"}:
+                raise MonitorError("MONITOR_STATE_MAC_MISSING")  # never downgrade to an unkeyed file
+            if not isinstance(doc["hmac_sha256"], str) or not hmac.compare_digest(doc["hmac_sha256"],
+                                                                                   _mac(key, body)):
+                raise MonitorError("MONITOR_STATE_MAC_INVALID")
+        _check_body(body)
+        if body["ledger_id"] != ledger_id:
             raise MonitorError("MONITOR_STATE_FOREIGN")
-        trailing = body.get("trailing")
-        if not isinstance(trailing, dict) or not all(
-                isinstance(v, dict) and type(v.get("peak")) is int for v in trailing.values()):
-            raise MonitorError("MONITOR_STATE_CORRUPT")
-        return cls(path, body)
+        return cls(path, body, key)
 
     def save(self) -> None:
-        data = _canon({"body": self._body, "sha256": hashlib.sha256(_canon(self._body)).hexdigest()})
+        _check_body(self._body)
+        if self._mac_key is None:
+            doc = {"body": self._body, "sha256": hashlib.sha256(_canon(self._body)).hexdigest()}
+        else:
+            doc = {"body": self._body, "hmac_sha256": _mac(self._mac_key, self._body)}
+        data = _canon(doc)
         tmp = self._path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -201,18 +232,45 @@ class MonitorState:
         self._body["ticks"] += 1
 
 
+def _check_key(key: Any) -> bytes | None:
+    if key is None:
+        return None
+    if not isinstance(key, (bytes, bytearray)) or len(key) < 32:
+        raise MonitorError("MONITOR_STATE_MAC_KEY_INVALID")
+    return bytes(key)
+
+
+def _mac(key: bytes, body: Mapping[str, Any]) -> str:
+    return hmac.new(key, b"sxbet.monitor_state.v1\x00" + _canon(body), hashlib.sha256).hexdigest()
+
+
+def _check_body(body: Any) -> None:
+    """Type-check every field: a well-hashed but ill-typed body is still refused (fail closed)."""
+    ok = (isinstance(body, dict) and set(body) == _BODY_KEYS and body["schema"] == MONITOR_SCHEMA
+          and isinstance(body["ledger_id"], str) and isinstance(body["trailing"], dict)
+          and all(isinstance(k, str) and isinstance(v, dict) and set(v) == {"peak", "updated_at"}
+                  and type(v["peak"]) is int and type(v["updated_at"]) is int for k, v in body["trailing"].items())
+          and (body["heartbeat_ack_at"] is None or type(body["heartbeat_ack_at"]) is int)
+          and isinstance(body["proposals_seen"], list) and len(body["proposals_seen"]) <= _MAX_SEEN
+          and all(isinstance(x, str) for x in body["proposals_seen"])
+          and type(body["ticks"]) is int and body["ticks"] >= 0)
+    if not ok:
+        raise MonitorError("MONITOR_STATE_CORRUPT")
+
+
 class _ReadOnly:
     """Exposes ONLY the three documented reads of the injected object; nothing else is reachable."""
 
-    __slots__ = ("_get_order", "_get_order_by_client_id", "_get_fills")
+    __slots__ = ("_get_order", "_get_order_by_client_id", "_get_fills", "calls")
 
     def __init__(self, reads: Any):
         self._get_order = reads.get_order
         self._get_order_by_client_id = reads.get_order_by_client_id
         self._get_fills = reads.get_fills
+        self.calls = 0  # measured: exchange reads issued
 
-    @staticmethod
-    def _safe(fn, arg) -> Mapping[str, Any]:
+    def _safe(self, fn, arg) -> Mapping[str, Any]:
+        self.calls += 1
         try:
             out = fn(arg)
         except Exception:
@@ -229,7 +287,7 @@ class Monitor:
                  heartbeat_policy: HeartbeatPolicy | None = None, rules: Mapping[str, Any] | None = None,
                  evaluate_rules: Callable[..., Mapping[str, Any]] | None = None,
                  market_snapshot: Callable[[str], Mapping[str, Any] | None] | None = None,
-                 lock: Any, settlement_poll_seconds: int = 300):
+                 gateway: SubmissionGateway | None = None, settlement_poll_seconds: int = 300):
         if not isinstance(ledger, OrderLedger):
             raise MonitorError("MONITOR_LEDGER_INVALID")
         if not isinstance(state, MonitorState) or state.ledger_id != ledger.ledger_id:
@@ -244,11 +302,13 @@ class Monitor:
         self._rules = copy.deepcopy(dict(rules)) if rules is not None else None
         self._evaluate = evaluate_rules
         self._snapshot = market_snapshot
-        # Mandatory: the SAME lock as the gateway / cancellation service (gateway._lock) in the signer process.
-        # A private lock would let a stale read race a gateway re-send (review finding 2).
-        if lock is None or not callable(getattr(lock, "__enter__", None)):
-            raise MonitorError("MONITOR_LOCK_REQUIRED")
-        self._lock = lock
+        # Mandatory: the SAME lock as the gateway / cancellation service in the signer process, taken from THE
+        # gateway of this ledger (review #195 P3): no private lock, no arbitrary context manager.
+        if not isinstance(gateway, SubmissionGateway):
+            raise MonitorError("MONITOR_GATEWAY_REQUIRED")
+        if gateway._ledger is not ledger:
+            raise MonitorError("MONITOR_GATEWAY_FOREIGN")
+        self._lock = gateway._lock
         self._poll = settlement_poll_seconds
         self._last_poll: dict[str, int] = {}
 
@@ -330,11 +390,21 @@ class Monitor:
             trailing = cfg.get("trailing_stop")
             if isinstance(trailing, dict) and trailing.get("enabled"):
                 stored = self._state.peak(mh)
-                base = stored if stored is not None else (mtm if type(mtm) is int else 0)
+                # Missing stays missing: no stored peak and no integer mark-to-market => None, never 0.
+                base = stored if stored is not None else (mtm if type(mtm) is int else None)
                 trailing["peak_mark_to_market_base_units"] = base
-            verdict = self._evaluate(cfg, market_position=position, market=snap.get("market"), now_unix=now,
-                                     data_age_seconds=snap.get("data_age_seconds"),
-                                     taker_percentage_odds=snap.get("taker_percentage_odds"), hedge=snap.get("hedge"))
+            try:
+                verdict = self._evaluate(cfg, market_position=position, market=snap.get("market"), now_unix=now,
+                                         data_age_seconds=snap.get("data_age_seconds"),
+                                         taker_percentage_odds=snap.get("taker_percentage_odds"),
+                                         hedge=snap.get("hedge"))
+            except Exception as exc:  # e.g. the evaluator refuses a None peak: report, never substitute a value
+                report["alerts"].append(Alert(WARN, "RULES_EVALUATION_REFUSED", None, mh,
+                                              {"reason": type(exc).__name__}))
+                if type(mtm) is int:
+                    self._state.raise_peak(mh, mtm, now)
+                self._state.save()
+                continue
             if type(mtm) is int:
                 self._state.raise_peak(mh, mtm, now)
             self._state.save()  # the peak is durable BEFORE anything is emitted
@@ -355,8 +425,11 @@ class Monitor:
     # ---------------------------------------------------------------- tick
     def tick(self) -> dict[str, Any]:
         now = int(self._clock())
+        reads_before = self._reads.calls
+        # orders_submitted / orders_cancelled / network_writes: 0 BY CONSTRUCTION (only reads are reachable).
         report: dict[str, Any] = {"at": now, "reconciled": [], "alerts": [], "proposals": [], "orders_submitted": 0,
-                                  "orders_cancelled": 0, "network_writes": 0}
+                                  "orders_cancelled": 0, "network_writes": 0,
+                                  "write_counters": "CONSTANT_BY_CONSTRUCTION", "exchange_reads": 0}
         self._reconcile(now, report)
         self._expiry_alerts(now, report)
         report["alerts"].extend(evaluate_heartbeat(self._hb, last_ack_at=self._state.heartbeat_ack_at,
@@ -365,4 +438,5 @@ class Monitor:
             self._rules_pass(now, report)
         self._state.bump()
         self._state.save()
+        report["exchange_reads"] = self._reads.calls - reads_before
         return report
