@@ -6,17 +6,22 @@ from urllib.parse import urlparse
 
 
 class UnsafeURL(ValueError):
-    pass
+    """A refused URL. `code` is the fixed, non-sensitive reason returned to MCP clients (#188);
+    the message stays server-side (it may carry the hostname)."""
+
+    def __init__(self, message: str = "", code: str = "URL_NOT_ALLOWED"):
+        super().__init__(message)
+        self.code = code
 
 
 def validate_public_http_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
-        raise UnsafeURL("only http/https URLs are allowed")
+        raise UnsafeURL("only http/https URLs are allowed", "URL_SCHEME_NOT_ALLOWED")
     if not parsed.hostname:
-        raise UnsafeURL("URL hostname is required")
+        raise UnsafeURL("URL hostname is required", "URL_HOST_REQUIRED")
     if parsed.username or parsed.password:
-        raise UnsafeURL("credentials in URLs are not allowed")
+        raise UnsafeURL("credentials in URLs are not allowed", "URL_CREDENTIALS_NOT_ALLOWED")
 
     host = parsed.hostname
     try:
@@ -26,7 +31,7 @@ def validate_public_http_url(url: str) -> str:
         try:
             infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
         except socket.gaierror as exc:
-            raise UnsafeURL(f"hostname cannot be resolved: {host}") from exc
+            raise UnsafeURL(f"hostname cannot be resolved: {host}", "URL_HOST_UNRESOLVABLE") from exc
         addresses = []
         for info in infos:
             try:
@@ -35,12 +40,12 @@ def validate_public_http_url(url: str) -> str:
                 continue
 
     if not addresses:
-        raise UnsafeURL("hostname resolved to no usable address")
+        raise UnsafeURL("hostname resolved to no usable address", "URL_HOST_UNRESOLVABLE")
 
     for addr in addresses:
         for candidate in [addr, *_embedded_ipv4(addr)]:
             if _non_public(candidate):
-                raise UnsafeURL("non-public destination refused")
+                raise UnsafeURL("non-public destination refused", "URL_NON_PUBLIC_DESTINATION")
 
     return url
 

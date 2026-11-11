@@ -271,8 +271,35 @@ red_profile_only = pytest.mark.skipif(PROFILE != "lna_off", reason="RED controls
                                       "lna_off profile (native LNA can mask a vector)")
 
 
+# #189: FCB_CLOAK_CHROMIUM=<full Chrome or the CloakBrowser binary> launches the local path exactly
+# as production Cloak does (sandbox on, allowlisted env, one combined --disable-features incl.
+# IsolateSandboxedIframes, renderer process limit) instead of chromium-headless-shell, which does
+# not isolate sandboxed frames and so cannot show the WP-002b P1 on the local path. Run it as a
+# NON-root uid (Chromium refuses its sandbox as root).
+CLOAK_CHROMIUM = os.environ.get("FCB_CLOAK_CHROMIUM", "")
+
+
+def cloak_launch_options(extra_args=()):
+    """Production Cloak launch options for a Playwright launch (test flags merged, never appended:
+    Chromium honours only the last --disable-features)."""
+    disabled = ["LocalNetworkAccessChecks"] if PROFILE == "lna_off" else []
+    other = []
+    for arg in extra_args:
+        if arg.startswith("--disable-features="):
+            disabled += [f for f in arg.split("=", 1)[1].split(",") if f]
+        else:
+            other.append(arg)
+    args = browser_use.cloak_chromium_args(tuple(disabled))
+    return {"executable_path": CLOAK_CHROMIUM, "chromium_sandbox": True, "headless": True,
+            "env": browser_use.cloak_child_env(),
+            "ignore_default_args": ["--enable-automation", "--enable-unsafe-swiftshader"],
+            "args": [f"--host-resolver-rules=MAP {REBIND_HOST} {INT}", *other, *args]}
+
+
 async def _launch(p, extra_args=()):
     try:
+        if CLOAK_CHROMIUM:
+            return await p.chromium.launch(**cloak_launch_options(extra_args))
         return await p.chromium.launch(args=[*CHROMIUM_TEST_ARGS, *extra_args])
     except Exception as exc:  # pragma: no cover
         if os.environ.get("FCB_REQUIRE_CHROMIUM") == "1":
@@ -1159,3 +1186,82 @@ def test_browser_use_live_odds_over_wss_stay_at_the_load_state(servers, wss, mcp
     (text, html), _ = _run_with_cdp_chromium(api, flow)
     assert text == "-" and html == '<td id="odds-home" data-seq="0">-</td>'
     assert wss.paths == [] and servers.lines == []
+
+
+# ---- #189 CloakBrowser launch hardening, on a real full-Chrome or Cloak binary ---------------
+# Run with FCB_CLOAK_CHROMIUM=<binary> as a NON-root user (Chromium refuses its sandbox as root).
+cloak_binary_only = pytest.mark.skipif(
+    not CLOAK_CHROMIUM, reason="needs FCB_CLOAK_CHROMIUM (full Chrome or the Cloak binary): "
+    "chromium-headless-shell does not isolate sandboxed frames")
+
+
+@cloak_binary_only
+def test_cloak_launch_cmdline_is_sandboxed_scrubbed_and_keeps_sandboxed_frames_in_process(monkeypatch):
+    marker = "FCB-MOCK-SECRET-7f3a"
+    monkeypatch.setenv("DATABASE_URL", f"postgres://u:{marker}@db/x")
+    monkeypatch.setenv("MCP_OAUTH_PASSWORD", marker)
+
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            browser = await _launch(p)
+            try:
+                page = await browser.new_page()
+                await page.goto("chrome://sandbox")
+                sandbox = await page.inner_text("body")
+                procs = [pid for pid in browser_use._descendants(os.getpid())
+                         if (browser_use._proc_read(pid, "comm") or b"").strip() == b"chrome"
+                         and b"--type=" not in (browser_use._proc_read(pid, "cmdline") or b"")]
+                cmdline = (browser_use._proc_read(procs[0], "cmdline") or b"").split(b"\0")
+                environ = browser_use._proc_read(procs[0], "environ") or b""
+                return [c.decode() for c in cmdline if c], environ, sandbox
+            finally:
+                await browser.close()
+    cmdline, environ, sandbox = asyncio.run(scenario())
+    assert "--no-sandbox" not in cmdline
+    effective = [a for a in cmdline if a.startswith("--disable-features=")][-1]
+    features = set(effective.split("=", 1)[1].split(","))
+    # Chromium honours the last switch only: it must carry Playwright's list AND ours.
+    assert set(browser_use.CLOAK_DISABLED_FEATURES) <= features
+    assert "--renderer-process-limit=1" in cmdline
+    assert marker.encode() not in environ
+    assert "adequately sandboxed" in sandbox, sandbox
+
+
+@red_profile_only
+@cloak_binary_only
+def test_control_p1_fires_on_the_cloak_path_when_sandboxed_frames_are_isolated(servers, udp, monkeypatch):
+    """RED control: without IsolateSandboxedIframes in the combined flag, a sandboxed srcdoc frame
+    commits in its own process and WebRTC/WebTransport reach the internal host (WP-002b P1)."""
+    monkeypatch.setattr(browser_use, "CLOAK_DISABLED_FEATURES", browser_use.CLOAK_PLAYWRIGHT_DISABLED_FEATURES)
+    counts = {}
+    for name in (_webtransport_page(udp), _rtc_udp_page(udp)):
+        before = udp.packets
+        _visit(servers, "local", [name], settle=3.0, await_leak=6.0)
+        counts[name] = udp.packets - before
+    results = _visit(servers, "local", ["rtc_turn"], settle=3.0, await_leak=6.0)
+    counts["rtc_turn"] = len(results["rtc_turn"][2])
+    assert any(counts.values()), counts
+
+
+@cloak_binary_only
+def test_cloak_websockets_never_reach_internal_whatever_the_binary_does(servers):
+    """Binary-independent GREEN: on full Chrome the document CSP refuses ws:/wss:; on the Cloak 146
+    binary new WebSocket() throws (Playwright's Runtime bindings break there). Either way no socket
+    opens and the internal host sees nothing."""
+    async def scenario():
+        async with playwright_api.async_playwright() as p:
+            bridge, session, close = await PROVIDERS["local"](p)
+            try:
+                await bridge.open_url(session.id, servers.url("normal"))
+                return await session.page.evaluate("""async (urls) => {
+                    const open = (u) => new Promise(r => { try { const w = new WebSocket(u);
+                        w.onopen = () => r('open'); w.onerror = () => r('error');
+                        setTimeout(() => r('timeout'), 3000); } catch (e) { r('threw') } });
+                    return Promise.all(urls.map(open));
+                }""", [f"ws://{servers.internal}/private", f"wss://{servers.internal}/private",
+                       servers.url("x").replace("http://", "ws://")])
+            finally:
+                await close()
+    states = asyncio.run(scenario())
+    assert "open" not in states, states
+    assert servers.lines == []

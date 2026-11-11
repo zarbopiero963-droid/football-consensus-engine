@@ -1,0 +1,56 @@
+#!/bin/bash
+# CloakBrowser uid-split launcher (#189). PREPARED, NOT APPLIED: it needs the Docker runtime on
+# Render (deploy/cloak-uid-split/Dockerfile) and the owner's canary
+# (docs/certification/areas/cloak_hardening.md).
+#
+# The bridge sets CLOAKBROWSER_LAUNCHER to this file; cloakbrowser/Playwright then exec it in place
+# of the Chromium binary. It runs Chromium as the dedicated uid `cloak` with a minimal environment
+# and no capabilities, so a compromised browser process cannot read the bridge's environment,
+# /proc/<bridge>/*, the Playwright driver's environment, or write any file the bridge owns.
+# Chromium's own sandbox stays ON: --no-sandbox is refused here as well as by the bridge.
+# Requires the bridge to hold CAP_SETUID/CAP_SETGID as ambient capabilities (image entrypoint).
+#
+# Input (environment, set by the bridge only):
+#   FCB_CLOAK_BINARY            the binary the bridge has just verified against its SHA-256 pin. It
+#                               must resolve under CLOAK_ROOT and be root-owned and not writable by
+#                               group/others (the `cloak` uid cannot swap it).
+#   CLOAKBROWSER_LICENSE_KEY,   only for the licensed profile, set by cloakbrowser for the binary.
+#   CLOAKBROWSER_LICENSE_STATUS_FILE
+# Playwright's --user-data-dir (owned by the bridge uid) is replaced by a fresh per-launch profile
+# owned by `cloak`, removed on exit. The pipe fds 3/4 (--remote-debugging-pipe) are inherited.
+set -u
+CLOAK_USER=cloak
+CLOAK_ROOT=/opt/cloak
+BASE=/var/lib/cloak
+
+die() { echo "cloak-launch: $1" >&2; exit "$2"; }
+
+bin=$(readlink -f -- "${FCB_CLOAK_BINARY:-}") || die "binary missing" 64
+case "$bin" in "$CLOAK_ROOT"/*) ;; *) die "binary outside $CLOAK_ROOT" 64 ;; esac
+[ -f "$bin" ] && [ -x "$bin" ] || die "binary missing" 64
+[ "$(stat -c %u "$bin")" = 0 ] || die "binary not root-owned" 64
+case "$(stat -c %A "$bin")" in ?????w????|????????w?) die "binary writable by group/others" 64 ;; esac
+
+uid=$(id -u "$CLOAK_USER") && gid=$(id -g "$CLOAK_USER") || die "user $CLOAK_USER missing" 65
+[ "$uid" != 0 ] && [ "$uid" != "$(id -u)" ] || die "cloak uid must differ from the bridge" 65
+
+args=()
+for a in "$@"; do
+  case "$a" in
+    --user-data-dir=*) ;;
+    --no-sandbox|--no-sandbox=*|--disable-setuid-sandbox|--disable-namespace-sandbox|--disable-seccomp-filter-sandbox)
+      die "refusing $a" 66 ;;
+    *) args+=("$a") ;;
+  esac
+done
+
+as_cloak() { setpriv --reuid="$uid" --regid="$gid" --clear-groups --inh-caps=-all --ambient-caps=-all -- "$@"; }
+# At most one Cloak session exists (bridge invariant): a profile left by a killed launch is removed.
+as_cloak find "$BASE" -mindepth 1 -maxdepth 1 -name 'profile-*' -exec rm -rf -- {} + 2>/dev/null
+profile=$(as_cloak mktemp -d "$BASE/profile-XXXXXX") || die "profile dir" 67
+trap 'as_cloak rm -rf -- "$profile"' EXIT
+
+envv=(HOME="$profile" PATH=/usr/bin:/bin LANG=C.UTF-8 TMPDIR="$profile")
+[ -n "${CLOAKBROWSER_LICENSE_KEY:-}" ] && envv+=(CLOAKBROWSER_LICENSE_KEY="$CLOAKBROWSER_LICENSE_KEY")
+[ -n "${CLOAKBROWSER_LICENSE_STATUS_FILE:-}" ] && envv+=(CLOAKBROWSER_LICENSE_STATUS_FILE="$CLOAKBROWSER_LICENSE_STATUS_FILE")
+as_cloak env -i "${envv[@]}" "$bin" "${args[@]}" --user-data-dir="$profile/data"

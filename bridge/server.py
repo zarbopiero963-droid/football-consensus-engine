@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import logging
 import re
@@ -9,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -17,7 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from bridge import oauth, oauth_store
-from bridge.browser_use import BrowserUseBridge, browser_tools_enabled
+from bridge.browser_use import BrowserUseBridge, browser_error_code, browser_tools_enabled
 from bridge.schema_readiness import SchemaReadiness
 
 bridge = BrowserUseBridge()
@@ -31,19 +33,44 @@ mcp = MCPServer(
 )
 
 
+
+def _fixed_errors(fn):
+    """A browser_* tool whose failures reach the client as ONE fixed code (#188).
+
+    Without this, any exception other than ToolError is reported by the MCP SDK as the bare
+    "Error executing tool <name>", so a client cannot tell a refused ws:/wss: URL from a crash.
+    The code comes from bridge.browser_use.browser_error_code: never an exception message, URL,
+    hostname, provider body or traceback. The exception type is logged server-side only."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except Exception as exc:
+            code = browser_error_code(exc)
+            logging.getLogger(__name__).info("browser_tool_refused tool=%s code=%s type=%s",
+                                             fn.__name__, code, type(exc).__name__)
+            raise ToolError(code) from None
+    return wrapper
+
+
 @mcp.tool()
+@_fixed_errors
 async def browser_create(proxy_country_code: str | None = None) -> dict[str, Any]:
     """Create one Browser Use cloud browser. Returns an opaque session id and live_view_available; never the CDP URL or live URL (operator opt-in only)."""
     return await bridge.create(proxy_country_code)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_create_cloak() -> dict[str, Any]:
     """Create one bridge-owned CloakBrowser session when server-side enabled."""
     return await bridge.create_cloak()
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_open_url(
     session_id: str,
     url: str,
@@ -56,12 +83,14 @@ async def browser_open_url(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_get_html(session_id: str, selector: str | None = None) -> dict[str, Any]:
     """Return raw outer HTML for the page or one selector."""
     return await bridge.html(session_id, selector)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_get_dom(
     session_id: str,
     selector: str = "body",
@@ -72,12 +101,14 @@ async def browser_get_dom(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_screenshot(session_id: str, full_page: bool = True) -> dict[str, Any]:
     """Return a PNG screenshot as base64."""
     return await bridge.screenshot(session_id, full_page)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_click(
     session_id: str,
     selector: str,
@@ -91,12 +122,14 @@ async def browser_click(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_fill(session_id: str, selector: str, value: str, timeout_ms: int = 30000) -> dict[str, Any]:
     """Fill an input without echoing the supplied value in the result."""
     return await bridge.fill(session_id, selector, value, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_type(
     session_id: str,
     selector: str,
@@ -109,12 +142,14 @@ async def browser_type(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_press(session_id: str, selector: str, key: str, timeout_ms: int = 30000) -> dict[str, Any]:
     """Press a keyboard key or chord on the first matching element."""
     return await bridge.press(session_id, selector, key, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_select_option(
     session_id: str,
     selector: str,
@@ -126,6 +161,7 @@ async def browser_select_option(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_set_checked(
     session_id: str,
     selector: str,
@@ -137,24 +173,28 @@ async def browser_set_checked(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_hover(session_id: str, selector: str, timeout_ms: int = 30000) -> dict[str, Any]:
     """Hover the first matching element."""
     return await bridge.hover(session_id, selector, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_focus(session_id: str, selector: str, timeout_ms: int = 30000) -> dict[str, Any]:
     """Focus the first matching element."""
     return await bridge.focus(session_id, selector, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_scroll(session_id: str, delta_x: int = 0, delta_y: int = 700) -> dict[str, Any]:
     """Scroll the active page using mouse-wheel deltas."""
     return await bridge.scroll(session_id, delta_x, delta_y)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_wait_for_selector(
     session_id: str,
     selector: str,
@@ -166,30 +206,35 @@ async def browser_wait_for_selector(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_wait(session_id: str, milliseconds: int = 1000) -> dict[str, Any]:
     """Wait a bounded amount of time in the active page."""
     return await bridge.wait(session_id, milliseconds)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_back(session_id: str, wait_until: str = "domcontentloaded", timeout_ms: int = 45000) -> dict[str, Any]:
     """Navigate the active page backward in history."""
     return await bridge.back(session_id, wait_until, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_forward(session_id: str, wait_until: str = "domcontentloaded", timeout_ms: int = 45000) -> dict[str, Any]:
     """Navigate the active page forward in history."""
     return await bridge.forward(session_id, wait_until, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_reload(session_id: str, wait_until: str = "domcontentloaded", timeout_ms: int = 45000) -> dict[str, Any]:
     """Reload the active page."""
     return await bridge.reload(session_id, wait_until, timeout_ms)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_get_elements(
     session_id: str,
     selector: str = "input,button,a,select,textarea",
@@ -200,78 +245,91 @@ async def browser_get_elements(
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_list_pages(session_id: str) -> dict[str, Any]:
     """List tabs/pages for the managed browser session."""
     return await bridge.list_pages(session_id)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_new_page(session_id: str, url: str | None = None) -> dict[str, Any]:
     """Open a new tab/page and optionally navigate to an authorized public URL."""
     return await bridge.new_page(session_id, url)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_switch_page(session_id: str, page_index: int) -> dict[str, Any]:
     """Switch the active tab/page by its current zero-based index."""
     return await bridge.switch_page(session_id, page_index)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_close_page(session_id: str, page_index: int) -> dict[str, Any]:
     """Close one tab/page; the final remaining page cannot be closed."""
     return await bridge.close_page(session_id, page_index)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_get_network_responses(session_id: str) -> dict[str, Any]:
     """Return XHR/fetch/document response metadata captured by the last navigation."""
     return await bridge.network_responses(session_id)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_stop(session_id: str) -> dict[str, Any]:
     """Stop the bridge-owned browser session and remove its in-memory capabilities."""
     return await bridge.stop(session_id)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_list_sessions(include_stopped: bool = False, limit: int = 200) -> dict[str, Any]:
     """List durable bridge-owned browser sessions without exposing provider capabilities."""
     return await bridge.list_sessions(include_stopped, limit)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_session_status(session_id: str) -> dict[str, Any]:
     """Return lifecycle status for one bridge-owned browser session."""
     return await bridge.session_status(session_id)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_reap(idle_seconds: int = 300) -> dict[str, Any]:
     """Stop expired idle bridge leases; invalid thresholds return a structured error."""
     return await bridge.reap(idle_seconds)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_stop_all_idle(idle_seconds: int = 300) -> dict[str, Any]:
     """Stop expired idle bridge sessions while excluding active local operations."""
     return await bridge.stop_all_idle(idle_seconds)
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_stop_all() -> dict[str, Any]:
     """Emergency stop for all sessions local to this bridge worker."""
     return await bridge.stop_all()
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_health() -> dict[str, Any]:
     """Return bridge/database/provider configuration health without exposing secrets."""
     return await bridge.health()
 
 
 @mcp.tool()
+@_fixed_errors
 async def browser_cleanup_report() -> dict[str, Any]:
     """Return durable/local cleanup counts and the last reaper failure, if any."""
     return await bridge.cleanup_report()
@@ -449,7 +507,8 @@ mcp_app = mcp.streamable_http_app(
 async def lifespan(_app: Starlette) -> AsyncIterator[None]:
     # Render should not mark a fresh worker ready until Cloak's Chromium
     # artifact is actually present. This moves the expensive cold download
-    # out of the first user MCP request.
+    # out of the first user MCP request. It never raises (#189): a failure
+    # leaves Cloak disabled with a fixed code and the MCP starts normally.
     await bridge.prepare_cloak_runtime()
     total, by_component = await _tool_registry_counts()
     logging.getLogger(__name__).info(

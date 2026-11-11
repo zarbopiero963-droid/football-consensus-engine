@@ -165,6 +165,12 @@ def _chromium_path() -> str | None:
 
 async def _launch(p):
     try:
+        cloak = os.environ.get("FCB_CLOAK_CHROMIUM", "")
+        if cloak:  # #189: the Cloak binary / full Chrome, launched with production Cloak options
+            return await p.chromium.launch(
+                executable_path=cloak, chromium_sandbox=True, env=browser_use.cloak_child_env(),
+                args=browser_use.cloak_chromium_args(),
+                ignore_default_args=["--enable-automation", "--enable-unsafe-swiftshader"])
         return await p.chromium.launch()
     except Exception as exc:  # pragma: no cover
         if os.environ.get("FCB_REQUIRE_CHROMIUM") == "1":

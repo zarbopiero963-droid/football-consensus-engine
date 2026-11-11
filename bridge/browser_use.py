@@ -9,6 +9,7 @@ import logging
 import hashlib
 import json
 import importlib.util
+import re
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from collections import deque
@@ -83,6 +84,8 @@ _document_buffered_bytes = 0
 _FULFILL_DROPPED_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 TOOLS_DISABLED = "browser tools are disabled on this server"
+CLOAK_SANDBOX_UNAVAILABLE = "CloakBrowser sandbox unavailable"
+CLOAK_ISOLATION_UNAVAILABLE = "CloakBrowser process isolation unavailable"
 
 # Schemes a frame may legitimately carry without a network fetch of its own.
 _LOCAL_FRAME_PREFIXES = ("about:blank", "about:srcdoc", "data:", "blob:", "chrome-error://")
@@ -138,9 +141,346 @@ async def request_verdict(url: str):
         return type(exc).__name__
 
 
+class BrowserRefusal(RuntimeError):
+    """A refusal the bridge anticipated. str() keeps the legacy, non-sensitive message; `code` is the
+    fixed reason an MCP client receives (#188). Never built from exception text or a URL."""
+
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+# RuntimeError messages raised before #188 that a client may meet, mapped to fixed codes.
+_LEGACY_RUNTIME_CODES = {
+    "BROWSER_USE_API_KEY is required": "BROWSER_USE_NOT_CONFIGURED",
+    "CloakBrowser session is no longer connected": "CLOAK_SESSION_DISCONNECTED",
+    "browser context unavailable": "BROWSER_CONTEXT_UNAVAILABLE",
+    "Provider did not confirm the browser stopped": "BROWSER_STOP_UNCONFIRMED",
+    "browser session already claimed or no longer owned": "SESSION_NOT_OWNED",
+    "browser session stop lock timed out and lease is not stopping": "SESSION_STOP_TIMEOUT",
+}
+
+
+def browser_error_code(exc: BaseException) -> str:
+    """The fixed code an MCP client receives for a failed browser tool (#188).
+
+    Exception messages, URLs, hostnames, provider bodies and tracebacks never reach the client;
+    an unexpected exception is reported as BROWSER_INTERNAL_ERROR (its type is logged server-side)."""
+    if isinstance(exc, (UnsafeURL, BrowserRefusal)):
+        return exc.code
+    if isinstance(exc, KeyError):
+        return "SESSION_STOPPING" if "stopping" in str(exc) else "SESSION_NOT_FOUND"
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "BROWSER_TIMEOUT"
+    if isinstance(exc, PlaywrightError):
+        return "BROWSER_TIMEOUT" if type(exc).__name__ == "TimeoutError" else "BROWSER_OPERATION_FAILED"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"PROVIDER_HTTP_{exc.response.status_code}"
+    if isinstance(exc, httpx.HTTPError):
+        return "PROVIDER_UNAVAILABLE"
+    if isinstance(exc, ValueError):
+        return "INVALID_ARGUMENT"
+    if isinstance(exc, RuntimeError):
+        text = str(exc)
+        if text.startswith("browser stop failed: "):
+            return "BROWSER_STOP_FAILED"
+        return _LEGACY_RUNTIME_CODES.get(text, "BROWSER_INTERNAL_ERROR")
+    return "BROWSER_INTERNAL_ERROR"
+
+
 def _require_enabled() -> None:
     if not browser_tools_enabled():
-        raise RuntimeError(TOOLS_DISABLED)
+        raise BrowserRefusal(TOOLS_DISABLED, "BROWSER_TOOLS_DISABLED")
+
+
+# ---- CloakBrowser hardening (#189) ------------------------------------------------------------
+# Cloak runs Chromium on the bridge's own host, next to the bridge's secrets. It is created only
+# when ALL of these hold, otherwise it fails closed with a fixed code and the rest of the MCP
+# (OAuth, Browser Use, API-FOOTBALL, SX Bet) is untouched:
+#   * BROWSER_TOOLS_ENABLED and CLOAKBROWSER_ENABLED are both explicitly on (fail-closed parsing);
+#   * the runtime was prepared at startup: pinned binary present and its SHA-256 verified;
+#   * Chromium's own sandbox is ON and ACTIVE: never --no-sandbox (cloakbrowser's stealth defaults
+#     carry it, so they are replaced by the same fingerprint flags without it), Playwright is told
+#     chromium_sandbox=True, and after launch every renderer is checked in /proc to run under
+#     seccomp-BPF (Seccomp: 2) inside its own PID namespace (CLOAK_SANDBOX_UNAVAILABLE otherwise);
+#   * Chromium runs under a DIFFERENT uid from the bridge (deploy/cloak-uid-split): with the same
+#     uid a compromised browser process could read or rewrite what the bridge owns, so a same-uid
+#     or root browser is refused (CLOAK_ISOLATION_UNAVAILABLE);
+#   * the browser and the Playwright driver get an allowlisted environment only (never
+#     DATABASE_URL, OAuth, API or SX Bet keys) and the bridge is non-dumpable;
+#   * at most ONE local session, reserved atomically before the launch.
+# A launch or verification failure latches Cloak off for the life of the process (health shows
+# the fixed code); a restart or deploy clears it. Never --no-sandbox, never a same-uid browser.
+#
+# IsolateSandboxedIframes is disabled so a sandboxed srcdoc frame stays in its parent's process,
+# where the init script and the WebSocket route reach it (WP-002b P1, WebRTC/WebTransport,
+# reproduced on full Chrome). Chromium honours only the LAST --disable-features switch and
+# Playwright already passes its own, so ours repeats Playwright's list (playwright==1.63.0) plus
+# the feature; tests/test_cloak_launch_hardening.py checks the installed Playwright for drift.
+# Public ws:/wss: stay refused on Cloak too (DOCUMENT_CSP): on the Cloak 146 binary Playwright's
+# WebSocket route cannot run (its Runtime bindings break), so it could not tell public from
+# private targets there.
+CLOAK_PLAYWRIGHT_DISABLED_FEATURES = (
+    "AvoidUnnecessaryBeforeUnloadCheckSync", "DestroyProfileOnBrowserClose", "DialMediaRouteProvider",
+    "GlobalMediaControls", "HttpsUpgrades", "LensOverlay", "MediaRouter", "PaintHolding",
+    "ThirdPartyStoragePartitioning", "BlockOriginHeaderModificationOnRedirect", "Translate",
+    "AutoDeElevate", "OptimizationHints", "msForceBrowserSignIn",
+    "msEdgeUpdateLaunchServicesPreferredVersion")
+CLOAK_DISABLED_FEATURES = CLOAK_PLAYWRIGHT_DISABLED_FEATURES + ("IsolateSandboxedIframes",)
+# Memory/process bounds for Render Free (512 MB with the bridge), measured in
+# docs/certification/areas/cloak_hardening.md: one renderer process shared by every frame and page
+# of the single session, and a V8 heap cap so a page that allocates without bound crashes its own
+# tab (fixed error) instead of growing the container towards Render's memory limit.
+CLOAK_PROCESS_ARGS = ("--renderer-process-limit=1", "--js-flags=--max-old-space-size=128")
+# A full-page screenshot is rasterised whole (width x height x 4 bytes, plus copies): on a tall page
+# it measured 1.8 GB. Over this area a Cloak screenshot is refused (no silent clipping).
+CLOAK_SCREENSHOT_MAX_PIXELS = 16_000_000
+# The ONLY environment the browser process receives. No secret of the bridge is ever listed; the
+# Cloak licence key (licensed profile only) is added by cloakbrowser itself for the binary.
+CLOAK_ENV_ALLOWLIST = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "FONTCONFIG_FILE",
+                       "FONTCONFIG_PATH", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR")
+# The Playwright driver (node) is a separate process: the same allowlist plus Playwright's own
+# PW_* and proxy settings.
+_DRIVER_ENV_ALLOWLIST = CLOAK_ENV_ALLOWLIST + ("PLAYWRIGHT_BROWSERS_PATH", "HTTP_PROXY", "HTTPS_PROXY",
+                                               "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+                                               "NODE_EXTRA_CA_CERTS")
+CLOAK_LAUNCHER_BINARY_ENV = "FCB_CLOAK_BINARY"  # verified binary handed to the uid-split launcher
+_PR_SET_DUMPABLE = 4
+
+
+@dataclass(frozen=True)
+class CloakProfile:
+    """A pinned Cloak runtime. `sha256` is the SHA-256 of the `chrome` executable itself."""
+    name: str
+    chromium_version: str | None
+    sha256: str | None
+    licensed: bool
+
+
+# pinned-146 (default): the keyless binary of cloakbrowser==0.5.11, Chromium 146.0.7680.177.5
+# (linux-x64). Hash taken from the binary cloakbrowser downloaded and verified against its
+# Ed25519-signed SHA256SUMS (2026-11-11), identical to the cached copy used in the lab runs.
+# licensed: the binary served to a CLOAKBROWSER_LICENSE_KEY (0.6+/0.7 wrappers; the free plan is
+# always served the LATEST build, so its version cannot be pinned upstream). It is accepted only
+# when its SHA-256 equals CLOAKBROWSER_BINARY_SHA256, set by the owner after the canary in
+# docs/certification/areas/cloak_hardening.md. Unverified here: no licence key in this environment.
+CLOAK_PROFILES = {
+    "pinned-146": CloakProfile("pinned-146", "146.0.7680.177.5",
+                               "715722e8605ae3ce81523c1218aba1ec89425786ab33ceaf99f8a6cb5e70e6e8", False),
+    "licensed": CloakProfile("licensed", None, None, True),
+}
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def cloak_profile() -> CloakProfile:
+    name = os.environ.get("CLOAKBROWSER_RUNTIME_PROFILE", "pinned-146").strip().lower() or "pinned-146"
+    profile = CLOAK_PROFILES.get(name)
+    if profile is None:
+        raise BrowserRefusal("CloakBrowser runtime profile is not valid", "CLOAK_PROFILE_INVALID")
+    if profile.licensed:
+        pinned = os.environ.get("CLOAKBROWSER_BINARY_SHA256", "").strip().lower()
+        if not _SHA256_RE.fullmatch(pinned):
+            raise BrowserRefusal("CloakBrowser binary is not pinned", "CLOAK_BINARY_UNPINNED")
+        profile = CloakProfile(profile.name, None, pinned, True)
+    return profile
+
+
+def cloak_child_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """The only environment the Cloak browser process receives."""
+    src = os.environ if source is None else source
+    return {k: src[k] for k in CLOAK_ENV_ALLOWLIST if src.get(k)}
+
+
+def cloak_chromium_args(extra_disabled_features: tuple[str, ...] = ()) -> list[str]:
+    """cloakbrowser's Linux stealth flags minus --no-sandbox, the process bound, and ONE combined
+    --disable-features (Playwright's list + IsolateSandboxedIframes)."""
+    import secrets
+    seed = 10000 + secrets.randbelow(90000)
+    features = list(dict.fromkeys(CLOAK_DISABLED_FEATURES + tuple(extra_disabled_features)))
+    return [f"--fingerprint={seed}", "--fingerprint-platform=windows", *CLOAK_PROCESS_ARGS,
+            "--disable-features=" + ",".join(features)]
+
+
+def _scrub_playwright_driver_env() -> None:
+    """Start every Playwright driver with an allowlisted environment (private API: fail closed)."""
+    from playwright._impl import _transport
+    original = getattr(_transport, "get_driver_env", None)
+    if original is None:
+        raise BrowserRefusal("CloakBrowser runtime unavailable", "CLOAK_RUNTIME_UNAVAILABLE")
+    if getattr(original, "_fcb_scrubbed", False):
+        return
+
+    def scrubbed() -> dict[str, str]:
+        return {k: v for k, v in original().items() if k in _DRIVER_ENV_ALLOWLIST or k.startswith("PW_")}
+    scrubbed._fcb_scrubbed = True  # type: ignore[attr-defined]
+    _transport.get_driver_env = scrubbed
+
+
+def _set_bridge_non_dumpable() -> None:
+    """PR_SET_DUMPABLE=0: /proc/<bridge>/environ and /mem become root-owned and the bridge cannot
+    be ptraced by its own uid. Defence in depth: the uid split is what keeps the browser out."""
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise BrowserRefusal("CloakBrowser runtime unavailable", "CLOAK_RUNTIME_UNAVAILABLE")
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _proc_read(pid: int, name: str) -> bytes | None:
+    try:
+        with open(f"/proc/{pid}/{name}", "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _descendants(root: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        stat = _proc_read(int(entry), "stat")
+        if not stat:
+            continue
+        try:
+            ppid = int(stat.rsplit(b")", 1)[1].split()[1])
+        except (IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(entry))
+    found, todo = [], [root]
+    while todo:
+        for child in children.get(todo.pop(), []):
+            found.append(child)
+            todo.append(child)
+    return found
+
+
+_NO_SANDBOX_RE = re.compile(rb"--no-sandbox(?:[\0 ]|$)")
+
+
+def _status_fields(pid: int) -> dict[str, list[str]]:
+    text = (_proc_read(pid, "status") or b"").decode("ascii", "replace")
+    return {line.split(":", 1)[0]: line.split(":", 1)[1].split() for line in text.splitlines() if ":" in line}
+
+
+# Memory watchdog (#189). Chromium shares the container's memory with the bridge: past Render's
+# limit the WHOLE service is killed and restarted (OAuth, API-FOOTBALL, SX Bet, Browser Use). While a
+# Cloak session exists the container's non-reclaimable memory (cgroup usage minus file page cache:
+# anonymous + shared memory + kernel) is polled
+# and, above CLOAKBROWSER_MEMORY_KILL_MB (default 448 of 512), every Chromium process of the session
+# is killed: the session then answers CLOAK_SESSION_DISCONNECTED and the bridge keeps running.
+CLOAK_MEMORY_KILL_MB_DEFAULT = 448
+CLOAK_MEMORY_POLL_SECONDS = 0.1
+
+
+def _cgroup_memory_files() -> list[tuple[str, str, str]]:
+    """(usage file, stat file, memory.stat key prefix) of THIS process's memory cgroup, v2 then v1;
+    the mount root last (a container with its own cgroup namespace sees itself there)."""
+    found = []
+    try:
+        with open("/proc/self/cgroup") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        _, controllers, path = (line.split(":", 2) + ["", ""])[:3]
+        path = path.lstrip("/")
+        if controllers == "":
+            base = os.path.join("/sys/fs/cgroup", path)
+            found.append((os.path.join(base, "memory.current"), os.path.join(base, "memory.stat"), ""))
+        elif "memory" in controllers.split(","):
+            base = os.path.join("/sys/fs/cgroup/memory", path)
+            found.append((os.path.join(base, "memory.usage_in_bytes"), os.path.join(base, "memory.stat"),
+                          "total_"))
+    found += [("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat", ""),
+              ("/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory/memory.stat", "total_")]
+    return found
+
+
+def cloak_memory_kill_bytes() -> int:
+    try:
+        mb = int(os.environ.get("CLOAKBROWSER_MEMORY_KILL_MB", "") or CLOAK_MEMORY_KILL_MB_DEFAULT)
+    except ValueError:
+        mb = CLOAK_MEMORY_KILL_MB_DEFAULT
+    return max(128, min(mb, CLOAK_MEMORY_KILL_MB_DEFAULT)) * 2**20  # never above the safe default
+
+
+def container_working_set_bytes(files: list[tuple[str, str, str]] | None = None) -> int | None:
+    """cgroup memory usage minus file page cache (active + inactive: reclaimable), or None."""
+    for usage_path, stat_path, prefix in (_cgroup_memory_files() if files is None else files):
+        try:
+            with open(usage_path) as fh:
+                usage = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        file_cache = 0
+        try:
+            with open(stat_path) as fh:
+                for line in fh:
+                    key, _, value = line.partition(" ")
+                    if key in (prefix + "active_file", prefix + "inactive_file"):
+                        file_cache += int(value)
+        except (OSError, ValueError):
+            pass
+        return max(0, usage - file_cache)
+    return None
+
+
+def kill_cloak_chromium(root_pid: int | None = None) -> int:
+    """SIGKILL every Chromium process below the bridge (comm `chrome`). Returns how many."""
+    import signal
+    killed = 0
+    for pid in _descendants(os.getpid() if root_pid is None else root_pid):
+        if (_proc_read(pid, "comm") or b"").strip() == b"chrome":
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except OSError:
+                pass
+    return killed
+
+
+def cloak_process_audit(root_pid: int | None = None) -> dict[str, Any]:
+    """Prove, from /proc, that the Cloak Chromium below `root_pid` is sandboxed and uid-isolated.
+
+    The browser process is the descendant whose comm is `chrome` without --type= (another uid's
+    /proc/<pid>/exe is not readable; a launcher wrapper is not `chrome`). In its whole subtree: no
+    process may carry --no-sandbox; every renderer must run under seccomp-BPF (Seccomp: 2) with
+    no_new_privs inside a nested PID namespace (Chromium's layer-1 sandbox, namespace or SUID);
+    every process must run as a uid that is neither root nor the bridge's own."""
+    bridge_uid = os.getuid()
+    root = os.getpid() if root_pid is None else root_pid
+    browsers = [pid for pid in _descendants(root)
+                if (_proc_read(pid, "comm") or b"").strip() == b"chrome"
+                and b"--type=" not in (_proc_read(pid, "cmdline") or b"")]
+    renderers, processes, uids = 0, 0, set()
+    for pid in browsers + [child for browser in browsers for child in _descendants(browser)]:
+        cmdline = _proc_read(pid, "cmdline")
+        fields = _status_fields(pid)
+        if cmdline is None or "Uid" not in fields:
+            continue  # exited between the listing and the read
+        processes += 1
+        if _NO_SANDBOX_RE.search(cmdline):
+            raise BrowserRefusal(CLOAK_SANDBOX_UNAVAILABLE, "CLOAK_SANDBOX_UNAVAILABLE")
+        uids.add(int(fields["Uid"][0]))
+        if b"--type=renderer" in cmdline:
+            if not (fields.get("Seccomp") == ["2"] and fields.get("NoNewPrivs") == ["1"]
+                    and len(fields.get("NSpid", [])) >= 2):
+                raise BrowserRefusal(CLOAK_SANDBOX_UNAVAILABLE, "CLOAK_SANDBOX_UNAVAILABLE")
+            renderers += 1
+    if not browsers or not renderers:
+        raise BrowserRefusal(CLOAK_SANDBOX_UNAVAILABLE, "CLOAK_SANDBOX_UNAVAILABLE")
+    if 0 in uids or bridge_uid in uids:
+        raise BrowserRefusal(CLOAK_ISOLATION_UNAVAILABLE, "CLOAK_ISOLATION_UNAVAILABLE")
+    return {"browser_processes": len(browsers), "renderers": renderers, "chromium_processes": processes,
+            "separate_uid": True}
 
 
 def session_operation(method):
@@ -186,6 +526,16 @@ class BrowserUseBridge:
         self._lock = asyncio.Lock()
         self._owner_id = 'bridge-' + uuid.uuid4().hex
         self.reaper_error = None
+        # CloakBrowser runtime state (#189): ready only after prepare_cloak_runtime verified it.
+        self._cloak_ready = False
+        self._cloak_failure: str | None = None
+        self._cloak_pending = False
+        self._cloak_license: str | None = None
+        self._cloak_binary: str | None = None
+        self._cloak_profile: CloakProfile | None = None
+        self.cloak_audit: dict[str, Any] | None = None
+        self._cloak_watchdog: asyncio.Future | None = None
+        self.cloak_memory_kills = 0
 
     @staticmethod
     def _api_key() -> str:
@@ -258,76 +608,203 @@ class BrowserUseBridge:
         return os.environ.get("CLOAKBROWSER_HEADLESS", "true").strip().lower() not in {"0", "false", "no", "off"}
 
     async def prepare_cloak_runtime(self) -> None:
-        """Ensure Cloak's Chromium binary exists before the service accepts traffic."""
-        if not self._cloak_enabled():
+        """Verify Cloak's pinned Chromium before the service accepts traffic. NEVER raises: any
+        failure leaves Cloak disabled with a fixed code (health) and the MCP starts normally.
+        Does nothing unless BOTH kill switches are on."""
+        self._cloak_ready = False
+        if not (browser_tools_enabled() and self._cloak_enabled()):
             return
         try:
-            from cloakbrowser import ensure_binary
+            async with asyncio.timeout(180):
+                await asyncio.to_thread(self._prepare_cloak_sync)
         except Exception as exc:
-            raise RuntimeError("CloakBrowser runtime unavailable") from exc
-        async with asyncio.timeout(120):
-            await asyncio.to_thread(ensure_binary)
-        LOG.info("CloakBrowser runtime prewarmed")
+            self._disable_cloak(exc)
+            return
+        self._cloak_ready = True
+        LOG.info("CloakBrowser runtime prepared: profile=%s", self._cloak_profile.name)
 
-    async def _launch_cloak(self):
+    def _disable_cloak(self, exc: BaseException) -> str:
+        code = exc.code if isinstance(exc, BrowserRefusal) else "CLOAK_RUNTIME_UNAVAILABLE"
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+            code = "CLOAK_LAUNCH_TIMEOUT"
+        self._cloak_ready = False
+        self._cloak_failure = code
+        LOG.error("CLOAK_DISABLED code=%s type=%s", code, type(exc).__name__)
+        return code
+
+    def _prepare_cloak_sync(self) -> None:
+        profile = cloak_profile()
+        # The licence key is moved out of the process environment: no child (driver, browser,
+        # anything else) inherits it; cloakbrowser gets it explicitly, licensed profile only.
+        licence = os.environ.pop("CLOAKBROWSER_LICENSE_KEY", "").strip() or None
+        if profile.licensed and not licence:
+            raise BrowserRefusal("CloakBrowser licence missing", "CLOAK_LICENSE_MISSING")
+        self._cloak_license = licence if profile.licensed else None
+        # No background binary/wrapper switch from the running service: forced, not defaulted.
+        os.environ["CLOAKBROWSER_AUTO_UPDATE"] = "false"
         try:
-            from cloakbrowser import launch_async
-        except Exception as exc:
-            raise RuntimeError("CloakBrowser runtime unavailable") from exc
+            import cloakbrowser  # noqa: F401
+            from cloakbrowser import ensure_binary
+        except Exception:
+            raise BrowserRefusal("CloakBrowser runtime unavailable", "CLOAK_RUNTIME_UNAVAILABLE") from None
+        _scrub_playwright_driver_env()
+        _set_bridge_non_dumpable()
+        launcher = os.environ.get("CLOAKBROWSER_LAUNCHER", "").strip()
+        binary = os.environ.get("CLOAKBROWSER_BINARY_PATH", "").strip()
+        if launcher and binary and os.path.realpath(binary) == os.path.realpath(launcher):
+            binary = ""  # set to the launcher by an earlier prepare in this process
+        if not binary:
+            binary = self._resolve_profile_binary(profile, ensure_binary)
+        observed = _sha256_file(binary) if os.path.isfile(binary) else None
+        if observed != profile.sha256:
+            # The observed hash is public information about a public binary (never a secret): the
+            # owner compares it with the canary before pinning it (cloak_hardening.md).
+            LOG.error("CLOAK_BINARY_UNVERIFIED profile=%s observed_sha256=%s", profile.name, observed)
+            raise BrowserRefusal("CloakBrowser binary does not match its pin", "CLOAK_BINARY_UNVERIFIED")
+        self._cloak_binary = os.path.realpath(binary)
+        self._cloak_profile = profile
+        if launcher:
+            if not (os.path.isfile(launcher) and os.access(launcher, os.X_OK)):
+                raise BrowserRefusal("CloakBrowser launcher unavailable", "CLOAK_ISOLATION_UNAVAILABLE")
+            os.environ["CLOAKBROWSER_BINARY_PATH"] = launcher
+        else:
+            os.environ["CLOAKBROWSER_BINARY_PATH"] = self._cloak_binary
 
+    def _resolve_profile_binary(self, profile: CloakProfile, ensure_binary) -> str:
+        """The profile's binary, downloaded (cloakbrowser verifies its signed SHA256SUMS) if missing."""
+        if profile.licensed:
+            return ensure_binary(license_key=self._cloak_license)
+        from cloakbrowser.config import get_binary_path
+        cached = get_binary_path(profile.chromium_version)
+        if os.path.isfile(cached):
+            return str(cached)
+        version = getattr(importlib.import_module("cloakbrowser"), "__version__", "")
+        if not str(version).startswith("0.5."):
+            # 0.6+ wrappers download only with a licence key (latest build): the keyless pin can
+            # only come from a prebuilt image or an existing cache.
+            raise BrowserRefusal("CloakBrowser binary unavailable", "CLOAK_RUNTIME_UNAVAILABLE")
+        return ensure_binary(browser_version=profile.chromium_version)
+
+    def _cloak_launch_kwargs(self) -> dict[str, Any]:
+        env = cloak_child_env()
+        if os.environ.get("CLOAKBROWSER_LAUNCHER", "").strip():
+            env[CLOAK_LAUNCHER_BINARY_ENV] = self._cloak_binary or ""
         kwargs: dict[str, Any] = {
             "headless": self._cloak_headless(),
             "humanize": os.environ.get("CLOAKBROWSER_HUMANIZE", "true").strip().lower() in {"1", "true", "yes", "on"},
+            "stealth_args": False,  # cloakbrowser's stealth defaults carry --no-sandbox
+            "args": cloak_chromium_args(),
+            "chromium_sandbox": True,
+            "env": env,
         }
+        if self._cloak_license:
+            kwargs["license_key"] = self._cloak_license  # injected by cloakbrowser for the binary only
         proxy = os.environ.get("CLOAKBROWSER_PROXY_URL", "").strip()
         if proxy:
             kwargs["proxy"] = proxy
+        return kwargs
 
-        # CLOAKBROWSER_LICENSE_KEY is consumed by the upstream library directly.
-        return await launch_async(**kwargs)
+    async def _launch_cloak(self):
+        """Launch the pinned Chromium and PROVE it is sandboxed and uid-isolated before use.
+        Any failure closes what was started, latches Cloak off and raises a fixed code."""
+        if not self._cloak_ready:
+            raise BrowserRefusal("CloakBrowser runtime is not ready", self._cloak_failure or "CLOAK_RUNTIME_NOT_READY")
+        browser = None
+        try:
+            from cloakbrowser import launch_async
+            async with asyncio.timeout(45):
+                browser = await launch_async(**self._cloak_launch_kwargs())
+                probe = await browser.new_context()
+                try:
+                    page = await probe.new_page()
+                    await page.goto("about:blank")
+                    self.cloak_audit = await asyncio.to_thread(cloak_process_audit)
+                finally:
+                    await probe.close()
+            return browser
+        except Exception as exc:
+            if browser is not None:
+                try:
+                    async with asyncio.timeout(10):
+                        await browser.close()
+                except Exception:
+                    LOG.warning("Cloak cleanup after a failed launch did not complete")
+            if not isinstance(exc, BrowserRefusal):
+                text = str(exc)
+                if "No usable sandbox" in text or "sandboxing failed" in text or "setuid sandbox" in text.lower():
+                    exc = BrowserRefusal(CLOAK_SANDBOX_UNAVAILABLE, "CLOAK_SANDBOX_UNAVAILABLE")
+                elif not isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+                    exc = BrowserRefusal("CloakBrowser launch failed", "CLOAK_LAUNCH_FAILED")
+            code = self._disable_cloak(exc)
+            raise BrowserRefusal("CloakBrowser is disabled after a launch failure", code) from None
 
     async def create_cloak(self) -> dict[str, Any]:
-        """Create one bridge-owned CloakBrowser session. No CDP or secret is returned."""
+        """Create THE bridge-owned CloakBrowser session (at most one). No CDP or secret is returned."""
         _require_enabled()
         if not self._cloak_enabled():
-            raise RuntimeError("CloakBrowser is not enabled")
+            raise BrowserRefusal("CloakBrowser is not enabled", "CLOAK_DISABLED")
+        if self._cloak_failure:
+            raise BrowserRefusal("CloakBrowser is disabled after a launch failure", self._cloak_failure)
 
-        # Cloak is a local Chromium process. Bound startup and refuse
-        # unbounded local fan-out on small workers.
+        # One local Chromium at most (Render Free memory). The slot is reserved under the lock
+        # BEFORE the launch, so concurrent creates cannot both pass the check (BR-048).
         async with self._lock:
-            local_cloak = [
-                s for s in self._sessions.values()
-                if s.provider == "cloak" and not s.closing
-            ]
-        max_local = max(1, min(int(os.environ.get("CLOAKBROWSER_MAX_LOCAL_SESSIONS", "1")), 4))
-        if len(local_cloak) >= max_local:
-            raise RuntimeError("CloakBrowser local session capacity reached")
-        async with asyncio.timeout(45):
-            browser = await self._launch_cloak()
-        session_id = "cloak-" + uuid.uuid4().hex
-        session = Session(
-            id=session_id,
-            cdp_url="local-cloak-owned",
-            live_url=None,
-            provider="cloak",
-            browser=browser,
-        )
+            # A stopping session still counts while its Chromium is alive (browser not yet dropped).
+            local_cloak = [s for s in self._sessions.values()
+                           if s.provider == "cloak" and (not s.closing or s.browser is not None)]
+            if local_cloak or self._cloak_pending:
+                raise BrowserRefusal("CloakBrowser local session capacity reached", "CLOAK_CAPACITY_REACHED")
+            self._cloak_pending = True
         try:
-            async with asyncio.timeout(30):
-                session.context = await browser.new_context()
-                session.page = await session.context.new_page()
-            await self._install_guards(session)
-            await asyncio.to_thread(session_leases.register, session.id, self._owner_id)
-        except Exception:
+            browser = await self._launch_cloak()
+            session_id = "cloak-" + uuid.uuid4().hex
+            session = Session(
+                id=session_id,
+                cdp_url="local-cloak-owned",
+                live_url=None,
+                provider="cloak",
+                browser=browser,
+            )
             try:
-                await browser.close()
+                async with asyncio.timeout(30):
+                    session.context = await browser.new_context()
+                    session.page = await session.context.new_page()
+                await self._install_guards(session)
+                await asyncio.to_thread(session_leases.register, session.id, self._owner_id)
             except Exception:
-                pass
-            raise
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+                raise
 
-        async with self._lock:
-            self._sessions[session.id] = session
+            async with self._lock:
+                self._sessions[session.id] = session
+            self._start_cloak_watchdog()
+        finally:
+            async with self._lock:
+                self._cloak_pending = False
         return {"session_id": session.id, "status": "active", "provider": "cloak"}
+
+    def _start_cloak_watchdog(self) -> None:
+        if self._cloak_watchdog is None or self._cloak_watchdog.done():
+            self._cloak_watchdog = asyncio.ensure_future(self._cloak_memory_watchdog())
+
+    async def _cloak_memory_watchdog(self) -> None:
+        """Runs while a Cloak session exists; see CLOAK_MEMORY_KILL_MB_DEFAULT."""
+        limit = cloak_memory_kill_bytes()
+        while True:
+            async with self._lock:
+                active = [s for s in self._sessions.values() if s.provider == "cloak" and not s.closing]
+            if not active:
+                return
+            used = container_working_set_bytes()
+            if used is not None and used > limit:
+                killed = await asyncio.to_thread(kill_cloak_chromium)
+                self.cloak_memory_kills += 1
+                LOG.error("CLOAK_MEMORY_LIMIT working_set_mb=%d limit_mb=%d killed=%d",
+                          used // 2**20, limit // 2**20, killed)
+            await asyncio.sleep(CLOAK_MEMORY_POLL_SECONDS)
 
     async def _session(self, session_id: str) -> Session:
         async with self._lock:
@@ -625,7 +1102,7 @@ class BrowserUseBridge:
         """Fail closed: never navigate or read on a session without an active redirect guard
         and the capability guard (WP-002b)."""
         if not (session.redirect_guard_active and session.capability_guard_installed):
-            raise UnsafeURL(CONTENT_BLOCKED)
+            raise UnsafeURL(CONTENT_BLOCKED, "BROWSER_GUARD_INACTIVE")
 
     async def _quarantine(self, session: Session, page: Page) -> None:
         """Discard a page that reached (or tried to reach) a non-public address.
@@ -659,7 +1136,7 @@ class BrowserUseBridge:
                 await asyncio.to_thread(validate_public_http_url, value)
             except UnsafeURL:
                 await self._quarantine(session, page)
-                raise UnsafeURL(CONTENT_BLOCKED) from None
+                raise UnsafeURL(CONTENT_BLOCKED, "PAGE_CONTENT_NOT_PUBLIC") from None
 
     async def _after_navigation(self, session: Session, page: Page) -> None:
         """Post-navigation check shared by every navigating tool; quarantines on failure."""
@@ -667,7 +1144,7 @@ class BrowserUseBridge:
         session.redirect_blocked = False
         if blocked:
             await self._quarantine(session, page)
-            raise UnsafeURL(REDIRECT_BLOCKED)
+            raise UnsafeURL(REDIRECT_BLOCKED, "NAVIGATION_REDIRECT_BLOCKED")
         await self._assert_public_page(session, page)
 
     async def _navigate(self, session: Session, page: Page, action):
@@ -681,12 +1158,12 @@ class BrowserUseBridge:
             if session.redirect_blocked:
                 session.redirect_blocked = False
                 await self._quarantine(session, page)
-                raise UnsafeURL(REDIRECT_BLOCKED) from None
+                raise UnsafeURL(REDIRECT_BLOCKED, "NAVIGATION_REDIRECT_BLOCKED") from None
             if session.document_csp_failures != csp_failures_before:
                 # A document of this navigation was refused because the WP-002b CSP could not be
                 # applied (oversized, unreadable, buffer budget): fixed code, nothing rendered.
                 await self._quarantine(session, page)
-                raise UnsafeURL(DOCUMENT_REFUSED) from None
+                raise UnsafeURL(DOCUMENT_REFUSED, "DOCUMENT_REFUSED") from None
             raise
         await self._after_navigation(session, page)
         return response
@@ -808,6 +1285,14 @@ class BrowserUseBridge:
         session = await self._session(session_id)
         page = await self._page(session)
         await self._assert_public_page(session, page)
+        if session.provider == "cloak":
+            # Local Chromium shares the bridge's memory (#189): refuse, never clip, an oversized one.
+            area = await page.evaluate(
+                "(full) => (devicePixelRatio || 1) ** 2 * (full ? Math.max(document.documentElement.scrollWidth,"
+                " innerWidth) * Math.max(document.documentElement.scrollHeight, innerHeight)"
+                " : innerWidth * innerHeight)", bool(full_page))
+            if not isinstance(area, (int, float)) or area > CLOAK_SCREENSHOT_MAX_PIXELS:
+                raise BrowserRefusal("screenshot too large for the local browser", "SCREENSHOT_TOO_LARGE")
         body = await page.screenshot(full_page=bool(full_page), type="png")
         return {
             "session_id": session_id,
@@ -1352,7 +1837,12 @@ class BrowserUseBridge:
             "database_ok": database_ok,
             "providers": {
                 "browser_use": {"configured": browser_use_configured},
-                "cloak": {"enabled": cloak_enabled, "runtime_available": cloak_runtime_available},
+                "cloak": {"enabled": cloak_enabled, "runtime_available": cloak_runtime_available,
+                          # #189: verified-runtime state and the fixed code that disabled it, if any.
+                          "ready": self._cloak_ready, "disabled_code": self._cloak_failure,
+                          "profile": self._cloak_profile.name if self._cloak_profile else None,
+                          "max_local_sessions": 1, "memory_kills": self.cloak_memory_kills,
+                          "last_sandbox_audit": self.cloak_audit},
             },
             "local_session_count": local_count,
             "reaper_error": self.reaper_error,
@@ -1438,5 +1928,6 @@ class BrowserUseBridge:
                     await self.stop(session_id)
                 stopped.append(session_id)
             except Exception as exc:
-                failed.append({"session_id": session_id, "error": str(exc)})
+                # Fixed code only (#188): the exception text (e.g. a DB error with host/user) never reaches the client.
+                failed.append({"session_id": session_id, "error": browser_error_code(exc)})
         return {"stopped": stopped, "failed": failed}
