@@ -40,9 +40,9 @@ and runs only after this branch is merged and its deploy is verified healthy (CL
 
 | Case | Call | Proves | Pass rule |
 |---|---|---|---|
-| B01 | `fixtures(date=D)` (no league) | FIX-01 | `PARTIAL_ID_MANIFEST` with `complete_retrieval_available` true, **or** `PROVIDER_RESPONSE_TOO_LARGE` + `navigation.NOT_COMPLETE` (documents R1). Either is recorded; neither is PASS of completeness |
-| B02-B04 | first 3 `follow_up.calls` of B01 (only if B01 is a manifest) | FIX-01 continuation | each reply holds exactly `expect_ids` in order; a mismatch is recorded as DATA_CHANGED, not hidden |
-| B05 | `leagues()` | FIX-01 / R1 | expected read-cap refusal with navigation; a manifest is also acceptable |
+| B01 | `fixtures(date=D)` (no league) | FIX-01 (streamed scan if above 512 KiB) | `PARTIAL_ID_MANIFEST` (`mode` IN_MEMORY or STREAMED_SCAN) with `results_match` true and follow-ups by league+season; `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` is recorded with its bound, never a PASS |
+| B02-B04 | first 3 `follow_up.calls` of B01 (only if B01 is a manifest) | FIX-01 continuation + DOCS_UNVERIFIED date+league+season | each reply holds exactly the `expect_ids` set and `expect_rows`; a provider refusal of the combination is recorded (R4); a mismatch is DATA_CHANGED, not hidden |
+| B05 | `leagues()` | FIX-01 streamed scan | STREAMED_SCAN manifest with one `id` follow-up per league (DOCUMENTED_VALID) |
 | B06 | `odds(league=L, season=Y)` | FIX-05 page 1 (3 pages known) | full reply, or `PARTIAL_ODDS_MANIFEST` without `odd`, `phase PRE_MATCH` |
 | B07 | `odds(fixture=U)` | FIX-05 per fixture | full reply or manifest split by bookmaker; if manifest, B07b = its first follow-up (counts must match `expect`) |
 | B08 | `live_odds(fixture=Z)` | FIX-09 / C08 | PASS only with `live_odds_state.state == ACTIVE`; ALL_SUSPENDED / ALL_NULL_ODDS / NO_OPEN_PRICED_SELECTION / EMPTY = PARTIAL; NOT_TESTED (0 calls) if no live fixture |
@@ -67,5 +67,5 @@ integration tests do not already prove. Recorded as `NOT_TESTED_REAL (proven on 
 - Budget reached → stop (never raised in the run).
 - Any FAIL that is an MCP defect (envelope, manifest not explicit, `odd` in a manifest, pre-match/live id mix)
   → stop and open a fix; no retry of the campaign before the fix is merged.
-- Two consecutive `PROVIDER_RESPONSE_TOO_LARGE` → stop campaign B (R1 is then documented, not re-proven).
+- Two consecutive `PROVIDER_RESPONSE_TOO_LARGE` or `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` → stop campaign B.
 - No live match at run time → B08-B10 NOT_TESTED with 0 calls; C08 stays NOT proven.

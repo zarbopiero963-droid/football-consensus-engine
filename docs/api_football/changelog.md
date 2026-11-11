@@ -7,6 +7,7 @@
 - Oversized non-odds replies: `PARTIAL_ID_MANIFEST` with plain re-validated follow-up calls; odds manifests navigable by bookmaker/market, pre-match and live namespaces separate.
 - Times: provider `Date` header as `provider_timestamp_utc`, acquisition time kept on cache HIT, labelled bridge-clock times.
 - Local quota: `LOCAL_RATE_LIMITED` (retry_after_seconds) and `LOCAL_DAILY_QUOTA_EXHAUSTED` (reset_at_utc) replace `LOCAL_QUOTA_EXHAUSTED`.
+- Review follow-up (PR #190): replies above the 512 KiB read cap are scanned in a bounded stream for ids (`STREAMED_SCAN`, 16 MiB / 20 s / 20 000 rows / depth 32 / 64 KiB token, else `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN`); completeness only when follow-ups are provably under the read cap; timezone catalog from the pinned `tzdata` package (provider acceptance unverified); a bad live price is MALFORMED.
 - Details: `docs/certification/areas/apifootball_full_capability.md`.
 
 ## 2026-11-01 (official parameter reconciliation, v3.9.3)

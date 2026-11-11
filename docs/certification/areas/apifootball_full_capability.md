@@ -1,75 +1,125 @@
 # API-FOOTBALL — full capability (FIX-01..FIX-09)
 
-- Mandate: FCB-OWNER-AF-FULL-CAPABILITY-ONE-PR-20261111. One branch, one deliverable, one commit per fix.
+- Mandate: FCB-OWNER-AF-FULL-CAPABILITY-ONE-PR-20261111 (PR #190). One branch, one deliverable, one commit
+  per fix, plus the review follow-up commits (P2, P3s, FIX-01 option B).
 - Base: `origin/main` `475dae8`. Gap ids (G01..G13, D06) refer to the reconciliation matrix of 2026-11-10.
 - Evidence in this document is **offline only**: unit tests, `httpx.MockTransport` behind the real transport,
-  resilience client and MCP tools, and a throwaway local PostgreSQL 18 for the quota coordinator. **No call
-  was made to API-FOOTBALL, Render or the production MCP.** No row below is a real-provider PASS.
-- Status legend: `VERIFIED_OFFLINE` (code + RED/GREEN tests), `PARTIAL` (part of the requirement is
-  blocked, the block is stated), `NOT_PROVEN_REAL` (needs the real campaign in
-  `apifootball_full_capability_budget.md`).
+  resilience client and MCP tools, synthetic payloads, and a throwaway local PostgreSQL 18 for the quota
+  coordinator. **No call was made to API-FOOTBALL, Render or the production MCP.**
+- "PASS" below means **PASS offline** (code + RED/GREEN tests + mutations). No fix has a real-provider PASS;
+  the real campaign is proposed (not run) in `apifootball_full_capability_budget.md`.
 
-## 1. Coverage matrix
+## 1. Per-fix verdict
 
-| Fix | Code | Tests (RED on 475dae8 → GREEN) | Evidence | Status |
-|---|---|---|---|---|
-| FIX-01 responses > 256 KiB | `bridge/api_football/continuation.py` (new), `tools.py` (`PARTIAL_ID_MANIFEST`, `navigation` on `PROVIDER_RESPONSE_TOO_LARGE`), `scripts/mcp_e2e_render.py` (`check_id_manifest`) | `tests/test_apifootball_continuation.py` (19): 600 fixtures over the cap retrieved in 30 `ids` slices, no loss/duplicate, same order, 31 real requests; follow-ups run in a **fresh process** (restart); two requests never mix; a row removed upstream between reads is detected; `ids` halved, single `id` not splittable; every strategy yields validated calls covering each row once; rows without id / duplicate ids / endpoints without a documented split never claimed complete; read cap still refuses before parsing | Offline, real transport + resilience + tools | **PARTIAL** — complete for replies between 256 KiB and the read cap; above the read cap (512 KiB, 2 MiB for odds, unchanged by owner rule) nothing is parsed, so `fixtures?date=` without league and `leagues` without filters (estimated above 512 KiB, ASSUMED) get only a `NOT_COMPLETE` narrowing hint. See §5 R1 |
-| FIX-02 fixtures `live` | `contracts.py` (`_live_filter`, `LIVE_IDS_MAXIMUM`) | `tests/test_apifootball_fixtures_live_filter.py` (24) | Capture: `live` = `Enum: "all" \| "id-id"`; no documented maximum | **VERIFIED_OFFLINE**; id-count limit `DOCS_UNVERIFIED` (only the 128-character bound applies) |
-| FIX-03 /fixtures combinations | `contracts.py` (`fixtures_combination`), `tools.py` (`combination` label) | `tests/test_apifootball_fixtures_combinations.py` (54) | Capture only (§2) | **VERIFIED_OFFLINE**; real provider semantics of `DOCS_UNVERIFIED` combinations NOT_PROVEN_REAL |
-| FIX-04 page > 100 | `contracts.py` (`MAX_PAGE`), `transport.py` (empty page past the end), `tools.py` (`pagination_state`) | `tests/test_apifootball_paging_beyond_100.py` (58) | Capture: `page` "Default: 1", no maximum; players/profiles 250 per page | **VERIFIED_OFFLINE**; provider behaviour on a page past the end `DOCS_UNVERIFIED` (D06) |
-| FIX-05 odds manifest | `odds_manifest.py` (rewritten, compatible), `tools.py` (detail levels, `response_sha256`) | `tests/test_apifootball_odds_manifest_navigation.py` (12) + existing `tests/test_odds_manifest_and_parameter_matrix.py` | Repo fixtures for live selection fields | **VERIFIED_OFFLINE** |
-| FIX-06 timezones | `bridge/api_football/timezones.py` (new), `contracts.py`, `tools.py` (`timezone_context`, `timezone_check`), E2E N00 | `tests/test_apifootball_timezones.py` (52) | §3 | **VERIFIED_OFFLINE**; provider acceptance of each zone NOT_PROVEN_REAL |
-| FIX-07 timestamps and cache | `transport.py` (`provider_http_date`), `cache.py` (`get_with_age`), `resilience.py` (`_cache_hit`), `tools.py` (`_reply_timing`, `_finish_timing`) | `tests/test_apifootball_timestamps_cache.py` (13) | The provider `Date` header is not captured in the repo: it is used when present, null otherwise | **VERIFIED_OFFLINE** |
-| FIX-08 local quota codes | `quota.py` (typed `QuotaExceeded`, retry/reset SQL), `tools.py` (`_local_quota_error`), E2E runner stops | `tests/test_apifootball_local_quota_codes.py` (11), `tests/integration/test_apifootball_quota_codes_postgres.py` (8, real PostgreSQL 18) | Local PG cluster on port 55521, removed afterwards | **VERIFIED_OFFLINE** (real coordinator code on real PostgreSQL; not on Neon/Aiven) |
-| FIX-09 suspended live odds | `bridge/api_football/live_odds_state.py` (new), `tools.py` (`live_odds_state`), E2E runner (`LIVE_PARTIAL_STATES`) | `tests/test_apifootball_live_odds_states.py` (28), sanitized shapes `tests/fixtures/apifootball_live_odds/shapes.json` | Shapes are repo-derived or `ASSUMED`; **no real `/odds/live` payload is captured** | **VERIFIED_OFFLINE**; **C08 stays NOT proven**: a real PASS needs new real evidence |
-| P3 errors.py reserved keys | `errors.py` | `tests/test_apifootball_review_p3.py` (11) | — | VERIFIED_OFFLINE |
-| P3 circuit hold vs success() | `circuit.py` (`_hold_until`) | `tests/test_apifootball_review_p3.py` (11) | — | VERIFIED_OFFLINE |
-| P3 single-flight over-count | `resilience.py` (`shared_flight`, follower copy), `tools.py` (`_real_calls`) | `tests/test_apifootball_review_p3.py` (11) | — | VERIFIED_OFFLINE |
+| Fix | Offline verdict | Real-provider status | Why not more |
+|---|---|---|---|
+| FIX-01 replies > 256 KiB | **PASS offline**, completeness conditional | NOT_PROVEN_REAL | Completeness is claimed only when provable (§4); detailed `ids` slices are never complete; replies above 16 MiB / 20 000 rows / other scan bounds are refused with `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` |
+| FIX-02 `live` id list | **PASS offline** | NOT_PROVEN_REAL | Maximum number of ids DOCS_UNVERIFIED |
+| FIX-03 /fixtures combinations | **PASS offline** | NOT_PROVEN_REAL | Most combinations are DOCS_UNVERIFIED (§2) |
+| FIX-04 page > 100 | **PASS offline** | NOT_PROVEN_REAL | Provider answer on a page past the end DOCS_UNVERIFIED (D06) |
+| FIX-05 odds manifest | **PASS offline** | NOT_PROVEN_REAL | — |
+| FIX-06 timezones | **PASS offline** (IANA validation) | **Provider acceptance UNVERIFIED** | Validated against IANA (pinned `tzdata`), never against the provider's `/timezone` catalog, which is not captured |
+| FIX-07 timestamps and cache | **PASS offline** | **Date header never observed live** | `provider_timestamp_utc` comes from the HTTP `Date` header, which no captured reply shows |
+| FIX-08 local quota codes | **PASS offline** on real PostgreSQL 18 | NOT_PROVEN on Neon/Aiven | No reason to spend quota to hit a local limit on purpose |
+| FIX-09 suspended live odds | **PASS offline** | **C08 NOT proven** | Nulls stay null; no real `/odds/live` payload is captured; C08 needs separate real proof |
+| P3 (PR #185) reserved keys, hold vs success(), single-flight | **PASS offline** | — | — |
 
-Regression: `tests/test_apifootball_full_capability_regression.py` drives all 40 provider tools end to end
-(path, exact parameters, lossless data, time fields, exact `network_calls_made`, cache HIT keeping the
-acquisition time). Contract tests against the official matrix (`tests/test_apifootball_official_parameter_matrix.py`)
-are unchanged and green.
+## 2. Coverage matrix
 
-Spot mutations (each applied alone, then reverted): 17/17 killed — last/next 99→100, live duplicate check,
-timezone catalog check, ids slice 20→21, missing `suspended` read as open, reserved-key truncation,
-success() erasing the hold, day pre-check, rolling retry from the newest slot, `odd` copied into a manifest,
-rows accepted on a page past the end, shared flight counted twice, runner ignoring live PARTIAL, bridge
-clock used as provider timestamp, page bound removed, unscoped fixtures allowed, documented label for
-supersets.
+| Fix | Code | Tests |
+|---|---|---|
+| FIX-01 | `continuation.py`, `stream_scan.py` (new), `transport.py` (`ScannedReply`, scan above the cap), `resilience.py` (`scan` in the outcome), `tools.py` (`PARTIAL_ID_MANIFEST`, `navigation`), `scripts/mcp_e2e_render.py` (`check_id_manifest`) | `test_apifootball_continuation.py` (32), `test_apifootball_stream_scan.py` (35) |
+| FIX-02 | `contracts.py` (`_live_filter`) | `test_apifootball_fixtures_live_filter.py` (24) |
+| FIX-03 | `contracts.py` (`fixtures_combination`), `tools.py` (`combination`) | `test_apifootball_fixtures_combinations.py` (54) |
+| FIX-04 | `contracts.py` (`MAX_PAGE`), `transport.py`, `tools.py` (`pagination_state`) | `test_apifootball_paging_beyond_100.py` (58) |
+| FIX-05 | `odds_manifest.py`, `tools.py` | `test_apifootball_odds_manifest_navigation.py` (12), `test_odds_manifest_and_parameter_matrix.py` |
+| FIX-06 | `timezones.py`, `contracts.py`, `tools.py`, `requirements.txt` (`tzdata==2025.2`) | `test_apifootball_timezones.py` (56) |
+| FIX-07 | `transport.py` (`provider_http_date`), `cache.py`, `resilience.py`, `tools.py` | `test_apifootball_timestamps_cache.py` (13) |
+| FIX-08 | `quota.py`, `tools.py`, E2E runner | `test_apifootball_local_quota_codes.py` (11), `tests/integration/test_apifootball_quota_codes_postgres.py` (8) |
+| FIX-09 | `live_odds_state.py`, `tools.py`, E2E runner, `tests/fixtures/apifootball_live_odds/shapes.json` | `test_apifootball_live_odds_states.py` (38) |
+| P3s | `errors.py`, `circuit.py`, `resilience.py`, `tools.py` | `test_apifootball_review_p3.py` (11) |
 
-### Continuation design (FIX-01)
+Regression: `test_apifootball_full_capability_regression.py` drives all 40 provider tools end to end; the
+contract tests against the official matrix are unchanged and green.
 
-Plain, re-validated provider parameters, never a token. Every follow-up (`ids` ≤ 20, an `ids` request
-halved, one documented id filter added, or `page = current + 1`) is an ordinary tool call: validated,
-authorized, quota-charged, no secret, no server state, no new env var, valid across restarts and redeploys.
-An opaque token was not needed because every split has a documented parameter, so no HMAC key exists.
-Change detection is client-side and stateless: the manifest carries `response_sha256`, `results_declared`,
-the row ids in provider order and, per call, `expect_ids` / `expect_rows`.
+Spot mutations, each applied alone and reverted:
+- first round 17/17 killed (validation, timezone, manifests, quota, circuit, shared flight, runner);
+- review round 19/20 killed: every scan bound (bytes, time, rows, depth, token, including off-by-one), truncated
+  stream, UTF-8, duplicate keys and id fields, hash coverage, scan of the already-buffered prefix, the P2
+  guard (detail slices claimed provable; measured-size check removed), invalid-id range, results mismatch,
+  combination labels, from/to mapping, open zero odd. The one survivor removes a redundant "data after the
+  top-level value" check: the grammar already refuses any token after the document (tested by
+  `test_malformed_payloads_are_refused`), so it is an equivalent mutant.
+
+## 3. Continuation design (FIX-01)
+
+**Plain, re-validated provider parameters, never a token.** A follow-up is an ordinary tool call:
+validated, authorized and quota-charged. It needs no secret, no server state and no new env var, and it
+works across restarts and redeploys (tested with a fresh process). No HMAC or other opaque token exists.
+
+Two modes, one manifest (`PARTIAL_ID_MANIFEST`, never data, never prices):
+
+- `IN_MEMORY`: a reply above the 256 KiB MCP cap and at most 512 KiB (the read cap, unchanged) is parsed;
+  the manifest hashes the canonical JSON of `response`.
+- `STREAMED_SCAN` (owner option B): above the read cap, a listing path with a documented row id is streamed
+  through `stream_scan.IdScanner`. The body is never buffered whole. It keeps only the per-row ids, the
+  grouping fields and the raw row byte sizes, plus `get`, `results`, `paging` and the keys of a non-empty
+  `errors`. The manifest carries the SHA-256 of the raw body. A path without a documented row id
+  (statistics, events, …) is still refused at the read cap.
+
+**Scan bounds** (`stream_scan.ScanLimits`): 16 MiB of body, 20 s of scanning, 20 000 rows, depth 32,
+64 KiB per token. Hitting any of them gives `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` with the bound's name,
+`navigation.complete_retrieval_available: false`, a narrowing hint, and no partial result. The resilience
+request timeout (default 8 s) applies first. Measured scan speed is about 3 MB/s of CPU, in 64 KiB steps
+between network reads, so 16 MiB is about 6 s.
+
+**Validation:** strict UTF-8; a single top-level object; `response` must be a list; no duplicate top-level
+keys; no data after the document; a strict JSON grammar (an iterative regex tokenizer with an explicit
+stack, no recursion, no eval). A malformed or truncated stream gives `PROVIDER_INVALID_JSON`, and a
+contract violation gives its own fixed code.
+
+**Splitting and completeness** (review P2):
+
+| Request | Follow-ups | Complete? |
+|---|---|---|
+| fixtures `date` (no league) | `date + league + season` per league (DOCS_UNVERIFIED combination) | yes, if every group is provably under the read cap |
+| fixtures `league + season` (no round) | `+ round` per round | idem |
+| fixtures `ids` | the two halves | idem (the same detailed rows) |
+| fixtures otherwise (or one group only) | detailed `ids` slices of 2 | **never** (`IDS_DETAIL_REPLY_SIZE_UNPROVEN`) |
+| fixtures `id` | — | not splittable |
+| leagues, teams, venues, coachs, players, profiles, injuries, transfers, odds/live odds (streamed) | the original filters + one documented id parameter, one call per id | yes, if provable |
+
+"Provable" means a follow-up returns a SUBSET of rows already seen, and its size is under the read cap:
+- in memory: a subset of a reply that itself fitted under the cap;
+- streamed: the measured raw row bytes plus a 16 KiB envelope margin.
+
+The stated condition is that the same row comes back with the same content. When a follow-up uses a
+DOCS_UNVERIFIED combination, provider acceptance is also listed as a condition. Ids outside 1..2·10⁹,
+non-integers and duplicates are counted as `rows_without_id`, and completeness is then refused (review
+P3-1). Each call carries `combination_status` (review P3-2). Order is `NOT_ASSERTED`: clients compare id
+sets, counts and `row_ids_sorted_sha256`, so a provider reorder is not a false "data changed". Follow-up
+and next-page arguments use the MCP names `from_date`/`to_date` (review P3-6).
 
 ### Declared behaviour changes (pre-existing tests changed on purpose)
 
 | Test | Change | Fix |
 |---|---|---|
-| `test_mcp_e2e_apifootball_suite.py` | `STOP_LOCAL_QUOTA_EXHAUSTED` → `STOP_LOCAL_RATE_LIMITED` / `STOP_LOCAL_DAILY_QUOTA_EXHAUSTED`; N00 negative zone | FIX-08, FIX-06 |
+| `test_mcp_e2e_apifootball_suite.py` | `STOP_LOCAL_QUOTA_EXHAUSTED` → two stops; N00 negative zone | FIX-08, FIX-06 |
 | `test_apifootball_pr07_certification.py` | the joining caller of a shared flight reports 0 attempts | P3 |
-| `test_apifootball_typed_mcp.py` | `TIMEZONE_NOT_CERTIFIED` → `TIMEZONE_NOT_IN_CATALOG`; oversized mock → `PARTIAL_ID_MANIFEST` | FIX-06, FIX-01 |
-| `test_apifootball_full_catalog.py`, `test_apifootball_real_reply_pagination.py` | out-of-bound page is 100001 (101 is valid) | FIX-04 |
-| `test_apifootball_resilience.py` | an empty page past the end is valid; with a row it stays invalid | FIX-04 / D06 |
+| `test_apifootball_typed_mcp.py` | `TIMEZONE_NOT_IN_CATALOG`; oversized mock → `PARTIAL_ID_MANIFEST` | FIX-06, FIX-01 |
+| `test_apifootball_full_catalog.py`, `test_apifootball_real_reply_pagination.py` | out-of-bound page is 100001 | FIX-04 |
+| `test_apifootball_resilience.py` | empty page past the end valid; past the read cap a listing path is scanned (garbage → `PROVIDER_INVALID_JSON`) | FIX-04, FIX-01 |
 | `test_apifootball_error_codes.py` | oversized players page → `PARTIAL_ID_MANIFEST` | FIX-01 |
-| `test_odds_manifest_and_parameter_matrix.py` | no-price scan also skips the new bridge-clock time fields | FIX-07 |
+| `test_odds_manifest_and_parameter_matrix.py` | no-price scan skips bridge-clock fields; 0.6–2.2 MB single strings refused by the scan token bound | FIX-07, FIX-01 |
 | `test_mcp_e2e_apifootball_error_codes.py` | live facts gain `open_priced`, `live_state` | FIX-09 |
+| `test_apifootball_continuation.py` | rewritten: provable completeness, sets not order, MCP names | FIX-01 review |
+| `test_apifootball_timezones.py` | `validated_against` = `IANA_TZDATA_PYPI_PACKAGE` | FIX-06 review |
 
-Other visible changes: `INVALID_INPUT` and gate replies now carry `retrieved_at_utc: null` (nothing was
-acquired) plus `responded_at_utc`; `LOCAL_QUOTA_EXHAUSTED` no longer exists.
-
-## 2. /fixtures combination table (FIX-03)
+## 4. /fixtures combination table (FIX-03)
 
 Source: `docs/api_football/official_parameter_matrix_v3.9.3.json` only. It lists the 15 parameters as
-independent optional filters and records **no combination rule**; nothing becomes DOCUMENTED_VALID because
-the docs do not forbid it. `timezone` may join any accepted set. `DOCS_UNVERIFIED` sets are forwarded with
-`combination: {status, rule}` in the reply; the provider is the final authority (its `errors` keys come back
-classified).
+independent optional filters and records **no combination rule**. Nothing becomes DOCUMENTED_VALID just
+because the docs do not forbid it. `timezone` may join any accepted set.
 
 | Combination | Status | Basis / code |
 |---|---|---|
@@ -80,58 +130,62 @@ classified).
 | `date` | DOCUMENTED_VALID | single documented parameter |
 | `league` + `season` | DOCUMENTED_VALID | `season`: "The season of the league" |
 | `league` + `season` + `from` + `to` | DOCUMENTED_VALID | same, plus real PASS on 37e74fd |
-| `team` + `season` | DOCS_UNVERIFIED | no combination rule captured |
-| `venue` + `season` | DOCS_UNVERIFIED | idem |
-| `league`/`team`/`venue` + `last` or `next` | DOCS_UNVERIFIED | idem |
-| `last` or `next` alone | DOCS_UNVERIFIED | idem |
+| `team` + `season`, `venue` + `season` | DOCS_UNVERIFIED | no combination rule captured |
+| `league`/`team`/`venue` + `last`/`next`; `last` or `next` alone | DOCS_UNVERIFIED | idem |
 | `league`+`season` + `round`/`status`/`team`/`venue` | DOCS_UNVERIFIED | idem |
 | `team`/`venue` (+`season`) + `from` + `to` | DOCS_UNVERIFIED | idem |
-| `date` + `league`/`season`/`team`/`status`/... | DOCS_UNVERIFIED | idem |
-| `live` + `status`/`league`/... | DOCS_UNVERIFIED | idem |
-| `id` + `ids` | DOCS_UNVERIFIED | idem (accepted before this PR as well) |
-| no scoping filter (`{}`, `league`, `team`, `venue`, `season`, `status`, `round`, `timezone`, `from`+`to`, `team`+`from`, `league`+`team`) | MCP_REJECTED | `FIXTURE_FILTER_REQUIRED` (unbounded listing, B03) |
+| `date` + `league`/`season`/`team`/`status`/… | DOCS_UNVERIFIED | idem |
+| `live` + `status`/`league`/…; `id` + `ids` | DOCS_UNVERIFIED | idem |
+| no scoping filter (`{}`, `league`, `team`, `venue`, `season`, `status`, `round`, `timezone`, `from`+`to`, `team`+`from`, `league`+`team`) | MCP_REJECTED | `FIXTURE_FILTER_REQUIRED` |
 | `last` + `next` | MCP_REJECTED | `FIXTURE_LAST_NEXT_EXCLUSIVE` |
 | `from` after `to` | MCP_REJECTED | `INVALID_DATE_RANGE` |
-| `last` or `next` > 99 | MCP_REJECTED | `PAGE_OR_BATCH_TOO_LARGE` (documented "<= 2 characters") |
+| `last` or `next` > 99 | MCP_REJECTED | `PAGE_OR_BATCH_TOO_LARGE` |
 
-## 3. Timezone source (FIX-06)
+## 5. Timezone source (FIX-06)
 
-- No captured copy of the provider's `/timezone` catalog exists in the repository. The validation source is
-  **Python `zoneinfo` (IANA tz database of the host)**, minus `Factory`, `localtime`, `posixrules`.
-- The provider stays the final authority: a zone it rejects returns a declared `timezone` error
-  (`INVALID_PARAMETER`), never retried.
-- An unreadable tz database fails closed: only `UTC` is accepted (`TIMEZONE_CATALOG_UNAVAILABLE`).
-- The bridge never converts times. `fixture.timestamp` (provider Unix seconds, UTC) and `fixture.date`
-  (provider offset) pass through untouched. `timezone_check` (DERIVED, outside the data) verifies each
-  published offset against the IANA offset at that instant: from a UTC instant there is exactly one local
-  time, so DST gaps and repeated hours are exact (tested on the 2026 Rome spring and autumn changes).
-- Owner-approved removal of `TIMEZONE_NOT_CERTIFIED`; the pinning tests are changed and declared (§1).
+- **What is validated:** a zone is checked against the IANA database of the pinned PyPI package
+  `tzdata==2025.2` (IANA 2025b), not the host's tz files, so the result is the same on every host. The
+  reply states `validated_against: IANA_TZDATA_PYPI_PACKAGE`, the IANA version and
+  `provider_acceptance: UNVERIFIED`.
+- **What is not validated:** the provider's own `/timezone` catalog is not captured, so the bridge never
+  claims provider-catalog validation.
+- **Fail closed:** a missing package leaves only UTC accepted.
+- **Provider authority:** the provider decides. A zone it rejects comes back as a declared `timezone` error.
+- **No conversion:** the bridge never converts times. `timezone_check` (DERIVED) checks the published
+  offsets against IANA at each UTC instant, so DST changes are handled exactly.
 
-## 4. Other notes
+## 6. Times (FIX-07)
 
-- FIX-07: `provider_timestamp_utc` is the provider's own HTTP `Date` header (strict IMF-fixdate), source
-  `PROVIDER_HTTP_DATE_HEADER`; otherwise null. `retrieved_at_utc` = bridge clock at acquisition (kept on a cache
-  HIT), `responded_at_utc` = bridge clock at response, `age_seconds` = their difference, `cache_age_seconds`
-  = cache clock on a HIT; `time_sources` labels each. Item-level provider times (`update`,
-  `fixture.timestamp`) stay inside the data.
-- FIX-08: limits and defaults untouched (`APIFOOTBALL_MAX_RPM=60`, `APIFOOTBALL_MAX_DAILY_REQUESTS=7000`,
-  `max_concurrency` 1 as configured; code defaults 8/80/2 unchanged). `LOCAL_RATE_LIMITED` carries
-  `retry_after_seconds` from the (n − limit + 1)-th oldest attempt in the rolling window or from the
-  provider-zero marker; `LOCAL_DAILY_QUOTA_EXHAUSTED` carries `reset_at_utc` = next UTC midnight (the day bucket
-  is `epoch // 86400` of the database clock). A spent day is reported before the minute checks.
+- `provider_timestamp_utc` comes from the provider's HTTP `Date` header, in strict IMF-fixdate form. It
+  is null when the header is absent or malformed.
+- That header is the **generation time of the HTTP reply**. It may be set by an edge or CDN server, and it
+  says nothing about data freshness.
+- **It has never been observed in a real API-FOOTBALL reply.**
+- Data times such as `update` and `fixture.timestamp` stay inside the provider data.
+- The bridge-clock times are labelled in `time_sources`: `retrieved_at_utc` (acquisition, kept on a
+  cache HIT), `responded_at_utc`, `age_seconds` and `cache_age_seconds`.
 
-## 5. Residual risks
+## 7. Quota (FIX-08)
 
-| Id | Risk | Mitigation / owner decision |
+- **Unchanged:** limits and defaults (`APIFOOTBALL_MAX_RPM=60`, `APIFOOTBALL_MAX_DAILY_REQUESTS=7000`,
+  `max_concurrency` 1 as configured; code defaults 8/80/2).
+- **`LOCAL_RATE_LIMITED`:** carries `retry_after_seconds`, computed from the rolling 60 s window or from
+  the provider-zero marker.
+- **`LOCAL_DAILY_QUOTA_EXHAUSTED`:** carries `reset_at_utc`, the next UTC midnight.
+
+## 8. Residual risks
+
+| Id | Risk | Mitigation |
 |---|---|---|
-| R1 | Non-odds replies above the 512 KiB read cap (likely `fixtures?date=` without league, `leagues` without filters) are not retrievable completely: nothing is parsed, so no ids | Owner decision: either keep (current) or approve a bounded streaming id scan / higher read cap in a separate owner-merged PR |
-| R2 | `fixtures?ids=` may return richer rows than a listing (ASSUMED from upstream behaviour, not captured): a 20-id slice could itself exceed 256 KiB | The manifest of an `ids` request halves it; a single `id` over the cap is reported not splittable |
-| R3 | `ADD_ID` splits cost one call per distinct id (e.g. hundreds of leagues) | The call list is explicit; nothing is fetched automatically |
-| R4 | `DOCS_UNVERIFIED` combinations may be refused or reinterpreted upstream | Labelled in every reply; provider errors surface with keys; real check in the budget proposal |
-| R5 | Host tz database may differ from the provider catalog (or be missing on the runtime image) | Provider is final authority; missing database fails closed to UTC |
-| R6 | Provider `Date` header not evidenced in a captured reply | Optional: null when absent or malformed |
-| R7 | No real `/odds/live` payload captured; selection-level fields come from repo fixtures | C08 stays NOT proven; states are DERIVED and conservative (missing `suspended` never open) |
-| R8 | Behaviour of a page past the end is DOCS_UNVERIFIED (D06) | Accepted only without rows; with rows `PROVIDER_INVALID_PAGINATION` |
-| R9 | The official site returned 403 on 2026-11-10 (D01): the capture of 2026-11-01 is the only documentary source | Re-capture when the site is reachable |
+| R1 | Replies above the scan bounds (16 MiB, 20 000 rows, …) are not retrievable completely | Fixed code + narrowing hint; bounds are owner-adjustable constants |
+| R2 | `fixtures?ids=` detail size not evidenced | Detail slices of 2, never claimed complete; oversized `ids` replies are halved |
+| R3 | Per-id splits cost one call per id (e.g. 1 200 leagues) | Explicit call list; nothing fetched automatically |
+| R4 | DOCS_UNVERIFIED combinations may be refused upstream | Labelled per call; listed as a completeness condition; provider errors surface with keys |
+| R5 | IANA (tzdata) and the provider catalog may differ | Provider is final authority; `provider_acceptance: UNVERIFIED` |
+| R6 | `Date` header never observed live; edge time, not freshness | Null when absent; documented semantics |
+| R7 | No real `/odds/live` payload; selection fields from repo fixtures | C08 NOT proven; conservative DERIVED states |
+| R8 | Page past the end DOCS_UNVERIFIED (D06) | Accepted only without rows |
+| R9 | Official docs returned 403 on 2026-11-10 | Re-capture when reachable |
+| R10 | A scan of up to 16 MiB costs about 6 s of CPU on the event loop, in steps of about 20 ms | Bounded by the scan time limit and the request timeout |
 
 Real certification: proposal (not executed) in `apifootball_full_capability_budget.md`.
