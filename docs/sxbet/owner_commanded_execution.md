@@ -1,7 +1,9 @@
 # SX Bet — esecuzione reale su comando esplicito dell'owner (progetto)
 
-Stato: **PROGETTO, NON IMPLEMENTATO.** `LIVE_TRADING` resta OFF/UNAVAILABLE. Nessun ordine reale.
+Stato: **PROGETTO, IN CORSO.** `LIVE_TRADING` resta OFF/UNAVAILABLE. Nessun ordine reale.
 Base: `main` = `e155193`. Governance di riferimento: CLAUDE.md/AGENTS.md §2.6 come modificato dalla PR che introduce questo documento.
+
+Aggiornamento (PR "risk config v2 + autorizzazione comando owner nel signer", su `main` = `6c69521`): i passi 4 e 5 della sequenza §7 sono implementati **nel solo signer** (`signer/risk.py` v2, `signer/command.py`, `signer/killswitch.py`; vedi `signer/README.md`), senza sender di rete, senza tool MCP e senza modifiche a Render. Decisioni dell'owner applicate (issue #187): modifica = cancel + nuovo ordine (due comandi distinti); id monouso nuovo per ogni comando, consumato nel ledger anche dopo un riavvio, più finestra breve; kill switch automatico solo deterministico e solo per ridurre il rischio, con rilascio firmato dall'owner fuori dal MCP; copertura universale di Market e Limit senza whitelist funzionale. La guardia "quasi duplicato" (T5) non è ancora implementata. Restano aperte D2, D3 (lorda/netta) e le altre decisioni del §8.
 
 Flusso richiesto dall'owner: *«Piazza 10 USDC su Over 2,5 in Cape Verde–Liberia a quota minima 1,90»* → MCP verifica → signer firma → SX Bet esegue → MCP restituisce l'esito. Nessuna strategia genera scommesse; nessuna passkey; nessuna seconda conferma per un comando esplicito e completo.
 
