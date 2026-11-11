@@ -25,7 +25,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 ENV = "FCB_PG18_TEST_URL"
 # FCB-WP-005: the defaultdb restore workflow reuses this module with its own secret name.
 # Only these variable names may carry the URI; anything else is a configuration error.
-URL_VARS = ("FCB_PG18_TEST_URL", "FCB_DEFAULTDB_URL")
+# The OAuth-throttle 0009 and unlock workflows connect as fcb_migrator (owner-provisioned secret).
+URL_VARS = ("FCB_PG18_TEST_URL", "FCB_DEFAULTDB_URL", "FCB_MIGRATOR_DB_URL")
 
 
 def url_var(env=None) -> str | None:
@@ -202,6 +203,10 @@ def target_check(raw: str, env: dict | None = None) -> tuple[bool, str]:
             return False, "query_not_allowed (only a single sslmode parameter)"
         if val not in _ALLOWED_SSLMODES:
             return False, "sslmode_too_weak"
+        # In libpq a URI sslmode overrides PGSSLMODE: a job that requires verify-full must not let
+        # the URI downgrade it (e.g. the Aiven console default '?sslmode=require').
+        if env.get("REQUIRE_SSLMODE_VERIFY_FULL") == "true" and val != "verify-full":
+            return False, "sslmode_not_verify_full"
     elif qmark:
         return False, "query_not_allowed (only a single sslmode parameter)"
     source = "uri" if port else ("config(empty)" if colon else "config(absent)")

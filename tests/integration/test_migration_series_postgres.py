@@ -83,7 +83,8 @@ def test_empty_database_gets_bridge_0001_0008_and_no_signer_schema(schema):
     name, connect = schema
     migrations.apply_migrations(connect)
     rows = _rows(connect)
-    assert [r["version"] for r in rows] == list(range(1, 9))
+    # Intentional change (OAuth persistent throttle): the bridge series now ends at 0009.
+    assert [r["version"] for r in rows] == list(range(1, 10))
     for r in rows[:7]:
         assert (r["name"], r["sha256"]) == LEGACY[r["version"]]  # checksums preserved
     assert rows[7]["name"] == "0008_runtime_tables.sql"
@@ -123,7 +124,7 @@ def test_runtime_created_tables_and_data_survive_the_migration(schema, tmp_path)
     with connect() as conn:
         assert conn.execute("SELECT used FROM api_football_quota_counters").fetchone()["used"] == 5
         assert conn.execute("SELECT count(*) AS n FROM oauth_claude_dcr_clients").fetchone()["n"] == 1
-    assert len(_rows(connect)) == 8
+    assert len(_rows(connect)) == 9  # intentional change: bridge series 0001-0009
 
 
 def _columns(connect, schema_name):
@@ -207,7 +208,7 @@ def test_concurrent_appliers_serialize_on_the_advisory_lock(schema):
     for t in threads:
         t.join(60)
     assert errors == []
-    assert [r["version"] for r in _rows(connect)] == list(range(1, 9))
+    assert [r["version"] for r in _rows(connect)] == list(range(1, 10))  # intentional: 0001-0009
 
 
 def test_checksum_drift_is_refused_and_nothing_changes(schema):

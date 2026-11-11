@@ -114,6 +114,9 @@ def test_the_policy_sees_the_known_privileged_workflows():
     assert ("fcb-aiven-defaultdb-roles.yml", "roles") in found  # WP-009: admin URI + role passwords
     assert ("api-football-live-smoke.yml", "live") in found
     assert ("fcb-mcp-e2e.yml", "e2e") in found  # MCP_OAUTH_PASSWORD is privileged (default-closed)
+    # OAuth persistent throttle: 0009 apply and emergency unlock (fcb_migrator URI).
+    assert ("fcb-aiven-defaultdb-oauth-throttle-0009.yml", "throttle0009") in found
+    assert ("fcb-aiven-defaultdb-oauth-throttle-unlock.yml", "unlock") in found
 
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)

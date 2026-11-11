@@ -182,7 +182,8 @@ def test_empty_schema_restores_to_bridge_0008_and_second_run_is_a_noop(schema):
     rc, _, err = _apply(schema)
     assert rc == 0, err
     assert _counts(schema) == first
-    expected_rows = [f"{m.version}={m.name}={m.checksum}" for m in migrations.load_migrations()]
+    # The restore is exactly 0001-0008 (0009+ has its own owner-gated workflow).
+    expected_rows = [f"{m.version}={m.name}={m.checksum}" for m in migrations.load_migrations()[:8]]
     assert first[1] == expected_rows  # recorded names + checksums == repo files
     for table in ("signer_ledger_anchors", "signer_ledger_writer_leases", "signer_schema_migrations"):
         rc, out, _ = _psql(schema, "-c", f"SELECT to_regclass('{table}') IS NULL")

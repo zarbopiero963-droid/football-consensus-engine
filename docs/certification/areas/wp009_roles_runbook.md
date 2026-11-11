@@ -84,6 +84,7 @@ effective session -> fcb_signer member=true inherits_privileges=false can_set_ro
 | `api_football_quota_attempts` S I D | `quota._reserve`, `_mark_exhausted` | same | keep; **UPDATE revoked** |
 | `sxbet_rate_attempts` S I D | `ratelimit._reserve` | coordinator test | keep; **UPDATE revoked** |
 | `sxbet_rate_cooldowns` S I U D | `ratelimit._reserve` (expiry DELETE), `_record` (UPSERT) | same | keep |
+| `oauth_throttle_buckets` S I U D (bridge 0009) | `oauth_persistent_throttle.acquire` (UPSERT), `refund` (UPDATE), cleanup (DELETE) | `test_oauth_persistent_throttle_postgres.py`, `test_oauth_throttle_workflow_sql_postgres.py` | granted only where 0009 exists (no-op on 0001-0008); `oauth_throttle_unlock_audit`: nothing |
 | Revoked DML above | none (grep of `bridge/` and `app/`) | RED: each statement denied now (the uniform grant allowed it). GREEN: the whole runtime | **implemented** |
 | `TEMPORARY` on defaultdb (PUBLIC default) | none | RED: fcb_app creates a temp table. GREEN: after `REVOKE TEMPORARY … FROM PUBLIC`, the real app (OAuth, MCP) is unchanged | **owner decision**: database-wide default; Aiven tooling may rely on it |
 | Large objects (`lo_create`) | none | RED: fcb_app creates one. The administrator cannot revoke EXECUTE on pg_catalog functions: PostgreSQL only warns, nothing is revoked | residual (superuser only) |

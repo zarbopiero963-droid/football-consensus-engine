@@ -146,15 +146,19 @@ def test_pinned_script_is_the_generated_bridge_series():
     text = script.read_text(encoding="utf-8")
     for marker in ("signer_ledger_anchors", "signer_ledger_writer_leases", "signer_schema_migrations"):
         assert marker not in text
-    for m in migrations.load_migrations():
+    # The restore script is exactly 0001-0008; 0009+ has its own owner-gated workflow
+    # (intentional change with the OAuth persistent throttle).
+    for m in migrations.load_migrations()[:8]:
         assert m.name in text
+    for m in migrations.load_migrations()[8:]:
+        assert m.name not in text
 
 
 def test_tracked_precheck_pins_exactly_the_bridge_files():
     sql = (ROOT / "sql" / "aiven" / "defaultdb_precheck_tracked.sql").read_text(encoding="utf-8")
     rows = re.findall(r"\((\d+), '([^']+)', '([0-9a-f]{64})'\)", sql)
     assert [(int(v), n, c) for v, n, c in rows] == [(m.version, m.name, m.checksum)
-                                                    for m in migrations.load_migrations()]
+                                                    for m in migrations.load_migrations()[:8]]  # 0001-0008 only
 
 
 @pytest.mark.parametrize("name", ["defaultdb_precheck.sql", "defaultdb_precheck_tracked.sql",
