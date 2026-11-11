@@ -1,0 +1,192 @@
+"""AF-05 first real batch: plan bounds and the persistent, write-ahead campaign budget (offline only).
+
+Owner conditions (2026-11-11): at most 78 attempts per campaign, retries/timeouts/ambiguous replies
+included; the counter is persistent and shared (a restart or re-run with the same campaign_id never
+gets a new budget); no secret in logs or artefacts. Provider = httpx.MockTransport, ledger = an
+in-memory store that outlives every runner instance (as the database would).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from apifootball_campaign_kit import (KEY, FakeLedger, Provider, Quota, Store, envelope, load,
+                                            settings)
+
+batch = load("apifootball_cert_batch1_t", "apifootball_cert_batch1.py")
+PLAN_TEXT = batch.render_plan(batch.build_plan())
+PLAN = json.loads(PLAN_TEXT)
+
+
+def _run(store, provider, campaign="cert-batch1-test-0001"):
+    return asyncio.run(batch.execute(PLAN, campaign_id=campaign, settings=settings(), ledger=FakeLedger(store),
+                                     inner_transport=provider.transport(), quota=Quota(), plan_text=PLAN_TEXT,
+                                     source_sha="f666cc1"))
+
+
+def test_plan_is_committed_deterministic_and_within_the_hard_cap():
+    assert batch.main(["--check-plan"]) == 0
+    assert batch.HARD_CAP == 78
+    assert PLAN["max_attempts_total"] <= 78 and all(c["max_attempts"] == 1 for c in PLAN["calls"])
+    assert PLAN["status"] == "PREPARED_NOT_AUTHORIZED"
+    assert batch.render_plan(batch.build_plan()) == PLAN_TEXT
+
+
+def test_every_plan_call_passes_the_contract_and_covers_existing_rows():
+    from bridge.api_football.contracts import validate
+    for call in PLAN["calls"]:
+        validate(call["tool"], batch._contract_args(call["arguments"]))
+        assert call["covers_rows"] or "AF-02_SEARCH_MIN_LENGTH_PROBE" in call["tags"]
+
+
+def test_full_run_never_exceeds_78_and_counts_before_sending():
+    store, provider = Store(), Provider()
+    run = _run(store, provider)
+    assert len(provider.sent) == len(store.attempts) <= 78
+    assert run["ledger_attempts_used"] == len(provider.sent)
+
+
+def test_restart_mid_campaign_does_not_get_a_new_budget():
+    store = Store()
+
+    class Crash(BaseException):
+        pass
+
+    count = {"n": 0}
+
+    def crashing(request):
+        count["n"] += 1
+        if count["n"] == 30:
+            raise Crash()  # the worker dies while the 30th request is in flight
+        return httpx.Response(200, json=envelope(request.url.path, [{"fixture": {"id": 101}}]))
+
+    with pytest.raises(Crash):
+        _run(store, Provider(default=crashing))
+    assert len(store.attempts) == 30  # the in-flight attempt was reserved before the send
+    second = Provider()
+    run = _run(store, second)
+    assert len(store.attempts) <= 78
+    assert len(second.sent) + 30 <= 78
+    attempted = {c for _, _, c in store.attempts}
+    assert len(attempted) == len(store.attempts)  # no call attempted twice
+    redone = [c for c in run["calls"] if c["outcome"] == "ALREADY_ATTEMPTED_IN_CAMPAIGN_NOT_RETRIED"]
+    assert len(redone) == 30
+
+
+def test_rerun_with_same_campaign_id_makes_zero_requests():
+    store = Store()
+    _run(store, Provider())
+    used = len(store.attempts)
+    again = Provider()
+    _run(store, again)
+    assert again.sent == [] and len(store.attempts) == used
+
+
+def test_timeouts_and_ambiguous_replies_are_counted():
+    store = Store()
+    count = {"n": 0}
+
+    def flaky(request):
+        count["n"] += 1
+        if count["n"] % 3 == 0:
+            raise httpx.ReadTimeout("t", request=request)
+        if count["n"] % 3 == 1:
+            return httpx.Response(200, content=b'{"truncated": ')  # ambiguous: did it count upstream?
+        return httpx.Response(200, json=envelope(request.url.path, [{"fixture": {"id": 101}}]))
+
+    provider = Provider(default=flaky)
+    _run(store, provider)
+    assert len(provider.sent) == len(store.attempts) <= 78
+
+
+def test_retries_are_counted_one_by_one_by_the_transport():
+    """Even with a retrying client, every attempt is reserved before it is sent."""
+    from bridge.api_football.resilience import ResilientFootballClient, RetryPolicy
+    from bridge.api_football.transport import InjectedHTTPXTransport
+
+    store = Store()
+    ledger = FakeLedger(store)
+    asyncio.run(ledger.open("cert-retry-test-01", 2, "sha"))
+    provider = Provider(default=lambda request: httpx.Response(503))
+    http = httpx.AsyncClient(base_url=settings().base_url,
+                             transport=batch.budget_transport(provider.transport(), ledger, "cert-retry-test-01"))
+    client = ResilientFootballClient(settings(), InjectedHTTPXTransport(http, api_key=KEY), quota=Quota(),
+                                     retry=RetryPolicy(max_attempts=3, base_delay=0.0, max_delay=0.0))
+    with pytest.raises(Exception):
+        asyncio.run(client.get("/countries", {}))
+    assert len(store.attempts) == 2 and len(provider.sent) == 2  # 3rd attempt refused before sending
+
+
+def test_a_campaign_with_a_different_plan_is_refused():
+    store = Store()
+    asyncio.run(FakeLedger(store).open("cert-batch1-test-0001", 78, "other-plan"))
+    with pytest.raises(RuntimeError):
+        _run(store, Provider())
+
+
+def test_postgres_ledger_fails_closed_without_the_owner_migration():
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a):
+            self.executed = a
+
+        def fetchone(self):
+            return {"t": None}
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    ledger = batch.PostgresCampaignLedger(connect=lambda: Conn())
+    with pytest.raises(batch.LedgerUnavailable) as exc:
+        asyncio.run(ledger.open("cert-batch1-test-0001", 78, "x"))
+    assert str(exc.value) == "CAMPAIGN_LEDGER_MIGRATION_REQUIRED"
+
+
+def test_artifacts_of_a_simulated_run_hold_no_secret(tmp_path, monkeypatch):
+    dsn = "postgresql://fcb_user:S3cretPassw0rd@db.example.invalid:5432/fcb?sslmode=verify-full"
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    run = _run(Store(), Provider())
+    paths = batch.write_artifacts(run, tmp_path)
+    assert len(paths) > 1
+    assert batch.scan_for_secrets(paths, [KEY, dsn, "S3cretPassw0rd"]) == []
+    planted = tmp_path / "planted.json"
+    planted.write_text(json.dumps({"x": dsn}))
+    assert batch.scan_for_secrets([planted], [KEY, dsn]) == ["planted.json"]
+
+
+def test_execute_refuses_without_authorization(capsys):
+    assert batch.main(["--execute"]) == 2
+    assert "LIVE_CAMPAIGN_NOT_AUTHORIZED" in capsys.readouterr().out
+
+
+def test_plan_exclusion_is_a_distinct_verdict():
+    out = {"status": "PROVIDER_ERROR", "error": {"code": "PROVIDER_DECLARED_ERRORS", "category": "PLAN_NOT_INCLUDED"}}
+    assert batch.classify(out) == "PLAN_EXCLUDED"
+    assert batch.classify({"status": "PROVIDER_ERROR", "error": {"code": "PROVIDER_SERVER_ERROR"}}) == "ERROR"
+    assert batch.classify({"status": "REAL_API_RESPONSE", "data": {"results": 0, "response": []}}) == "EMPTY_VALID"
+    assert batch.classify({"status": "PARTIAL_ID_MANIFEST"}) == "PARTIAL"
+
+
+def test_workflow_is_manual_owner_gated_and_masks_secrets():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "api-football-cert-campaign.yml").read_text()
+    assert "workflow_dispatch:" in text and "pull_request" not in text and "schedule:" not in text
+    assert "environment: api-football-live" in text
+    assert "require_owner_main_dispatch.sh" in text and "require_protected_environment.sh" in text
+    assert "::add-mask::" in text
+    assert "--authorize-live-campaign" in text

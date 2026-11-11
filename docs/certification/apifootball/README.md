@@ -3,120 +3,196 @@
 Questa cartella contiene `matrix.json` e `matrix.csv`. Sono generati da `scripts/apifootball_cert_matrix.py`
 a partire **solo** da fonti del repository:
 
-- `bridge/api_football/contracts.py`, cioè i contratti, i tipi, i vincoli e le regole di combinazione estratte via AST da `validate()` e `fixtures_combination()`;
+- `bridge/api_football/contracts.py`, cioè i contratti, i tipi, i vincoli e le regole di combinazione estratte via AST;
 - gli schemi MCP reali, prodotti da `register_tools()` (la stessa funzione chiamata da `bridge/server.py`) sulla classe server dell'SDK MCP;
-- i test offline, letti con una scansione statica di `tests/test_*.py` e `tests/integration/test_*.py`;
+- i test offline, letti con una scansione statica;
 - le evidenze live già committate;
 - lo snapshot della documentazione `docs/api_football/official_parameter_matrix_v3.9.3.json`.
 
-La generazione non fa chiamate al provider, a MCP, a Render o al database e non consuma quota. Il risultato è deterministico: non contiene orari né dati dell'host.
+La generazione non fa chiamate al provider, a MCP, a Render o al database e non consuma quota. Il risultato è deterministico.
 
 ```bash
-python scripts/apifootball_cert_matrix.py           # rigenera matrix.json e matrix.csv
-python scripts/apifootball_cert_matrix.py --check   # exit 1 se i file committati non sono aggiornati
-python scripts/apifootball_cert_matrix.py --gate    # exit 1 se una riga MANDATORY non è PASS live
+python scripts/apifootball_cert_matrix.py                # rigenera matrix.json e matrix.csv
+python scripts/apifootball_cert_matrix.py --check        # exit 1 se i file committati non sono aggiornati
+python scripts/apifootball_cert_matrix.py --gate-offline # gate della PR (deve passare)
+python scripts/apifootball_cert_matrix.py --gate-live    # certificazione live completa (informativo; oggi FAIL)
+python scripts/apifootball_cert_batch1.py --write-plan   # rigenera batch1_plan.json (--check-plan per verificarlo)
 ```
 
-`--check` dipende anche dai test. Se si aggiunge o si modifica un test API-FOOTBALL, la matrice va rigenerata.
-`tests/test_apifootball_cert_matrix.py` lo verifica.
+`--check` dipende anche dai test. Se si modifica un test API-FOOTBALL, la matrice va rigenerata.
 
-## Righe
+## Gate
 
-Il file ha 366 righe e copre 42 tool MCP:
+| Gate | Cosa verifica | Dove gira | Stato |
+|---|---|---|---|
+| `--gate-offline` | Struttura e vocabolari; ogni tool `apifootball_*` presente; ogni parametro dello schema MCP e del contratto presente ed esposto; nessun parametro inventato; ogni `COVERED` con test citati; ogni riuso con prova; file aggiornati (`--check`). | CI della PR (`multi-market-tests.yml`, job `pytest`) | **PASS** |
+| `--gate-live` | Fallisce se una riga `MANDATORY` è `FAIL`, `BLOCKED`, `NOT_TESTED` o `STALE`. Non bloccano `PASS`, `REUSED_EQUIVALENT` e `PROVIDER_LIMITATION` documentata. | Solo a mano, dopo una campagna autorizzata | FAIL atteso |
+
+## Righe e vocabolario
+
+Le righe sono 378:
 
 | kind | righe | contenuto |
 |---|---|---|
-| `PARAMETER` | 142 | Una riga per ogni (tool, parametro) del contratto. Riporta il nome MCP (`from` → `from_date`, `to` → `to_date`), il tipo nello schema MCP, `required`, il tipo e i vincoli del contratto e il confronto con lo snapshot della documentazione. |
-| `BEHAVIOUR` | 173 | Per ogni tool provider: `ROUTE_CALL`, `EMPTY_VALID`, `NULL_HANDLING`, `PAYLOAD_CAP` e, se il tool è paginato, `PAGINATION`. Ci sono poi 9 righe trasversali (`*`): errori HTTP 401, 403, 429, 5xx e timeout via transport mockato, `PROVIDER_DECLARED_ERRORS`, null preservati, empty valid e cap a 256 KiB. |
-| `RULE` | 49 | Rifiuti locali con codice fisso (`*_FILTER_REQUIRED`, `REQUIRED_PARAMETER_MISSING`, `SEARCH_TOO_SHORT`, ...) e combinazioni di `/fixtures`, etichettate `DOCUMENTED_VALID`, `DOCS_UNVERIFIED`, `MCP_REJECTED` o `PROVIDER_REJECTED_OBSERVED`. |
-| `LOCAL_TOOL` | 2 | `apifootball_health` e `apifootball_quota_report`, che non fanno chiamate al provider. |
+| `PARAMETER` | 142 | una riga per ogni (tool, parametro) |
+| `BEHAVIOUR` | 173 | `ROUTE_CALL`, `EMPTY_VALID`, `NULL_HANDLING`, `PAYLOAD_CAP` e, se paginato, `PAGINATION`, per ogni tool; più 9 righe trasversali (`*`) |
+| `RULE` | 49 | rifiuti locali e combinazioni di `/fixtures` |
+| `LOCAL_TOOL` | 2 | — |
+| `SNAPSHOT` | 12 | requisiti di LIVE FULL MATCH SNAPSHOT |
 
-## Colonne principali e vocabolario
+**verdict** (CLAUDE.md §4): `HTTP_200`, `DATA_PRESENT`, `EMPTY_VALID`, `PARTIAL`, `ERROR`, `NOT_TESTED`. A questi si aggiungono due verdetti di disponibilità del provider (condizione E dell'owner):
 
-- **offline_status**: `COVERED` se almeno una funzione di test nomina il tool e il parametro, il codice o il comportamento. Il testo considerato include le tabelle di modulo che la funzione usa. `offline_tests` elenca gli id `file::test`. È un'euristica statica: indica che esiste un test pertinente, non che quel test asserisca il comportamento.
-- **verdict** (CLAUDE.md §4): `HTTP_200`, `DATA_PRESENT`, `EMPTY_VALID`, `PARTIAL`, `ERROR`, `NOT_TESTED`. Riporta la migliore evidenza live disponibile, con la fonte citata in `live_evidence_source`.
-- **live_requirement**:
-  - `MANDATORY`: va provato live per certificare;
-  - `DATA_DEPENDENT`: si può provare solo se il dato esiste in una certa finestra (vedi sotto);
-  - `OFFLINE_ONLY`: non si deve provocare live, perché è un rifiuto locale a 0 chiamate oppure un errore 401, 403, 429, 5xx o timeout, che richiederebbe una chiave invalida o consumerebbe quota.
-- **gate_status**:
-  - `PASS`: c'è evidenza live sul codice corrente;
-  - `STALE`: l'evidenza è reale ma non certifica il codice corrente;
-  - `NOT_TESTED`;
-  - `BLOCKED`;
-  - `FAIL`: `ERROR` non atteso;
-  - `NOT_APPLICABLE`.
-- **Gate:** fallisce se una riga `MANDATORY` è `FAIL`, `BLOCKED`, `NOT_TESTED` o `STALE`.
-- **Perché tutta l'evidenza esistente è `STALE`:**
-  - la route inventory del 2026-10-25 e le capability run del 2026-10-31 sono script httpx diretti, fuori dal path MCP e dal coordinatore (gap G1 in `../areas/apifootball.md`);
-  - la certificazione MCP del 2026-11-11 è stata fatta su `848c007`, e dopo `bridge/api_football` è cambiato (`e155193`).
-- **docs_status**: vale `DOCS_UNVERIFIED` su tutte le righe. La pagina ufficiale `https://www.api-football.com/documentation-v3`, richiesta una volta il 2026-11-11, ha risposto HTTP 403 con il challenge Cloudflare, che non è stato aggirato.
-- **docs_snapshot_status**: è il confronto con lo snapshot del 2026-11-01, che non ha capture raw né hash. Valori: `MATCH` / `MISSING_IN_CONTRACT` / `MISSING_IN_DOCS` / `DOCS_UNVERIFIED`.
+- `PROVIDER_NOT_OFFERED`: il provider non offre il dato. L'evidenza è la copertura della lega o la documentazione.
+- `PLAN_EXCLUDED`: il piano lo esclude. L'evidenza è la risposta reale con errore dichiarato `plan` (categoria `PLAN_NOT_INCLUDED`, `bridge/api_football/errors.py`).
 
-## Stato attuale (generato)
+Non sono difetti del MCP. Se sono documentati, `gate_status` è `PROVIDER_LIMITATION` e non bloccano.
 
-| metrica | valore |
-|---|---|
-| righe | 366 |
-| offline `COVERED` / `NOT_COVERED` | 312 / 54 |
-| verdict `NOT_TESTED` | 319 |
-| verdict con evidenza | `DATA_PRESENT` 44, `EMPTY_VALID` 1, `HTTP_200` 1, `ERROR` 1 (A04, atteso) |
-| `MANDATORY` / `DATA_DEPENDENT` / `OFFLINE_ONLY` | 176 / 139 / 51 |
-| gate | **FAIL**: 176 righe `MANDATORY` non PASS (135 `NOT_TESTED`, 41 `STALE`) |
-| docs snapshot `MATCH` / `DOCS_UNVERIFIED` | 308 / 58 (nessun `MISSING_IN_CONTRACT` o `MISSING_IN_DOCS`) |
+**live_requirement**:
+- `MANDATORY`;
+- `DATA_DEPENDENT`: serve una partita live, quote in finestra o una risposta oltre il cap;
+- `OFFLINE_ONLY`: rifiuti locali a 0 chiamate, oppure errori 401/403/429/5xx/timeout da non provocare live.
 
-### Gap offline (54 righe `NOT_COVERED`)
+**gate_status**: `PASS`, `REUSED_EQUIVALENT`, `PROVIDER_LIMITATION`, `FAIL`, `BLOCKED`, `NOT_TESTED`, `STALE`, `NOT_APPLICABLE`.
 
-| Gruppo | Righe | Dettaglio |
+**docs_status**: vale `DOCS_UNVERIFIED` su tutte le righe. La pagina ufficiale ha risposto 403 (challenge Cloudflare, non aggirato). `docs_snapshot_status` confronta lo snapshot del 2026-11-01.
+
+## AF-01 — Riuso selettivo delle evidenze dell'11-11 (848c007)
+
+Colonne della matrice: `source_sha`, `evidence_date`, `evidence_ref`, `changes_since`, `reuse_status`, `reuse_reason`, `reuse_proof`.
+
+**Modifiche tra 848c007 e f666cc1 sul percorso di codice API-FOOTBALL** (`bridge/api_football/**`, `bridge/server.py`, `bridge/db_identity.py`, `requirements.txt`): solo `e155193` (#193), che ha toccato `contracts.py`, `stream_scan.py` e `tools.py`. Gli altri commit del periodo (`6615acb`, `6c69521`, `d09571f`, `f666cc1`) non toccano quel percorso.
+
+**Come è provata l'equivalenza** (`tests/test_apifootball_cert_reuse_equivalence.py`), in due passi:
+1. `git diff --name-only 848c007 HEAD` sul percorso di codice deve coincidere con i tre file registrati. Qualunque nuova modifica invalida i riusi.
+2. La busta del provider registrata, riprodotta attraverso il bridge corrente (client resiliente e transport reali su `httpx.MockTransport`), deve dare la risposta MCP registrata. Il confronto riguarda status, parametri, paginazione, `pagination_state`, warning e `network_calls_made`; anche i dati restano identici.
+
+| Righe | Stato | Motivo |
 |---|---|---|
-| `PAYLOAD_CAP` per route | 19 | Il cap è coperto in modo trasversale (`*|PAYLOAD_CAP_256KIB`), non per singola route. |
-| `EMPTY_VALID` per route | 12 | — |
-| `REQUIRED_PARAMETER_MISSING` | 12 tool | Il set `required` è verificato contro la documentazione (`test_apifootball_official_parameter_matrix.py`), ma il rifiuto con quel codice no. |
-| Parametri | 6 | `bets.search`, `bookmakers.search`, `countries.search`, `venues.city`, `fixture_headtohead.next`, `fixture_lineups.type` |
-| Regole | 5 | `INVALID_COUNTRY_CODE`, `LIVE_ODDS_FILTER_REQUIRED`, `LEAGUE_SEASON_PAIR_REQUIRED`, `teams SEARCH_TOO_SHORT`, `TEAM_FILTER_REQUIRED` |
+| `player_profiles.page`, `player_profiles` `ROUTE_CALL` (caso A09) | **REUSED_EQUIVALENT** (MANDATORY) | La rotta non è modificata. La modifica a `pagination_state` vale solo per pagine vuote oltre la prima. Il replay è identico. |
+| `odds.fixture`, `odds` `ROUTE_CALL` (caso B06f) | **REUSED_EQUIVALENT** (DATA_DEPENDENT) | La rotta non è modificata. Il warning dei manifest vale solo oltre il cap, e B06f era sotto il cap. Il replay è identico. |
+| `player_profiles` `PAGINATION`, `EMPTY_VALID` (A10) | STALE | `e155193` ha cambiato proprio questo comportamento: il replay dà `EMPTY_PAGE` e non più `LAST_PAGE`. |
+| `fixtures.team`, `fixtures.season`, `fixtures` `ROUTE_CALL` (A03) e regola A04 | STALE | La rotta `/fixtures` è stata modificata da `e155193`. |
+| Evidenze del 2026-10 (httpx diretto) | NOT_REUSABLE | Fuori dal MCP e dal coordinatore. |
 
-### Divergenze tra contratto e snapshot (`CONSTRAINT_DRIFT`, non corrette qui)
+**Conteggi**:
+- `MANDATORY`: 2 `REUSED_EQUIVALENT`, 39 `STALE`, 135 `NOT_TESTED`;
+- `DATA_DEPENDENT`: 2 `REUSED_EQUIVALENT`, 3 `STALE`, 146 `NOT_TESTED`.
 
-- **Lunghezza minima di `search`.** Lo snapshot indica `= 3` o `>= 3` caratteri per `countries`, `bets`, `bookmakers`, `coaches` e `venues`. Il contratto ammette 1 carattere: la richiesta arriva al provider, che resta l'autorità finale.
-- **Tipo di `odds/bets.id`.** La documentazione lo dà come `string`, il contratto come `integer`.
+## AF-05 — Primo lotto reale (`batch1_plan.json`, NON eseguito)
 
-Le due divergenze sono documentate qui. Qualunque correzione richiede una PR dedicata (CLAUDE.md §0).
+**Dimensione e copertura:**
+- 78 chiamate, ciascuna con `max_attempts = 1`, cioè `RetryPolicy(max_attempts=1)`: 78 tentativi in totale, uguale a `HARD_CAP`.
+- Coprono 133 delle 174 righe `MANDATORY` ancora senza evidenza valida (135 righe in totale).
+- Le 41 righe escluse sono elencate in `mandatory_pending_not_covered`: sono parametri opzionali secondari, per esempio la maggior parte dei parametri opzionali di `headtohead`, `trophies` e `sidelined` (`coach`, `coachs`, `players`).
 
-## Budget live (stima, da approvare dall'owner, CLAUDE.md §2.4)
+**Ordine e attribuzione:**
+- Il piano parte dai cataloghi, poi leghe, squadre, classifiche, round e head-to-head.
+- Segue `/fixtures` con le regole `F-*`, poi le sotto-rotte della partita, giocatori e paginazione (pagina 2 e una pagina oltre il totale), top, transfer e trofei, cataloghi delle quote.
+- Gli id che cambiano nel tempo (partita, squadra di casa, giocatore, totale pagine) si leggono da risposte precedenti tramite binding. Un binding non risolto salta la chiamata con 0 tentativi.
+- Le chiamate con più filtri opzionali hanno il tag `JOINT_ATTRIBUTION`: l'attribuzione è congiunta e più debole.
 
-Ogni chiamata passa dal coordinatore PostgreSQL condiviso attraverso i tool MCP. Nessuna di queste chiamate è stata eseguita.
+**AF-02:**
+- `C08 countries(search="En")` è una sola chiamata. La risposta del provider decide se il contratto deve imporre il minimo documentato, con una PR separata.
+- Per il tipo di `odds/bets.id` non è prevista nessuna chiamata. Sul filo un intero e una stringa producono lo stesso testo di query, quindi una chiamata reale non li distingue. Resta `DOCS_UNVERIFIED`; l'accettazione di `bets.id` è coperta da `C73`.
 
-| Gruppo | Righe | Chiamate (limite superiore) | Stima con accorpamento |
-|---|---|---|---|
-| `MANDATORY` `ROUTE_CALL` (37 `STALE`, 1 `NOT_TESTED`) e 24 parametri obbligatori | 62 | 62 | 38: una chiamata per tool, che copre anche i parametri obbligatori |
-| `MANDATORY` parametri opzionali | 106 | 106 | circa 100. Ogni parametro va isolato, con i soli parametri obbligatori, per attribuirgli l'esito. I parametri più numerosi sono `fixtures` 14, `headtohead` 10, `leagues` 10, `injuries` 8 e `teams` 8. |
-| `MANDATORY` regole `F-*` di `/fixtures` | 5 | 5 | 0: coincidono con le chiamate di `id`, `ids`, `date`, `league+season` e `from/to` |
-| `MANDATORY` paginazione (`players`, `player_profiles`, `odds_mapping`) | 3 | 6 | 6: pagina 2 e una pagina oltre il totale |
-| `DATA_DEPENDENT` quote pre-match e live, `fixtures.live`, `F-LIVE` | 16 | 17 | circa 17, da eseguire in una finestra con partite in corso o imminenti |
-| `DATA_DEPENDENT` `PAYLOAD_CAP` | 40 | 40 | circa 5: solo le risposte realmente oltre 256 KiB, cioè `leagues` senza filtro, `odds` per data, `fixtures` per data, `transfers` e `odds/live` con molte partite |
-| `DATA_DEPENDENT` `EMPTY_VALID` e `NULL_HANDLING` | 80 | 80 | circa 0–10: si osservano sulle chiamate precedenti, più poche chiamate mirate per pagine o id vuoti |
-| **Totale** | | **316** (`summary.live_budget`) | **circa 170–180** |
+### Budget persistente (condizione A) — serve una decisione dell'owner
 
-## Righe `DATA_DEPENDENT`
+`scripts/apifootball_cert_batch1.py` conta i tentativi in modo write-ahead:
+- un wrapper del transport httpx, posto sotto il client resiliente reale, riserva e committa ogni tentativo nel ledger di campagna **prima** dell'invio;
+- retry, timeout e risposte ambigue sono quindi sempre contati;
+- un riavvio o un re-run con lo stesso `campaign_id` continua lo stesso budget e non ritenta le chiamate già tentate.
 
-- **Finestra temporale:**
-  - `/odds`: le quote pre-match esistono solo nei giorni prima del calcio d'inizio;
-  - `/odds/live`: serve una partita in corso con il mercato aperto;
-  - `fixtures.live` e la regola `F-LIVE`: serve una partita in corso.
-- **Dato reale:**
-  - `PAYLOAD_CAP`: serve una risposta reale oltre 256 KiB;
-  - `NULL_HANDLING`: serve un payload con campi null pubblicati dal provider;
-  - `EMPTY_VALID`: serve un filtro che il provider restituisce vuoto.
+Ogni richiesta prende anche il lease del coordinatore di quota condiviso (`PostgresQuota`).
 
-Una riga `DATA_DEPENDENT` non certificata non fa fallire il gate, ma resta `NOT_TESTED` o `STALE` nella matrice. Non si dichiara mai coperta per assenza di dati (CLAUDE.md §7).
+**Lo schema adatto non esiste.** Le tabelle del coordinatore (`api_football_quota_*`) hanno un altro significato (finestre per chiave): riusarle cambierebbe la loro ownership (CLAUDE.md §5). Per questo il ledger PostgreSQL rifiuta con `CAMPAIGN_LEDGER_MIGRATION_REQUIRED` prima di qualunque richiesta.
 
-## Proposta di step CI (solo offline)
+Migration proposta, **non scritta in `sql/migrations/`, decisione owner**:
 
-Questa è una proposta: non è stato aggiunto nessun workflow.
-
-```yaml
-- name: API-FOOTBALL cert matrix is up to date (offline)
-  run: python scripts/apifootball_cert_matrix.py --check
+```sql
+CREATE TABLE api_football_cert_campaigns (
+  campaign_id TEXT PRIMARY KEY, budget INTEGER NOT NULL CHECK (budget BETWEEN 1 AND 78),
+  plan_sha256 TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
+CREATE TABLE api_football_cert_campaign_attempts (          -- append-only (trigger anti UPDATE/DELETE)
+  campaign_id TEXT NOT NULL REFERENCES api_football_cert_campaigns,
+  seq INTEGER NOT NULL CHECK (seq BETWEEN 1 AND 78), call_id TEXT NOT NULL,
+  reserved_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY (campaign_id, seq));
 ```
 
-`--gate` va usato solo dopo una campagna live autorizzata dall'owner. Oggi fallisce per costruzione.
+Il `CHECK (seq <= 78)` rende il tetto vincolante anche nel database. Servono anche i grant `INSERT` e `SELECT` per il ruolo del coordinatore (WP-009).
+
+### Workflow proposto
+
+Il file è `.github/workflows/api-football-cert-campaign.yml`: preparato, **dispatch NON autorizzato**. È meglio di un passaggio via MCP per tre motivi:
+- il runner MCP E2E (`fcb-mcp-e2e`) addebita il caso peggiore, 3 tentativi per chiamata, quindi entro 78 farebbe solo 26 chiamate;
+- il suo tetto approvato è 45;
+- non può fissare `max_attempts = 1` sul server.
+
+Il runner in-process esegue gli stessi tool di `tools.py` (contratti, client resiliente, transport, coordinatore). Lo strato JSON-RPC e OAuth resta coperto dai test offline e da `fcb-mcp-e2e`.
+
+**Protezioni del workflow:**
+- solo `workflow_dispatch` e solo da `main`;
+- dispatch dell'owner (`require_owner_main_dispatch.sh`);
+- Environment protetto `api-football-live` con revisori (`require_protected_environment.sh`);
+- variabile `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true` richiesta, che l'owner non ha impostato;
+- limite giornaliero dalla variabile dell'owner `APIFOOTBALL_CERT_MAX_DAILY_REQUESTS`; RPM 4, concorrenza 1;
+- `::add-mask::` su chiave, DSN e componenti del DSN;
+- scansione anti-segreti degli artefatti, che vengono cancellati se trova qualcosa;
+- un JSON per ogni requisito.
+
+**Secret necessari** (già referenziati dai workflow esistenti nell'Environment `api-football-live`; i valori non sono stati letti):
+- `APIFOOTBALL_API_KEY`;
+- `APIFOOTBALL_COORDINATOR_DATABASE_URL`.
+
+Da creare a cura dell'owner:
+- la variabile `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED`;
+- la variabile `APIFOOTBALL_CERT_MAX_DAILY_REQUESTS`;
+- la migration sopra.
+
+## LIVE FULL MATCH SNAPSHOT (campagna `live_full_match_snapshot`, NON eseguita)
+
+**Fonti**, tutte per lo stesso `fixture_id` e verificate in `contracts.py`:
+- `apifootball_fixtures(id)`;
+- `apifootball_fixture_statistics`;
+- `apifootball_fixture_events`;
+- `apifootball_fixture_lineups`;
+- `apifootball_fixture_players`;
+- `apifootball_live_odds(fixture)`;
+- `apifootball_coverage_report(id=lega, season)`, usata come evidenza di disponibilità.
+
+`fixtures(live="all")` si usa solo se non viene passato un `fixture_id`, e costa un tentativo in più.
+
+**Budget:** tetto configurato di 8 tentativi per `snapshot_id`, nello stesso ledger persistente. È un tetto, non un'autorizzazione: al raggiungimento lo snapshot si chiude `SNAPSHOT_INCOMPLETE` e non fa altri tentativi.
+
+**Strumenti:** `scripts/apifootball_live_snapshot.py` costruisce il rapporto unico da risposte registrate. `tests/test_apifootball_live_snapshot.py` lo prova offline su fixture sintetiche:
+- risposte vuote, null, manifest PARTIAL, partita senza lineups;
+- `PLAN_EXCLUDED`, timeout, retry, riavvio, tetto;
+- risposta manomessa, assenza del raw, timestamp senza timezone.
+
+**Requisiti** (righe `SNAPSHOT` della matrice, tutte `DATA_DEPENDENT`):
+
+| Riga | Garanzia |
+|---|---|
+| `SNAP-RAW-PRESERVED` | Si conservano la risposta MCP così come ricevuta e il corpo originale del provider, catturato al transport fino a 16 MiB. |
+| `SNAP-FIELD-COMPLETENESS` / `SNAP-NULL-PRESERVED` | Confronto deterministico campo per campo, originale contro rapporto: tipo e valore stretti, null resta null, nessun campo perso. |
+| `SNAP-IDENTITY-WITH-ORIGINAL` | Senza cattura del raw la fonte è dichiarata `NOT_VERIFIABLE`, mai affermata; il verdetto complessivo diventa `SNAPSHOT_INCOMPLETE`. |
+| `SNAP-TRANSFORMATIONS-LISTED` | Per ogni fonte si elencano, con il percorso del campo, le trasformazioni del bridge verificate nel codice (vedi elenco sotto). |
+| `SNAP-TIMESTAMPS` / `SNAP-NOT-SIMULTANEOUS-DECLARED` | Inizio e fine di ogni richiesta in UTC e Europe/Rome, finestra di raccolta (primo inizio → ultima fine), dichiarazione esplicita che le fonti **non** sono simultanee. Il minuto è quello riportato dal provider all'istante della richiesta. |
+| `SNAP-DERIVED-CONSISTENCY` | `goals` contro gli eventi `Goal` solo come controllo `DERIVED`; i dati del provider non vengono mai riscritti; l'HT non viene mai derivato. |
+| `SNAP-LIVE-ODDS-AS-PUBLISHED` | Bookmaker, mercati, valori e sospensioni come pubblicati, con etichetta `MARKET_PRICES_AS_PUBLISHED_NOT_MODEL_PROBABILITIES`. |
+| `SNAP-AVAILABILITY-CLASSIFIED` | `EMPTY_VALID`, `PROVIDER_NOT_OFFERED` (flag di copertura false) o `PLAN_EXCLUDED`. |
+| `SNAP-PARTIAL-NOT-CERTIFIED` | Una sola fonte `PARTIAL` porta a `SNAPSHOT_PARTIAL`, con il manifest per recuperare il resto. |
+| `SNAP-BUDGET-CAP-CLOSES-INCOMPLETE` | Raggiunto il tetto, lo snapshot si chiude `SNAPSHOT_INCOMPLETE`. |
+
+**Trasformazioni del bridge verificate nel codice:**
+- parsing `json.loads`: la formattazione numerica non è conservata e una chiave duplicata tiene l'ultimo valore;
+- `errors` del provider ridotto alle sole chiavi;
+- manifest oltre 256 KiB;
+- metadati del bridge;
+- etichette `DERIVED` accanto ai dati: `combination` e `live_odds_state`.
+
+Fuori scope: raccolta continuativa delle quote, storico, calcolo del drop.
+
+## Divergenze tra contratto e snapshot (`CONSTRAINT_DRIFT`, non corrette)
+
+- **Lunghezza minima di `search`.** Lo snapshot indica 3 caratteri per `countries`, `bets`, `bookmakers`, `coaches` e `venues`; il contratto ne ammette 1. La chiamata `C08` del lotto serve a decidere.
+- **Tipo di `odds/bets.id`.** La documentazione lo dà come `string`, il contratto come `integer`.

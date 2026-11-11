@@ -16,7 +16,8 @@ host data): docs/certification/apifootball/matrix.json and matrix.csv.
 Usage:
   python scripts/apifootball_cert_matrix.py            # (re)write the two files
   python scripts/apifootball_cert_matrix.py --check    # exit 1 if the committed files differ
-  python scripts/apifootball_cert_matrix.py --gate     # exit 1 if a MANDATORY row is not PASS live
+  python scripts/apifootball_cert_matrix.py --gate-offline  # PR gate: structure, schema, no invented params, --check
+  python scripts/apifootball_cert_matrix.py --gate-live     # informative: full live certification (FAIL expected today)
 """
 from __future__ import annotations
 
@@ -47,9 +48,15 @@ CERT_20261111 = ROOT / "tests" / "fixtures" / "apifootball_cert_20261111"
 SELF_TEST = "tests/test_apifootball_cert_matrix.py"
 
 SCHEMA = "apifootball-cert-matrix/v1"
-VERDICTS = ("HTTP_200", "DATA_PRESENT", "EMPTY_VALID", "PARTIAL", "ERROR", "NOT_TESTED")
+# CLAUDE.md §4 vocabulary plus two provider-availability verdicts (owner condition E, 2026-11-11): the
+# provider does not offer the data, or the account's plan excludes it. Not an MCP defect; documented
+# with evidence they do not block the live gate.
+VERDICTS = ("HTTP_200", "DATA_PRESENT", "EMPTY_VALID", "PARTIAL", "PROVIDER_NOT_OFFERED", "PLAN_EXCLUDED",
+            "ERROR", "NOT_TESTED")
+PROVIDER_LIMITATION_VERDICTS = frozenset({"PROVIDER_NOT_OFFERED", "PLAN_EXCLUDED"})
 LIVE_REQUIREMENTS = ("MANDATORY", "DATA_DEPENDENT", "OFFLINE_ONLY")
-GATE_STATUSES = ("PASS", "FAIL", "BLOCKED", "NOT_TESTED", "STALE", "NOT_APPLICABLE")
+GATE_STATUSES = ("PASS", "REUSED_EQUIVALENT", "PROVIDER_LIMITATION", "FAIL", "BLOCKED", "NOT_TESTED", "STALE",
+                 "NOT_APPLICABLE")
 GATE_FAILING = frozenset({"FAIL", "BLOCKED", "NOT_TESTED", "STALE"})
 
 # The official page was requested once on 2026-11-11 (read-only): HTTP 403, Cloudflare challenge page.
@@ -68,10 +75,12 @@ COLUMNS = (
     "docs_snapshot_status", "docs_snapshot_type", "docs_snapshot_required", "docs_snapshot_constraints",
     "docs_status",
     "offline_status", "offline_tests", "live_evidence", "live_evidence_source",
-    "live_evidence_scope", "live_requirement", "verdict", "gate_status", "live_calls_estimate", "notes",
+    "live_evidence_scope", "source_sha", "evidence_date", "evidence_ref", "changes_since", "reuse_status",
+    "reuse_reason", "reuse_proof", "live_requirement", "verdict", "gate_status", "live_calls_estimate", "notes",
 )
 
-_VERDICT_RANK = {"DATA_PRESENT": 0, "EMPTY_VALID": 1, "HTTP_200": 2, "PARTIAL": 3, "ERROR": 4, "NOT_TESTED": 5}
+_VERDICT_RANK = {"DATA_PRESENT": 0, "EMPTY_VALID": 1, "HTTP_200": 2, "PARTIAL": 3, "PLAN_EXCLUDED": 4,
+                 "PROVIDER_NOT_OFFERED": 5, "ERROR": 6, "NOT_TESTED": 7}
 _MCP_ALIASES = {"from": "from_date", "to": "to_date"}
 # Routes whose data exists only in a time window (pre-match odds, in-play odds).
 _DATA_DEPENDENT_ROUTES = frozenset({"/odds", "/odds/live"})
@@ -86,6 +95,61 @@ LOCAL_TOOLS = ("apifootball_health", "apifootball_quota_report")
 #   MCP_RENDER_848c007 - real MCP client -> Render on 848c007; bridge/api_football changed after it
 #                       (e155193, contracts.py/tools.py), so the evidence is STALE for current main.
 _STALE_SCOPES = frozenset({"RAW_HTTPX_SCRIPT_2026-10-25", "RAW_HTTPX_SCRIPT_2026-10-31", "MCP_RENDER_848c007_2026-11-11"})
+_RAW_SCOPES = frozenset({"RAW_HTTPX_SCRIPT_2026-10-25", "RAW_HTTPX_SCRIPT_2026-10-31"})
+
+# ---- AF-01 (owner decision 2026-11-11): selective reuse of the 848c007 MCP evidence ----------
+# Reuse is allowed only for a row whose route was not modified by e155193 (#193) and whose shared
+# dependencies did not change in a way that can alter the recorded behaviour. Equivalence is shown
+# deterministically by tests/test_apifootball_cert_reuse_equivalence.py:
+#   (1) `git diff --name-only 848c007 HEAD` over the API-FOOTBALL code path equals CODE_PATH_CHANGES
+#       (skipped only when 848c007 is not in the local history, e.g. a shallow clone);
+#   (2) the recorded provider envelope replayed through the CURRENT bridge (real resilience client and
+#       transport over httpx.MockTransport) yields the recorded MCP reply on every recorded field.
+# The 2026-10 evidence (direct httpx outside MCP and the coordinator) is never reusable.
+REUSE_SOURCE_SHA = "848c007"
+REUSE_EVIDENCE_DATE = "2026-11-11"
+CODE_PATH = ("bridge/api_football", "bridge/server.py", "bridge/db_identity.py", "requirements.txt")
+CODE_PATH_CHANGES = ("bridge/api_football/contracts.py", "bridge/api_football/stream_scan.py",
+                     "bridge/api_football/tools.py")
+CHANGES_SINCE = ("e155193 (#193): " + ", ".join(CODE_PATH_CHANGES)
+                 + "; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path")
+_PROOF = "tests/test_apifootball_cert_reuse_equivalence.py"
+_SAME_REPLY = (" Proof: the recorded envelope replayed through current main gives the recorded MCP reply "
+               "(status, parameters, pagination, pagination_state, warnings, network_calls_made).")
+_REUSE = {
+    ("apifootball_player_profiles", "PARAMETER", "page"): ("REUSED_EQUIVALENT",
+        "Route /players/profiles not modified by e155193 (contract entry unchanged; contracts.py diff only "
+        "touches /fixtures). tools.py: pagination_state changes only for rows == 0 and page > 1 (A09 has "
+        "rows); success warning text unchanged. stream_scan.py: only replies above the read cap (A09 was a "
+        "plain REAL_API_RESPONSE)." + _SAME_REPLY, _PROOF + "::test_a09_replay_equals_recorded_reply"),
+    ("apifootball_player_profiles", "BEHAVIOUR", "ROUTE_CALL"): ("REUSED_EQUIVALENT",
+        "Same case and reasoning as player_profiles.page (A09)." + _SAME_REPLY,
+        _PROOF + "::test_a09_replay_equals_recorded_reply"),
+    ("apifootball_player_profiles", "BEHAVIOUR", "PAGINATION"): ("STALE",
+        "e155193 changed pagination_state (EMPTY_PAGE) on this very route: pagination behaviour as a whole "
+        "must be re-tested (page 2 and a page beyond the total).",
+        _PROOF + "::test_a10_replay_differs_from_recorded_reply"),
+    ("apifootball_player_profiles", "BEHAVIOUR", "EMPTY_VALID"): ("STALE",
+        "A10 recorded LAST_PAGE; current code returns EMPTY_PAGE for the same input (behaviour changed).",
+        _PROOF + "::test_a10_replay_differs_from_recorded_reply"),
+    ("apifootball_odds", "PARAMETER", "fixture"): ("REUSED_EQUIVALENT",
+        "Route /odds not modified by e155193 (contract entry unchanged). tools.py changes on this path: "
+        "PARTIAL manifest warning only for oversized replies (B06f was a plain REAL_API_RESPONSE under the "
+        "256 KiB cap) and pagination_state only for empty pages > 1 (B06f is page 1 with rows). "
+        "stream_scan.py: only replies above the read cap." + _SAME_REPLY,
+        _PROOF + "::test_b06f_replay_equals_recorded_reply"),
+    ("apifootball_odds", "BEHAVIOUR", "ROUTE_CALL"): ("REUSED_EQUIVALENT",
+        "Same case and reasoning as odds.fixture (B06f)." + _SAME_REPLY,
+        _PROOF + "::test_b06f_replay_equals_recorded_reply"),
+    ("apifootball_fixtures", "PARAMETER", "team"): ("STALE",
+        "Route /fixtures modified by e155193 (fixtures_combination: PROVIDER_REJECTED_OBSERVED).", ""),
+    ("apifootball_fixtures", "PARAMETER", "season"): ("STALE",
+        "Route /fixtures modified by e155193 (fixtures_combination: PROVIDER_REJECTED_OBSERVED).", ""),
+    ("apifootball_fixtures", "BEHAVIOUR", "ROUTE_CALL"): ("STALE",
+        "Route /fixtures modified by e155193 (fixtures_combination: PROVIDER_REJECTED_OBSERVED).", ""),
+    ("apifootball_fixtures", "RULE", "F-REJECTED-season+venue"): ("STALE",
+        "The observation is now a local refusal (0 provider calls) added by e155193; no live re-test needed.", ""),
+}
 
 # 2026-11-11 real certification: cases kept as fixtures in the repo (verbatim/trimmed MCP replies).
 _CERT_CASES = (
@@ -123,7 +187,17 @@ def live_ledger(endpoints: Mapping[str, Any]) -> dict[tuple[str, str, str], list
     ledger: dict[tuple[str, str, str], list[dict[str, str]]] = {}
 
     def add(tool: str, kind: str, item: str, verdict: str, source: str, scope: str) -> None:
-        ledger.setdefault((tool, kind, item), []).append({"verdict": verdict, "source": source, "scope": scope})
+        entry = {"verdict": verdict, "source": source, "scope": scope}
+        if scope in _RAW_SCOPES:
+            entry["reuse_status"] = "NOT_REUSABLE"
+            entry["reuse_reason"] = "direct httpx script outside MCP and the PostgreSQL coordinator (G1)"
+        elif scope == "MCP_RENDER_848c007_2026-11-11":
+            status, reason, proof = _REUSE[(tool, kind, item)]  # KeyError: an undecided row
+            entry.update(reuse_status=status, reuse_reason=reason, reuse_proof=proof,
+                         source_sha=REUSE_SOURCE_SHA, evidence_date=REUSE_EVIDENCE_DATE,
+                         evidence_ref=source.split(" (case")[0] + "#observed_mcp_reply",
+                         changes_since=CHANGES_SINCE)
+        ledger.setdefault((tool, kind, item), []).append(entry)
 
     inventory = _route_inventory()
     src = _rel(ROUTE_INVENTORY) + " (run 40211464376)"
@@ -387,17 +461,32 @@ def _evidence_fields(entries: list[dict[str, str]] | None, requirement: str, exp
     entries = sorted(entries, key=lambda e: (_VERDICT_RANK.get(e["verdict"], 9), e["source"]))
     usable = [e for e in entries if e["verdict"] in _VERDICT_RANK]
     best = usable[0]["verdict"] if usable else "NOT_TESTED"
+    reused = [e for e in usable if e.get("reuse_status") == "REUSED_EQUIVALENT"]
     if not usable:
         gate = "BLOCKED"
     elif best == "ERROR" and not expected_error:
         gate = "FAIL"
+    elif best in PROVIDER_LIMITATION_VERDICTS and usable[0].get("source"):
+        gate = "PROVIDER_LIMITATION"  # documented provider/plan limitation, not an MCP defect
+    elif any(e["scope"] not in _STALE_SCOPES for e in usable):
+        gate = "PASS"
+    elif reused and reused[0]["verdict"] != "ERROR":
+        gate = "REUSED_EQUIVALENT"
     elif all(e["scope"] in _STALE_SCOPES for e in usable):
         gate = "STALE"
     else:
         gate = "PASS"
     if requirement == "OFFLINE_ONLY":
         gate = "NOT_APPLICABLE"
+    mcp = [e for e in entries if e.get("source_sha")]
+    pick = (reused or mcp or [{}])[0]
+    reuse = {k: pick.get(k, "") for k in ("source_sha", "evidence_date", "evidence_ref", "changes_since",
+                                          "reuse_status", "reuse_reason", "reuse_proof")}
+    if not pick:
+        reuse["reuse_status"] = "NOT_REUSABLE" if any(e.get("reuse_status") == "NOT_REUSABLE" for e in entries) else ""
+        reuse["reuse_reason"] = entries[0].get("reuse_reason", "") if reuse["reuse_status"] else ""
     return {
+        **reuse,
         "live_evidence": ";".join(e["verdict"] for e in entries),
         "live_evidence_source": " | ".join(e["source"] for e in entries),
         "live_evidence_scope": ";".join(sorted({e["scope"] for e in entries})),
@@ -586,6 +675,21 @@ def build_rows() -> list[dict[str, str]]:
                    else "observed per route in the route rows"),
             **offline(ids), **ev))
 
+    # LIVE FULL MATCH SNAPSHOT (owner requirement 2026-11-11): one row per fidelity requirement.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("apifootball_live_snapshot_m", ROOT / "scripts" / "apifootball_live_snapshot.py")
+    snapshot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(snapshot)
+    for item in snapshot.REQUIREMENTS:
+        ids = index.find(None, [re.escape(item) + r"(?![\w-])"], files=r"test_apifootball_live_snapshot")
+        rows.append(_row(
+            row_id=f"snapshot|SNAPSHOT|{item}", kind="SNAPSHOT", tool="snapshot", route="LIVE_FULL_MATCH_SNAPSHOT",
+            item=item, contract_status="SNAPSHOT_REQUIREMENT", docs_snapshot_status="DOCS_UNVERIFIED",
+            docs_status="DOCS_UNVERIFIED", live_requirement="DATA_DEPENDENT", verdict="NOT_TESTED",
+            gate_status="NOT_TESTED", live_calls_estimate=0,
+            notes=("needs one live match; campaign live_full_match_snapshot, ceiling "
+                   "8 attempts per snapshot (scripts/apifootball_cert_batch1.py)"), **offline(ids)))
+
     # unknown MCP tools (an apifootball_* tool with neither contract nor local role)
     for tool in sorted(set(schemas) - set(ENDPOINTS) - set(LOCAL_TOOLS)):
         rows.append(_row(row_id=f"{tool}|LOCAL_TOOL|UNCLASSIFIED", kind="LOCAL_TOOL", tool=tool, route="UNKNOWN",
@@ -634,8 +738,54 @@ def summary(rows: list[dict[str, str]]) -> dict[str, Any]:
     }
 
 
+def gate_offline(rows: list[dict[str, str]], schemas: Mapping[str, Any], files_up_to_date: bool) -> list[str]:
+    """Offline PR gate (owner condition D): failures as fixed strings; empty list = PASS."""
+    from bridge.api_football.contracts import ENDPOINTS
+
+    failures: list[str] = []
+    if not files_up_to_date:
+        failures.append("MATRIX_OUT_OF_DATE")
+    ids = [r.get("row_id") for r in rows]
+    if len(ids) != len(set(ids)):
+        failures.append("DUPLICATE_ROW_IDS")
+    vocab = {"verdict": VERDICTS, "live_requirement": LIVE_REQUIREMENTS, "gate_status": GATE_STATUSES,
+             "offline_status": ("COVERED", "NOT_COVERED")}
+    for r in rows:
+        if list(r) != list(COLUMNS):
+            failures.append(f"BAD_COLUMNS:{r.get('row_id')}")
+        for key, allowed in vocab.items():
+            if r.get(key) not in allowed:
+                failures.append(f"BAD_{key.upper()}:{r.get('row_id')}")
+        if (r.get("offline_status") == "COVERED") != bool(r.get("offline_tests")):
+            failures.append(f"COVERAGE_WITHOUT_TESTS:{r.get('row_id')}")
+        if r.get("contract_status") in ("NOT_IN_CONTRACT", "UNCLASSIFIED"):
+            failures.append(f"INVENTED_OR_UNCLASSIFIED:{r.get('row_id')}")
+        if r.get("gate_status") == "REUSED_EQUIVALENT" and not (r.get("reuse_proof") and r.get("source_sha")
+                                                                 and r.get("changes_since")):
+            failures.append(f"REUSE_WITHOUT_PROOF:{r.get('row_id')}")
+    by_id = {r.get("row_id"): r for r in rows}
+    reverse_alias = {v: k for k, v in _MCP_ALIASES.items()}
+    for tool, schema in schemas.items():
+        if not tool.startswith("apifootball_"):
+            continue
+        if not any(r.get("tool") == tool for r in rows):
+            failures.append(f"TOOL_MISSING:{tool}")
+        if tool in LOCAL_TOOLS:
+            continue
+        for name in schema.get("properties", {}):
+            row = by_id.get(f"{tool}|PARAMETER|{reverse_alias.get(name, name)}")
+            if row is None or row.get("mcp_exposed") != "true":
+                failures.append(f"SCHEMA_PARAMETER_MISSING:{tool}.{name}")
+    for tool, endpoint in ENDPOINTS.items():
+        for field in endpoint.fields:
+            if f"{tool}|PARAMETER|{field}" not in by_id:
+                failures.append(f"CONTRACT_PARAMETER_MISSING:{tool}.{field}")
+    return failures
+
+
 def gate(rows: list[dict[str, str]]) -> tuple[bool, list[dict[str, str]]]:
-    """False when a MANDATORY row is FAIL / BLOCKED / NOT_TESTED / STALE (CLAUDE.md §4, §7)."""
+    """Live gate: False when a MANDATORY row is FAIL / BLOCKED / NOT_TESTED / STALE (CLAUDE.md §4, §7).
+    PASS, REUSED_EQUIVALENT and PROVIDER_LIMITATION (documented) do not block."""
     failing = [r for r in rows if r.get("live_requirement") == "MANDATORY" and r.get("gate_status") in GATE_FAILING]
     return (not failing, failing)
 
@@ -688,27 +838,36 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="fail if the committed matrix differs")
-    mode.add_argument("--gate", action="store_true", help="fail if a MANDATORY row is not PASS live")
+    mode.add_argument("--gate-offline", action="store_true", help="PR gate: structure, schema coverage, "
+                      "no invented parameter, committed files up to date")
+    mode.add_argument("--gate-live", action="store_true", help="informative: fail if a MANDATORY row is not "
+                      "certified live (FAIL expected until a live campaign runs)")
     args = parser.parse_args(argv)
 
     rows = build_rows()
     text_json, text_csv = render(rows)
+    stale = [p for p, text in ((OUT_JSON, text_json), (OUT_CSV, text_csv))
+             if not p.is_file() or p.read_text(encoding="utf-8") != text]
+    if args.gate_offline:
+        failures = gate_offline(rows, mcp_schemas(), not stale)
+        print(f"GATE_OFFLINE {'PASS' if not failures else 'FAIL'}: rows={len(rows)} failures={len(failures)}")
+        for failure in failures:
+            print(f"  {failure}")
+        return 0 if not failures else 1
     if args.check:
-        stale = [p for p, text in ((OUT_JSON, text_json), (OUT_CSV, text_csv))
-                 if not p.is_file() or p.read_text(encoding="utf-8") != text]
         if stale:
             print("MATRIX_OUT_OF_DATE: " + ", ".join(_rel(p) for p in stale)
                   + " (run python scripts/apifootball_cert_matrix.py)")
             return 1
         print("MATRIX_UP_TO_DATE")
         return 0
-    if args.gate:
+    if args.gate_live:
         _print_summary(rows)
         ok, failing = gate(rows)
         by_status: dict[str, int] = {}
         for r in failing:
             by_status[r["gate_status"]] = by_status.get(r["gate_status"], 0) + 1
-        print("GATE " + ("PASS" if ok else "FAIL") + f": {len(failing)} MANDATORY rows not PASS "
+        print("GATE_LIVE " + ("PASS" if ok else "FAIL") + f": {len(failing)} MANDATORY rows not PASS "
               + json.dumps(dict(sorted(by_status.items()))))
         for r in failing[:20]:
             print(f"  {r['gate_status']:<10} {r['row_id']}")

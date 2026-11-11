@@ -1,0 +1,733 @@
+#!/usr/bin/env python3
+"""AF-05: first real API-FOOTBALL certification batch. PREPARED ONLY: dispatch is NOT authorized.
+
+Plan: docs/certification/apifootball/batch1_plan.json (generated here, deterministic), at most
+HARD_CAP = 78 provider HTTP attempts, every attempt counted (first send, retry, timeout,
+ambiguous reply).
+
+Budget model (owner conditions A and C, 2026-11-11):
+  * the counter is PERSISTENT and SHARED: a campaign ledger in PostgreSQL, keyed by campaign_id;
+  * write-ahead: an attempt is reserved (committed) BEFORE the HTTP request leaves, by an httpx
+    transport wrapper under the real resilience client. Retries, timeouts and ambiguous replies
+    are therefore always counted;
+  * a restart or re-run with the same campaign_id continues the SAME budget, never a new one;
+  * RetryPolicy(max_attempts=1): one attempt per planned call, no automatic retry;
+  * every request also takes a lease of the shared quota coordinator (PostgresQuota, CLAUDE.md §2.4).
+The campaign ledger tables do NOT exist yet (no migration). PostgresCampaignLedger refuses with
+CAMPAIGN_LEDGER_MIGRATION_REQUIRED and the run stops before any request: the migration is an
+owner decision (see docs/certification/apifootball/README.md, "Ledger di campagna").
+
+Usage:
+  python scripts/apifootball_cert_batch1.py --write-plan
+  python scripts/apifootball_cert_batch1.py --check-plan
+  python scripts/apifootball_cert_batch1.py --execute --authorize-live-campaign --campaign-id ID --out DIR
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextvars
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any, Mapping, Protocol
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+PLAN_PATH = ROOT / "docs" / "certification" / "apifootball" / "batch1_plan.json"
+HARD_CAP = 78  # owner decision 2026-11-11: initial requests + retries + timeouts + ambiguous replies
+ATTEMPTS_PER_CALL = 1  # RetryPolicy(max_attempts=1)
+CAMPAIGN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
+LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts")
+
+L, S, T = 39, 2025, 33  # Premier League, season 2025 (2025/26, completed), Manchester United
+
+
+def _b(call: str, *path: Any, take: int | None = None, join: str | None = None, add: int | None = None) -> dict:
+    out: dict[str, Any] = {"$bind": call, "path": list(path)}
+    if take is not None:
+        out["take"] = take
+    if join is not None:
+        out["join"] = join
+    if add is not None:
+        out["add"] = add
+    return out
+
+
+FIX = _b("C33", "response", 0, "fixture", "id")
+HOME = _b("C33", "response", 0, "teams", "home", "id")
+PLAYER = _b("C54", "response", 0, "player", "id")
+
+# (call id, tool, MCP arguments, extra matrix items covered, tags). First call of a tool = ROUTE_CALL.
+# The values are public catalogue ids; ids that change with time are taken from earlier replies.
+PLAN: tuple[tuple[str, str, dict[str, Any], tuple[str, ...], tuple[str, ...]], ...] = (
+    ("C01", "apifootball_status", {}, (), ()),
+    ("C02", "apifootball_timezones", {}, (), ()),
+    ("C03", "apifootball_seasons", {}, (), ()),
+    ("C04", "apifootball_team_countries", {}, (), ()),
+    ("C05", "apifootball_countries", {"name": "England"}, (), ()),
+    ("C06", "apifootball_countries", {"code": "GB-ENG"}, (), ()),
+    ("C07", "apifootball_countries", {"search": "Eng"}, (), ()),
+    ("C08", "apifootball_countries", {"search": "En"}, (), ("AF-02_SEARCH_MIN_LENGTH_PROBE",)),
+    ("C09", "apifootball_leagues", {"id": L}, (), ()),
+    ("C10", "apifootball_leagues", {"country": "England"}, (), ()),
+    ("C11", "apifootball_leagues", {"code": "GB-ENG", "type": "league"}, (), ("JOINT_ATTRIBUTION",)),
+    ("C12", "apifootball_leagues", {"id": L, "season": S}, (), ()),
+    ("C13", "apifootball_leagues", {"team": T, "current": True}, (), ("JOINT_ATTRIBUTION",)),
+    ("C14", "apifootball_leagues", {"search": "Premier"}, (), ()),
+    ("C15", "apifootball_coverage_report", {"id": L, "season": S}, (), ()),
+    ("C16", "apifootball_teams", {"id": T}, (), ()),
+    ("C17", "apifootball_teams", {"league": L, "season": S}, (), ()),
+    ("C18", "apifootball_teams", {"search": "Manchester"}, (), ()),
+    ("C19", "apifootball_teams", {"venue": 556}, (), ()),
+    ("C20", "apifootball_team_seasons", {"team": T}, (), ()),
+    ("C21", "apifootball_team_statistics", {"league": L, "season": S, "team": T}, (), ()),
+    ("C22", "apifootball_team_statistics", {"league": L, "season": S, "team": T, "date": "2026-01-31"}, (), ()),
+    ("C23", "apifootball_venues", {"id": 556}, (), ()),
+    ("C24", "apifootball_venues", {"city": "Manchester"}, (), ()),
+    ("C25", "apifootball_venues", {"search": "Trafford"}, (), ()),
+    ("C26", "apifootball_standings", {"league": L, "season": S}, (), ()),
+    ("C27", "apifootball_standings", {"team": T, "season": S}, (), ()),
+    ("C28", "apifootball_fixture_rounds", {"league": L, "season": S}, (), ()),
+    ("C29", "apifootball_fixture_rounds", {"league": L, "season": S, "current": True}, (), ()),
+    ("C30", "apifootball_fixture_rounds", {"league": L, "season": S, "dates": True}, (), ()),
+    ("C31", "apifootball_fixture_headtohead", {"h2h": "33-34"}, (), ()),
+    ("C32", "apifootball_fixture_headtohead", {"h2h": "33-34", "last": 5}, (), ()),
+    ("C33", "apifootball_fixtures", {"league": L, "season": S, "from_date": "2026-05-01", "to_date": "2026-05-31"},
+     ("F-LEAGUE-SEASON-RANGE",), ()),
+    ("C34", "apifootball_fixtures", {"id": FIX}, ("F-ID",), ()),
+    ("C35", "apifootball_fixtures", {"ids": _b("C33", "response", "*", "fixture", "id", take=2, join="-")}, ("F-IDS",), ()),
+    ("C36", "apifootball_fixtures", {"date": "2026-05-24", "timezone": "Europe/Rome"}, ("F-DATE",), ("JOINT_ATTRIBUTION",)),
+    ("C37", "apifootball_fixtures", {"league": L, "season": S}, ("F-LEAGUE-SEASON",), ()),
+    ("C38", "apifootball_fixtures", {"team": T, "last": 5}, (), ()),
+    ("C39", "apifootball_fixtures", {"team": T, "next": 5}, (), ()),
+    ("C40", "apifootball_fixtures", {"league": L, "season": S, "round": "Regular Season - 38"}, (), ()),
+    ("C41", "apifootball_fixtures", {"team": T, "season": S, "status": "FT"}, (), ()),
+    ("C42", "apifootball_fixtures", {"venue": 556, "from_date": "2026-01-01", "to_date": "2026-05-31"}, (), ()),
+    ("C43", "apifootball_fixture_headtohead", {"h2h": "33-34", "league": L, "season": S}, (), ("JOINT_ATTRIBUTION",)),
+    ("C44", "apifootball_fixture_statistics", {"fixture": FIX}, (), ()),
+    ("C45", "apifootball_fixture_statistics", {"fixture": FIX, "half": True}, (), ()),
+    ("C46", "apifootball_fixture_statistics", {"fixture": FIX, "team": HOME}, (), ()),
+    ("C47", "apifootball_fixture_events", {"fixture": FIX}, (), ()),
+    ("C48", "apifootball_fixture_lineups", {"fixture": FIX}, (), ()),
+    ("C49", "apifootball_fixture_lineups", {"fixture": FIX, "team": HOME}, (), ()),
+    ("C50", "apifootball_fixture_players", {"fixture": FIX}, (), ()),
+    ("C51", "apifootball_predictions", {"fixture": FIX}, (), ()),
+    ("C52", "apifootball_injuries", {"fixture": FIX}, (), ()),
+    ("C53", "apifootball_injuries", {"team": T, "season": S}, (), ()),
+    ("C54", "apifootball_players", {"team": T, "season": S}, (), ()),
+    ("C55", "apifootball_players", {"team": T, "season": S, "page": 2}, ("PAGINATION",), ()),
+    ("C56", "apifootball_players", {"team": T, "season": S, "page": _b("C54", "paging", "total", add=1)}, ("PAGINATION",), ()),
+    ("C57", "apifootball_players", {"id": PLAYER, "season": S}, (), ()),
+    ("C58", "apifootball_players", {"team": T, "search": "Fernandes"}, (), ()),
+    ("C59", "apifootball_player_profiles", {"player": PLAYER}, (), ()),
+    ("C60", "apifootball_player_profiles", {"page": 2}, ("PAGINATION",), ()),
+    ("C61", "apifootball_player_profiles", {"page": _b("C60", "paging", "total", add=1)}, ("PAGINATION",), ()),
+    ("C62", "apifootball_player_seasons", {"player": PLAYER}, (), ()),
+    ("C63", "apifootball_player_squads", {"team": T}, (), ()),
+    ("C64", "apifootball_player_teams", {"player": PLAYER}, (), ()),
+    ("C65", "apifootball_top_scorers", {"league": L, "season": S}, (), ()),
+    ("C66", "apifootball_top_assists", {"league": L, "season": S}, (), ()),
+    ("C67", "apifootball_top_yellow_cards", {"league": L, "season": S}, (), ()),
+    ("C68", "apifootball_top_red_cards", {"league": L, "season": S}, (), ()),
+    ("C69", "apifootball_transfers", {"team": T}, (), ()),
+    ("C70", "apifootball_trophies", {"player": PLAYER}, (), ()),
+    ("C71", "apifootball_sidelined", {"player": PLAYER}, (), ()),
+    ("C72", "apifootball_coaches", {"team": T}, (), ()),
+    ("C73", "apifootball_bets", {"id": 1}, (), ()),
+    ("C74", "apifootball_bookmakers", {"id": 7}, (), ()),
+    ("C75", "apifootball_live_bets", {"search": "Win"}, (), ()),
+    ("C76", "apifootball_odds_mapping", {"page": 2}, ("PAGINATION",), ()),
+    ("C77", "apifootball_odds_mapping", {"page": _b("C76", "paging", "total", add=1)}, ("PAGINATION",), ()),
+    ("C78", "apifootball_fixture_events", {"fixture": FIX, "type": "Goal"}, (), ()),
+)
+_MCP_TO_CONTRACT = {"from_date": "from", "to_date": "to"}
+
+
+def _matrix_module():
+    spec = importlib.util.spec_from_file_location("apifootball_cert_matrix_b1", ROOT / "scripts" / "apifootball_cert_matrix.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["apifootball_cert_matrix_b1"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _placeholder(binding: Mapping[str, Any]) -> Any:
+    if binding.get("join"):
+        return "-".join(str(i + 1) for i in range(binding.get("take", 2)))
+    return 1 + int(binding.get("add", 0))
+
+
+def _contract_args(args: Mapping[str, Any]) -> dict[str, Any]:
+    return {_MCP_TO_CONTRACT.get(k, k): (_placeholder(v) if isinstance(v, dict) else v) for k, v in args.items()}
+
+
+def build_plan(rows: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    from bridge.api_football.contracts import validate
+
+    if rows is None:
+        rows = _matrix_module().build_rows()
+    by_id = {r["row_id"]: r for r in rows}
+    pending = {r["row_id"] for r in rows if r["live_requirement"] == "MANDATORY"
+               and r["gate_status"] in ("NOT_TESTED", "STALE", "BLOCKED", "FAIL")}
+    seen_tools: set[str] = set()
+    pagination_parts: dict[str, int] = {}
+    calls = []
+    ids = [c[0] for c in PLAN]
+    assert len(ids) == len(set(ids)), "duplicate call ids"
+    for call_id, tool, args, extra, tags in PLAN:
+        validate(tool, _contract_args(args))  # a plan call the contract would refuse is a plan bug
+        for value in args.values():
+            if isinstance(value, dict):
+                assert ids.index(value["$bind"]) < ids.index(call_id), (call_id, "binding to a later call")
+        covers = [f"{tool}|PARAMETER|{_MCP_TO_CONTRACT.get(k, k)}" for k in sorted(args)]
+        if tool not in seen_tools:
+            covers.append(f"{tool}|BEHAVIOUR|ROUTE_CALL")
+            seen_tools.add(tool)
+        for item in extra:
+            if item == "PAGINATION":
+                pagination_parts[tool] = pagination_parts.get(tool, 0) + 1
+                continue
+            covers.append(f"{tool}|RULE|{item}")
+        missing = [c for c in covers if c not in by_id]
+        assert not missing, (call_id, missing)
+        calls.append({"call_id": call_id, "tool": tool, "arguments": args, "max_attempts": ATTEMPTS_PER_CALL,
+                      "covers_rows": sorted(covers), "tags": list(tags)})
+    for tool, parts in pagination_parts.items():  # page 2 and a page beyond the total: both needed
+        if parts >= 2:
+            last = [c for c in calls if c["tool"] == tool][-1]
+            last["covers_rows"] = sorted(set(last["covers_rows"]) | {f"{tool}|BEHAVIOUR|PAGINATION"})
+    total = sum(c["max_attempts"] for c in calls)
+    assert total <= HARD_CAP, total
+    covered = sorted({r for c in calls for r in c["covers_rows"]})
+    covered_pending = sorted(set(covered) & pending)
+    plan = {
+        "schema": "apifootball-cert-batch1/v1",
+        "status": "PREPARED_NOT_AUTHORIZED",
+        "hard_cap_attempts": HARD_CAP,
+        "max_attempts_total": total,
+        "attempt_model": "every HTTP attempt counts (first send, retry, timeout, ambiguous reply); "
+                         "RetryPolicy(max_attempts=1); write-ahead reservation in the campaign ledger",
+        "binding_rules": "a {'$bind': call, 'path': [...]} argument is read from that call's provider data; "
+                         "'take'+'join' joins the first N values; 'add' adds to an integer; an unresolved "
+                         "binding SKIPS the call with 0 attempts (rows stay NOT_TESTED)",
+        "verdict_rules": {
+            "REAL_API_RESPONSE with results > 0": "DATA_PRESENT",
+            "REAL_API_RESPONSE with results == 0": "EMPTY_VALID",
+            "PARTIAL_*": "PARTIAL",
+            "PROVIDER_DECLARED_ERRORS category PLAN_NOT_INCLUDED": "PLAN_EXCLUDED",
+            "any other status or error": "ERROR",
+            "not sent (budget, binding, ledger)": "NOT_TESTED",
+        },
+        "af02": {
+            "search_min_length": "C08 countries(search='En'): the provider answer decides whether the "
+                                 "contract needs the documented minimum (separate PR)",
+            "odds_bets_id_type": "no dedicated call: on the wire an integer and a string id are the same "
+                                 "query text, so a real call cannot separate them; stays DOCS_UNVERIFIED "
+                                 "(bets.id acceptance is covered by C73)",
+        },
+        "not_in_batch": "DATA_DEPENDENT rows (pre-match/in-play odds, fixtures.live, payload cap, null "
+                        "handling) and the MANDATORY rows listed in mandatory_pending_not_covered",
+        "summary": {
+            "calls": len(calls),
+            "rows_covered": len(covered),
+            "mandatory_pending_before": len(pending),
+            "mandatory_pending_covered": len(covered_pending),
+            "mandatory_pending_not_covered": len(pending - set(covered)),
+        },
+        "mandatory_pending_not_covered": sorted(pending - set(covered)),
+        "calls": calls,
+    }
+    return plan
+
+
+def render_plan(plan: Mapping[str, Any]) -> str:
+    return json.dumps(plan, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def plan_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------- campaign ledger
+class BudgetExhausted(RuntimeError):
+    """Fixed code only."""
+
+
+class LedgerUnavailable(RuntimeError):
+    """Fixed code only."""
+
+
+class CampaignLedger(Protocol):
+    async def open(self, campaign_id: str, budget: int, plan_sha: str) -> None: ...
+    async def reserve(self, campaign_id: str, call_id: str) -> int: ...  # write-ahead; returns seq
+    async def used(self, campaign_id: str) -> int: ...
+    async def attempted_calls(self, campaign_id: str) -> set[str]: ...
+
+
+class PostgresCampaignLedger:
+    """Proposed design. The tables do not exist: every method fails closed until the owner-approved
+    migration lands. It never creates a table."""
+
+    def __init__(self, connect=None):
+        if connect is None:
+            from app.db import connect as connect  # noqa: PLW0127 - DATABASE_URL from env, never logged
+        self._connect = connect
+
+    def _require_schema(self, cur) -> None:
+        for table in LEDGER_TABLES:
+            cur.execute("SELECT to_regclass(%s) AS t", (table,))
+            row = cur.fetchone()
+            if (row["t"] if isinstance(row, dict) else row[0]) is None:
+                raise LedgerUnavailable("CAMPAIGN_LEDGER_MIGRATION_REQUIRED")
+
+    def _open(self, campaign_id: str, budget: int, plan_sha: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            cur.execute("INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256) "
+                        "VALUES (%s, %s, %s) ON CONFLICT (campaign_id) DO NOTHING", (campaign_id, budget, plan_sha))
+            cur.execute("SELECT budget, plan_sha256 FROM api_football_cert_campaigns WHERE campaign_id=%s",
+                        (campaign_id,))
+            row = cur.fetchone()
+            stored_budget = row["budget"] if isinstance(row, dict) else row[0]
+            stored_sha = row["plan_sha256"] if isinstance(row, dict) else row[1]
+            if stored_sha != plan_sha or stored_budget > HARD_CAP:
+                raise LedgerUnavailable("CAMPAIGN_PLAN_MISMATCH")
+
+    def _reserve(self, campaign_id: str, call_id: str) -> int:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            cur.execute("SELECT budget FROM api_football_cert_campaigns WHERE campaign_id=%s FOR UPDATE",
+                        (campaign_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise LedgerUnavailable("CAMPAIGN_NOT_OPEN")
+            budget = min(int(row["budget"] if isinstance(row, dict) else row[0]), HARD_CAP)
+            cur.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts WHERE campaign_id=%s",
+                        (campaign_id,))
+            n = cur.fetchone()
+            used = int(n["n"] if isinstance(n, dict) else n[0])
+            if used >= budget:
+                raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")
+            cur.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                        "VALUES (%s, %s, %s)", (campaign_id, used + 1, call_id))
+            return used + 1  # committed on leaving the block, BEFORE the request is sent
+
+    def _used(self, campaign_id: str) -> int:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            cur.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts WHERE campaign_id=%s",
+                        (campaign_id,))
+            n = cur.fetchone()
+            return int(n["n"] if isinstance(n, dict) else n[0])
+
+    def _attempted(self, campaign_id: str) -> set[str]:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            cur.execute("SELECT DISTINCT call_id FROM api_football_cert_campaign_attempts WHERE campaign_id=%s",
+                        (campaign_id,))
+            return {r["call_id"] if isinstance(r, dict) else r[0] for r in cur.fetchall()}
+
+    async def open(self, campaign_id, budget, plan_sha):
+        await asyncio.to_thread(self._open, campaign_id, budget, plan_sha)
+
+    async def reserve(self, campaign_id, call_id):
+        return await asyncio.to_thread(self._reserve, campaign_id, call_id)
+
+    async def used(self, campaign_id):
+        return await asyncio.to_thread(self._used, campaign_id)
+
+    async def attempted_calls(self, campaign_id):
+        return await asyncio.to_thread(self._attempted, campaign_id)
+
+
+_CURRENT_CALL: contextvars.ContextVar[str] = contextvars.ContextVar("af_cert_call", default="UNKNOWN")
+
+
+CAPTURE_MAX_BYTES = 16 * 1024 * 1024  # == the streamed-scan bound; above it nothing is captured
+
+
+def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: dict[str, str] | None = None):
+    """httpx transport that reserves one ledger attempt BEFORE every request it sends (write-ahead).
+    With `capture`, the provider body text of each call is kept verbatim (snapshot mode)."""
+    import httpx
+
+    class _BudgetTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            call_id = _CURRENT_CALL.get()
+            await ledger.reserve(campaign_id, call_id)  # raises before any send
+            response = await inner.handle_async_request(request)
+            if capture is None:
+                return response
+            body = await response.aread()
+            if len(body) <= CAPTURE_MAX_BYTES:
+                capture[call_id] = body.decode("utf-8", errors="replace")
+            headers = [(k, v) for k, v in response.headers.multi_items()
+                       if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+            return httpx.Response(response.status_code, headers=headers, content=body, request=request)
+
+        async def aclose(self):
+            await inner.aclose()
+
+    return _BudgetTransport()
+
+
+class _Registry:
+    def __init__(self):
+        self.tools: dict[str, Any] = {}
+
+    def tool(self):
+        def deco(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+        return deco
+
+
+def _tools(settings, ledger: CampaignLedger, campaign_id: str, inner_transport, quota, capture=None):
+    import httpx
+
+    from bridge.api_football.resilience import ResilientFootballClient, RetryPolicy
+    from bridge.api_football.tools import register_tools
+    from bridge.api_football.transport import InjectedHTTPXTransport
+
+    http = httpx.AsyncClient(base_url=settings.base_url, timeout=settings.timeout_seconds, follow_redirects=False,
+                             transport=budget_transport(inner_transport, ledger, campaign_id, capture))
+    client = ResilientFootballClient(settings, InjectedHTTPXTransport(http, api_key=settings.api_key),
+                                     quota=quota, retry=RetryPolicy(max_attempts=ATTEMPTS_PER_CALL))
+    registry = _Registry()
+    register_tools(registry, settings, client=client)
+    return registry.tools, http
+
+
+# ---------------------------------------------------------------------------- execution
+def _resolve(value: Any, replies: Mapping[str, Any]) -> Any:
+    if not isinstance(value, dict):
+        return value
+    node: Any = replies.get(value["$bind"])
+    values = [node]
+    for step in value["path"]:
+        nxt = []
+        for v in values:
+            if step == "*" and isinstance(v, list):
+                nxt.extend(v)
+            elif isinstance(step, int) and isinstance(v, list) and 0 <= step < len(v):
+                nxt.append(v[step])
+            elif isinstance(step, str) and isinstance(v, dict) and step in v:
+                nxt.append(v[step])
+        values = nxt
+    values = [v for v in values if type(v) is int and v > 0]
+    if not values:
+        raise LookupError("BINDING_UNRESOLVED")
+    if value.get("join"):
+        take = values[: value.get("take", len(values))]
+        if len(take) < value.get("take", 1):
+            raise LookupError("BINDING_UNRESOLVED")
+        return value["join"].join(str(v) for v in take)
+    return values[0] + int(value.get("add", 0))
+
+
+def classify(out: Mapping[str, Any]) -> str:
+    status = out.get("status")
+    if status == "REAL_API_RESPONSE":
+        data = out.get("data") if isinstance(out.get("data"), dict) else {}
+        results = data.get("results")
+        if type(results) is not int:
+            rows = data.get("response")
+            results = len(rows) if isinstance(rows, list) else None
+        if results is None:
+            return "ERROR"
+        return "DATA_PRESENT" if results > 0 else "EMPTY_VALID"
+    if isinstance(status, str) and status.startswith("PARTIAL_"):
+        return "PARTIAL"
+    error = out.get("error") if isinstance(out.get("error"), dict) else {}
+    if error.get("code") == "PROVIDER_DECLARED_ERRORS" and error.get("category") == "PLAN_NOT_INCLUDED":
+        return "PLAN_EXCLUDED"
+    return "ERROR"
+
+
+def _summary_of(out: Mapping[str, Any]) -> dict[str, Any]:
+    """Shapes and counts only: no provider values, no prices, no raw payload."""
+    data = out.get("data") if isinstance(out.get("data"), dict) else {}
+    error = out.get("error") if isinstance(out.get("error"), dict) else {}
+    return {
+        "status": out.get("status"),
+        "error_code": error.get("code"), "error_category": error.get("category"),
+        "error_keys": error.get("keys") if isinstance(error.get("keys"), list) else None,
+        "results": data.get("results") if type(data.get("results")) is int else None,
+        "paging": out.get("pagination") if isinstance(out.get("pagination"), dict) else None,
+        "pagination_state": (out.get("pagination_state") or {}).get("state") if isinstance(out.get("pagination_state"), dict) else None,
+        "network_calls_made": out.get("network_calls_made") if type(out.get("network_calls_made")) is int else None,
+    }
+
+
+async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger: CampaignLedger,
+                  inner_transport, quota=None, plan_text: str, source_sha: str) -> dict[str, Any]:
+    if not CAMPAIGN_ID.fullmatch(campaign_id):
+        raise ValueError("INVALID_CAMPAIGN_ID")
+    if plan.get("max_attempts_total", HARD_CAP + 1) > HARD_CAP:
+        raise ValueError("PLAN_ABOVE_HARD_CAP")
+    await ledger.open(campaign_id, HARD_CAP, plan_sha256(plan_text))
+    already = await ledger.attempted_calls(campaign_id)
+    tools, http = _tools(settings, ledger, campaign_id, inner_transport, quota)
+    replies: dict[str, Any] = {}
+    results = []
+    try:
+        for call in plan["calls"]:
+            entry = {"call_id": call["call_id"], "tool": call["tool"], "covers_rows": call["covers_rows"]}
+            if call["call_id"] in already:
+                entry.update(verdict="NOT_TESTED", outcome="ALREADY_ATTEMPTED_IN_CAMPAIGN_NOT_RETRIED")
+                results.append(entry)
+                continue
+            if await ledger.used(campaign_id) >= HARD_CAP:
+                entry.update(verdict="NOT_TESTED", outcome="CAMPAIGN_BUDGET_EXHAUSTED")
+                results.append(entry)
+                continue
+            try:
+                args = {k: _resolve(v, replies) for k, v in call["arguments"].items()}
+            except LookupError:
+                entry.update(verdict="NOT_TESTED", outcome="BINDING_UNRESOLVED")
+                results.append(entry)
+                continue
+            token = _CURRENT_CALL.set(call["call_id"])
+            try:
+                out = await tools[call["tool"]](**args)
+            finally:
+                _CURRENT_CALL.reset(token)
+            if isinstance(out.get("data"), dict):
+                replies[call["call_id"]] = out["data"]
+            entry.update(verdict=classify(out), outcome="SENT_OR_REFUSED", reply=_summary_of(out))
+            results.append(entry)
+    finally:
+        await http.aclose()
+    return {
+        "schema": "apifootball-cert-batch1-run/v1", "campaign_id": campaign_id, "source_sha": source_sha,
+        "plan_sha256": plan_sha256(plan_text), "hard_cap_attempts": HARD_CAP,
+        "ledger_attempts_used": await ledger.used(campaign_id), "calls": results,
+    }
+
+
+def write_artifacts(run: Mapping[str, Any], out_dir: Path) -> list[Path]:
+    """One JSON per matrix requirement row, plus the campaign summary."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for call in run["calls"]:
+        for row_id in call["covers_rows"]:
+            rows.setdefault(row_id, []).append({k: call.get(k) for k in ("call_id", "verdict", "outcome", "reply")})
+    for row_id, calls in sorted(rows.items()):
+        name = re.sub(r"[^A-Za-z0-9_.+-]", "_", row_id) + ".json"
+        path = out_dir / "rows" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"row_id": row_id, "campaign_id": run["campaign_id"],
+                                    "source_sha": run["source_sha"], "calls": calls},
+                                   indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        written.append(path)
+    summary = out_dir / "campaign_summary.json"
+    summary.write_text(json.dumps({k: v for k, v in run.items() if k != "calls"} |
+                                  {"calls": [{k: c.get(k) for k in ("call_id", "tool", "verdict", "outcome")}
+                                             for c in run["calls"]]}, indent=1, sort_keys=True) + "\n",
+                       encoding="utf-8")
+    written.append(summary)
+    return written
+
+
+SECRET_PATTERNS = (
+    re.compile(r"postgres(?:ql)?://", re.I), re.compile(r"x-apisports-key", re.I),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"), re.compile(r"password\s*[=:]", re.I),
+    re.compile(r"sslrootcert|PGPASSWORD", re.I),
+)
+
+
+def scan_for_secrets(paths: list[Path], secrets: list[str]) -> list[str]:
+    """Names of artefacts holding a secret value or a secret-shaped pattern (never the value)."""
+    bad = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        if any(s and s in text for s in secrets) or any(p.search(text) for p in SECRET_PATTERNS):
+            bad.append(path.name)
+    return bad
+
+
+# ---------------------------------------------------------------------------- live full match snapshot
+# Separate campaign `live_full_match_snapshot`: one fixture, its own snapshot_id in the same persistent
+# campaign ledger, a configured CEILING of SNAPSHOT_CAP attempts (not an authorization to spend them).
+# Run only while a match is live. On reaching the ceiling the snapshot closes INCOMPLETE; nothing is
+# retried. Out of scope: continuous odds collection, history, drop computation.
+SNAPSHOT_CAP = 8
+SNAPSHOT_STEPS = (  # (source, tool, argument builder from the fixture reply)
+    ("fixture", "apifootball_fixtures"),
+    ("statistics", "apifootball_fixture_statistics"),
+    ("events", "apifootball_fixture_events"),
+    ("lineups", "apifootball_fixture_lineups"),
+    ("players", "apifootball_fixture_players"),
+    ("live_odds", "apifootball_live_odds"),
+    ("coverage", "apifootball_coverage_report"),
+)
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def execute_snapshot(*, snapshot_id: str, fixture_id: int | None, settings, ledger: CampaignLedger,
+                           inner_transport, quota=None, cap: int = SNAPSHOT_CAP, clock=_utc_now) -> dict[str, Any]:
+    spec = importlib.util.spec_from_file_location("apifootball_live_snapshot_b1", ROOT / "scripts" / "apifootball_live_snapshot.py")
+    snap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(snap)
+    if not CAMPAIGN_ID.fullmatch(snapshot_id):
+        raise ValueError("INVALID_SNAPSHOT_ID")
+    if not 1 <= cap <= SNAPSHOT_CAP:
+        raise ValueError("SNAPSHOT_CAP_OUT_OF_RANGE")
+    plan_text = json.dumps({"campaign": "live_full_match_snapshot", "fixture_id": fixture_id, "cap": cap,
+                            "steps": [s for s, _ in SNAPSHOT_STEPS]}, sort_keys=True)
+    await ledger.open(snapshot_id, cap, plan_sha256(plan_text))
+    already = await ledger.attempted_calls(snapshot_id)
+    capture: dict[str, str] = {}
+    tools, http = _tools(settings, ledger, snapshot_id, inner_transport, quota, capture)
+    sources: dict[str, Any] = {}
+    stopped: str | None = None
+
+    async def call(call_id: str, tool: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal stopped
+        if call_id in already:
+            stopped = stopped or "RESTART_CALLS_ALREADY_ATTEMPTED_NOT_RETRIED"
+            return None
+        if await ledger.used(snapshot_id) >= cap:
+            stopped = stopped or "BUDGET_CAP_REACHED"
+            return None
+        before = await ledger.used(snapshot_id)
+        token = _CURRENT_CALL.set(call_id)
+        started = clock()
+        try:
+            out = await tools[tool](**args)
+        finally:
+            _CURRENT_CALL.reset(token)
+        ended = clock()
+        used_now = await ledger.used(snapshot_id)
+        if used_now == before and out.get("network_calls_made", 0):
+            stopped = stopped or "LEDGER_ACCOUNTING_MISMATCH"
+        return {"out": out, "requested_at_utc": started, "completed_at_utc": ended, "attempts_used": used_now - before}
+
+    try:
+        if fixture_id is None:  # choose the match: costs one attempt
+            chosen = await call("S00", "apifootball_fixtures", {"live": "all"})
+            rows = ((chosen or {}).get("out", {}).get("data") or {}).get("response") if chosen else None
+            ids = [r.get("fixture", {}).get("id") for r in rows or [] if isinstance(r, dict)]
+            fixture_id = next((i for i in ids if type(i) is int and i > 0), None)
+            if fixture_id is None:
+                stopped = stopped or "NO_LIVE_FIXTURE_SELECTED"
+        league = season = None
+        for index, (source, tool) in enumerate(SNAPSHOT_STEPS, start=1):
+            if fixture_id is None:
+                break
+            if source == "coverage":
+                if league is None or season is None:
+                    continue
+                args = {"id": league, "season": season}
+            else:
+                args = {"id" if source == "fixture" else "fixture": fixture_id}
+            got = await call(f"S{index:02d}", tool, args)
+            if got is None:
+                continue
+            body = capture.get(f"S{index:02d}")
+            sources[source] = {"tool": tool, "arguments": args, "mcp_reply": got["out"],
+                               "requested_at_utc": got["requested_at_utc"], "completed_at_utc": got["completed_at_utc"],
+                               "attempts_used": got["attempts_used"],
+                               **({"provider_body_text": body} if body is not None else {})}
+            if source == "fixture":
+                try:
+                    league_info = got["out"]["data"]["response"][0]["league"]
+                    league, season = league_info["id"], league_info["season"]
+                except (KeyError, IndexError, TypeError):
+                    league = season = None
+    finally:
+        await http.aclose()
+    used = await ledger.used(snapshot_id)
+    if fixture_id is None:
+        return {"schema": "apifootball-live-full-match-snapshot/v1", "snapshot_id": snapshot_id,
+                "overall": "SNAPSHOT_INCOMPLETE", "incomplete_reasons": [f"STOPPED:{stopped}"],
+                "budget": {"cap": cap, "attempts_used": used}, "sources": {}}
+    return snap.build_report(snapshot_id, fixture_id, sources, budget_cap=cap, attempts_used=used,
+                             stopped_reason=stopped)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--write-plan", action="store_true")
+    mode.add_argument("--check-plan", action="store_true")
+    mode.add_argument("--execute", action="store_true")
+    parser.add_argument("--campaign", choices=("batch1", "live_full_match_snapshot"), default="batch1")
+    parser.add_argument("--authorize-live-campaign", action="store_true")
+    parser.add_argument("--campaign-id", default="")
+    parser.add_argument("--fixture-id", type=int, default=None)
+    parser.add_argument("--out", default="")
+    args = parser.parse_args(argv)
+    text = render_plan(build_plan())
+    if args.write_plan:
+        PLAN_PATH.write_text(text, encoding="utf-8")
+        print(f"PLAN_WRITTEN calls={len(json.loads(text)['calls'])} attempts={json.loads(text)['max_attempts_total']}")
+        return 0
+    if args.check_plan:
+        ok = PLAN_PATH.is_file() and PLAN_PATH.read_text(encoding="utf-8") == text
+        print("PLAN_UP_TO_DATE" if ok else "PLAN_OUT_OF_DATE")
+        return 0 if ok else 1
+    # --execute: owner-dispatched workflow only. Fails closed on every missing precondition.
+    if not args.authorize_live_campaign or not args.out:
+        print("LIVE_CAMPAIGN_NOT_AUTHORIZED")
+        return 2
+    import httpx
+
+    from bridge.api_football.config import OFFICIAL_BASE_URL, Settings
+    settings = Settings.from_env(os.environ)
+    if not settings.real_requests_authorized or settings.base_url != OFFICIAL_BASE_URL:
+        print("LIVE_CAMPAIGN_NOT_AUTHORIZED")
+        return 2
+    if not os.environ.get("DATABASE_URL", "").strip():
+        print("COORDINATOR_DATABASE_REQUIRED")
+        return 2
+    if args.campaign == "live_full_match_snapshot":
+        try:
+            report = asyncio.run(execute_snapshot(snapshot_id=args.campaign_id, fixture_id=args.fixture_id,
+                                                  settings=settings, ledger=PostgresCampaignLedger(),
+                                                  inner_transport=httpx.AsyncHTTPTransport()))
+        except (LedgerUnavailable, ValueError) as exc:
+            print(f"CAMPAIGN_REFUSED {exc.args[0] if exc.args and isinstance(exc.args[0], str) else 'UNKNOWN'}")
+            return 2
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / "live_full_match_snapshot.json"
+        path.write_text(json.dumps(report, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+        if scan_for_secrets([path], [settings.api_key, os.environ.get("DATABASE_URL", "")]):
+            path.unlink()
+            print("ARTIFACT_LEAK_DETECTED files=1 (artefact deleted)")
+            return 3
+        print(f"SNAPSHOT_DONE {report['overall']} attempts_used={report['budget']['attempts_used']}")
+        return 0
+    try:
+        run = asyncio.run(execute(json.loads(text), campaign_id=args.campaign_id, settings=settings,
+                                  ledger=PostgresCampaignLedger(), inner_transport=httpx.AsyncHTTPTransport(),
+                                  plan_text=text, source_sha=os.environ.get("GITHUB_SHA", "UNKNOWN")[:40]))
+    except (LedgerUnavailable, ValueError) as exc:
+        print(f"CAMPAIGN_REFUSED {exc.args[0] if exc.args and isinstance(exc.args[0], str) else 'UNKNOWN'}")
+        return 2
+    paths = write_artifacts(run, Path(args.out))
+    leaks = scan_for_secrets(paths, [settings.api_key, os.environ.get("DATABASE_URL", "")])
+    if leaks:
+        for path in paths:
+            path.unlink()
+        print(f"ARTIFACT_LEAK_DETECTED files={len(leaks)} (artefacts deleted)")
+        return 3
+    print(f"CAMPAIGN_DONE attempts_used={run['ledger_attempts_used']} of {HARD_CAP}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

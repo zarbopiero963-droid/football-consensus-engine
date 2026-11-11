@@ -119,12 +119,38 @@ def test_check_mode_passes_on_committed_matrix(capsys):
     assert "MATRIX_UP_TO_DATE" in capsys.readouterr().out
 
 
-def test_gate_mode_exit_code_matches_gate(built, capsys):
+def test_live_gate_mode_exit_code_matches_gate(built, capsys):
     rows, _, _ = built
     ok, _failing = matrix.gate(rows)
-    assert matrix.main(["--gate"]) == (0 if ok else 1)
+    assert matrix.main(["--gate-live"]) == (0 if ok else 1)
     out = capsys.readouterr().out
-    assert ("GATE PASS" if ok else "GATE FAIL") in out
+    assert ("GATE_LIVE PASS" if ok else "GATE_LIVE FAIL") in out
+
+
+def test_offline_gate_passes_now(capsys):
+    """The PR gate (owner condition D): structure, schema coverage, no invented parameter, --check."""
+    assert matrix.main(["--gate-offline"]) == 0
+    assert "GATE_OFFLINE PASS" in capsys.readouterr().out
+
+
+def test_offline_gate_catches_invented_parameter_missing_schema_param_and_stale_files(built):
+    rows, _, schemas = built
+    assert matrix.gate_offline(rows, schemas, True) == []
+    assert "MATRIX_OUT_OF_DATE" in matrix.gate_offline(rows, schemas, False)
+    invented = dict(rows[0], row_id="x|PARAMETER|invented", contract_status="NOT_IN_CONTRACT")
+    assert any(f.startswith("INVENTED_OR_UNCLASSIFIED") for f in matrix.gate_offline(rows + [invented], schemas, True))
+    dropped = [r for r in rows if r["row_id"] != "apifootball_fixtures|PARAMETER|from"]
+    failures = matrix.gate_offline(dropped, schemas, True)
+    assert "SCHEMA_PARAMETER_MISSING:apifootball_fixtures.from_date" in failures
+    reused = dict(rows[0], gate_status="REUSED_EQUIVALENT", reuse_proof="")
+    assert any(f.startswith("REUSE_WITHOUT_PROOF") for f in matrix.gate_offline([reused] + rows[1:], schemas, True))
+
+
+def test_provider_limitation_is_not_a_defect_and_does_not_block_the_live_gate():
+    limited = {"verdict": "PLAN_EXCLUDED", "source": "evidence.json", "scope": "MCP_CURRENT_MAIN"}
+    assert matrix._evidence_fields([limited], "MANDATORY")["gate_status"] == "PROVIDER_LIMITATION"
+    assert matrix.gate([_synthetic("MANDATORY", "PROVIDER_LIMITATION")]) == (True, [])
+    assert matrix.gate([_synthetic("MANDATORY", "REUSED_EQUIVALENT")]) == (True, [])
 
 
 def _synthetic(requirement, gate_status, row_id="x"):

@@ -55,11 +55,35 @@ def _provider_scripts():
             yield path, text
 
 
+# AF-05 (2026-11-11, declared intentional change): the certification campaign runner drives the real
+# MCP tool code (tools.register_tools) on the RUNTIME client, ResilientFootballClient, whose default
+# quota is the shared PostgresQuota coordinator (+ circuit breaker), like the deployed server. It is
+# known here by name and checked statically below; it is not a live_harness script.
+RUNTIME_CLIENT_SCRIPTS = ("apifootball_cert_batch1.py",)
+
+
 def test_every_provider_script_is_known_and_uses_the_harness():
     found = {p.name for p, _ in _provider_scripts()}
-    assert found == set(LIVE_SCRIPTS), "a new script reaches API-FOOTBALL: route it through live_harness"
+    assert found == set(LIVE_SCRIPTS) | set(RUNTIME_CLIENT_SCRIPTS), \
+        "a new script reaches API-FOOTBALL: route it through live_harness"
     for path, text in _provider_scripts():
+        if path.name in RUNTIME_CLIENT_SCRIPTS:
+            continue
         assert "coordinated_client" in text, path.name
+
+
+@pytest.mark.parametrize("name", RUNTIME_CLIENT_SCRIPTS)
+def test_runtime_client_scripts_keep_the_shared_coordinator(name):
+    """The campaign runner never replaces the coordinator: its live entry point passes no quota, so
+    ResilientFootballClient builds PostgresQuota; every request is budgeted write-ahead."""
+    tree = ast.parse((ROOT / "scripts" / name).read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    for node in ast.walk(main):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("execute", "execute_snapshot"):
+            assert "quota" not in {k.arg for k in node.keywords}, "the live entry point must keep PostgresQuota"
+    text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+    assert "ResilientFootballClient(" in text and "budget_transport(" in text
+    assert "RetryPolicy(max_attempts=ATTEMPTS_PER_CALL)" in text and "HARD_CAP = 78" in text
 
 
 @pytest.mark.parametrize("name", LIVE_SCRIPTS)
