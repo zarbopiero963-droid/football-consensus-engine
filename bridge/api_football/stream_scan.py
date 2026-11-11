@@ -23,6 +23,10 @@ no duplicate top-level keys); anything else is refused with a fixed code. Finite
 A field that is duplicated, not a scalar, a non-integer number or an unsafe/unread string is
 never copied: the row gets an `invalid` flag for it, so no split or completeness can use it.
 
+Speed (F-B05): inside a subtree the scan never reads, runs of short scalar members are consumed by
+one regular expression (see _FAST_OBJECT_RUN); every bound, the grammar and the error codes are the
+same as on the token-by-token path, which handles everything else.
+
 A bound that is hit raises ScanBoundExceeded (PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN) with the
 bound's name; no partial result is ever returned.
 """
@@ -77,6 +81,24 @@ _STRING_PREFIX = re.compile(rb'"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]
 _ESCAPE_PREFIX = re.compile(rb"\\(?:u[0-9a-fA-F]{0,3})?")
 _NUMBER_TAIL = re.compile(rb"[0-9.eE+-]*")
 _LITERALS = (b"true", b"false", b"null")
+# F-B05 fast path (a speed-up, never a relaxation): inside a subtree whose values the scan never
+# reads (no row field below it, not `errors`, not `paging`, not the top level), a run of complete
+# scalar members `"k":v,` (object) or values `v,` (array) is consumed by ONE regular expression
+# instead of one Python step per token. It accepts exactly the same grammar as _TOKEN (strict JSON
+# strings, numbers and literals) but only SHORT tokens, so no token it consumes could reach the
+# token bound: anything longer, unfinished, invalid or unusual falls back to the token-by-token
+# path, which applies every bound and error code unchanged. The final member of a run is consumed
+# only when its closing bracket is already in the buffer (a number can never be cut short).
+_FAST_STRING = rb'"[^"\\\x00-\x1f]{0,512}(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]{0,512}){0,16}"'
+_FAST_NUMBER = rb"-?(?:0|[1-9][0-9]{0,31})(?:\.[0-9]{1,32})?(?:[eE][+-]?[0-9]{1,8})?"
+_FAST_VALUE = rb"(?:" + _FAST_STRING + rb"|" + _FAST_NUMBER + rb"|true|false|null)"
+_FAST_WS = rb"[ \t\n\r]*"
+_FAST_MEMBER = _FAST_WS + _FAST_STRING + _FAST_WS + rb":" + _FAST_WS + _FAST_VALUE + _FAST_WS
+_FAST_ITEM = _FAST_WS + _FAST_VALUE + _FAST_WS
+_FAST_OBJECT_RUN = re.compile(rb"(?:" + _FAST_MEMBER + rb",)*" + _FAST_MEMBER + rb"(?:,|(?=\}))")
+_FAST_ARRAY_RUN = re.compile(rb"(?:" + _FAST_ITEM + rb",)*" + _FAST_ITEM + rb"(?:,|(?=\]))")
+# Longest token the fast path can consume: 17 x 512 plain bytes + 16 x 6-byte escapes + quotes.
+FAST_TOKEN_MAX = 17 * 512 + 16 * 6 + 2
 
 
 def _malformed() -> ProviderDataError:
@@ -84,10 +106,11 @@ def _malformed() -> ProviderDataError:
 
 
 class _Frame:
-    __slots__ = ("kind", "expect", "key", "seen")
+    __slots__ = ("kind", "expect", "key", "seen", "skip")
 
     def __init__(self, kind: str, expect: str):
         self.kind, self.expect, self.key, self.seen = kind, expect, None, None
+        self.skip = False  # True: nothing below this container is read (fast path allowed)
 
 
 class IdScanner:
@@ -120,6 +143,8 @@ class IdScanner:
         self.row_invalid: set[str] = set()
         self.row_start = 0
         self._max_field_depth = max((len(p) for p in self.fields.values()), default=0)
+        # The fast path only consumes tokens far below the token bound (see FAST_TOKEN_MAX).
+        self._fast = limits.max_token >= FAST_TOKEN_MAX
 
     # ---- input --------------------------------------------------------------------------------
     def feed(self, chunk: bytes) -> None:
@@ -161,7 +186,27 @@ class IdScanner:
     def _run(self, *, eof: bool) -> None:
         buf, pos, n = self.buf, 0, len(self.buf)
         count = 0
+        next_check = 4096
+        stack = self.stack
         while True:
+            if stack:
+                f = stack[-1]
+                if f.skip and (f.expect in ("KEY_OR_END", "KEY") if f.kind == "O"
+                               else f.expect in ("VALUE_OR_END", "VALUE")):
+                    run = (_FAST_OBJECT_RUN if f.kind == "O" else _FAST_ARRAY_RUN).match(buf, pos)
+                    if run is not None:
+                        end = run.end()
+                        # A run ends after a comma (a key/value must follow) or before the bracket.
+                        if buf[end - 1] == 0x2C:
+                            f.expect = "KEY" if f.kind == "O" else "VALUE"
+                        else:
+                            f.expect = "COMMA_OR_END"
+                        count += 1 + ((end - pos) >> 4)  # keeps the in-loop time check per bytes read
+                        pos = end
+                        if count >= next_check:
+                            next_check = count + 4096
+                            self._check_time()
+                        continue
             m = _TOKEN.match(buf, pos)
             if m is None or (m.group(3) is not None and not eof
                              and _NUMBER_TAIL.match(buf, m.end()).end() == n):
@@ -182,7 +227,8 @@ class IdScanner:
             if self.done:
                 raise _malformed()  # data after the top-level value
             count += 1
-            if not count % 4096:
+            if count >= next_check:
+                next_check = count + 4096
                 self._check_time()
             if m.group(1) is not None:
                 self._punct(m.group(1), self.base + m.end(1) - 1, self.base + m.end(1))
@@ -242,6 +288,8 @@ class IdScanner:
             frame = _Frame("O" if c == b"{" else "A", "KEY_OR_END" if c == b"{" else "VALUE_OR_END")
             if not self.stack:
                 frame.seen = set()
+            elif self._fast:
+                frame.skip = self._skippable()
             self.stack.append(frame)
             return
         if not self.stack:
@@ -318,6 +366,20 @@ class IdScanner:
         elif top == "response" and self.row is not None and d - 2 <= self._max_field_depth:
             self._field(tuple(f.key for f in self.stack[2:]), value)
         self._value_done()
+
+    def _skippable(self) -> bool:
+        """For a container about to be pushed: True only when no value below it is ever read.
+        Never at the top level, never under `errors` or `paging`, never the `response` list, and
+        under `response` only when no row field path continues below this container."""
+        parent = self.stack[-1]
+        if parent.skip:
+            return True
+        if len(self.stack) < 2:
+            return self.stack[0].key not in ("errors", "paging", "response")
+        if self.stack[0].key != "response":
+            return self.stack[0].key not in ("errors", "paging")
+        path = tuple(f.key for f in self.stack[2:])  # this container's path inside the row
+        return not any(len(p) > len(path) and p[:len(path)] == path for p in self.fields.values())
 
     def _in_errors(self, d: int) -> bool:
         return d >= 2 and self.stack[0].key == "errors"

@@ -87,6 +87,18 @@ bound `MAX_SECONDS`: a data error, never retried, costing one quota unit. Withou
 have become a retryable `PROVIDER_TIMEOUT` costing up to 3 units. The timeout and retry policy of normal
 requests are unchanged, and the scan's own 20 s bound stays. Measured scan speed is about 3 MB/s of CPU.
 
+**Fast path (F-B05, real certification 2026-11-11):** `leagues()` with no filter ended with bound
+`MAX_SECONDS` on Render Free. Offline profiling showed the scan is CPU-bound: one Python step per token,
+most of them in `seasons[].coverage`, which is never read. Inside a subtree with no row field below it
+(never the top level, `errors`, `paging` or the `response` list), runs of short scalar members are now
+consumed by one regular expression with the same grammar; anything longer than 8.8 KB, unfinished or
+invalid goes through the token path, so every bound and error code is unchanged (fast path on/off
+equivalence is tested). Measured on a synthetic leagues payload (1 200 leagues, dev machine, 64 KiB
+steps): 2.4 MB 0.53 s -> 0.23 s, 6.6 MB 1.49 s -> 0.58 s, 10.8 MB 2.49 s -> 0.82 s (about 4.5 -> 11-13
+MB/s); Python steps for 120 leagues 142 476 -> 25 731. Not verified on Render: the real `/leagues` body
+size and Render Free CPU share were not measured offline, and the binding deadline is the request
+timeout minus 1 s (7 s by default), not the 20 s bound. A live re-test is required.
+
 **Validation:** strict UTF-8; a single top-level object; `response` must be a list; no duplicate top-level
 keys; no data after the document; a strict JSON grammar (an iterative regex tokenizer with an explicit
 stack, no recursion, no eval). A malformed or truncated stream gives `PROVIDER_INVALID_JSON`, and a
@@ -213,6 +225,6 @@ because the docs do not forbid it. `timezone` may join any accepted set.
 | R7 | No real `/odds/live` payload; selection fields from repo fixtures | C08 NOT proven; conservative DERIVED states |
 | R8 | Page past the end DOCS_UNVERIFIED (D06) | Accepted only without rows |
 | R9 | Official docs returned 403 on 2026-11-10 | Re-capture when reachable |
-| R10 | A scan costs about 3 MB/s of CPU on the event loop | 64 KiB steps with a yield between them; a scan deadline under the request timeout (non-retryable `MAX_SECONDS`) |
+| R10 | A scan costs about 3 MB/s of CPU on the event loop (about 11 MB/s on skippable subtrees since F-B05; Render Free not re-measured) | 64 KiB steps with a yield between them; a scan deadline under the request timeout (non-retryable `MAX_SECONDS`) |
 
 Real certification: proposal (not executed) in `apifootball_full_capability_budget.md`.

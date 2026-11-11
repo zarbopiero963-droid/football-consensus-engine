@@ -4,6 +4,7 @@
 - `/fixtures`: new status `PROVIDER_REJECTED_OBSERVED` (empirical, not documentary) for the one parameter set the real provider was observed to refuse: exactly `venue` + `season` (A04: declared errors on both keys). Refused locally as `INVALID_INPUT` `FIXTURE_COMBINATION_PROVIDER_REJECTED` with the evidence (date, case, error keys, category), 0 provider calls. No other combination changes.
 - Warnings: "Provider calls require separate owner authorization and key." now appears only where it is true (gated replies, test mocks). Authorized real replies carry the provider-data warning (success), an error warning (provider or local error), a scan-bound warning or a partial-manifest warning.
 - `pagination_state`: a page after page 1 with no rows is `EMPTY_PAGE` with `possible_out_of_range: true` and `has_next: null` (A10: the provider echoed `total` = requested page for a page beyond the data). Provider `paging` values are unchanged.
+- Streamed scan (F-B05): runs of short scalar members in subtrees the scan never reads are consumed by one regular expression (same grammar, same bounds and codes); about 2.5x faster on a synthetic `/leagues` payload. Effect on Render Free not yet verified live.
 
 ## 2026-11-10 (full capability, FIX-01..FIX-09)
 - `timezone`: any IANA zone (Python zoneinfo; no captured provider catalog), provider is the final authority. `TIMEZONE_NOT_CERTIFIED` is removed (owner-approved); unknown zones are `TIMEZONE_NOT_IN_CATALOG`.
