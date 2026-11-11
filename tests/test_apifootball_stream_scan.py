@@ -540,3 +540,36 @@ def test_a_number_that_cannot_complete_fails_at_the_end_of_the_stream():
 def test_long_whitespace_is_not_a_token():
     raw = b'{"response":[' + b" " * 200_000 + b'{"fixture":{"id":5}}]}'
     assert [r["id"] for r in scan(raw, chunk=4096)["rows"]] == [5]
+    assert [r["id"] for r in scan(raw, chunk=len(raw))["rows"]] == [5]  # whitespace and token in one step
+
+
+# ---- each layer of the P2 rule on its own (scanner, manifest) --------------------------------
+
+def test_scanner_flags_an_unsafe_round_string():
+    raw = b'{"response":[{"fixture":{"id":1},"league":{"id":39,"season":2023,"round":"R\\u0001"}}]}'
+    row = scan(raw)["rows"][0]
+    assert row["round"] is None and row["invalid"] == ["round"]
+
+
+@pytest.mark.parametrize("flag", ["round", "id"])
+def test_manifest_honours_invalid_flags_even_with_plausible_values(flag):
+    from bridge.api_football.continuation import scan_manifest
+    rows = [{"id": i, "league": 39, "season": 2023, "round": f"R{i % 2}", "size": 100, "invalid": []}
+            for i in range(1, 11)]
+    rows[3]["invalid"] = [flag]
+    m = scan_manifest("apifootball_fixtures", {"league": 39, "season": 2023},
+                      {"rows": rows, "results": 10, "paging": None, "body_sha256": "x", "bytes": 1000})
+    assert m["complete_retrieval_available"] is False
+    if flag == "id":
+        assert m["rows_without_id"] == 1 and m["row_ids"][3] is None
+    else:
+        assert m["follow_up"]["split_by"] != "round"
+
+
+def test_manifest_refuses_an_unsafe_round_value_on_its_own():
+    from bridge.api_football.continuation import scan_manifest
+    rows = [{"id": i, "league": 39, "season": 2023, "round": "R\x01" if i == 4 else f"R{i % 2}", "size": 100,
+             "invalid": []} for i in range(1, 11)]
+    m = scan_manifest("apifootball_fixtures", {"league": 39, "season": 2023},
+                      {"rows": rows, "results": 10, "paging": None, "body_sha256": "x", "bytes": 1000})
+    assert m["follow_up"]["split_by"] != "round" and m["complete_retrieval_available"] is False
