@@ -16,6 +16,7 @@ from .config import Settings
 from .catalog import ALLOWED_PATHS
 from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, fixtures_combination, validate
 from .full_contract_audit import audit_contract_coverage
+from .continuation import mcp_arguments
 from .live_odds_state import classify as classify_live_odds
 from .timezones import timezone_context
 
@@ -167,7 +168,7 @@ def pagination_state(paging: Any, params: Mapping[str, Any]) -> dict[str, Any]:
     has_next = current < total
     return {"state": "MORE_PAGES" if has_next else "LAST_PAGE", "current": current, "total": total,
             "requested_page": requested, "has_next": has_next, "next_page": current + 1 if has_next else None,
-            "next_parameters": {**params, "page": current + 1} if has_next else None,
+            "next_parameters": mcp_arguments({**params, "page": current + 1}) if has_next else None,
             "auto_fetch": False}
 
 
@@ -406,9 +407,12 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 if tool == "apifootball_live_odds":
                     from .live_odds_state import unavailable
                     result["live_odds_state"] = unavailable(result["error"].get("code"))
-                if result["error"].get("code") == "PROVIDER_RESPONSE_TOO_LARGE":
+                if result["error"].get("code") in ("PROVIDER_RESPONSE_TOO_LARGE",
+                                                   "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN"):
                     from .continuation import read_cap_navigation
-                    result["navigation"] = read_cap_navigation(tool)
+                    reason = ("SCAN_BOUND_" + str(result["error"].get("bound"))
+                              if result["error"]["code"].endswith("_FOR_SCAN") else "READ_CAP_EXCEEDED_NOT_SCANNABLE")
+                    result["navigation"] = read_cap_navigation(tool, params, reason=reason)
                 if isinstance(result["error"].get("http_status"), int):
                     result["http_status"] = result["error"]["http_status"]
                 # Real attempts of the resilience layer (retries included); 0 when none was sent.

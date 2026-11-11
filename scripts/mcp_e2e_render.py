@@ -576,7 +576,7 @@ NO_NETWORK_STATUSES = frozenset({"INVALID_INPUT", "KEY_NOT_CONFIGURED", "LIVE_NO
 COORDINATOR_CODES = frozenset({"LOCAL_CONCURRENCY_BUSY", "QUOTA_COORDINATOR_UNAVAILABLE",
                                "QUOTA_RELEASE_FAILED", "QUOTA_RECONCILIATION_FAILED"})
 # Known and non-stopping: a body above the transport's read limit (F-03); that page is lost.
-KNOWN_SIZE_CODES = frozenset({"PROVIDER_RESPONSE_TOO_LARGE"})
+KNOWN_SIZE_CODES = frozenset({"PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN"})
 SUITE_REPORT_MAX_BYTES = 131_072
 _NAME_RE = re.compile(r"[^\w .'&()/-]")
 _CODE_RE = re.compile(r"^[A-Z0-9_]{1,64}$")
@@ -1200,7 +1200,7 @@ def check_id_manifest(p: dict[str, Any], facts: dict[str, Any]) -> list[str]:
     """FIX-01: an oversized non-odds reply must be an explicit, data-free id manifest."""
     m = p.get("data") if isinstance(p.get("data"), dict) else {}
     follow = m.get("follow_up") if isinstance(m.get("follow_up"), dict) else {}
-    ok = (m.get("partial") is True and m.get("data_included") is False and isinstance(m.get("response_sha256"), str)
+    ok = (m.get("partial") is True and m.get("data_included") is False and isinstance(m.get("reply_sha256"), str)
           and _is_int(m.get("rows_in_reply")) and isinstance(follow.get("calls"), list)
           and isinstance(m.get("complete_retrieval_available"), bool))
     facts.update({"id_manifest": True, "rows_in_reply": m.get("rows_in_reply") if _is_int(m.get("rows_in_reply")) else None,

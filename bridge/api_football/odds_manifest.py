@@ -63,7 +63,8 @@ def _lines(values: list[dict[str, Any]]) -> list[Any]:
 def _next_page(request: Mapping[str, Any], paging: dict[str, Any]) -> dict[str, Any] | None:
     current, total = paging.get("current"), paging.get("total")
     if type(current) is int and type(total) is int and current < total:
-        return {**request, "page": current + 1}
+        from .continuation import mcp_arguments
+        return mcp_arguments({**request, "page": current + 1})
     return None
 
 

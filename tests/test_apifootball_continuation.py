@@ -1,201 +1,180 @@
-"""FIX-01: replies above the 256 KiB MCP cap become a data-free id manifest whose follow-up
-calls are plain, re-validated provider parameters (no token, no server state: they survive a
-restart). Verified end to end through the REAL transport, resilience client and MCP tools over
-httpx.MockTransport: every row is retrieved exactly once, order and ids preserved, nothing
-mixed between requests, a change between reads is detected, the read cap stays."""
+"""FIX-01 (in-memory replies between the 256 KiB MCP cap and the 512 KiB read cap) with the
+review P2/P3 fixes: a data-free id manifest whose follow-ups are plain, re-validated provider
+parameters (MCP argument names), complete only when every follow-up is provably under the read
+cap, never on detailed `ids` slices; invalid ids never listed; undocumented combinations
+labelled; order not asserted, changes detected on id sets."""
 from __future__ import annotations
 
-import asyncio
 import json
 
-import httpx
 import pytest
 
-from bridge.api_football.config import OFFICIAL_BASE_URL, Settings
-from bridge.api_football.continuation import STRATEGIES, id_manifest, response_sha256
-from bridge.api_football.contracts import validate
-from bridge.api_football.quota import QuotaLease
-from bridge.api_football.resilience import ResilientFootballClient, RetryPolicy
-from bridge.api_football.tools import register_tools
+from apifootball_continuation_kit import (
+    PAD, Provider, boot, call, fixture_row, follow_all, validate_follow_up,
+)
+from bridge.api_football.continuation import (
+    IDS_DETAIL_SLICE, STRATEGIES, id_manifest, mcp_arguments, read_cap_navigation, sorted_ids_sha256,
+)
 
-KEY = "LOCAL_FAKE_KEY_CONTINUATION_ONLY"
-PAD = "Stadio-" + "v" * 420  # a listing row of ~600 bytes: 600 rows sit between 256 and 512 KiB
-
-
-def fixture_row(fid, day="2026-11-10"):
-    return {"fixture": {"id": fid, "date": day + "T15:00:00+00:00", "timestamp": 1_794_000_000 + fid,
-                        "venue": {"id": None, "name": PAD}, "status": {"short": "NS", "elapsed": None}},
-            "league": {"id": 39, "season": 2026}, "teams": {"home": {"id": 1}, "away": {"id": 2}},
-            "goals": {"home": None, "away": None}}
+D = "2026-11-10"
 
 
-class Provider:
-    """A fake API-FOOTBALL holding fixtures by date; answers date listings and ids lookups."""
-
-    def __init__(self, days):
-        self.days = days  # {date: [fixture ids in provider order]}
-        self.requests = []
-
-    def rows_for(self, params):
-        if "date" in params:
-            return [fixture_row(f, params["date"]) for f in self.days.get(params["date"], [])]
-        if "ids" in params or "id" in params:
-            wanted = [int(x) for x in (params.get("ids") or params["id"]).split("-")]
-            known = {f: d for d, ids in self.days.items() for f in ids}
-            return [fixture_row(f, known[f]) for f in wanted if f in known]
-        if "team" in params:  # players page shape
-            return [{"player": {"id": i, "name": PAD + PAD}, "statistics": []} for i in range(1, 501)]
-        if "country" in params or "season" in params:
-            return [{"league": {"id": 1000 + i, "name": PAD}, "country": {"name": "C%d" % (i % 7)}}
-                    for i in range(500)]
-        return []
-
-    def handler(self, request):
-        params = dict(request.url.params)
-        self.requests.append((request.url.path, params))
-        rows = self.rows_for(params)
-        paging = {"current": int(params.get("page", 1)), "total": 3 if "team" in params else 1}
-        return httpx.Response(200, json={"get": request.url.path.strip("/"), "parameters": params, "errors": [],
-                                         "results": len(rows), "paging": paging, "response": rows})
+def three_leagues(n=600):
+    leagues = [(39, 2026), (140, 2026), (71, 2026)]
+    return [fixture_row(5000 + i, D, *leagues[i % 3]) for i in range(n)]
 
 
-class Quota:
-    async def acquire(self, secret):
-        return QuotaLease("l", "h")
-
-    async def release(self, lease):
-        return None
-
-    async def mark_exhausted(self, secret, kind):
-        return None
-
-
-class Server:
-    def __init__(self):
-        self.tools = {}
-
-    def tool(self):
-        def deco(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-        return deco
-
-
-def boot(provider):
-    """A fresh bridge process: new client, new cache, no state shared with an earlier boot."""
-    settings = Settings(enabled=True, api_key=KEY, live_authorized=True, cache_enabled=False)
-    http = httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, transport=httpx.MockTransport(provider.handler))
-    from bridge.api_football.transport import InjectedHTTPXTransport
-    client = ResilientFootballClient(settings, InjectedHTTPXTransport(http, api_key=KEY), quota=Quota(),
-                                     retry=RetryPolicy(base_delay=0.0, max_delay=0.0))
-    server = Server()
-    register_tools(server, settings, client=client)
-    return server.tools
-
-
-def call(tools, name, args):
-    return asyncio.run(tools[name](**{("from_date" if k == "from" else "to_date" if k == "to" else k): v
-                                      for k, v in args.items()}))
-
-
-def follow_all(tools, manifest):
-    """The client side: run every follow-up and check it against the manifest."""
-    rows, problems = [], []
-    for c in manifest["follow_up"]["calls"]:
-        out = call(tools, manifest["follow_up"]["tool"], c["arguments"])
-        assert out["status"] == "REAL_API_RESPONSE", out.get("error")
-        got = [r["fixture"]["id"] for r in out["data"]["response"]]
-        if got != c["expect_ids"] or len(got) != c["expect_rows"]:
-            problems.append({"expected": c["expect_ids"], "got": got})
-        rows.extend(got)
-    return rows, problems
-
-
-def test_fixtures_by_date_over_the_cap_is_retrieved_completely_in_order_without_duplicates():
-    ids = list(range(5000, 5600))
-    provider = Provider({"2026-11-10": ids})
+def test_fixtures_by_date_is_split_by_league_season_and_retrieved_completely():
+    provider = Provider(three_leagues())
     tools = boot(provider)
-    first = call(tools, "apifootball_fixtures", {"date": "2026-11-10"})
+    first = call(tools, "apifootball_fixtures", {"date": D})
     assert first["status"] == "PARTIAL_ID_MANIFEST" and first["network_calls_made"] == 1
     m = first["data"]
-    assert m["data_included"] is False and PAD not in json.dumps(first)
-    assert m["rows_in_reply"] == m["results_declared"] == 600 and m["row_ids"] == ids
-    assert m["follow_up"]["strategy"] == "IDS_SLICES" and m["complete_retrieval_available"] is True
-    assert all(len(c["expect_ids"]) <= 20 for c in m["follow_up"]["calls"]) and len(m["follow_up"]["calls"]) == 30
-    assert len(json.dumps(first).encode()) <= 262_144
+    assert m["mode"] == "IN_MEMORY" and m["data_included"] is False and PAD not in json.dumps(first)
+    assert m["rows_in_reply"] == m["results_declared"] == 600 and m["results_match"] is True
+    assert m["row_ids"] == [5000 + i for i in range(600)]
+    assert m["follow_up"]["split_by"] == "league_season" and len(m["follow_up"]["calls"]) == 3
+    assert m["complete_retrieval_available"] is True
+    assert m["completeness_basis"] == "SUBSET_OF_A_REPLY_UNDER_THE_READ_CAP"
+    # date+league+season is not a documented combination: labelled, and a stated condition.
+    assert m["follow_up"]["combination_evidence"] == "DOCS_UNVERIFIED"
+    assert any("DOCS_UNVERIFIED" in c for c in m["completeness_conditions"])
+    assert all(c["arguments"].keys() == {"date", "league", "season"} for c in m["follow_up"]["calls"])
+    assert m["order"] == "NOT_ASSERTED" and len(json.dumps(first).encode()) <= 262_144
     rows, problems = follow_all(tools, m)
-    assert problems == [] and rows == ids                  # no loss, no duplicate, same order
-    assert len(provider.requests) == 31                    # each follow-up is one real, counted call
+    assert problems == [] and sorted(rows) == sorted(m["row_ids"]) and len(rows) == len(set(rows)) == 600
+    assert len(provider.requests) == 4
 
 
 def test_follow_ups_survive_a_restart_and_carry_no_token():
-    ids = list(range(1, 601))
-    provider = Provider({"2026-11-10": ids})
-    manifest = call(boot(provider), "apifootball_fixtures", {"date": "2026-11-10"})["data"]
+    provider = Provider(three_leagues())
+    manifest = call(boot(provider), "apifootball_fixtures", {"date": D})["data"]
     blob = json.dumps(manifest["follow_up"])
     assert "token" not in blob and "signature" not in blob
     for c in manifest["follow_up"]["calls"]:
-        assert set(c["arguments"]) <= {"ids", "id", "timezone"}
-        validate("apifootball_fixtures", c["arguments"])   # plain, re-validated parameters
+        validate_follow_up("apifootball_fixtures", c["arguments"])
     rows, problems = follow_all(boot(provider), manifest)  # a brand-new process
-    assert problems == [] and rows == ids
+    assert problems == [] and len(rows) == 600
 
 
 def test_two_requests_never_mix_their_rows():
-    provider = Provider({"2026-11-10": list(range(1, 601)), "2026-11-11": list(range(10_001, 10_601))})
+    rows_a = three_leagues()
+    rows_b = [fixture_row(20_000 + i, "2026-11-11", 39 if i % 2 else 61) for i in range(600)]
+    provider = Provider(rows_a + rows_b)
     tools = boot(provider)
-    a = call(tools, "apifootball_fixtures", {"date": "2026-11-10"})["data"]
+    a = call(tools, "apifootball_fixtures", {"date": D})["data"]
     b = call(tools, "apifootball_fixtures", {"date": "2026-11-11"})["data"]
-    assert a["response_sha256"] != b["response_sha256"]
-
-    async def both():
-        async def run(m):
-            got = []
-            for c in m["follow_up"]["calls"]:
-                out = await tools["apifootball_fixtures"](**c["arguments"])
-                got += [r["fixture"]["id"] for r in out["data"]["response"]]
-            return got
-        return await asyncio.gather(run(a), run(b))
-    rows_a, rows_b = asyncio.run(both())
-    assert rows_a == list(range(1, 601)) and rows_b == list(range(10_001, 10_601))
-    assert not set(rows_a) & set(rows_b)
+    got_a, pa = follow_all(tools, a)
+    got_b, pb = follow_all(tools, b)
+    assert pa == pb == [] and not set(got_a) & set(got_b)
+    assert set(got_a) == {r["fixture"]["id"] for r in rows_a} and set(got_b) == {r["fixture"]["id"] for r in rows_b}
 
 
-def test_a_change_between_reads_is_detected():
-    ids = list(range(1, 601))
-    provider = Provider({"2026-11-10": ids})
+def test_a_change_between_reads_is_detected_but_a_reorder_is_not_a_change():
+    provider = Provider(three_leagues(), reverse_follow_ups=True)
     tools = boot(provider)
-    m = call(tools, "apifootball_fixtures", {"date": "2026-11-10"})["data"]
-    provider.days["2026-11-10"] = [i for i in ids if i != 55]   # fixture 55 removed upstream
+    m = call(tools, "apifootball_fixtures", {"date": D})["data"]
     rows, problems = follow_all(tools, m)
-    assert len(problems) == 1 and 55 not in rows               # the gap is visible, never silent
-    reread = call(tools, "apifootball_fixtures", {"date": "2026-11-10"})["data"]
-    assert reread["response_sha256"] != m["response_sha256"] and reread["results_declared"] == 599
+    assert problems == [] and len(rows) == 600            # provider reorder: no false alarm
+    provider.fixtures = [r for r in provider.fixtures if r["fixture"]["id"] != 5003]
+    rows, problems = follow_all(tools, m)
+    assert len(problems) == 1 and 5003 not in rows       # the removal is visible, never silent
+    reread = call(tools, "apifootball_fixtures", {"date": D})["data"]
+    assert reread["row_ids_sorted_sha256"] != m["row_ids_sorted_sha256"] and reread["results_declared"] == 599
+
+
+def test_league_season_listing_is_split_by_round():
+    rows = [fixture_row(i, D, 39, 2026, f"Regular Season - {1 + i % 4}") for i in range(1, 601)]
+    m = id_manifest("apifootball_fixtures", {"league": 39, "season": 2026}, {"response": rows, "results": 600})
+    assert m["follow_up"]["split_by"] == "round" and len(m["follow_up"]["calls"]) == 4
+    assert m["complete_retrieval_available"] is True
+
+
+# ---- P2: detailed `ids` slices are never claimed complete ------------------------------------
+
+def test_single_group_listing_falls_back_to_detail_slices_never_complete():
+    rows = [fixture_row(i, D, 39, 2026, "Regular Season - 1") for i in range(1, 601)]
+    m = id_manifest("apifootball_fixtures", {"league": 39, "season": 2026}, {"response": rows, "results": 600})
+    f = m["follow_up"]
+    assert f["split_by"] == "ids_detail_slices" and f["reason"] == "IDS_DETAIL_REPLY_SIZE_UNPROVEN"
+    assert all(len(c["expect_ids"]) <= IDS_DETAIL_SLICE and c["size_provable"] is False for c in f["calls"])
+    assert m["complete_retrieval_available"] is False and m["completeness_basis"] is None
 
 
 def test_an_oversized_ids_request_is_halved_and_a_single_id_is_not_splittable():
-    ids = list(range(1, 601))
-    m = id_manifest("apifootball_fixtures", {"ids": "-".join(map(str, ids[:20]))},
-                    {"response": [fixture_row(i) for i in ids[:20]], "results": 20})
-    calls = m["follow_up"]["calls"]
-    assert [c["expect_ids"] for c in calls] == [ids[:10], ids[10:20]]
+    ids = list(range(1, 21))
+    m = id_manifest("apifootball_fixtures", {"ids": "-".join(map(str, ids))},
+                    {"response": [fixture_row(i) for i in ids], "results": 20})
+    assert [c["expect_ids"] for c in m["follow_up"]["calls"]] == [ids[:10], ids[10:]]
+    assert m["complete_retrieval_available"] is True  # the same detailed rows, a subset of a reply under the cap
     one = id_manifest("apifootball_fixtures", {"id": 7}, {"response": [fixture_row(7)], "results": 1})
-    assert one["follow_up"]["splittable"] is False and one["complete_retrieval_available"] is False
-    assert one["follow_up"]["reason"] == "NOT_SPLITTABLE_SINGLE_FIXTURE_ID"
+    assert one["complete_retrieval_available"] is False and one["follow_up"]["reason"] == "NOT_SPLITTABLE_SINGLE_FIXTURE_ID"
 
 
-def test_native_pagination_and_per_id_split_for_players():
-    provider = Provider({})
+def test_navigation_for_an_ids_request_halves_it():
+    nav = read_cap_navigation("apifootball_fixtures", {"ids": "1-2-3-4-5", "timezone": "UTC"}, reason="SCAN_BOUND_MAX_BYTES")
+    assert nav["complete_retrieval_available"] is False and nav["reason"] == "SCAN_BOUND_MAX_BYTES"
+    assert [c["arguments"] for c in nav["calls"]] == [{"ids": "1-2-3", "timezone": "UTC"}, {"ids": "4-5", "timezone": "UTC"}]
+    single = read_cap_navigation("apifootball_fixtures", {"ids": "9"})
+    assert single["calls"] is None and "cannot be split" in single["narrowing"]
+    listing = read_cap_navigation("apifootball_fixtures", {"date": D})
+    assert listing["calls"] is None and "league" in listing["narrowing"]
+
+
+# ---- P3-1: ids outside the accepted range are rows without id ---------------------------------
+
+@pytest.mark.parametrize("bad", [0, -5, 2_000_000_001, True, "12", 1.5, None])
+def test_invalid_provider_ids_are_never_listed_as_follow_ups(bad):
+    rows = [fixture_row(1), fixture_row(2)]
+    rows[1]["fixture"]["id"] = bad
+    m = id_manifest("apifootball_fixtures", {"date": D}, {"response": rows, "results": 2})
+    assert m["rows_without_id"] == 1 and m["complete_retrieval_available"] is False
+    assert m["follow_up"]["calls"] == [] and m["follow_up"]["reason"] == "ROWS_WITHOUT_VALID_IDENTIFIER"
+
+
+# ---- P3-2: undocumented follow-up combinations are labelled -----------------------------------
+
+@pytest.mark.parametrize("tool,request_args,rows,args,status", [
+    ("apifootball_players", {"search": "messi", "league": 39},
+     [{"player": {"id": 1}}, {"player": {"id": 2}}], {"league": 39, "id": 1}, "DOCS_UNVERIFIED"),
+    ("apifootball_injuries", {"league": 39, "season": 2026},
+     [{"fixture": {"id": 1}}, {"fixture": {"id": 2}}], {"season": 2026, "fixture": 1}, "DOCS_UNVERIFIED"),
+    ("apifootball_leagues", {}, [{"league": {"id": 1}}, {"league": {"id": 2}}], {"id": 1}, "DOCUMENTED_VALID"),
+])
+def test_follow_up_combinations_are_labelled(tool, request_args, rows, args, status):
+    m = id_manifest(tool, request_args, {"response": rows, "results": len(rows)})
+    first = m["follow_up"]["calls"][0]
+    assert first["arguments"] == args and first["combination_status"] == status
+    assert m["follow_up"]["combination_evidence"] == status
+
+
+def test_order_is_not_asserted_and_the_set_hash_ignores_order():
+    a = id_manifest("apifootball_leagues", {}, {"response": [{"league": {"id": 1}}, {"league": {"id": 2}}], "results": 2})
+    b = id_manifest("apifootball_leagues", {}, {"response": [{"league": {"id": 2}}, {"league": {"id": 1}}], "results": 2})
+    assert a["order"] == "NOT_ASSERTED" and a["row_ids_sorted_sha256"] == b["row_ids_sorted_sha256"]
+    assert a["reply_sha256"] != b["reply_sha256"]  # the raw reply did change: both facts are kept
+    assert "AS_LISTED" not in json.dumps(a)
+    assert sorted_ids_sha256([3, 1, 2]) == sorted_ids_sha256([1, 2, 3])
+
+
+# ---- P3-6: follow-ups use the MCP argument names ---------------------------------------------
+
+def test_from_to_are_emitted_as_mcp_argument_names_and_the_call_works():
+    rows = [fixture_row(i, D, 39, 2026, f"Regular Season - {1 + i % 2}") for i in range(1, 601)]
+    provider = Provider(rows)
     tools = boot(provider)
-    out = call(tools, "apifootball_players", {"team": 33, "season": 2026, "page": 2})
-    assert out["status"] == "PARTIAL_ID_MANIFEST"
-    m = out["data"]
-    assert m["next_page_arguments"] == {"team": 33, "season": 2026, "page": 3}
-    validate("apifootball_players", m["next_page_arguments"])
-    assert len(m["follow_up"]["calls"]) == 500
-    for c in m["follow_up"]["calls"][:5]:
-        assert c["arguments"] == {"team": 33, "season": 2026, "id": c["expect_ids"][0]}
-        validate("apifootball_players", c["arguments"])
+    out = call(tools, "apifootball_fixtures", {"league": 39, "season": 2026, "from_date": D, "to_date": "2026-11-12"})
+    calls = out["data"]["follow_up"]["calls"]
+    assert all({"from_date", "to_date"} <= c["arguments"].keys() and "from" not in c["arguments"] for c in calls)
+    got, problems = follow_all(tools, out["data"])
+    assert problems == [] and len(got) == 600
+    assert mcp_arguments({"from": D, "to": D, "page": 2}) == {"from_date": D, "to_date": D, "page": 2}
+
+
+def test_pagination_state_next_parameters_use_mcp_names():
+    from bridge.api_football.tools import pagination_state
+    st = pagination_state({"current": 1, "total": 2}, {"from": D, "to": D, "fixture": 1})
+    assert st["next_parameters"] == {"from_date": D, "to_date": D, "fixture": 1, "page": 2}
 
 
 @pytest.mark.parametrize("tool,request_args,rows", [
@@ -206,69 +185,41 @@ def test_native_pagination_and_per_id_split_for_players():
     ("apifootball_player_profiles", {"page": 101}, [{"player": {"id": i}} for i in range(1, 30)]),
     ("apifootball_injuries", {"league": 39, "season": 2026}, [{"fixture": {"id": i // 2 + 1}} for i in range(30)]),
     ("apifootball_transfers", {"team": 33}, [{"player": {"id": i}} for i in range(1, 30)]),
-    ("apifootball_fixtures", {"league": 39, "season": 2026}, [{"fixture": {"id": i}} for i in range(1, 30)]),
+    ("apifootball_fixtures", {"date": D}, [fixture_row(i, D, 39 + i % 3) for i in range(1, 30)]),
 ])
-def test_every_strategy_yields_valid_plain_calls_covering_each_row_once(tool, request_args, rows):
+def test_every_strategy_yields_valid_calls_covering_each_row_once(tool, request_args, rows):
     m = id_manifest(tool, request_args, {"response": rows, "results": len(rows)})
     assert m["complete_retrieval_available"] is True
     covered = []
     for c in m["follow_up"]["calls"]:
-        validate(tool, c["arguments"])
-        covered += c["expect_ids"] * (c["expect_rows"] // len(c["expect_ids"]))
-    path = STRATEGIES[tool].id_path
-    original = []
-    for r in rows:
-        node = r
-        for k in path:
-            node = node[k]
-        original.append(node)
-    assert sorted(covered) == sorted(original)
+        validate_follow_up(tool, c["arguments"])
+        covered += [c["expect_ids"][0]] * c["expect_rows"] if len(c["expect_ids"]) == 1 else c["expect_ids"]
+    assert sorted(covered) == sorted(m["row_ids"])
 
 
-def test_rows_without_ids_or_unknown_endpoints_are_never_claimed_complete():
-    m = id_manifest("apifootball_fixtures", {"date": "2026-11-10"},
-                    {"response": [fixture_row(1), {"fixture": {"id": None}}], "results": 2})
-    assert m["complete_retrieval_available"] is False and m["rows_without_id"] == 1
-    assert m["follow_up"]["reason"] == "ROWS_WITHOUT_IDENTIFIER"
+def test_results_mismatch_or_unknown_endpoint_is_never_complete():
+    m = id_manifest("apifootball_leagues", {}, {"response": [{"league": {"id": 1}}, {"league": {"id": 2}}], "results": 3})
+    assert m["results_match"] is False and m["complete_retrieval_available"] is False
+    assert m["follow_up"]["reason"] == "RESULTS_COUNT_MISMATCH"
     n = id_manifest("apifootball_trophies", {"player": 1}, {"response": [{"league": "x"}] * 3, "results": 3})
-    assert n["complete_retrieval_available"] is False
-    assert n["follow_up"]["reason"] == "NO_DOCUMENTED_SPLIT_FOR_THIS_ENDPOINT"
+    assert n["complete_retrieval_available"] is False and n["follow_up"]["reason"] == "NO_DOCUMENTED_SPLIT_FOR_THIS_ENDPOINT"
+    dup = id_manifest("apifootball_fixtures", {"date": D}, {"response": [fixture_row(1), fixture_row(1)], "results": 2})
+    assert dup["follow_up"]["reason"] == "DUPLICATE_FIXTURE_IDS_IN_REPLY"
     with pytest.raises(ValueError):
         id_manifest("apifootball_fixtures", {}, {"response": {"not": "a list"}})
 
 
-def test_duplicate_ids_in_a_reply_are_not_silently_merged():
-    m = id_manifest("apifootball_fixtures", {"date": "2026-11-10"},
-                    {"response": [fixture_row(1), fixture_row(1)], "results": 2})
-    assert m["complete_retrieval_available"] is False and m["follow_up"]["reason"] == "DUPLICATE_FIXTURE_IDS_IN_REPLY"
-
-
-def test_hash_is_order_sensitive_and_value_exact():
-    a = [fixture_row(1), fixture_row(2)]
-    assert response_sha256(a) != response_sha256(list(reversed(a)))
-    b = json.loads(json.dumps(a))
-    b[0]["goals"]["home"] = 0  # null -> 0 is a change
-    assert response_sha256(a) != response_sha256(b)
-
-
-def test_above_the_read_cap_nothing_is_parsed_and_the_answer_says_not_complete():
-    provider = Provider({"2026-11-10": list(range(1, 1001))})  # ~600 KB > 512 KiB read cap
-    tools = boot(provider)
-    out = call(tools, "apifootball_fixtures", {"date": "2026-11-10"})
-    assert out["status"] == "PROVIDER_ERROR" and out["error"] == {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
-    assert out["navigation"]["complete_retrieval_available"] is False
-    assert out["navigation"]["reason"] == "READ_CAP_EXCEEDED_BEFORE_PARSE" and out["navigation"]["row_ids"] is None
-    assert out["network_calls_made"] == 1 and out["data"] is None
+def test_strategies_cover_the_scannable_paths():
+    from bridge.api_football.continuation import ROW_FIELDS
+    assert {s.path for s in STRATEGIES.values()} == set(ROW_FIELDS)
 
 
 def test_e2e_runner_treats_an_id_manifest_as_partial_never_pass():
     from scripts import mcp_e2e_render as e2e
-    m = id_manifest("apifootball_fixtures", {"date": "2026-11-10"},
-                    {"response": [fixture_row(1), fixture_row(2)], "results": 2})
+    m = id_manifest("apifootball_fixtures", {"date": D}, {"response": [fixture_row(1, D, 39), fixture_row(2, D, 61)], "results": 2})
     p = {"status": "PARTIAL_ID_MANIFEST", "data": m, "http_status": 200, "endpoint": "/fixtures"}
     assert e2e._classify(p) == "PARTIAL"
     facts = {}
-    assert e2e.check_id_manifest(p, facts) == [] and facts["follow_up_calls"] == 1
-    assert e2e.check_id_manifest({"status": "PARTIAL_ID_MANIFEST", "data": {"partial": True}}, {}) == \
-        ["ID_MANIFEST_NOT_EXPLICIT"]
+    assert e2e.check_id_manifest(p, facts) == [] and facts["follow_up_calls"] == 2
+    assert e2e.check_id_manifest({"status": "PARTIAL_ID_MANIFEST", "data": {"partial": True}}, {}) == ["ID_MANIFEST_NOT_EXPLICIT"]
     assert e2e.stop_reason_for(p) is None
