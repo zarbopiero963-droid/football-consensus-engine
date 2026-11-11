@@ -7,7 +7,7 @@ Tutti i browser sono **di proprietà del bridge**: il client riceve solo un `ses
 | Provider | Tool di creazione | Dove gira | Configurazione |
 |---|---|---|---|
 | Browser Use Cloud (default) | `browser_create(proxy_country_code?)` | cloud Browser Use, via CDP + Playwright | `BROWSER_USE_API_KEY` |
-| CloakBrowser (opzionale) | `browser_create_cloak()` | Chromium locale sull'istanza Render; id `cloak-*` | `CLOAKBROWSER_ENABLED=true`. Opzionali: `CLOAKBROWSER_HEADLESS` (default true), `CLOAKBROWSER_HUMANIZE` (default true), `CLOAKBROWSER_PROXY_URL`, `CLOAKBROWSER_MAX_LOCAL_SESSIONS` (default 1, massimo 4) |
+| CloakBrowser (opzionale) | `browser_create_cloak()` | Chromium locale sull'istanza Render; id `cloak-*` | `BROWSER_TOOLS_ENABLED=true` e `CLOAKBROWSER_ENABLED=true`, runtime preparato all'avvio (binario con SHA-256 verificato), sandbox Chromium attiva e uid separato verificati a ogni avvio (#189, `docs/certification/areas/cloak_hardening.md`). Opzionali: `CLOAKBROWSER_HEADLESS` (default true), `CLOAKBROWSER_HUMANIZE` (default true), `CLOAKBROWSER_PROXY_URL`, `CLOAKBROWSER_RUNTIME_PROFILE` (`pinned-146` default, `licensed` con `CLOAKBROWSER_BINARY_SHA256`), `CLOAKBROWSER_LAUNCHER`, `CLOAKBROWSER_MEMORY_KILL_MB` (solo verso il basso, massimo 448). Al massimo **una** sessione locale: `CLOAKBROWSER_MAX_LOCAL_SESSIONS` non ha più effetto |
 
 `browser_health` riporta se ogni provider è configurato e disponibile e lo stato del database, senza esporre segreti.
 

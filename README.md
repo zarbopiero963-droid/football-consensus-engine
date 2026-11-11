@@ -55,7 +55,7 @@ Lo schema `tools/list` espone tutti i 140 parametri di query della documentazion
 | `MCP_PUBLIC_HOST`, `MCP_OAUTH_PASSWORD`, `DATABASE_URL` | host pubblico, OAuth, PostgreSQL |
 | `FCB_DATABASE_TLS_VERIFY_FULL`, `PGSSLROOTCERT` | gate runtime D02: rifiuta DSN senza `sslmode=verify-full` o CA assente quando attivo |
 | `BROWSER_USE_API_KEY`, `BROWSER_STOP_LOCK_TIMEOUT_SECONDS`, `BROWSER_USE_EXPOSE_LIVE_URL` (default spento) | Browser Use |
-| `CLOAKBROWSER_ENABLED`, `CLOAKBROWSER_HEADLESS`, `CLOAKBROWSER_HUMANIZE`, `CLOAKBROWSER_MAX_LOCAL_SESSIONS`, `CLOAKBROWSER_PROXY_URL` | CloakBrowser |
+| `CLOAKBROWSER_ENABLED`, `CLOAKBROWSER_HEADLESS`, `CLOAKBROWSER_HUMANIZE`, `CLOAKBROWSER_PROXY_URL`, `CLOAKBROWSER_RUNTIME_PROFILE`, `CLOAKBROWSER_BINARY_SHA256`, `CLOAKBROWSER_LAUNCHER`, `CLOAKBROWSER_MEMORY_KILL_MB`, `CLOAKBROWSER_LICENSE_KEY` (segreto) | CloakBrowser (#189: sandbox verificata, uid separato, una sola sessione; vedi `docs/certification/areas/cloak_hardening.md`) |
 | `APIFOOTBALL_ENABLED`, `APIFOOTBALL_LIVE_AUTHORIZED`, `APIFOOTBALL_API_KEY` | API-FOOTBALL (entrambi i flag sono necessari per le chiamate reali) |
 | `APIFOOTBALL_MAX_RPM` (8), `APIFOOTBALL_MAX_DAILY_REQUESTS` (80), `APIFOOTBALL_MAX_CONCURRENCY` (2; in produzione 1) | limiti locali del coordinatore di quota, più restrittivi del piano del provider |
 | `APIFOOTBALL_CACHE_ENABLED`, `APIFOOTBALL_CIRCUIT_BREAKER_ENABLED` | resilienza |

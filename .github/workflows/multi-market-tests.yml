@@ -47,6 +47,61 @@ jobs:
           FCB_CHROMIUM_PROFILE: native
         run: pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py tests/test_oauth_consent_redirect_chromium.py
 
+  cloak-hardening-chromium:
+    # #189: CloakBrowser hardening on REAL full Chrome and on the pinned keyless Cloak 146 binary, with
+    # Chromium's sandbox ON (never --no-sandbox), as the non-root runner uid. Offline: loopback servers
+    # only; the Cloak binary is fetched from its public GitHub release (no licence key, no secret).
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      FCB_REQUIRE_CHROMIUM: "1"
+      CLOAKBROWSER_AUTO_UPDATE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor; Chromium's namespace sandbox
+      # needs them (test runner setting only; production is unaffected).
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Locate full Chrome and fetch the pinned Cloak binary (SHA-256 checked against the bridge pin)
+        run: |
+          full=$(find ~/.cache/ms-playwright -path '*chromium-*/chrome-linux*/chrome' -type f | head -1)
+          cloak=$(env -u CLOAKBROWSER_LICENSE_KEY python -c "from cloakbrowser import ensure_binary; print(ensure_binary(browser_version='146.0.7680.177.5'))")
+          pin=$(python -c "from bridge.browser_use import CLOAK_PROFILES; print(CLOAK_PROFILES['pinned-146'].sha256)")
+          echo "$pin  $cloak" | sha256sum -c -
+          echo "FULL_CHROME=$full" >> "$GITHUB_ENV"
+          echo "CLOAK_146=$cloak" >> "$GITHUB_ENV"
+      - name: Cloak hardening tests (full Chrome)
+        run: FCB_CLOAK_CHROMIUM="$FULL_CHROME" pytest -q tests/test_cloak_launch_hardening.py tests/test_browser_error_codes.py
+      - name: Cloak hardening tests (Cloak 146)
+        run: FCB_CLOAK_CHROMIUM="$CLOAK_146" pytest -q tests/test_cloak_launch_hardening.py
+      - name: SSRF suites on full Chrome with production Cloak launch options (lna_off, then native)
+        run: |
+          FCB_CLOAK_CHROMIUM="$FULL_CHROME" FCB_CHROMIUM_PROFILE=lna_off pytest -q tests/test_browser_capability_guard_chromium.py
+          FCB_CLOAK_CHROMIUM="$FULL_CHROME" FCB_CHROMIUM_PROFILE=native pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py
+      # On the Cloak 146 binary four tests observe binary behaviour, not the bridge, and are deselected
+      # ONLY here (they run on full Chrome above): new WebSocket() throws instead of a CSP violation
+      # (positive_controls[local], websocket_guard_allows_public...: still refused, nothing reaches
+      # internal: test_cloak_websockets_never_reach_internal_whatever_the_binary_does); the binary issues
+      # no speculation-rules request (the strict-xfail residual passes); WebRTC STUN does not fire even
+      # with the guards off (the RED control is vacuous there). See docs/certification/areas/cloak_hardening.md.
+      - name: SSRF suites on the Cloak 146 binary (lna_off, then native)
+        run: |
+          FCB_CLOAK_CHROMIUM="$CLOAK_146" FCB_CHROMIUM_PROFILE=lna_off pytest -q tests/test_browser_capability_guard_chromium.py \
+            --deselect "tests/test_browser_capability_guard_chromium.py::test_speculation_rules_residual_is_still_open" \
+            --deselect "tests/test_browser_capability_guard_chromium.py::test_control_webtransport_and_webrtc_fire_on_the_local_path_without_the_guards" \
+            --deselect "tests/test_browser_capability_guard_chromium.py::test_positive_controls[local]"
+          FCB_CLOAK_CHROMIUM="$CLOAK_146" FCB_CHROMIUM_PROFILE=native pytest -q tests/test_browser_ssrf_redirect_chromium.py tests/test_browser_ssrf_subresources_chromium.py tests/test_browser_capability_guard_chromium.py \
+            --deselect "tests/test_browser_capability_guard_chromium.py::test_positive_controls[local]" \
+            --deselect "tests/test_browser_ssrf_subresources_chromium.py::test_websocket_guard_allows_public_and_closes_internal"
+      - name: uid-split end to end (lab users, launcher, ambient caps as in deploy/cloak-uid-split)
+        run: |
+          sudo FCB_LAB_PYTHON="$(command -v python)" scripts/cloak_uid_split_lab.sh "$CLOAK_146"
+          sudo FCB_LAB_PYTHON="$(command -v python)" scripts/cloak_uid_split_lab.sh "$FULL_CHROME"
+
   decision-postgres:
     runs-on: ubuntu-latest
     services:
