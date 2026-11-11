@@ -176,7 +176,7 @@ Il ciclo completo è collaudabile con sole credenziali di prova, perché Toronto
 | "Cashout" / chiusura posizione | **no** (nessun endpoint documentato; il simulatore risponde 404) | cancel del residuo + hedge FULL, etichetta `CLOSE_POSITION_OURS_NOT_NATIVE_SX_BET` | `SIMULATED` | `test_simulated_close_position_is_ours_*` |
 | Stop-loss, take-profit | **no** | `bridge/sxbet/rules.py`: solo proposte | `SIMULATED` | `test_simulated_stop_loss_and_take_profit_*` |
 | Trailing stop | **no** | regola + picco persistito dal monitor | `SIMULATED`, anche dopo restart | `test_simulated_trailing_stop_monitor_persists_peak_across_restart` |
-| Ledger ancorato e lease | — | `signer/anchor.py` + migration 0008 | `VERIFIED` su PostgreSQL 16 reale usa e getta (locale) | `tests/integration/test_signer_e2e_postgres.py` (5) e `test_signer_ledger_anchor_postgres.py` (7) |
+| Ledger ancorato e lease | — | `signer/anchor.py` + migration signer 0001 (serie `signer`, WP-004) | `VERIFIED` su PostgreSQL 16 reale usa e getta (locale) | `tests/integration/test_signer_e2e_postgres.py` (5) e `test_signer_ledger_anchor_postgres.py` (7) |
 | Firma EIP-712 | contratto ufficiale | `signer/eip712.py` | vettori locali (#153); l'exchange simulato verifica la firma con la stessa libreria | `test_sxbet_eip712_official_vectors.py` |
 
 ### Scenari coperti (tutti con asserzioni sui numeri)
@@ -217,7 +217,7 @@ Una proposta con `executable`, `signed` o `submitted` diversi da `false` è un e
 
 ### PostgreSQL
 
-Migration 0008 e ledger ancorato sono stati collaudati su un **PostgreSQL 16 usa e getta** avviato in locale (cartella temporanea, solo socket Unix, nessun `DATABASE_URL` di produzione, cluster rimosso a fine prova). Collaudi:
+La migration signer 0001 (serie `signer`, WP-004) e il ledger ancorato sono stati collaudati su un **PostgreSQL 16 usa e getta** avviato in locale (cartella temporanea, solo socket Unix, nessun `DATABASE_URL` di produzione, cluster rimosso a fine prova). Collaudi:
 - migrate due volte (idempotente);
 - 6 scrittori concorrenti (un solo lease, poi takeover con fencing);
 - un processo reale ucciso tra fsync locale e ancora (ripartenza solo con `LedgerHeadAck` firmato dall'owner, nessuna riserva persa);

@@ -1,4 +1,4 @@
-"""Real PostgreSQL (THROWAWAY TEST_DATABASE_URL only): migration 0008 + anchored ledger under the SIMULATED e2e engine.
+"""Real PostgreSQL (THROWAWAY TEST_DATABASE_URL only): signer migration series 0001 (WP-004) + anchored ledger under the SIMULATED e2e engine.
 
 Never production credentials: the module is skipped without TEST_DATABASE_URL and refuses a URL equal to
 DATABASE_URL. Covers: idempotent migrate (twice), concurrent writers (lease + fencing), a real process killed
@@ -42,7 +42,10 @@ def _connect(**kw):
 
 @pytest.fixture(scope="module", autouse=True)
 def schema():
+    # WP-004: bridge and signer are independent series; the signer series is applied explicitly
+    # (throwaway test database only, never by the bridge runner).
     migrations.apply_migrations(_connect)
+    migrations.apply_migrations(_connect, series=migrations.SIGNER)
 
 
 def _store():
@@ -70,13 +73,17 @@ def _local_head(path):
 
 
 def test_migrate_twice_is_idempotent_and_tracked():
-    migrations.apply_migrations(_connect)
-    migrations.apply_migrations(_connect)
+    for _ in range(2):
+        migrations.apply_migrations(_connect)
+        migrations.apply_migrations(_connect, series=migrations.SIGNER)
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT version, name, sha256 FROM schema_migrations ORDER BY version")
-        rows = cur.fetchall()
-    expected = [(m.version, m.name, m.checksum) for m in migrations.load_migrations()]
-    assert rows == expected and rows[-1][1] == "0008_signer_ledger_anchor.sql"
+        cur.execute("SELECT version, name, sha256 FROM signer_schema_migrations ORDER BY version")
+        signer_rows = cur.fetchall()
+        cur.execute("SELECT count(*) FROM schema_migrations WHERE name LIKE '%%signer%%'")
+        signer_in_bridge = cur.fetchone()[0]
+    expected = [(m.version, m.name, m.checksum) for m in migrations.load_migrations(migrations.SIGNER.directory)]
+    assert signer_rows == expected and signer_rows[-1][1] == "0001_signer_ledger_anchor.sql"
+    assert signer_in_bridge == 0     # signer DDL is never tracked in the bridge series
 
 
 def test_concurrent_writers_exactly_one_lease_then_fenced_takeover(tmp_path):
