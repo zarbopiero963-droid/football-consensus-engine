@@ -31,7 +31,7 @@ _PASS_THROUGH_CODES = frozenset({
     "QUOTA_COORDINATOR_UNAVAILABLE", "QUOTA_RELEASE_FAILED",
     "QUOTA_RECONCILIATION_FAILED", "PROVIDER_INTERNAL_ERROR",
     "PROVIDER_REPLY_CONTRACT_INVALID", "PROVIDER_NO_REPLY", "PROVIDER_NOT_CONFIGURED",
-    "INVALID_STATUS_RESPONSE",
+    "INVALID_STATUS_RESPONSE", "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN",
 })
 
 
@@ -70,6 +70,10 @@ def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any
     if isinstance(exc, UnsupportedEndpoint):
         return {"code": "UNSUPPORTED_ENDPOINT"}
     safe_code = getattr(exc, "code", None)
+    if safe_code == "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN":
+        from .stream_scan import BOUND_NAMES
+        bound = getattr(exc, "bound", None)
+        return {"code": safe_code, "bound": bound if bound in BOUND_NAMES else None}
     if isinstance(safe_code, str) and safe_code in _PASS_THROUGH_CODES:
         return {"code": safe_code}
     if isinstance(exc, ValueError):
@@ -293,6 +297,22 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                         "minute": data.get("quota_remaining_provider_minute"),
                     }
 
+            if status == "REAL_API_RESPONSE" and isinstance(data.get("scan"), dict):
+                # FIX-01 option B: a reply above the read cap was scanned in a stream; only ids,
+                # counts, paging and a body hash exist. No provider data, no prices.
+                from .continuation import read_cap_navigation, scan_manifest
+                for with_ids in (True, False):
+                    manifest = scan_manifest(tool, params, data["scan"], with_row_ids=with_ids)
+                    if _encoded_size(manifest) <= _MANIFEST_BUDGET:
+                        _provenance("PARTIAL_ID_MANIFEST")
+                        result["data"] = manifest
+                        result["pagination"] = manifest["paging"]
+                        return result
+                _provenance("PAYLOAD_TOO_LARGE")
+                result["error"] = {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
+                result["manifest_error"] = {"code": "ID_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"}
+                result["navigation"] = read_cap_navigation(tool, params, reason="ID_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT")
+                return result
             if size > _MAX_MCP_DATA_BYTES and tool in ("apifootball_odds", "apifootball_live_odds"):
                 # Never pretend a truncated list of prices is complete (FIX-05).
                 from .continuation import response_sha256

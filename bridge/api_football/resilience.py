@@ -341,6 +341,7 @@ class ResilientFootballClient:
                             "quota_remaining_provider_day": reply.quota_remaining_day,
                             "quota_remaining_provider_minute": reply.quota_remaining_minute,
                             "data": deepcopy(reply.data),
+                            **({"scan": deepcopy(reply.scan)} if isinstance(getattr(reply, "scan", None), dict) else {}),
                             "warnings": [],
                             "provider_attempts": sent[0],
                         }

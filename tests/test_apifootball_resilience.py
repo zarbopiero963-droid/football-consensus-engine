@@ -200,8 +200,13 @@ def test_transport_aborts_oversized_response_before_accepting_data():
             base_url=OFFICIAL_BASE_URL,
             transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"x" * 524289)),
         ) as http:
-            with pytest.raises(ProviderDataError, match="PROVIDER_RESPONSE_TOO_LARGE"):
+            # FIX-01 option B (declared change): past the read cap a listing path is scanned in a
+            # stream instead of refused outright; garbage is still never accepted.
+            with pytest.raises(ProviderDataError, match="PROVIDER_INVALID_JSON"):
                 await InjectedHTTPXTransport(http, api_key=KEY).get("/fixtures")
+            # A path without a documented row id is still refused at the read cap.
+            with pytest.raises(ProviderDataError, match="PROVIDER_RESPONSE_TOO_LARGE"):
+                await InjectedHTTPXTransport(http, api_key=KEY).get("/fixtures/events")
     asyncio.run(go())
 
 

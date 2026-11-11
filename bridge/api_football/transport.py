@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import re
+import time
 from typing import Any, Mapping
 
 import httpx
@@ -17,6 +18,7 @@ import httpx
 from .catalog import documented_path
 from .config import OFFICIAL_BASE_URL
 from .client import UnsupportedEndpoint
+from .continuation import ROW_FIELDS
 from .errors import (
     ProviderUnavailable, ProviderHTTPError, ProviderDataError, ProviderDeclaredErrors, declared_error_keys,
 )
@@ -62,6 +64,13 @@ class ProviderReply:
     # The provider's own HTTP `Date` header (RFC 9110 IMF-fixdate, GMT), normalised to UTC ISO
     # 8601; None when absent or not in that exact form. Never the bridge clock.
     provider_date_utc: str | None = None
+
+
+@dataclass(frozen=True)
+class ScannedReply(ProviderReply):
+    """A reply above the read cap, scanned in a stream: ids, counts, paging and a body hash
+    only (stream_scan.IdScanner). `data` is empty: provider data is never kept or returned."""
+    scan: dict[str, Any] | None = None
 
 
 _IMF_FIXDATE = re.compile(
@@ -111,6 +120,37 @@ class InjectedHTTPXTransport:
             raise ValueError("Provider client must use pinned base origin")
         self._client = client
         self.__api_key = api_key
+        from .stream_scan import DEFAULT_LIMITS
+        self.scan_limits = DEFAULT_LIMITS
+        self.scan_clock = time.monotonic
+
+    def _scanner(self, fields):
+        from .stream_scan import IdScanner
+        return IdScanner(fields, limits=self.scan_limits, clock=self.scan_clock)
+
+    @staticmethod
+    def _scanned_reply(code: int, headers: httpx.Headers, scan: dict[str, Any], count: int) -> "ScannedReply":
+        if scan["errors_nonempty"]:
+            raise ProviderDeclaredErrors(
+                tuple(k if _PARAM.fullmatch(k) else "OTHER" for k in scan["error_keys"]) or ("OTHER",),
+                quota_remaining_day=_quota_header(headers, "x-ratelimit-requests-remaining"),
+                quota_remaining_minute=_quota_header(headers, "x-ratelimit-remaining"),
+            )
+        paging = scan["paging"]
+        if scan["paging_present"]:
+            current = paging.get("current") if isinstance(paging, dict) else None
+            total = paging.get("total") if isinstance(paging, dict) else None
+            in_range = type(current) is int and type(total) is int and 1 <= current <= total <= 100000
+            past_end = (type(current) is int and type(total) is int and 0 <= total < current <= 100000
+                        and not scan["rows"])
+            if not (in_range or past_end):
+                raise ProviderDataError("PROVIDER_INVALID_PAGINATION")
+        return ScannedReply(
+            status_code=code, data={}, received_at_utc=datetime.now(timezone.utc).isoformat(),
+            bytes_received=count,
+            quota_remaining_day=_quota_header(headers, "x-ratelimit-requests-remaining"),
+            quota_remaining_minute=_quota_header(headers, "x-ratelimit-remaining"),
+            provider_date_utc=provider_http_date(headers), scan=scan)
 
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
         path, checked = validated_request(path, params)
@@ -127,13 +167,29 @@ class InjectedHTTPXTransport:
                         raise ProviderUnavailable("PROVIDER_REDIRECT_REJECTED", retryable=False)
                     raise ProviderHTTPError(
                         code, retry_after_seconds=_retry_after(response.headers) if code == 429 else None)
-                chunks: list[bytes] = []
+                chunks: list[bytes] | None = []
                 count = 0
+                scanner = None
+                cap = _MAX_ODDS_BODY if path in _LARGE_BODY_PATHS else _MAX_BODY
                 async for chunk in response.aiter_bytes():
                     count += len(chunk)
-                    if count > (_MAX_ODDS_BODY if path in _LARGE_BODY_PATHS else _MAX_BODY):
-                        raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
-                    chunks.append(chunk)
+                    if scanner is not None:
+                        scanner.feed(chunk)
+                    elif count > cap:
+                        # FIX-01 option B: the read cap stays the in-memory limit. Past it, the
+                        # body is streamed through a bounded id scan and never buffered whole.
+                        fields = ROW_FIELDS.get(path)
+                        if not fields:
+                            raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
+                        scanner = self._scanner(fields)
+                        for buffered in chunks:
+                            scanner.feed(buffered)
+                        chunks = None
+                        scanner.feed(chunk)
+                    else:
+                        chunks.append(chunk)
+                if scanner is not None:
+                    return self._scanned_reply(code, response.headers, scanner.finish(), count)
                 try:
                     data = json.loads(b"".join(chunks))
                 except (UnicodeDecodeError, ValueError):
