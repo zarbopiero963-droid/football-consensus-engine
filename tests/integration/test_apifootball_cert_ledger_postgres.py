@@ -375,6 +375,9 @@ def _acl(connect):
             "SELECT c.relname, a.grantee::regrole::text AS grantee, a.privilege_type FROM pg_class c "
             "JOIN pg_namespace n ON n.oid = c.relnamespace, LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a "
             "WHERE n.nspname = 'public' AND c.relkind = 'r' AND a.grantee <> c.relowner "
+            "UNION ALL SELECT c.relname || '.' || t.attname, a.grantee::regrole::text, a.privilege_type "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute t ON t.attrelid = c.oid, "
+            "LATERAL aclexplode(t.attacl) a WHERE n.nspname = 'public' AND t.attacl IS NOT NULL "
             "ORDER BY 1, 2, 3").fetchall()
 
 
@@ -385,14 +388,27 @@ def _as_app(db):
 
 
 def _app_ledger_privileges(db):
+    """Table-level privileges, plus the columns fcb_app may INSERT (column-level) and UPDATE."""
     with _as_app(db) as conn:
-        return {t: {p: conn.execute("SELECT has_table_privilege('fcb_app', %s, %s) AS ok", (t, p)).fetchone()["ok"]
-                    for p in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")}
-                for t in LEDGER_TABLES}
+        out = {}
+        for t in LEDGER_TABLES:
+            privs = {p: conn.execute("SELECT has_table_privilege('fcb_app', %s, %s) AS ok", (t, p)).fetchone()["ok"]
+                     for p in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")}
+            for p in ("INSERT", "UPDATE", "REFERENCES"):
+                privs[p + "_COLUMNS"] = tuple(r["attname"] for r in conn.execute(
+                    "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass AND attnum > 0 AND NOT attisdropped "
+                    "AND has_column_privilege('fcb_app', attrelid, attnum, %s) ORDER BY attnum", (t, p)))
+            out[t] = privs
+        return out
 
 
-EXPECTED_APP = {t: {"SELECT": True, "INSERT": True, "UPDATE": False, "DELETE": False, "TRUNCATE": False,
-                    "REFERENCES": False, "TRIGGER": False} for t in LEDGER_TABLES}
+WRITABLE = {"api_football_cert_campaigns": ("campaign_id", "budget", "plan_sha256"),
+            "api_football_cert_campaign_attempts": ("campaign_id", "seq", "call_id"),
+            "api_football_cert_campaign_outcomes": ("campaign_id", "seq", "outcome", "http_status")}
+# Review #199 P3-2: SELECT on the table, INSERT only on the writer's columns (never the audit stamps).
+EXPECTED_APP = {t: {"SELECT": True, "INSERT": False, "UPDATE": False, "DELETE": False, "TRUNCATE": False,
+                    "REFERENCES": False, "TRIGGER": False, "INSERT_COLUMNS": WRITABLE[t], "UPDATE_COLUMNS": (),
+                    "REFERENCES_COLUMNS": ()} for t in LEDGER_TABLES}
 
 
 def _app_cannot_change_the_ledger(db):
@@ -416,6 +432,55 @@ def _app_cannot_change_the_ledger(db):
         assert conn.execute("SELECT pg_has_role('fcb_app', 'fcb_migrator', 'MEMBER') AS m").fetchone()["m"] is False
 
 
+def _app_cannot_forge_timestamps_or_shadow_the_budget(db, admin_connect):
+    """Review #199 P3-1/P3-2 as the real fcb_app:
+    * a pg_temp.api_football_cert_campaigns (budget 78) first in search_path does not lift the real
+      budget: the guard reads the ledger through the firing table's schema, never the caller's path;
+    * the audit timestamps cannot be set (INSERT and COPY: no column privilege), and a writer that
+      does hold the privilege (the owner) gets them overwritten server-side."""
+    campaign = "camp-shadow-" + uuid.uuid4().hex[:6]
+    with _as_app(db) as conn:
+        conn.execute("INSERT INTO public.api_football_cert_campaigns (campaign_id, budget, plan_sha256) "
+                     "VALUES (%s, 1, %s)", (campaign, SHA))
+        conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                     "VALUES (%s, 1, 'C01')", (campaign,))
+    with pytest.raises(psycopg.errors.RaiseException, match="API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED"):
+        with _as_app(db) as conn:
+            conn.execute("CREATE TEMP TABLE api_football_cert_campaigns (campaign_id text, budget int)")
+            conn.execute("CREATE TEMP TABLE api_football_cert_campaign_attempts (campaign_id text, seq int)")
+            conn.execute("INSERT INTO pg_temp.api_football_cert_campaigns VALUES (%s, 78)", (campaign,))
+            conn.execute("SET search_path = pg_temp, public")
+            conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                         "VALUES (%s, 2, 'C02')", (campaign,))
+    for statement in (
+            "INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id, reserved_at) "
+            f"VALUES ('{campaign}', 2, 'C02', '2000-01-01')",
+            "INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256, created_at) "
+            f"VALUES ('camp-forged-0001', 1, '{SHA}', '2000-01-01')",
+            "INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status, recorded_at) "
+            f"VALUES ('{campaign}', 1, 'HTTP_RESPONSE', 200, '2000-01-01')"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with _as_app(db) as conn:
+                conn.execute(statement)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        with _as_app(db) as conn:
+            with conn.cursor().copy("COPY api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status, "
+                                    "recorded_at) FROM STDIN") as copy:
+                copy.write_row((campaign, 1, "HTTP_RESPONSE", 200, "2000-01-01"))
+    with admin_connect() as conn:  # a writer allowed to name the column: the value is overwritten
+        with conn.cursor().copy("COPY api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status, "
+                                "recorded_at) FROM STDIN") as copy:
+            copy.write_row((campaign, 1, "HTTP_RESPONSE", 200, "2000-01-01"))
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256, created_at) "
+                     "VALUES (%s, 1, %s, '2000-01-01')", (campaign + "-o",  SHA))
+        stamps = conn.execute(
+            "SELECT (SELECT created_at FROM api_football_cert_campaigns WHERE campaign_id = %s) AS c, "
+            "(SELECT reserved_at FROM api_football_cert_campaign_attempts WHERE campaign_id = %s) AS r, "
+            "(SELECT recorded_at FROM api_football_cert_campaign_outcomes WHERE campaign_id = %s) AS o",
+            (campaign + "-o", campaign, campaign)).fetchone()
+        assert all(v.year >= 2026 for v in stamps.values()), stamps
+
+
 def _app_can_append(db, campaign):
     def connect():
         return _as_app(db)
@@ -437,6 +502,7 @@ def test_wp009_grant_files_then_0010_grant_then_rerun_keep_fcb_app_at_select_ins
     assert _app_ledger_privileges(db) == EXPECTED_APP
     assert _app_can_append(db, "camp-wp009-p1-01")[0]["state"] == "RESPONSE_RECEIVED"
     _app_cannot_change_the_ledger(db)
+    _app_cannot_forge_timestamps_or_shadow_the_budget(db, connect)
     _run_file(connect, "grant_bridge_runtime.sql")  # phase 1 re-run
     assert _acl(connect) == phase1
     for name in ("prepare_bridge_roles.sql", "finalize_bridge_privileges.sql"):
@@ -455,6 +521,7 @@ def test_wp009_grant_files_then_0010_grant_then_rerun_keep_fcb_app_at_select_ins
     assert _acl(connect) == phase2 and _app_ledger_privileges(db) == EXPECTED_APP
     assert [s["state"] for s in _app_can_append(db, "camp-wp009-p2-01")] == ["RESPONSE_RECEIVED"]
     _app_cannot_change_the_ledger(db)
+    _app_cannot_forge_timestamps_or_shadow_the_budget(db, connect)
     with pytest.raises(psycopg.errors.RaiseException):  # even the owner: the triggers refuse
         with connect() as conn:
             conn.execute("SET ROLE fcb_migrator")
@@ -508,4 +575,35 @@ def test_wp009_verify_model_differential_of_0009_and_0010(wp009):
 
 
 VERIFY_CODES_ADDED_BY_0009 = {"unexpected_relation_grant"}  # PR #198: fcb_app S I U D on oauth_throttle_buckets
-VERIFY_CODES_ADDED_BY_0010 = {"expression_functions", "routine_set", "trigger_set"}  # 2 functions, 4 triggers
+# 0010: 3 functions (pinned search_path), 7 triggers, clock_timestamp() defaults, and column-level
+# INSERT grants (review #199 P3-2; the WP-009 model allows no column privilege).
+VERIFY_CODES_ADDED_BY_0010 = {"column_grant", "expression_functions", "routine_set", "trigger_set"}
+
+
+def test_readiness_requires_all_three_0010_tables_once_recorded(schema, monkeypatch):
+    """Review #199 P3-3: 0010 recorded and its _outcomes table missing is MISSING_TABLES (3/3)."""
+    from bridge.schema_readiness import evaluate
+    name, connect = schema
+    migrations.apply_migrations(connect)
+    monkeypatch.delenv("MCP_OAUTH_THROTTLE_MODE", raising=False)
+    assert evaluate(connect)["state"] == "READY"
+    with connect() as conn:
+        conn.execute("DROP TABLE api_football_cert_campaign_outcomes")
+    result = evaluate(connect)
+    assert result["state"] == "MISSING_TABLES" and result["missing_tables"] == ["api_football_cert_campaign_outcomes"]
+
+
+def test_stamp_and_guard_hold_with_a_hostile_search_path_in_any_schema(schema):
+    """Review #199 P3-1 independent of roles: a temporary shadow table never feeds the guard."""
+    name, connect = schema
+    migrations.apply_migrations(connect)
+    with connect() as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256) VALUES ('camp-temp-0001', 1, %s)", (SHA,))
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-temp-0001', 1, 'C01')")
+    with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):
+        with connect() as conn:
+            conn.execute("CREATE TEMP TABLE api_football_cert_campaigns (campaign_id text, budget int)")
+            conn.execute("INSERT INTO pg_temp.api_football_cert_campaigns VALUES ('camp-temp-0001', 78)")
+            conn.execute(SQL("SET search_path = pg_temp, {}").format(Identifier(name)))
+            conn.execute(SQL("INSERT INTO {}.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                             "VALUES ('camp-temp-0001', 2, 'C02')").format(Identifier(name)))

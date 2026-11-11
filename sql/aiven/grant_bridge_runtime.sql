@@ -42,19 +42,26 @@ BEGIN
 END $throttle$;
 
 -- AF-13 API-FOOTBALL certification campaign ledger (bridge 0010, applied by its own owner-gated
--- workflow): SELECT and INSERT only, granted only where 0010 is already applied, so on a 0001-0009
--- database this block changes nothing. Never UPDATE, DELETE, TRUNCATE, REFERENCES or TRIGGER (the
--- 0010 triggers also refuse UPDATE, DELETE and TRUNCATE for every role). Same grant as
--- apifootball_cert_ledger_0010_grant.sql, so a re-run of this workflow keeps the ledger usable.
---   api_football_cert_campaigns          S I  scripts/apifootball_cert_batch1.py PostgresCampaignLedger.open
---   api_football_cert_campaign_attempts  S I  PostgresCampaignLedger.reserve (write-ahead)
---   api_football_cert_campaign_outcomes  S I  PostgresCampaignLedger.record_outcome
+-- workflow): SELECT on the tables and INSERT on the writer's columns only (column-level: never the
+-- audit timestamps), granted only where 0010 is already applied, so on a 0001-0009 database this
+-- block changes nothing. Never UPDATE, DELETE, TRUNCATE, REFERENCES or TRIGGER (the 0010 triggers
+-- also refuse UPDATE, DELETE and TRUNCATE for every role). Same grant as
+-- apifootball_cert_ledger_0010_grant.sql. NOTE: the WP-009 roles workflow today refuses any database
+-- whose schema_migrations differs from 0001-0008 (pinned counts, rows and verify model), so this
+-- block is NOT reached through that workflow on a 0009/0010 database until the WP-009 verify model
+-- is updated (dedicated PR, owner decision); it keeps a manual or future re-run consistent.
+--   api_football_cert_campaigns          S, I(campaign_id, budget, plan_sha256)        scripts/apifootball_cert_batch1.py PostgresCampaignLedger.open
+--   api_football_cert_campaign_attempts  S, I(campaign_id, seq, call_id)               PostgresCampaignLedger.reserve (write-ahead)
+--   api_football_cert_campaign_outcomes  S, I(campaign_id, seq, outcome, http_status)  PostgresCampaignLedger.record_outcome
 DO $certledger$
 BEGIN
     IF pg_catalog.to_regclass('public.api_football_cert_campaigns') IS NOT NULL
        AND pg_catalog.to_regclass('public.api_football_cert_campaign_attempts') IS NOT NULL
        AND pg_catalog.to_regclass('public.api_football_cert_campaign_outcomes') IS NOT NULL THEN
-        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.api_football_cert_campaigns, '
+        EXECUTE 'GRANT SELECT ON TABLE public.api_football_cert_campaigns, '
                 'public.api_football_cert_campaign_attempts, public.api_football_cert_campaign_outcomes TO fcb_app';
+        EXECUTE 'GRANT INSERT (campaign_id, budget, plan_sha256) ON TABLE public.api_football_cert_campaigns TO fcb_app';
+        EXECUTE 'GRANT INSERT (campaign_id, seq, call_id) ON TABLE public.api_football_cert_campaign_attempts TO fcb_app';
+        EXECUTE 'GRANT INSERT (campaign_id, seq, outcome, http_status) ON TABLE public.api_football_cert_campaign_outcomes TO fcb_app';
     END IF;
 END $certledger$;

@@ -126,6 +126,8 @@ Se la 0009 non risultasse applicata in produzione, la 0010 non si applica. Una e
   - `api_football_cert_campaign_attempts`: `seq` 1..78, chiave `(campaign_id, seq)`;
   - `api_football_cert_campaign_outcomes`: al massimo un esito per tentativo, con FK sul tentativo;
 - trigger append-only su tutte e tre: UPDATE, DELETE e TRUNCATE sono rifiutati per **ogni** ruolo, owner compreso;
+- timestamp di audit (`created_at`, `reserved_at`, `recorded_at`) imposti dal server: un trigger `BEFORE INSERT` li sovrascrive con `clock_timestamp()`, anche via COPY;
+- le tre funzioni hanno `SET search_path = pg_catalog, pg_temp` e raggiungono le tabelle solo tramite lo schema della tabella che le ha attivate (`TG_TABLE_SCHEMA`, cioè `public` in produzione). Una tabella `pg_temp.api_football_cert_campaigns` con budget più alto non può quindi aggirare il budget reale;
 - trigger di budget: `seq` deve essere il numero successivo ed entro il budget.
 
 **Tentativo PRENOTATO e richiesta INVIATA sono distinti.** La prenotazione è committata prima dell'invio. L'esito si registra dopo lo scambio, in una tabella separata e append-only, senza nessun UPDATE. Ogni tentativo prenotato finisce in uno di tre stati:
@@ -143,21 +145,24 @@ Un tentativo `RESERVED_UNKNOWN` consuma budget e non viene mai ritentato né rec
 
 Se la scrittura dell'esito fallisce, il tentativo resta `RESERVED_UNKNOWN`: è la scelta conservativa.
 
-**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Il runtime non applica mai le migration, e un test lo verifica.
+Una chiamata che non ha prenotato nulla (rifiutata prima dell'invio per autorizzazione, ledger o budget, oppure fermata prima dal client, per esempio `CIRCUIT_OPEN`) non ha inviato nulla. È `NOT_TESTED` con `outcome=REFUSED_BEFORE_SEND` e `refusal_code`, mai `ERROR`. Le chiamate con almeno un tentativo prenotato hanno `outcome=ATTEMPTED`.
 
-**Privilegi (AF-12, decisione owner).** `fcb_app` ha solo `SELECT` e `INSERT` sulle tre tabelle. Non ha UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ALTER o DROP.
+**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Una volta registrata la 0010, sono richieste tutte e tre le tabelle. Il runtime non applica mai le migration, e un test lo verifica.
+
+**Privilegi (AF-12, decisione owner).** `fcb_app` ha `SELECT` sulle tre tabelle e `INSERT` **a livello di colonna** solo sulle colonne che scrive, mai sui timestamp di audit. Non ha UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ALTER o DROP.
 - `fcb_app` non è owner delle tabelle (lo è `fcb_migrator`) e non è membro di `fcb_migrator`. Quindi non può fare ALTER né disabilitare i trigger, e non può impostare `session_replication_role`.
 - I trigger rifiutano le modifiche anche a chi ha i privilegi, owner compreso.
 - Limite dichiarato: `fcb_app` è **condiviso** con gli altri componenti del runtime. Un ruolo dedicato al ledger resta un obiettivo futuro.
 
 **Compatibilità WP-009 (AF-13, modifica intenzionale).** `grant_bridge_runtime.sql` e `finalize_bridge_privileges.sql` hanno ora un blocco `DO $certledger$` identico.
-- Il blocco concede `SELECT, INSERT` sulle tre tabelle **solo se esistono**; su un database 0001-0009 non cambia nulla, come il blocco della 0009.
+- Il blocco concede gli stessi privilegi del file di grant 0010 (`SELECT` più `INSERT` per colonna) **solo se le tabelle esistono**; su un database 0001-0009 non cambia nulla, come il blocco della 0009.
 - Gli SHA pinnati in `.github/workflows/fcb-aiven-defaultdb-roles.yml` sono aggiornati.
-- Una riesecuzione dei file del workflow ruoli dopo la 0010 lascia quindi i privilegi del ledger invariati.
+- Una riesecuzione dei file di grant WP-009 dopo la 0010 lascia i privilegi del ledger invariati.
+- **Però** oggi il workflow ruoli WP-009 rifiuta qualunque database con `schema_migrations` diverso da 0001-0008. Su un database 0009/0010 quindi il blocco **non viene raggiunto tramite il workflow**, finché il modello di verifica WP-009 non viene aggiornato (PR dedicata, decisione owner). Fino ad allora l'unico percorso di grant è il file 0010.
 
 **Limite dichiarato del modello WP-009 (non cambiato in questa PR).** Il modello di verifica `verify_bridge_roles.sql` resta quello di 0001-0008 (routine, trigger e allowlist pinnati). Lo stesso vale per i conteggi e le righe `schema_migrations` pinnati nel workflow ruoli.
 - Su un database con 0009 il modello segnala in più `unexpected_relation_grant`; questo viene da #198.
-- La 0010 aggiunge `routine_set`, `trigger_set` ed `expression_functions`: due funzioni, quattro trigger e i default `clock_timestamp()`.
+- La 0010 aggiunge `routine_set`, `trigger_set`, `expression_functions` e `column_grant`: tre funzioni con `search_path` fissato, sette trigger, i default `clock_timestamp()` e i grant `INSERT` per colonna.
 - Il workflow ruoli, su un database 0009/0010, **rifiuta prima di scrivere** (fail-closed).
 - Aggiornare quel modello è una decisione owner separata.
 
@@ -169,7 +174,7 @@ Se la scrittura dell'esito fallisce, il tentativo resta `RESERVED_UNKNOWN`: è l
 - backup schema-only prima della scrittura;
 - SQL pinnato SHA-256: `aiven_migrations_bridge_0001_0010.sql`, `apifootball_cert_ledger_0010_require_0009.sql` e `apifootball_cert_ledger_0010_grant.sql`;
 - una transazione eseguita due volte;
-- grant a `fcb_app`: solo `SELECT` e `INSERT`, verificato nella stessa transazione.
+- grant a `fcb_app`: `SELECT` e `INSERT` per colonna, con l'insieme esatto delle colonne verificato nella stessa transazione.
 
 L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restano azioni dell'owner, **non autorizzate**; nulla li esegue in automatico.
 
@@ -183,7 +188,9 @@ L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restan
   - runner senza 0010 (`CAMPAIGN_LEDGER_MIGRATION_REQUIRED`, 0 richieste);
   - **processi uccisi** tra prenotazione e invio, e tra invio ed esito: `RESERVED_UNKNOWN`, budget consumato, chiamata non ritentata;
   - esiti append-only;
-  - **`fcb_app` reale** nella sequenza dei file WP-009: fase 1, sua riesecuzione, fase 2, grant 0010 come `fcb_migrator`, riesecuzione della fase 2. I privilegi restano identici e solo S I; UPDATE, DELETE, TRUNCATE, ALTER, DISABLE TRIGGER, DROP e `session_replication_role` sono rifiutati;
+  - **`fcb_app` reale** nella sequenza dei file WP-009: fase 1, sua riesecuzione, fase 2, grant 0010 come `fcb_migrator`, riesecuzione della fase 2. I privilegi restano identici; UPDATE, DELETE, TRUNCATE, ALTER, DISABLE TRIGGER, DROP e `session_replication_role` sono rifiutati;
+  - come `fcb_app`: una tabella ombra in `pg_temp` non aggira il budget, e i timestamp di audit non si impostano né via INSERT né via COPY; per chi ha il privilegio, il valore viene sovrascritto;
+  - readiness: con la 0010 registrata, la mancanza della tabella `_outcomes` dà `MISSING_TABLES`;
   - i file WP-009 su un database 0009 senza 0010, senza errori;
   - il controllo 0009 (rifiuta 0008, accetta 0009 e 0010);
   - il differenziale del modello di verifica WP-009.

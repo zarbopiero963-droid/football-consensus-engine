@@ -1129,7 +1129,7 @@ DO '
     BEGIN
         SELECT * INTO applied FROM schema_migrations WHERE version=10;
         IF FOUND THEN
-            IF applied.name <> ''0010_apifootball_cert_campaign_ledger.sql'' OR applied.sha256 <> ''1cd83347bad670cf7ce83b6772c02c1a9653a2c6ac73d04d86e715b79ae15703'' THEN
+            IF applied.name <> ''0010_apifootball_cert_campaign_ledger.sql'' OR applied.sha256 <> ''0c4d7651cda68cd78c2b2c068a29dbfc3e4c9e381a5aa6a5276ea8b6ddd143c9'' THEN
                 RAISE EXCEPTION ''Migration 10 checksum/name drift'';
             END IF;
         ELSE
@@ -1177,11 +1177,18 @@ CREATE TABLE IF NOT EXISTS api_football_cert_campaign_outcomes (
     CHECK ((outcome = ''''HTTP_RESPONSE'''') = (http_status IS NOT NULL))
 );
 
+-- Every 0010 function pins its search_path (pg_catalog first, the session''''s temporary schema
+-- last) and reaches the ledger tables only through the schema of the table that fired it
+-- (TG_TABLE_SCHEMA: `public` in production, a throwaway schema in tests). A caller can therefore
+-- never redirect a check to an object of its own, e.g. a pg_temp.api_football_cert_campaigns with
+-- a larger budget, or to a planted operator or function.
+
 -- Rows never change and are never removed (campaign budget, attempts and outcomes alike). These
 -- statement-level triggers refuse UPDATE, DELETE and TRUNCATE for EVERY role, the table owner
 -- included; the runtime role holds no UPDATE/DELETE/TRUNCATE privilege either and, not being the
 -- owner, cannot ALTER the tables or DISABLE these triggers.
-CREATE FUNCTION api_football_cert_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION api_football_cert_reject_mutation() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     RAISE EXCEPTION ''''API_FOOTBALL_CERT_LEDGER_APPEND_ONLY'''';
 END;
@@ -1193,21 +1200,50 @@ CREATE TRIGGER api_football_cert_attempts_immutable BEFORE UPDATE OR DELETE OR T
 CREATE TRIGGER api_football_cert_outcomes_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
     ON api_football_cert_campaign_outcomes FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
 
+-- Audit timestamps are the server''''s, never the writer''''s: whatever an INSERT or COPY supplies,
+-- created_at / reserved_at / recorded_at are overwritten with clock_timestamp(). (The runtime role
+-- also has no INSERT privilege on these columns: column-level grant, see the grant files.)
+CREATE FUNCTION api_football_cert_stamp() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_campaigns'''' THEN
+        NEW.created_at := pg_catalog.clock_timestamp();
+    ELSIF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_campaign_attempts'''' THEN
+        NEW.reserved_at := pg_catalog.clock_timestamp();
+    ELSIF TG_TABLE_NAME OPERATOR(pg_catalog.=) ''''api_football_cert_campaign_outcomes'''' THEN
+        NEW.recorded_at := pg_catalog.clock_timestamp();
+    ELSE
+        RAISE EXCEPTION ''''API_FOOTBALL_CERT_STAMP_UNKNOWN_TABLE'''';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER api_football_cert_campaigns_stamp BEFORE INSERT ON api_football_cert_campaigns
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+CREATE TRIGGER api_football_cert_attempts_stamp BEFORE INSERT ON api_football_cert_campaign_attempts
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+CREATE TRIGGER api_football_cert_outcomes_stamp BEFORE INSERT ON api_football_cert_campaign_outcomes
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
+
 -- The database enforces the budget too: seq must be the next number and within the campaign''''s
 -- budget. Concurrent reservations of one campaign are serialized by the runner''''s transaction-scoped
 -- advisory lock; the primary key (campaign_id, seq) is the backstop (a racing duplicate seq fails).
-CREATE FUNCTION api_football_cert_attempt_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION api_football_cert_attempt_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     cap INTEGER;
     used INTEGER;
 BEGIN
-    SELECT c.budget INTO cap FROM api_football_cert_campaigns c
-        WHERE c.campaign_id = NEW.campaign_id;
+    EXECUTE pg_catalog.format(''''SELECT c.budget FROM %I.api_football_cert_campaigns c ''''
+                              ''''WHERE c.campaign_id OPERATOR(pg_catalog.=) $1'''', TG_TABLE_SCHEMA)
+        INTO cap USING NEW.campaign_id;
     IF cap IS NULL THEN
         RAISE EXCEPTION ''''API_FOOTBALL_CERT_CAMPAIGN_NOT_OPEN'''';
     END IF;
-    SELECT count(*) INTO used FROM api_football_cert_campaign_attempts a WHERE a.campaign_id = NEW.campaign_id;
-    IF used >= cap OR NEW.seq <> used + 1 THEN
+    EXECUTE pg_catalog.format(''''SELECT pg_catalog.count(*) FROM %I.api_football_cert_campaign_attempts a ''''
+                              ''''WHERE a.campaign_id OPERATOR(pg_catalog.=) $1'''', TG_TABLE_SCHEMA)
+        INTO used USING NEW.campaign_id;
+    IF (used OPERATOR(pg_catalog.>=) cap) OR (NEW.seq OPERATOR(pg_catalog.<>) (used OPERATOR(pg_catalog.+) 1)) THEN
         RAISE EXCEPTION ''''API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED'''';
     END IF;
     RETURN NEW;
@@ -1217,6 +1253,6 @@ CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON api_football_ce
     FOR EACH ROW EXECUTE FUNCTION api_football_cert_attempt_guard();
 '';
             INSERT INTO schema_migrations(version,name,sha256)
-            VALUES (10,''0010_apifootball_cert_campaign_ledger.sql'',''1cd83347bad670cf7ce83b6772c02c1a9653a2c6ac73d04d86e715b79ae15703'');
+            VALUES (10,''0010_apifootball_cert_campaign_ledger.sql'',''0c4d7651cda68cd78c2b2c068a29dbfc3e4c9e381a5aa6a5276ea8b6ddd143c9'');
         END IF;
     END;';

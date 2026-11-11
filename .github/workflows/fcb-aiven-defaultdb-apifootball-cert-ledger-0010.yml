@@ -3,7 +3,8 @@ name: FCB Aiven defaultdb API-FOOTBALL cert ledger 0010 (owner-gated)
 # AF-07 API-FOOTBALL certification campaign ledger. Manual only. Applies bridge migration 0010
 # (api_football_cert_campaigns, _attempts, _outcomes: additive, dedicated, append-only; the quota
 # coordinator tables are untouched) to the PRODUCTION database `defaultdb` as fcb_migrator, grants
-# fcb_app SELECT, INSERT on the three tables only, and asserts the end state. Prepared, NOT run;
+# fcb_app SELECT + column-level INSERT (never the audit timestamps) on the three tables only, and
+# asserts the end state. Prepared, NOT run;
 # applying it is an owner action (AF-14), nothing dispatches it automatically.
 # AF-11: requires bridge 0009 (PR #198) to be ALREADY APPLIED in production. Verified twice: the
 # read-only precheck (rows exactly 0001-0009 or 0001-0010) and, inside the write transaction before
@@ -61,9 +62,9 @@ jobs:
       SCRIPT: sql/aiven/aiven_migrations_bridge_0001_0010.sql
       # SHA-256 of every SQL file this workflow runs (tests/test_apifootball_cert_ledger_workflow.py).
       EXPECTED_SQL_SHA256: |
-        sql/aiven/aiven_migrations_bridge_0001_0010.sql=7149462daee41b0ac89b53540e6494b08149a3b139bb17f2809af099428056e1
+        sql/aiven/aiven_migrations_bridge_0001_0010.sql=ba3bcbc52c7c403f5d10900e79bd816b998c7f9e4b234f8552416adb0c1002d8
         sql/aiven/apifootball_cert_ledger_0010_require_0009.sql=6ce04bb491458a0e94b96cdb587b43563014b2bdcecdf6992fa78724a1092a20
-        sql/aiven/apifootball_cert_ledger_0010_grant.sql=7b5aeb284057b724bdc074f9d9c39e6d6de393eb2927332e02c627aafa036c07
+        sql/aiven/apifootball_cert_ledger_0010_grant.sql=4678810924ef4efd349318241eac97ca921857ec82ef6288ec21b7cbcedadd58
       PGCONNECT_TIMEOUT: '15'
       # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
       EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
@@ -266,4 +267,4 @@ jobs:
           # History before 0010 is untouched (names, checksums and applied_at).
           test "$(printf '%s\n' "$second" | head -n 9)" = "$(head -n 9 "$BACKUP_DIR/schema_migrations_before.txt")" \
             || [ "$PRECHECK_STATE" = "BRIDGE_0001_0010" ] || { echo "::error::0001-0009 history changed"; exit 1; }
-          echo "## 0010: PASS (state before: $PRECHECK_STATE; run 2 no-op; fcb_app S I on the three cert ledger tables only)" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 0010: PASS (state before: $PRECHECK_STATE; run 2 no-op; fcb_app S + column I on the three cert ledger tables only)" >> "$GITHUB_STEP_SUMMARY"

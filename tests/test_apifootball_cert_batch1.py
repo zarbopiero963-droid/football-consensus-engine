@@ -8,6 +8,7 @@ in-memory store that outlives every runner instance (as the database would).
 from __future__ import annotations
 
 import asyncio
+import re
 import json
 
 import httpx
@@ -264,3 +265,58 @@ def test_each_answered_attempt_records_its_outcome_and_transport_errors_are_expl
     assert sum(counts.values()) == run["ledger_attempts_used"]
     assert run["ledger_attempts"][0]["state"] == "TRANSPORT_ERROR" and run["ledger_attempts"][0]["http_status"] is None
     assert all(s["http_status"] == 200 for s in run["ledger_attempts"][1:])
+
+
+# ---- review #199 P3-4: a call refused BEFORE the send is NOT_TESTED, never ERROR ---------------
+
+class _RefusingLedger(FakeLedger):
+    def __init__(self, store, exc):
+        super().__init__(store)
+        self.exc = exc
+
+    async def reserve(self, campaign_id, call_id):
+        raise self.exc
+
+
+@pytest.mark.parametrize("cause,code", [
+    ("no_owner_authorization", "CAMPAIGN_NOT_AUTHORIZED_BY_OWNER"),
+    ("ledger_unavailable", "CAMPAIGN_LEDGER_UNAVAILABLE"),
+    ("budget_exhausted", "CAMPAIGN_BUDGET_EXHAUSTED"),
+])
+def test_a_call_refused_before_the_send_is_not_tested_with_the_refusal_code(monkeypatch, cause, code):
+    store, provider = Store(), Provider()
+    ledger = FakeLedger(store)
+    if cause == "no_owner_authorization":
+        monkeypatch.delenv(batch.AUTH_VAR, raising=False)
+    elif cause == "ledger_unavailable":
+        ledger = _RefusingLedger(store, batch.LedgerUnavailable(code))
+    else:
+        ledger = _RefusingLedger(store, batch.BudgetExhausted(code))
+    run = asyncio.run(batch.execute(PLAN, campaign_id="cert-refused-0001", settings=settings(), ledger=ledger,
+                                    inner_transport=provider.transport(), quota=Quota(), plan_text=PLAN_TEXT,
+                                    source_sha="x"))
+    assert provider.sent == [] and store.attempts == []
+    attempted = [c for c in run["calls"] if c["outcome"] != "BINDING_UNRESOLVED"]
+    assert attempted and all(c["verdict"] == "NOT_TESTED" for c in run["calls"])
+    assert all(c["outcome"] == "REFUSED_BEFORE_SEND" for c in attempted)
+    # the first call carries the transport refusal; later ones may be stopped by the client first
+    # (e.g. CIRCUIT_OPEN): still nothing sent, still NOT_TESTED with a fixed code
+    assert attempted[0]["refusal_code"] == code
+    assert all(re.fullmatch(r"[A-Z0-9_]+", c["refusal_code"]) for c in attempted)
+    assert not any(c["verdict"] == "ERROR" for c in run["calls"])
+
+
+def test_answered_calls_are_attempted_not_refused():
+    run = _run(Store(), Provider())
+    assert {c["outcome"] for c in run["calls"]} <= {"ATTEMPTED", "BINDING_UNRESOLVED"}
+    assert not any("refusal_code" in c for c in run["calls"])
+
+
+def test_snapshot_refused_before_the_send_stops_with_the_code_and_sends_nothing(monkeypatch):
+    monkeypatch.delenv(batch.AUTH_VAR, raising=False)
+    store, provider = Store(), Provider()
+    report = asyncio.run(batch.execute_snapshot(snapshot_id="snap-refused-001", fixture_id=None, settings=settings(),
+                                                ledger=FakeLedger(store), inner_transport=provider.transport(),
+                                                quota=Quota()))
+    assert provider.sent == [] and store.attempts == []
+    assert report["incomplete_reasons"] == ["STOPPED:REFUSED_BEFORE_SEND:CAMPAIGN_NOT_AUTHORIZED_BY_OWNER"]

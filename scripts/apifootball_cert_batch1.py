@@ -435,6 +435,28 @@ class PostgresCampaignLedger:
 
 
 _CURRENT_CALL: contextvars.ContextVar[str] = contextvars.ContextVar("af_cert_call", default="UNKNOWN")
+# Per planned call: how many attempts the transport reserved and the fixed code of a refusal. A call
+# refused BEFORE any reservation (owner authorization, ledger, budget) sent nothing: NOT_TESTED.
+_CALL_LOG: contextvars.ContextVar[dict | None] = contextvars.ContextVar("af_cert_call_log", default=None)
+PRE_SEND_REFUSALS = (NotAuthorized, BudgetExhausted, LedgerUnavailable)
+
+
+def _new_call_log() -> dict[str, Any]:
+    return {"reserved": 0, "refused": None}
+
+
+def refused_before_send(log: Mapping[str, Any] | None, out: Mapping[str, Any] | None = None) -> str | None:
+    """A fixed code when the call reserved (hence sent) NOTHING, None otherwise. Nothing reserved
+    means nothing left: the refusal of the transport (owner authorization, ledger, budget) or, when
+    the client stopped before the transport (e.g. CIRCUIT_OPEN after earlier refusals), its own
+    error code. Such a call is NOT_TESTED, never a provider ERROR."""
+    if log is None or log.get("reserved"):
+        return None
+    if log.get("refused"):
+        return str(log["refused"])
+    error = (out or {}).get("error") if isinstance((out or {}).get("error"), dict) else {}
+    code = error.get("code")
+    return str(code) if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", code) else "NOT_SENT"
 
 
 CAPTURE_MAX_BYTES = 16 * 1024 * 1024  # == the streamed-scan bound; above it nothing is captured
@@ -456,10 +478,21 @@ def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: d
 
     class _BudgetTransport(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request):
+            log = _CALL_LOG.get()
+            try:
+                return await self._send(request, log)
+            except PRE_SEND_REFUSALS as exc:  # fixed code only; the client sees the same exception
+                if log is not None:
+                    log["refused"] = str(exc)
+                raise
+
+        async def _send(self, request, log):
             call_id = _CURRENT_CALL.get()
             if os.environ.get(AUTH_VAR, "") != "true":
                 raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")  # before any reservation or send
             seq = await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send
+            if log is not None:
+                log["reserved"] += 1
             # From here the attempt is RESERVED: it stays RESERVED_UNKNOWN in the ledger until an
             # outcome is recorded (a crash before, during or after the send records nothing).
             try:
@@ -602,13 +635,20 @@ async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger
                 results.append(entry)
                 continue
             token = _CURRENT_CALL.set(call["call_id"])
+            log_token = _CALL_LOG.set(log := _new_call_log())
             try:
                 out = await tools[call["tool"]](**args)
             finally:
+                _CALL_LOG.reset(log_token)
                 _CURRENT_CALL.reset(token)
+            refusal = refused_before_send(log, out)
+            if refusal is not None:  # nothing reserved, nothing sent: not a provider result
+                entry.update(verdict="NOT_TESTED", outcome="REFUSED_BEFORE_SEND", refusal_code=refusal)
+                results.append(entry)
+                continue
             if isinstance(out.get("data"), dict):
                 replies[call["call_id"]] = out["data"]
-            entry.update(verdict=classify(out), outcome="SENT_OR_REFUSED", reply=_summary_of(out))
+            entry.update(verdict=classify(out), outcome="ATTEMPTED", reply=_summary_of(out))  # >= 1 attempt reserved
             results.append(entry)
     finally:
         await http.aclose()
@@ -713,12 +753,18 @@ async def execute_snapshot(*, snapshot_id: str, fixture_id: int | None, settings
             return None
         before = await ledger.used(snapshot_id)
         token = _CURRENT_CALL.set(call_id)
+        log_token = _CALL_LOG.set(log := _new_call_log())
         started = clock()
         try:
             out = await tools[tool](**args)
         finally:
+            _CALL_LOG.reset(log_token)
             _CURRENT_CALL.reset(token)
         ended = clock()
+        refusal = refused_before_send(log, out)
+        if refusal is not None:  # nothing sent: the source stays NOT_TESTED, the snapshot stops
+            stopped = stopped or f"REFUSED_BEFORE_SEND:{refusal}"
+            return None
         used_now = await ledger.used(snapshot_id)
         if used_now == before and out.get("network_calls_made", 0):
             stopped = stopped or "LEDGER_ACCOUNTING_MISMATCH"

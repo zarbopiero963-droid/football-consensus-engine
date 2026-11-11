@@ -50,7 +50,8 @@ DEFERRED_WHILE_THROTTLE_OFF = {9: ("oauth_throttle_buckets", "oauth_throttle_unl
 # AF-07: the API-FOOTBALL certification campaign ledger (0010) is used only by the owner-gated
 # campaign runner in GitHub Actions, never by the runtime: it is always deferred (a database
 # without it stays READY), and its tables are required only once 0010 is recorded.
-ALWAYS_DEFERRED = {10: ("api_football_cert_campaigns", "api_football_cert_campaign_attempts")}
+ALWAYS_DEFERRED = {10: ("api_football_cert_campaigns", "api_football_cert_campaign_attempts",
+                       "api_football_cert_campaign_outcomes")}
 
 
 def _deferrable() -> dict[int, tuple[str, ...]]:

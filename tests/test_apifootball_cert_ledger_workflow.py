@@ -107,14 +107,53 @@ def test_workflow_is_manual_owner_gated_pinned_and_backs_up_first():
     assert "oauth_throttle" not in text
 
 
-def test_grant_is_select_insert_only_and_asserted():
-    code = _code(GRANT.read_text(encoding="utf-8")).upper()
-    assert ("GRANT SELECT, INSERT ON TABLE PUBLIC.API_FOOTBALL_CERT_CAMPAIGNS, PUBLIC.API_FOOTBALL_CERT_CAMPAIGN_ATTEMPTS, "
-            "PUBLIC.API_FOOTBALL_CERT_CAMPAIGN_OUTCOMES TO FCB_APP") in code
-    assert code.count("GRANT ") == 1
-    assert "UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER" in code and "PG_HAS_ROLE('FCB_APP', 'FCB_MIGRATOR', 'MEMBER')" in code
-    assert "FCB_CERT_LEDGER_GRANTS_UNEXPECTED" in code and "FCB_CERT_LEDGER_NOT_MIGRATOR" in code
-    assert "API_FOOTBALL_QUOTA" not in code
+WRITABLE = {  # review #199 P3-2: INSERT is column-level, never on an audit timestamp
+    "api_football_cert_campaigns": ("campaign_id", "budget", "plan_sha256"),
+    "api_football_cert_campaign_attempts": ("campaign_id", "seq", "call_id"),
+    "api_football_cert_campaign_outcomes": ("campaign_id", "seq", "outcome", "http_status"),
+}
+AUDIT_COLUMNS = ("created_at", "reserved_at", "recorded_at")
+
+
+def _grants(text):
+    flat = re.sub(r"'\s*'", "", text).replace("'", ";")
+    return [g for g in (" ".join(x.split()) for x in flat.split(";")) if g.startswith("GRANT ")]
+
+
+EXPECTED_GRANTS = ["GRANT SELECT ON TABLE public.api_football_cert_campaigns, public.api_football_cert_campaign_attempts, "
+                   "public.api_football_cert_campaign_outcomes TO fcb_app"] + [
+    f"GRANT INSERT ({', '.join(cols)}) ON TABLE public.{t} TO fcb_app" for t, cols in WRITABLE.items()]
+
+
+def test_grant_is_select_plus_column_insert_and_asserted():
+    code = _code(GRANT.read_text(encoding="utf-8"))
+    assert _grants(code) == EXPECTED_GRANTS
+    for column in AUDIT_COLUMNS:
+        assert all(column not in g for g in _grants(code))
+    upper = code.upper()
+    assert "INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER" in upper  # no table-level INSERT either
+    assert "HAS_COLUMN_PRIVILEGE('FCB_APP', A.ATTRELID, A.ATTNUM, 'INSERT')" in upper
+    for cols in WRITABLE.values():
+        assert f"'{','.join(cols)}'" in code
+    assert "PG_HAS_ROLE('FCB_APP', 'FCB_MIGRATOR', 'MEMBER')" in upper
+    assert "FCB_CERT_LEDGER_GRANTS_UNEXPECTED" in upper and "FCB_CERT_LEDGER_NOT_MIGRATOR" in upper
+    assert "API_FOOTBALL_QUOTA" not in upper
+    assert "public.api_football_cert_stamp()" in code  # every 0010 function: PUBLIC EXECUTE revoked
+
+
+def test_0010_functions_pin_search_path_and_never_resolve_tables_through_the_caller():
+    """Review #199 P3-1: no table lookup through the caller's search_path (pg_temp shadowing)."""
+    sql = _code(migrations.load_migrations()[9].sql)
+    functions = re.findall(r"CREATE FUNCTION (\w+)\(\) RETURNS trigger LANGUAGE plpgsql\s+"
+                           r"SET search_path = pg_catalog, pg_temp AS \$\$(.*?)\$\$;", sql, re.S)
+    assert sorted(n for n, _ in functions) == ["api_football_cert_attempt_guard", "api_football_cert_reject_mutation",
+                                               "api_football_cert_stamp"]
+    assert sql.count("CREATE FUNCTION") == 3
+    for _name, body in functions:
+        for table in LEDGER:
+            for m in re.finditer(r"FROM\s+\S*" + table, body):
+                assert "%I." + table in m.group(0), m.group(0)
+    assert sql.count("FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp()") == 3
 
 
 def test_0010_transaction_requires_0009_with_the_repository_checksum():
@@ -137,11 +176,20 @@ def test_wp009_grant_files_carry_the_same_conditional_select_insert_ledger_grant
     block = blocks[0]
     for table in LEDGER:
         assert f"pg_catalog.to_regclass('public.{table}') IS NOT NULL" in block
-    granted = re.sub(r"'\s*'", "", " ".join(block.split()))
-    assert ("GRANT SELECT, INSERT ON TABLE public.api_football_cert_campaigns, public.api_football_cert_campaign_attempts, "
-            "public.api_football_cert_campaign_outcomes TO fcb_app") in granted
-    for word in ("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "ALL "):
-        assert word not in _code(block).upper().split("GRANT", 1)[1].split("TO FCB_APP")[0], word
+    assert _grants(_code(block)) == EXPECTED_GRANTS
+    for word in ("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "ALL ", *AUDIT_COLUMNS):
+        assert all(word.upper() not in g.upper() for g in _grants(_code(block))), word
+    for path in WP009_FILES:  # review #199 P3-5: the comment states the roles workflow limit
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        assert "is NOT reached through that workflow on a 0009/0010 database" in text
     roles = (ROOT / ".github" / "workflows" / "fcb-aiven-defaultdb-roles.yml").read_text(encoding="utf-8")
     for path in WP009_FILES:
         assert f"{path.relative_to(ROOT)}={hashlib.sha256(path.read_bytes()).hexdigest()}" in roles
+
+
+def test_readiness_defers_exactly_the_tables_0010_creates():
+    """Review #199 P3-3: every 0010 table (3/3) is always deferred and required once 0010 is recorded."""
+    from bridge import schema_readiness
+    created = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", migrations.load_migrations()[9].sql)
+    assert set(schema_readiness.ALWAYS_DEFERRED) == {10}
+    assert sorted(schema_readiness.ALWAYS_DEFERRED[10]) == sorted(created) == sorted(LEDGER)
