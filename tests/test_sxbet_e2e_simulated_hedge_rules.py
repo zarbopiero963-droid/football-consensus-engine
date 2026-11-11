@@ -130,7 +130,7 @@ def test_simulated_trailing_stop_monitor_persists_peak_across_restart(tmp_path):
 
     def monitor(state):
         return Monitor(s.ledger, s.adapter, state, clock=s.clock, rules=cfg, evaluate_rules=rl.evaluate,
-                       market_snapshot=lambda mh: s.snapshot(mh), gateway=s.gw)
+                       market_snapshot=lambda mh: s.snapshot(mh))
 
     m = monitor(MonitorState.create(state_path, ledger_id=s.ledger.ledger_id))
     writes = len(s.sim.writes())

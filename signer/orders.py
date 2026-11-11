@@ -96,8 +96,9 @@ they never change any order state or exposure.
 
 Owner-command authorization (§2.6, owner decision 2): an AUTHORIZE or CANCEL_REQUEST line written for an
 owner command carries `command_id` (single use: consumed for ever, in the same namespace as the legacy
-approval nonces, also after a restart), `command_canonical_sha256` (the same command text can never
-authorise a second operation: COMMAND_TEXT_REPLAYED), `command_text_sha256`, `client_ref_sha256` and
+approval nonces, also after a restart), `command_fingerprint_sha256` (the fingerprint of the PARSED and
+resolved operation plus its reference token: the same command, however spelled, never authorises a second
+operation: COMMAND_REPLAYED), `command_text_sha256`, `client_ref_sha256` and
 `command_received_at`. The command text itself is never written.
 
 KILL_SWITCH lines (signer/killswitch.py): ENGAGE (trigger, source), CANCEL_INTENT (order ids the kill
@@ -162,7 +163,7 @@ OPEN_ORDER_STATES = RESERVING
 TERMINAL = frozenset({SETTLED, REJECTED})
 CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
 KILL_SWITCH_ACTIONS = frozenset({"ENGAGE", "CANCEL_INTENT", "CANCEL_VERIFIED", "RELEASE"})
-COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_canonical_sha256", "client_ref_sha256",
+COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_fingerprint_sha256", "client_ref_sha256",
                             "command_received_at"})
 
 # A 404 from GET /orders-v3/{orderId} proves nothing about an order in flight. A
@@ -217,6 +218,7 @@ class Order:
     last_send_at: int | None = None
     evidence: tuple[str, ...] = field(default_factory=tuple)
     signature_released: bool = False       # SIGNED was reached: the signed order may exist outside the signer
+    post_only: bool = False                # commanded post-only (from the AUTHORIZE line): per order, review P2-3
     unconfirmed_since: int | None = None   # ts of the first EXPIRED_UNCONFIRMED observation
     authorized_at: int = 0                 # ts of the AUTHORIZE line (risk v2 counters, rebuilt on replay)
 
@@ -470,7 +472,12 @@ class OrderLedger:
         self._orders: dict[str, Order] = {}
         self._by_order_id: dict[str, str] = {}
         self._nonces: set[str] = set()          # consumed single-use ids: approval nonces and owner command ids
-        self._command_texts: set[str] = set()   # consumed canonical owner-command text hashes
+        self._command_texts: set[str] = set()   # consumed owner-command fingerprints
+        self._volatile_kill: str | None = None  # kill switch engaged while the ledger could not record it
+        # The ONE send/reconcile lock of this ledger, shared by every gateway, cancellation service and monitor
+        # built on it (review P2-4): the monitor no longer needs a submittable gateway to get it.
+        self.send_lock = threading.Lock()
+        self.genesis_sha256: str | None = None  # identity of this ledger file (bound into the LIVE flag)
         self._kill: dict[str, Any] = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
@@ -496,8 +503,10 @@ class OrderLedger:
             self._fd = self._open_locked(path, create=_create)
             self._flocked = True
             if _create:
+                # Random nonce: a new ledger file never has the identity of an old one (review P2-5).
                 self._append({"kind": "GENESIS", "schema": LEDGER_SCHEMA, "signer_id": signer_id,
-                              "signer_address": self.signer_address})
+                              "signer_address": self.signer_address, "ledger_nonce": os.urandom(16).hex()})
+                self.genesis_sha256 = self._prev
             else:
                 hashes = self._replay()
                 if anchor is not None:
@@ -750,6 +759,7 @@ class OrderLedger:
             raise LedgerError("LEDGER_CORRUPT") from None
         if first:
             raise LedgerError("LEDGER_EMPTY")
+        self.genesis_sha256 = hashes[0]
         self._prev, self._size, self._last_line, self._seq = prev, len(data), last, len(hashes)
         return hashes
 
@@ -757,10 +767,10 @@ class OrderLedger:
         """One single-use id per line: a legacy approval nonce, or an owner command id + its text hash."""
         if "command_id" in rec:
             if "approval_nonce" in rec or rec["command_id"] in self._nonces \
-                    or rec["command_canonical_sha256"] in self._command_texts:
+                    or rec["command_fingerprint_sha256"] in self._command_texts:
                 raise OrderStateError(code)
             self._nonces.add(rec["command_id"])
-            self._command_texts.add(rec["command_canonical_sha256"])
+            self._command_texts.add(rec["command_fingerprint_sha256"])
         else:
             if rec["approval_nonce"] in self._nonces:
                 raise OrderStateError(code)
@@ -772,7 +782,7 @@ class OrderLedger:
             o = Order(client_order_id=rec["client_order_id"], intent_hash=rec["intent_hash"],
                       order_id=rec["order_id"], market_hash=rec["market_hash"], event_id=rec["event_id"],
                       stake=int(rec["stake"]), expiry=int(rec["expiry"]), state=AUTHORIZED,
-                      authorized_at=int(rec["ts"]))
+                      authorized_at=int(rec["ts"]), post_only=rec.get("post_only") is True)
             if o.client_order_id in self._orders:
                 raise OrderStateError("LEDGER_DUPLICATE_AUTHORIZE")
             self._consume(rec, "LEDGER_DUPLICATE_AUTHORIZE")
@@ -870,14 +880,23 @@ class OrderLedger:
         with self._lock:
             return command_id in self._nonces
 
-    def command_text_consumed(self, canonical_sha256: str) -> bool:
+    def command_fingerprint_consumed(self, fingerprint: str) -> bool:
         with self._lock:
-            return canonical_sha256 in self._command_texts
+            return fingerprint in self._command_texts
 
     @property
     def kill_switch_engaged(self) -> bool:
+        """Engaged on the ledger OR engaged in memory because the ledger could not record it (review P3)."""
         with self._lock:
-            return bool(self._kill["engaged"])
+            return bool(self._kill["engaged"]) or self._volatile_kill is not None
+
+    def engage_volatile_kill(self, trigger: str) -> None:
+        with self._lock:
+            self._volatile_kill = trigger
+
+    def clear_volatile_kill(self) -> None:
+        with self._lock:
+            self._volatile_kill = None
 
     def kill_switch_state(self) -> dict[str, Any]:
         with self._lock:
@@ -929,7 +948,7 @@ class OrderLedger:
         return (isinstance(command, Mapping) and set(command) == COMMAND_FIELDS
                 and isinstance(command["command_id"], str) and _NONCE.fullmatch(command["command_id"]) is not None
                 and all(isinstance(command[k], str) and _SHA.fullmatch(command[k]) for k in
-                        ("command_text_sha256", "command_canonical_sha256", "client_ref_sha256"))
+                        ("command_text_sha256", "command_fingerprint_sha256", "client_ref_sha256"))
                 and type(command["command_received_at"]) is int)
 
     def _check_single_use(self, approval_nonce: Any, command: Any, replay_code: str) -> dict[str, Any]:
@@ -939,8 +958,8 @@ class OrderLedger:
                 raise OrderStateError("AUTHORIZE_FIELDS_INVALID")
             if command["command_id"] in self._nonces:
                 raise OrderStateError("COMMAND_ID_ALREADY_CONSUMED")
-            if command["command_canonical_sha256"] in self._command_texts:
-                raise OrderStateError("COMMAND_TEXT_REPLAYED")
+            if command["command_fingerprint_sha256"] in self._command_texts:
+                raise OrderStateError("COMMAND_REPLAYED")
             return dict(command)
         if not _NONCE.fullmatch(approval_nonce or ""):
             raise OrderStateError("AUTHORIZE_FIELDS_INVALID")
@@ -967,8 +986,14 @@ class OrderLedger:
                 raise OrderStateError("IDEMPOTENCY_KEY_ALREADY_AUTHORIZED")
             if order_id in self._by_order_id:
                 raise OrderStateError("ORDER_ID_ALREADY_AUTHORIZED")
+            # Under the ledger lock (review P2-1): an ENGAGE written by another thread between the signer's
+            # first check and here is seen, so no order is authorized after the kill switch engaged.
+            if self._kill["engaged"] or self._volatile_kill is not None:
+                raise OrderStateError("KILL_SWITCH_ENGAGED")
             if precheck is not None:
                 precheck(self.exposure())
+                if self._kill["engaged"] or self._volatile_kill is not None:  # engaged by the precheck's thread
+                    raise OrderStateError("KILL_SWITCH_ENGAGED")
             rec = {"kind": "AUTHORIZE", "client_order_id": client_order_id, "intent_hash": intent_hash,
                    "order_id": order_id, "market_hash": market_hash, "event_id": event_id, "stake": str(stake),
                    "expiry": expiry, **single_use}
@@ -1038,6 +1063,16 @@ class OrderLedger:
                     raise OrderStateError("KILL_SWITCH_RELEASE_REPLAYED")
             self._commit({"kind": "KILL_SWITCH", "action": action, **fields})
             return self._seq
+
+    def engage_kill_switch(self, *, trigger: str, source: str, triggers: list[str],
+                           intents: Callable[[list[Order]], list[str]]) -> list[str]:
+        """ENGAGE + CANCEL_INTENT written under ONE hold of the ledger lock (review P2-1): no AUTHORIZE can
+        slip between them, so the intent snapshot covers every order that exists when the switch engages."""
+        with self._lock:
+            self.record_kill_switch("ENGAGE", trigger=trigger, source=source, triggers=triggers)
+            ids = intents(list(self._orders.values()))
+            self.record_kill_switch("CANCEL_INTENT", order_ids=ids)
+            return ids
 
     def apply_evidence(self, client_order_id: str, evidence: Evidence) -> Order:
         """Idempotent: the same evidence twice, or evidence that changes nothing, writes nothing."""

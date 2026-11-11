@@ -10,6 +10,7 @@ Intentional change (owner-command authorization, §2.6 rewrite): orders and canc
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -61,8 +62,7 @@ GENEROUS = dict(max_stake_per_order_base_units=10_000_000, max_stake_per_utc_day
                 allowed_league_ids="ANY", allowed_market_types="ANY", pregame_only=True,
                 market_time_in_force="FOK", limit_time_in_force="GTC")
 # GET /metadata/obv3 `limits` + `activeAsset` as the risk context carries them (runtime metadata).
-EXCHANGE_LIMITS = {"order_size_minimum_base_units": "1000000", "min_resting_order_size_base_units": "100000",
-                   "base_token_symbol": "USDC", "base_token_decimals": 6}
+EXCHANGE_LIMITS = {"order_size_minimum_base_units": "1000000", "min_resting_order_size_base_units": "100000"}
 
 
 class Clock:
@@ -116,12 +116,40 @@ def _open_or_create(path, address, clock):
     return OrderLedger.create(str(path), signer_id=SIGNER_ID, signer_address=address, clock=clock)
 
 
+class KitMarketData:
+    """TEST-ONLY signer-owned market reads (signer/market_data.py): plays the exchange the signer reads from.
+    Tests set the world with `sign_with_reads(..., ctx)`; the signer never receives it from a caller."""
+
+    def __init__(self):
+        self.world = None
+        self.calls = []
+
+    def read(self, *, market_hash, outcome_one, percentage_odds, now):
+        self.calls.append((market_hash, outcome_one, percentage_odds, now))
+        return copy.deepcopy(self.world)
+
+
+def signer_config(*, account_id=ACCOUNT_ID, market_data="kit", **kw):
+    """Owner configuration of the test signer: token symbol / decimals bound to the base token (USDC, 6) and
+    the signer-owned market-data provider (a KitMarketData unless given)."""
+    return SignerConfig(signer_id=SIGNER_ID, network="mainnet", chain_id=4162, verifying_contract=ESCROW,
+                        base_token=TOKEN, odds_ladder_step_size=125, account_id=account_id,
+                        base_token_symbol="USDC", base_token_decimals=6,
+                        market_data=KitMarketData() if market_data == "kit" else market_data, **kw)
+
+
+def sign_with_reads(signer, intent, authorization, ctx=None, **kw):
+    """TEST helper: set what the signer's OWN provider will read (the simulated exchange), then sign."""
+    if signer.config.market_data is not None:
+        signer.config.market_data.world = ctx
+    return signer.sign_order(intent, authorization, **kw)
+
+
 def make_signer(tmp_path, throwaway, owner, *, limits=None, clock=None, ledger_path=None, audit_path=None,
                 account_id=ACCOUNT_ID, risk_config=None, env_extra=None):
     acct, key = throwaway
     clock = clock or Clock()
-    cfg = SignerConfig(signer_id=SIGNER_ID, network="mainnet", chain_id=4162, verifying_contract=ESCROW,
-                       base_token=TOKEN, odds_ladder_step_size=125, account_id=account_id)
+    cfg = signer_config(account_id=account_id)
     if risk_config is None:
         risk_config = load_limits(tmp_path, owner, **(limits or {}))
     ledger = open_or_create_ledger(ledger_path or tmp_path / "ledger.jsonl", acct.address, clock)
@@ -161,7 +189,8 @@ def stake_text(base_units: int, decimals: int = 6) -> str:
     return t
 
 
-def command_text(intent, *, label=None, teams=("Home FC", "Away FC"), odds_text=None, tif=None, ref=True):
+def command_text(intent, *, label=None, teams=("Home FC", "Away FC"), odds_text=None, tif=None, ref=True,
+                 post_only=False):
     """The owner's literal command for exactly this intent (IT grammar). A unique "(rif. N)" suffix keeps
     two otherwise identical commands distinct (the same text never authorises two operations)."""
     one = intent["is_maker_betting_outcome_one"]
@@ -172,7 +201,8 @@ def command_text(intent, *, label=None, teams=("Home FC", "Away FC"), odds_text=
     _n[0] += 1
     suffix = f" (rif. {_n[0]})" if ref else ""
     if intent["time_in_force"] == "GTC":
-        return f"Metti un Limit a quota {odds} per {stake} USDC su {label} in {event}{suffix}"
+        po = " post-only" if post_only else ""
+        return f"Metti un Limit a quota {odds} per {stake} USDC su {label} in {event}{po}{suffix}"
     return (f"Piazza {stake} USDC su {label} in {event} a quota minima {odds} "
             f"{tif or intent['time_in_force']}{suffix}")
 
@@ -205,7 +235,14 @@ def context(intent=None, *, now=NOW, **overrides):
     if "event_markets" not in overrides:
         # GET /markets/active?eventId=: here the event lists only this market (uniqueness, §2.3bis).
         ctx["event_markets"] = [ctx["market"]] if isinstance(ctx.get("market"), dict) else []
+    if "same_team_events" not in overrides:
+        # Active events with the same teams: only this one (cross-event uniqueness, §2.3bis).
+        ctx["same_team_events"] = [event_of(ctx["market"])] if isinstance(ctx.get("market"), dict) else []
     return ctx
+
+
+def event_of(market):
+    return {k: market.get(k) for k in ("sportXeventId", "teamOneName", "teamTwoName", "gameTime", "leagueId")}
 
 
 def throwaway_account():

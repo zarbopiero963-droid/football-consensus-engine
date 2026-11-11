@@ -18,6 +18,7 @@ from signer import gateway as gw  # noqa: E402
 from signer import orders as od  # noqa: E402
 from signer.audit import AuditLog  # noqa: E402
 from sxbet_signer_kit import NOW, SIGNER_ID, Clock, owner_command, context, make_intent, make_signer  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 
 class FakeTransport:
@@ -69,8 +70,9 @@ def owner():
 
 
 def write_flag(path, owner, *, signer_id=SIGNER_ID, network="mainnet", issued=NOW, expires=NOW + 3600,
-               live="ENABLED", key=None):
+               live="ENABLED", key=None, genesis=None):
     body = {"live_trading": live, "signer_id": signer_id, "network": network, "issued_at": issued,
+            "ledger_genesis_sha256": genesis,
             "expires_at": expires}
     body["signature"] = (key or owner).sign(gw.live_flag_message(body)).hex()
     path.write_text(json.dumps(body))
@@ -86,10 +88,11 @@ def setup(tmp_path, throwaway, owner, clock=None, key="order-key-G001", flag_kw=
     clock = clock or Clock()
     s = make_signer(tmp_path, throwaway, owner, clock=clock)
     i = make_intent(throwaway[0].address, idempotency_key=key)
-    signed = s.sign_order(i, owner_command(i), context(i))
+    signed = sign_with_reads(s, i, owner_command(i), context(i))
     t = FakeTransport()
     t.expected_id = signed["order_id"]
-    g = gw.SubmissionGateway(enabled_flag(tmp_path, owner, **(flag_kw or {})), owner_public_key=owner.public_key(),
+    g = gw.SubmissionGateway(enabled_flag(tmp_path, owner, genesis=s._ledger.genesis_sha256, **(flag_kw or {})),
+                             owner_public_key=owner.public_key(),
                              transport=t, ledger=s._ledger,
                              audit=AuditLog(str(tmp_path / "gw-audit.jsonl")), odds_ladder_step_size=125,
                              network="mainnet", clock=clock)
@@ -399,7 +402,7 @@ def test_m4_gateway_reverifies_owner_signature_and_ignores_attributes(tmp_path, 
 
 def test_m4_expired_flag_refuses_construction(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
-    flag = enabled_flag(tmp_path, owner, expires=NOW + 60)
+    flag = enabled_flag(tmp_path, owner, expires=NOW + 60, genesis=s._ledger.genesis_sha256)
     with pytest.raises(gw.GatewayDisabled, match="LIVE_TRADING_FLAG_EXPIRED"):
         gw.SubmissionGateway(flag, owner_public_key=owner.public_key(), transport=FakeTransport(), ledger=s._ledger,
                              audit=AuditLog(str(tmp_path / "a")), odds_ladder_step_size=125, network="mainnet",

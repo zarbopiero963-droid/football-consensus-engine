@@ -6,10 +6,11 @@ What one `Monitor.tick()` does:
    matched amount until settlement) is re-read through the INJECTED read functions (`get_order`,
    `get_order_by_client_id`, `get_fills`, the shapes of signer.gateway.SubmissionTransport) and the evidence is
    applied with the same `evidence_from_exchange` / `OrderLedger.apply_evidence` the gateway uses, re-reading
-   the order, reading the exchange and applying all under the MANDATORY shared gateway lock. The monitor is
-   bound to THE gateway of THIS ledger (`gateway=`; review #195 P3): it takes `gateway._lock` itself, so an
-   arbitrary context manager can no longer be passed as "the lock" (MONITOR_GATEWAY_REQUIRED /
-   MONITOR_GATEWAY_FOREIGN). Only the
+   the order, reading the exchange and applying all under the MANDATORY shared lock. The lock belongs to the
+   LEDGER (`ledger.send_lock`, the same object every gateway and cancellation service of that ledger uses;
+   review #195 P3 and #196 P2-4): the monitor takes it itself, no lock or context manager can be passed in,
+   and it needs NO submittable gateway, so reconciliation, alerts and kill-switch inputs keep working after
+   the LIVE flag expired or without one. Only the
    three read methods are reachable from here (`_ReadOnly`): a sender, an adapter's `send`, `submit_*` or a
    cancel are never called;
 2. expiry handling: alerts for orders past expiry that are still reserved, EXPIRED_UNCONFIRMED orders and the
@@ -55,7 +56,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from .gateway import SubmissionGateway
 from .orders import (AUTHORIZED, CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED, EXPIRY_CONFIRM_SECONDS, EXPIRY_GRACE_SECONDS,
                      FILLED, OPEN, PARTIALLY_FILLED, REJECTED, SIGNED, SUBMITTED, UNKNOWN, LedgerError, OrderLedger,
                      OrderStateError, evidence_from_exchange)
@@ -287,7 +287,7 @@ class Monitor:
                  heartbeat_policy: HeartbeatPolicy | None = None, rules: Mapping[str, Any] | None = None,
                  evaluate_rules: Callable[..., Mapping[str, Any]] | None = None,
                  market_snapshot: Callable[[str], Mapping[str, Any] | None] | None = None,
-                 gateway: SubmissionGateway | None = None, settlement_poll_seconds: int = 300):
+                 settlement_poll_seconds: int = 300):
         if not isinstance(ledger, OrderLedger):
             raise MonitorError("MONITOR_LEDGER_INVALID")
         if not isinstance(state, MonitorState) or state.ledger_id != ledger.ledger_id:
@@ -302,13 +302,9 @@ class Monitor:
         self._rules = copy.deepcopy(dict(rules)) if rules is not None else None
         self._evaluate = evaluate_rules
         self._snapshot = market_snapshot
-        # Mandatory: the SAME lock as the gateway / cancellation service in the signer process, taken from THE
-        # gateway of this ledger (review #195 P3): no private lock, no arbitrary context manager.
-        if not isinstance(gateway, SubmissionGateway):
-            raise MonitorError("MONITOR_GATEWAY_REQUIRED")
-        if gateway._ledger is not ledger:
-            raise MonitorError("MONITOR_GATEWAY_FOREIGN")
-        self._lock = gateway._lock
+        # Mandatory: the SAME lock as every gateway / cancellation service of this ledger, owned by the ledger
+        # itself: no private lock, no caller-supplied context manager, no LIVE flag needed (review P2-4).
+        self._lock = ledger.send_lock
         self._poll = settlement_poll_seconds
         self._last_poll: dict[str, int] = {}
 

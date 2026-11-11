@@ -29,7 +29,7 @@ def s(tmp_path):
 
 def make(s, tmp_path, name="monitor.json", **kw):
     st = MonitorState.create(str(tmp_path / name), ledger_id=s.ledger.ledger_id)
-    return Monitor(s.ledger, s.adapter, st, clock=s.clock, gateway=s.gw, **kw)
+    return Monitor(s.ledger, s.adapter, st, clock=s.clock, **kw)
 
 
 # ---------------------------------------------------------------- reconciliation
@@ -152,8 +152,7 @@ def test_monitor_state_is_explicit_integrity_checked_and_bound(s, tmp_path):
         MonitorState.open(str(p), ledger_id=s.ledger.ledger_id)
     assert e.value.code == "MONITOR_STATE_CORRUPT"
     with pytest.raises(MonitorError) as e:
-        Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "x.json"), ledger_id="other:0x" + "00" * 20),
-                gateway=s.gw)
+        Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "x.json"), ledger_id="other:0x" + "00" * 20))
     assert e.value.code == "MONITOR_STATE_FOREIGN"
 
 
@@ -167,7 +166,7 @@ def test_monitor_restart_recovers_from_ledger_and_state(s, tmp_path):
     s.sim.fill_maker_order(sg["order_id"], 2 * USDC)        # happens while the monitor is down
     s.restart()
     m2 = Monitor(s.ledger, s.adapter, MonitorState.open(str(tmp_path / "monitor.json"), ledger_id=s.ledger.ledger_id),
-                 clock=s.clock, gateway=s.gw)
+                 clock=s.clock)
     assert m2._state.ticks == ticks and s.state("order-key-W006") == od.OPEN    # ledger replay: as before the fill
     m2.tick()
     assert s.state("order-key-W006") == od.PARTIALLY_FILLED and m2._state.peak(H) == 123
@@ -188,7 +187,7 @@ def test_monitor_proposal_claiming_executable_is_refused(s, tmp_path):
     assert e.value.code == "MONITOR_PROPOSAL_CLAIMS_EXECUTABLE"
     with pytest.raises(MonitorError):
         Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "y.json"), ledger_id=s.ledger.ledger_id),
-                rules={}, gateway=s.gw)
+                rules={})
 
 
 def test_monitor_reaches_only_the_three_reads():
@@ -253,7 +252,7 @@ def test_monitor_stale_absent_snapshot_never_reopens_a_resent_order(s, tmp_path)
 
     reads = _DifferingBytesReads(s.adapter, race)
     m = Monitor(s.ledger, reads, MonitorState.create(str(tmp_path / "race.json"), ledger_id=s.ledger.ledger_id),
-                clock=s.clock, gateway=s.gw)
+                clock=s.clock)
     m.tick()
     race.t.join(5)
     assert s.sim.accepted_count("order-key-W008") == 1
@@ -266,28 +265,35 @@ def test_monitor_stale_absent_snapshot_never_reopens_a_resent_order(s, tmp_path)
 
 
 def test_monitor_requires_the_shared_lock(s, tmp_path):
-    """Review #195 P3 (intentional change): the monitor is bound to THE gateway of its ledger and takes that
-    gateway's lock itself; an arbitrary context manager can no longer be passed as the lock."""
+    """Review #195 P3 + #196 P2-4 (intentional change): the monitor takes the ONE send lock owned by its
+    ledger (the same object every gateway / cancellation service of that ledger uses). No lock, context
+    manager or gateway can be passed in."""
     import contextlib
-    import threading
 
     st = MonitorState.create(str(tmp_path / "lk.json"), ledger_id=s.ledger.ledger_id)
-    with pytest.raises(MonitorError) as e:
-        Monitor(s.ledger, s.adapter, st, clock=s.clock)               # no silent private lock any more
-    assert e.value.code == "MONITOR_GATEWAY_REQUIRED"
-    for not_a_gateway in (None, threading.Lock(), contextlib.nullcontext(), s.gw._lock):
-        with pytest.raises(MonitorError) as e:
-            Monitor(s.ledger, s.adapter, st, clock=s.clock, gateway=not_a_gateway)
-        assert e.value.code == "MONITOR_GATEWAY_REQUIRED"
+    m = Monitor(s.ledger, s.adapter, st, clock=s.clock)
+    assert m._lock is s.ledger.send_lock is s.gw._lock
     with pytest.raises(TypeError):
         Monitor(s.ledger, s.adapter, st, clock=s.clock, lock=contextlib.nullcontext())  # the old parameter is gone
-    (tmp_path / "other").mkdir()
-    other = Stack(tmp_path / "other")
-    with pytest.raises(MonitorError) as e:
-        Monitor(s.ledger, s.adapter, st, clock=s.clock, gateway=other.gw)  # the gateway of another ledger
-    assert e.value.code == "MONITOR_GATEWAY_FOREIGN"
-    m = Monitor(s.ledger, s.adapter, st, clock=s.clock, gateway=s.gw)
-    assert m._lock is s.gw._lock
+    with pytest.raises(TypeError):
+        Monitor(s.ledger, s.adapter, st, clock=s.clock, gateway=s.gw)                  # and so is this one
+
+
+def test_monitor_runs_without_a_live_flag(s, tmp_path):
+    """Review #196 P2-4: after the LIVE flag expired no gateway can be built, but the monitor still reconciles,
+    alerts and feeds the kill switch (RED before: Monitor required a submittable gateway)."""
+    from signer import gateway as gw_mod
+
+    i, sg, _ = s.place("order-key-W020")
+    s.clock.t += 3 * 3600                                  # the 1 h test flag is long expired
+    with pytest.raises(gw_mod.GatewayDisabled):
+        gw_mod.SubmissionGateway(s.live_flag, owner_public_key=s.owner.public_key(), transport=s.adapter,
+                                 ledger=s.ledger, audit=None, odds_ladder_step_size=125, network="mainnet",
+                                 clock=s.clock)
+    m = Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "nf.json"), ledger_id=s.ledger.ledger_id),
+                clock=s.clock)
+    rep = m.tick()
+    assert rep["exchange_reads"] > 0 and s.ledger.get("order-key-W020").state in (od.EXPIRED, od.OPEN, od.SUBMITTED)
 
 
 # ---------------------------------------------------------------- review #195 P3: state integrity, peak, counters

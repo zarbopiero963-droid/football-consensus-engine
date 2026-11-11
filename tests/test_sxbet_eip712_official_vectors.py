@@ -26,6 +26,7 @@ from eth_utils import keccak  # noqa: E402  (hash primitive only)
 
 from signer import eip712  # noqa: E402
 from sxbet_signer_kit import owner_command, context, make_intent, make_signer  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 # ---------------------------------------------------------------- domains (docs/sxbet/magic_and_proxy_wallet.md §4)
 MAINNET = {"chain_id": 4162, "escrow": "0x890482680C3a0116aBB003B17e7D694D13a6c1eB",
@@ -269,7 +270,7 @@ def test_real_signer_output_verifies_under_independent_implementation(tmp_path, 
     owner = Ed25519PrivateKey.generate()
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(acct.address)
-    out = s.sign_order(i, owner_command(i), context(i))
+    out = sign_with_reads(s, i, owner_command(i), context(i))
     o = out["order"]
     assert "timeInForce" in o and o["orderSignature"]
     digest = manual_digest(o, chain_id=i["chain_id"], verifying_contract=eip712.to_checksum_address(
@@ -362,7 +363,7 @@ def test_real_signer_refuses_intent_whose_maker_is_not_its_key(tmp_path, throwaw
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(Account.create().address)
     with pytest.raises(SignerRefused) as e:
-        s.sign_order(i, owner_command(i), context(i))
+        sign_with_reads(s, i, owner_command(i), context(i))
     assert e.value.code == "INTENT_MAKER_IS_NOT_SIGNER"
 
 
@@ -429,7 +430,7 @@ def test_exported_style_hex_key_round_trips_and_signs_as_its_address(tmp_path, t
         s = make_signer(d, (acct, fmt), owner)
         assert s.address == derived
         i = make_intent(derived)
-        o = s.sign_order(i, owner_command(i), context(i))["order"]
+        o = sign_with_reads(s, i, owner_command(i), context(i))["order"]
         dig = manual_digest(o, chain_id=i["chain_id"],
                             verifying_contract=eip712.to_checksum_address(i["verifying_contract"]))
         assert ecrecover(dig, o["orderSignature"]) == derived

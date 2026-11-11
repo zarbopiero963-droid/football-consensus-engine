@@ -17,6 +17,7 @@ from signer.command import OwnerCommandAuthorization, text_sha256  # noqa: E402
 from signer.core import SignerRefused  # noqa: E402
 from signer.intent import intent_hash  # noqa: E402
 from sxbet_e2e_kit import H, P, USDC, Stack  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 
 def refused(fn):
@@ -137,13 +138,13 @@ def test_simulated_odds_moved_beyond_slippage_refused_and_approval_not_burnt(tmp
     command = s.command(i, s.context(i))
     s.sim.clear_liquidity(H)
     s.sim.add_liquidity(H, outcome_one=False, maker_odds=57 * P, size=57 * USDC)  # taker price now 43% > 41%
-    assert refused(lambda: s.signer.sign_order(i, command, s.context(i))) == "INSUFFICIENT_LIQUIDITY"
+    assert refused(lambda: sign_with_reads(s.signer, i, command, s.context(i))) == "INSUFFICIENT_LIQUIDITY"
     assert not s.ledger.command_consumed(command.command_id) and s.sim.writes() == []
     worse = s.intent("order-key-R001", odds=43 * P, tif="FOK")         # the model "helpfully" lowers the odds
-    assert refused(lambda: s.signer.sign_order(worse, command, s.context(worse))) == "COMMAND_MISMATCH_ODDS"
+    assert refused(lambda: sign_with_reads(s.signer, worse, command, s.context(worse))) == "COMMAND_MISMATCH_ODDS"
     s.sim.clear_liquidity(H)
     s.sim.add_liquidity(H, outcome_one=False, maker_odds=59 * P, size=59 * USDC)  # back within the limit
-    assert s.signer.sign_order(i, command, s.context(i))["cached"] is False
+    assert sign_with_reads(s.signer, i, command, s.context(i))["cached"] is False
 
 
 @pytest.mark.parametrize("tif", ["IOC", "FOK"])
@@ -223,8 +224,8 @@ def test_simulated_same_client_order_id_twice_is_one_exchange_order(tmp_path):
     s = Stack(tmp_path)
     i = s.intent("order-key-I001")
     ctx = s.context(i)
-    first = s.signer.sign_order(i, s.command(i, ctx), ctx)
-    again = s.signer.sign_order(i, s.command(i, ctx), ctx)              # second request: cached, no new signature
+    first = sign_with_reads(s.signer, i, s.command(i, ctx), ctx)
+    again = sign_with_reads(s.signer, i, s.command(i, ctx), ctx)              # second request: cached, no new signature
     assert again["cached"] is True and again["order"] == first["order"]
     assert s.gw.submit(first, i)["sent"] is True
     assert s.gw.submit(again, i)["sent"] is False
@@ -238,18 +239,18 @@ def test_simulated_approval_replay_refused(tmp_path):
     i1, i2 = s.intent("order-key-A001"), s.intent("order-key-A002")
     ctx = s.context(i1)
     a1 = s.command(i1, ctx)
-    sg = s.signer.sign_order(i1, a1, ctx)
+    sg = sign_with_reads(s.signer, i1, a1, ctx)
     s.gw.submit(sg, i1)
     # The same command (id AND text) for a second order: the id is consumed (one command = one operation).
-    assert refused(lambda: s.signer.sign_order(i2, a1, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
+    assert refused(lambda: sign_with_reads(s.signer, i2, a1, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
     reused_id = s.command(i2, s.context(i2), command_id=a1.command_id)   # MCP re-sent a consumed id
-    assert refused(lambda: s.signer.sign_order(i2, reused_id, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
+    assert refused(lambda: sign_with_reads(s.signer, i2, reused_id, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
     same_text = s.command(i2, s.context(i2), text=a1.command_text)       # new id, the very same command text
-    assert refused(lambda: s.signer.sign_order(i2, same_text, s.context(i2))) == "COMMAND_TEXT_REPLAYED"
+    assert refused(lambda: sign_with_reads(s.signer, i2, same_text, s.context(i2))) == "COMMAND_REPLAYED"
     s.restart()
-    assert refused(lambda: s.signer.sign_order(i1, a1, s.context(i1))) in (
+    assert refused(lambda: sign_with_reads(s.signer, i1, a1, s.context(i1))) in (
         "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST", "COMMAND_ID_ALREADY_CONSUMED")
-    assert refused(lambda: s.signer.sign_order(i2, reused_id, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
+    assert refused(lambda: sign_with_reads(s.signer, i2, reused_id, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
     assert s.sim.accepted_count() == 1
 
 
@@ -260,14 +261,14 @@ def test_simulated_nothing_executes_without_owner_approval(tmp_path):
     s = Stack(tmp_path)
     i = s.intent("order-key-N001")
     ctx = s.context(i)
-    assert refused(lambda: s.signer.sign_order(i, None, ctx)) == "COMMAND_MISSING"
-    assert refused(lambda: s.signer.sign_order(i, "approved by the owner in chat: yes", ctx)) == "COMMAND_MISSING"
+    assert refused(lambda: sign_with_reads(s.signer, i, None, ctx)) == "COMMAND_MISSING"
+    assert refused(lambda: sign_with_reads(s.signer, i, "approved by the owner in chat: yes", ctx)) == "COMMAND_MISSING"
     good = s.command(i, ctx)
     bad = OwnerCommandAuthorization(good.command_id, good.command_text, text_sha256("something else"),
                                     good.received_at, good.client_ref_sha256)
-    assert refused(lambda: s.signer.sign_order(i, bad, ctx)) == "COMMAND_TEXT_HASH_MISMATCH"
+    assert refused(lambda: sign_with_reads(s.signer, i, bad, ctx)) == "COMMAND_TEXT_HASH_MISMATCH"
     vague = s.command(i, ctx, text="Sì, vai pure con la scommessa che mi hai proposto")
-    assert refused(lambda: s.signer.sign_order(i, vague, ctx)) == "COMMAND_UNPARSEABLE"
+    assert refused(lambda: sign_with_reads(s.signer, i, vague, ctx)) == "COMMAND_UNPARSEABLE"
     # An unsigned order cannot be submitted either: the gateway only forwards ledger-authorized signed orders.
     fake = {"order_id": "0x" + "00" * 32, "intent_hash": intent_hash(i), "order": {}}
     with pytest.raises(Exception):

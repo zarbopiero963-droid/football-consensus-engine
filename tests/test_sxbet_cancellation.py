@@ -22,6 +22,7 @@ from signer.audit import AuditLog  # noqa: E402
 from sxbet_exchange_kit import FakeSender, ok, order_row, submitted_row  # noqa: E402
 from sxbet_signer_kit import (ACCOUNT_ID, EVENT_ID, H, NOW, SIGNER_ID, Clock, context, owner_command,  # noqa: E402
                               make_intent, make_signer)
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 LIMITS = ra.ExchangeLimits(max_create_orders=10, max_cancel_orders=100)
 STAKE = 2_000_000
@@ -120,9 +121,9 @@ def test_parse_scope_only_confirms_the_command():
 
 
 # ---------------------------------------------------------------- flow
-def write_flag(path, owner, expires=NOW + 3600):
+def write_flag(path, owner, expires=NOW + 3600, genesis=None):
     body = {"live_trading": "ENABLED", "signer_id": SIGNER_ID, "network": "mainnet", "issued_at": NOW,
-            "expires_at": expires}
+            "expires_at": expires, "ledger_genesis_sha256": genesis}
     body["signature"] = owner.sign(gw.live_flag_message(body)).hex()
     path.write_text(json.dumps(body))
     return str(path)
@@ -135,19 +136,20 @@ class Env:
 def setup(tmp_path, throwaway, owner, keys=("order-key-X001",), flag_expires=NOW + 3600):
     e = Env()
     e.clock = Clock()
-    e.signer = make_signer(tmp_path, throwaway, owner, clock=e.clock)
+    e.signer = make_signer(tmp_path, throwaway, owner, clock=e.clock, limits={"command_max_age_seconds": 60})
     e.sender = FakeSender()
     e.adapter = ra.OfficialRestAdapter(e.sender, limits=LIMITS)
-    flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner, flag_expires), owner.public_key(),
+    flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner, flag_expires,
+                                                genesis=e.signer._ledger.genesis_sha256), owner.public_key(),
                                      signer_id=SIGNER_ID, network="mainnet", now=NOW)
     e.gw = gw.SubmissionGateway(flag, owner_public_key=owner.public_key(), transport=e.adapter,
                                 ledger=e.signer._ledger, audit=AuditLog(str(tmp_path / "gw-audit.jsonl")),
                                 odds_ladder_step_size=125, network="mainnet", clock=e.clock)
-    e.svc = cx.CancellationService(e.gw, account_id=ACCOUNT_ID, command_max_age_seconds=60)
+    e.svc = cx.CancellationService(e.gw, account_id=ACCOUNT_ID, risk_limits=e.signer._risk.limits)
     e.orders = []
     for k in keys:
         i = make_intent(throwaway[0].address, idempotency_key=k, stake_base_units=STAKE)
-        sg = e.signer.sign_order(i, owner_command(i), context(i))
+        sg = sign_with_reads(e.signer, i, owner_command(i), context(i))
         e.sender.script = [ok([submitted_row(sg["order_id"], k)])]
         assert e.gw.submit(sg, i)["state"] == od.SUBMITTED
         e.sender.orders[sg["order_id"]] = order_row(sg["order_id"], "ACTIVE", STAKE, total=STAKE)

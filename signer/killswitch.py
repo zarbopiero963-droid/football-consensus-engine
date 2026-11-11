@@ -47,8 +47,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .audit import AuditLog
-from .orders import (CANCELLED, EXPIRED, FILLED, OPEN, PARTIALLY_FILLED, REJECTED, SETTLED, SUBMITTED, UNKNOWN,
-                     LedgerError, OrderLedger, OrderStateError, utc_day_start)
+from .orders import (AUTHORIZED, CANCELLED, EXPIRED, EXPIRY_GRACE_SECONDS, FILLED, OPEN, PARTIALLY_FILLED, REJECTED, SETTLED,
+                     SIGNED, SUBMITTED, UNKNOWN, LedgerError, OrderLedger, OrderStateError, utc_day_start)
 
 RELEASE_DOMAIN = "sxbet.kill_switch_release.v1"
 MAX_RELEASE_TTL_SECONDS = 300
@@ -132,10 +132,12 @@ class KillSwitch:
     # ---- state ----
     @property
     def engaged(self) -> bool:
+        # The ledger reports a volatile engagement too, so the Signer and the gateway see it (review P3).
         return self._volatile is not None or self._ledger.kill_switch_engaged
 
     def state(self) -> dict[str, Any]:
         st = self._ledger.kill_switch_state()
+        st["engaged_on_ledger"] = st.pop("engaged")
         st["volatile_trigger"] = self._volatile
         st["engaged"] = self.engaged
         return st
@@ -146,23 +148,30 @@ class KillSwitch:
                            network=self._network, order_id=order_id, bucket=bucket)
 
     # ---- engage ----
-    def cancel_intents(self) -> list[str]:
-        """Order ids of ours that may still be on the book: the only ones a cancel can affect (risk-reducing)."""
+    def _intents(self, orders: list) -> list[str]:
+        """Order ids of ours that may be on the book or still be posted: every order a cancel can affect. A
+        SIGNED order whose signature left the signer is included (it may be posted by whoever holds it)."""
         now = int(self._clock())
-        return sorted(o.order_id for o in self._ledger.orders()
-                      if o.state in _CANCELLABLE or (o.state == REJECTED and o.rejected_hold_active(now)))
+        return sorted(o.order_id for o in orders
+                      if o.state in _CANCELLABLE or (o.state == REJECTED and o.rejected_hold_active(now))
+                      or (o.state in (AUTHORIZED, SIGNED) and now <= o.expiry + EXPIRY_GRACE_SECONDS))
+
+    def cancel_intents(self) -> list[str]:
+        return self._intents(self._ledger.orders())
 
     def engage(self, trigger: str, *, source: str = "MANUAL", triggers: Sequence[str] = ()) -> dict[str, Any]:
         if not isinstance(trigger, str) or not _TRIGGER.fullmatch(trigger) or source not in ("MANUAL", "AUTOMATIC"):
             raise KillSwitchError("KILL_SWITCH_TRIGGER_INVALID")
         all_triggers = sorted({trigger, *triggers})
-        intents = self.cancel_intents()
         try:
-            self._ledger.record_kill_switch("ENGAGE", trigger=trigger, source=source, triggers=all_triggers)
-            self._ledger.record_kill_switch("CANCEL_INTENT", order_ids=intents)
+            # ENGAGE and the intent snapshot under one hold of the ledger lock (review P2-1).
+            intents = self._ledger.engage_kill_switch(trigger=trigger, source=source, triggers=all_triggers,
+                                                      intents=self._intents)
             persisted = True
         except (LedgerError, OrderStateError) as exc:
+            intents = self.cancel_intents()
             self._volatile = trigger
+            self._ledger.engage_volatile_kill(trigger)
             self._log("KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE", reason=getattr(exc, "code", "LEDGER_ERROR"))
             persisted = False
         self._log("KILL_SWITCH_ENGAGED", reason=trigger, bucket=source)
@@ -213,7 +222,7 @@ class KillSwitch:
     # ---- release: owner-signed, outside the MCP ----
     def release(self, rel: Any) -> dict[str, Any]:
         st = self._ledger.kill_switch_state()
-        if not st["engaged"]:
+        if not st["engaged"]:  # a volatile-only engagement needs a restart on a sound ledger, then a release
             raise KillSwitchError("KILL_SWITCH_NOT_ENGAGED")
         if not isinstance(rel, KillSwitchRelease):
             self._log("KILL_SWITCH_RELEASE_REFUSED", reason="KILL_SWITCH_RELEASE_MISSING")
@@ -229,6 +238,7 @@ class KillSwitch:
             self._log("KILL_SWITCH_RELEASE_REFUSED", reason=exc.code)
             raise KillSwitchError(exc.code) from None
         self._volatile = None
+        self._ledger.clear_volatile_kill()
         self._log("KILL_SWITCH_RELEASED", reason="OWNER_SIGNED_RELEASE")
         return {"engaged": False, "released_engage_seq": rel.engage_seq}
 

@@ -15,10 +15,10 @@ What the signer receives (`OwnerCommandAuthorization`):
   `COMMAND_NOT_YET_VALID`;
 - `client_ref_sha256`: sha256 of the client / conversation reference (audit only; never the reference).
 
-Replay: besides the id, the canonical text (NFKC, case-folded, whitespace collapsed) is hashed and consumed
-too: the same command text cannot authorise a second operation (`COMMAND_TEXT_REPLAYED`). An owner who
-deliberately wants the same order twice writes a new command, for example with a reference suffix
-"(rif. 2)" / "(ref 2)", which the grammar accepts and ignores.
+Replay (review PR #196 P2-2): besides the id, the FINGERPRINT of the parsed and resolved operation (event,
+market, side, stake in base units, signed price, order type, time in force after owner defaults, post-only)
+plus the explicit reference token is consumed: the same command, however spelled, cannot authorise a second
+operation (`COMMAND_REPLAYED`). A deliberate repetition carries a new reference token "(rif. 2)" / "(ref 2)".
 
 One command = one operation. A command that names two operations (`COMMAND_MULTIPLE_OPERATIONS`) or a
 modification (`COMMAND_MODIFY_NOT_SUPPORTED`: owner decision 1, a modification is a cancel command plus a
@@ -52,9 +52,10 @@ owner policy in the risk config).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Mapping
@@ -72,7 +73,7 @@ SCOPE_ORDER_IDS, SCOPE_MARKET, SCOPE_EVENT, SCOPE_ALL = "ORDER_IDS", "MARKET", "
 _ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _HEX32 = r"0x[0-9a-fA-F]{64}"
-_NUM = r"(?<![\d.,])\d{1,12}(?:[.,]\d{1,30})?(?![\d])"
+_NUM = r"(?<![0-9.,])[0-9]{1,12}(?:[.,][0-9]{1,30})?(?![0-9])"  # ASCII digits only (review P3)
 _CURRENCY = r"USDC|USDT|USD|EUR|EURO|EUROS|DAI|ETH|WETH|SX|DOLLARI|DOLLARS|€|\$"
 
 
@@ -109,6 +110,7 @@ class PlaceCommand:
     time_in_force: str | None           # explicit in the command, else None (owner-signed default applies)
     post_only: bool
     market_type: int | None = None      # optional explicit provider market type ("tipo mercato 52")
+    reference: str | None = None        # explicit reference token "(rif. 2)": part of the replay fingerprint
     operation: str = "PLACE"
 
 
@@ -118,6 +120,7 @@ class CancelCommand:
     order_ids: tuple[str, ...] = ()
     market_hash: str | None = None
     event_id: str | None = None
+    reference: str | None = None
     operation: str = "CANCEL"
 
 
@@ -137,13 +140,26 @@ def _normalise(text: str) -> str:
     return re.sub(r"[.!]+$", "", t).strip()
 
 
-def canonical_text(text: str) -> str:
-    """What the text-replay guard hashes: case, accents, whitespace and trailing punctuation do not matter."""
-    return _strip_accents(_normalise(text)).casefold()
+def _fingerprint(obj: Mapping[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                                                 ensure_ascii=True).encode("ascii")).hexdigest()
 
 
-def canonical_sha256(text: str) -> str:
-    return text_sha256(canonical_text(text))
+def place_fingerprint(verified: Mapping[str, Any], reference: str | None) -> str:
+    """Replay fingerprint of an order command: the RESOLVED operation (event, market, side, stake in base
+    units, signed price, order type, time in force after owner defaults, post-only) plus the explicit
+    reference token. Equivalent spellings ("Over 2,5" / "over 2.50", explicit FOK / default FOK, a trailing
+    comma) give the same fingerprint; a deliberate repetition needs a new reference token "(rif. 2)"."""
+    keys = ("event_id", "market_hash", "side_one", "stake_base_units", "percentage_odds", "order_type",
+            "time_in_force", "post_only")
+    return _fingerprint({"op": "PLACE", **{k: verified[k] for k in keys}, "reference": reference})
+
+
+def cancel_fingerprint(cmd: "CancelCommand") -> str:
+    """Replay fingerprint of a cancel command: scope + target + reference token. A risk-reducing cancel (or
+    cancel-all) can be repeated by writing a new reference token, e.g. "Cancella tutti gli ordini (rif. 2)"."""
+    return _fingerprint({"op": "CANCEL", "scope": cmd.scope, "order_ids": sorted(cmd.order_ids),
+                         "market_hash": cmd.market_hash, "event_id": cmd.event_id, "reference": cmd.reference})
 
 
 def snapshot(auth: Any) -> OwnerCommandAuthorization:
@@ -176,10 +192,10 @@ def verify_record(auth: OwnerCommandAuthorization, *, now: int, max_age_seconds:
         raise CommandRefused("COMMAND_EXPIRED")
 
 
-def ledger_fields(auth: OwnerCommandAuthorization) -> dict[str, Any]:
+def ledger_fields(auth: OwnerCommandAuthorization, fingerprint: str) -> dict[str, Any]:
     """What the ledger records (hashes only: the text itself is never written)."""
     return {"command_id": auth.command_id, "command_text_sha256": auth.command_text_sha256,
-            "command_canonical_sha256": canonical_sha256(auth.command_text),
+            "command_fingerprint_sha256": fingerprint,
             "client_ref_sha256": auth.client_ref_sha256, "command_received_at": auth.received_at}
 
 
@@ -206,7 +222,7 @@ def canonical_label(s: str) -> str:
     def num(m: re.Match) -> str:
         return m.group(1) + _num_text(_decimal(m.group(2)))
 
-    t = re.sub(r"([+-]?)(\d+(?:[.,]\d+)?)", num, t)
+    t = re.sub(r"([+-]?)([0-9]+(?:[.,][0-9]+)?)", num, t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -242,7 +258,7 @@ _VERB_PLACE = r"piazza|punta|scommetti|metti|place|bet|back|put"
 _VERB_CANCEL = r"cancella|annulla|cancel"
 _VERB_MODIFY = r"modifica|cambia|sposta|aggiorna|modify|change|amend|replace|move|update"
 _ANY_VERB = re.compile(rf"(?<![\w'])(?:{_VERB_PLACE}|{_VERB_CANCEL}|{_VERB_MODIFY})(?![\w])", re.I)
-_REF = re.compile(r"\s*[,;]?\s*\(?\s*(?:rif\.?|ref\.?|riferimento|reference)\s*[:#]?\s*[A-Za-z0-9_-]{1,32}\s*\)?\s*$",
+_REF = re.compile(r"\s*[,;]?\s*\(?\s*(?:rif\.?|ref\.?|riferimento|reference)\s*[:#]?\s*([A-Za-z0-9_-]{1,32})\s*\)?\s*$",
                   re.I)
 
 _LIMIT_MARK = re.compile(r"(?<![\w])(?:(?:un|una|a|an)\s+)?(?:ordine\s+)?(?:limit|limite)(?:\s+order)?(?![\w])",
@@ -262,7 +278,7 @@ _STAKE = re.compile(rf"(?<![\w])(?:(?:per|for|di|of)\s+)?({_NUM})\s?({_CURRENCY}
 _TIF = re.compile(r"(?<![\w])(FOK|IOC|GTC|fill[ -]or[ -]kill|immediate[ -]or[ -]cancel|good[ -]till?[ -]cancell?ed"
                   r"|tutto\s+o\s+niente)(?![\w])", re.I)
 _POST_ONLY = re.compile(r"(?<![\w])(?:post[ -]?only|solo\s+maker)(?![\w])", re.I)
-_MARKET_TYPE = re.compile(r"(?<![\w])\(?\s*(?:tipo(?:\s+di)?\s+mercato|market\s+type)\s+(\d{1,6})\s*\)?(?![\w])",
+_MARKET_TYPE = re.compile(r"(?<![\w])\(?\s*(?:tipo(?:\s+di)?\s+mercato|market\s+type)\s+([0-9]{1,6})\s*\)?(?![\w])",
                           re.I)
 _SEL_EVENT = re.compile(r"^[\s|,()]*(?:su|on)\s+(?P<sel>[^|]+?)\s+(?:in|per|nella partita|nel match|nell'evento"
                         r"|in the match|for)\s+(?P<event>[^|]+?)[\s|,()]*$", re.I)
@@ -304,8 +320,12 @@ def parse(text: Any) -> PlaceCommand | CancelCommand:
     """Deterministic: the same text always gives the same result or the same refusal code."""
     if not isinstance(text, str) or not text.strip():
         raise CommandRefused("COMMAND_MISSING")
+    if any(c.isdigit() and not ("0" <= c <= "9") for c in text):
+        raise CommandRefused("COMMAND_NON_ASCII_DIGITS")  # e.g. Arabic-Indic or full-width digits (review P3)
     t = _normalise(text)
-    t = _REF.sub("", t).strip()
+    ref_m = _REF.search(t)
+    reference = ref_m.group(1).casefold() if ref_m else None
+    t = (t[:ref_m.start()] if ref_m else t).strip()
     verbs = [m.group(0).casefold() for m in _ANY_VERB.finditer(_TIF.sub(" ", t))]  # "immediate or cancel" is a TIF
     if len(verbs) > 1 or re.search(r";|\be poi\b|\band then\b", t, re.I):
         raise CommandRefused("COMMAND_MULTIPLE_OPERATIONS")
@@ -316,8 +336,8 @@ def parse(text: Any) -> PlaceCommand | CancelCommand:
     if re.fullmatch(_VERB_MODIFY, verb, re.I):
         raise CommandRefused("COMMAND_MODIFY_NOT_SUPPORTED")
     if re.fullmatch(_VERB_CANCEL, verb, re.I):
-        return _parse_cancel(rest)
-    return _parse_place(rest)
+        return replace(_parse_cancel(rest), reference=reference)
+    return replace(_parse_place(rest), reference=reference)
 
 
 def _parse_cancel(rest: str) -> CancelCommand:
@@ -383,13 +403,14 @@ def _parse_place(rest: str) -> PlaceCommand:
             raise CommandRefused("COMMAND_AMBIGUOUS_ORDER_TYPE")
         order_type, odds_raw = LIMIT, _group(plain_m)
 
+    if _thousands_like(odds_raw):
+        raise CommandRefused("COMMAND_AMBIGUOUS_ODDS")  # "2,000": two thousand or two? (review P3)
     odds = _decimal(odds_raw)
     if not Decimal(1) < odds <= MAX_ODDS:
         raise CommandRefused("COMMAND_INVALID_ODDS")
     groups = stake_m.groups()
     amount_raw, currency = (groups[0], groups[1]) if groups[0] is not None else (groups[3], groups[2])
-    frac = re.split(r"[.,]", amount_raw)
-    if len(frac) == 2 and len(frac[1]) == 3:
+    if _thousands_like(amount_raw):
         raise CommandRefused("COMMAND_AMBIGUOUS_STAKE")  # "1.000" / "1,000": thousands or decimals?
     stake = _decimal(amount_raw)
     if stake <= 0:
@@ -404,9 +425,18 @@ def _parse_place(rest: str) -> PlaceCommand:
                         market_type=int(type_m.group(1)) if type_m else None)
 
 
+def _thousands_like(raw: str) -> bool:
+    """Exactly three digits after the separator ("1.000", "2,000"): thousands or decimals? Refused."""
+    parts = re.split(r"[.,]", raw.lstrip("+-"))
+    return len(parts) == 2 and len(parts[1]) == 3
+
+
 def _selection_line(selection: str) -> tuple[str, Decimal | None]:
     if not selection:
         raise CommandRefused("COMMAND_INCOMPLETE_SELECTION")
+    m = _OU.fullmatch(selection) or _HCP.fullmatch(selection)
+    if m and _thousands_like(m.group(2)):
+        raise CommandRefused("COMMAND_AMBIGUOUS_LINE")
     m = _OU.fullmatch(selection)
     if m:
         return OVER_UNDER, _decimal(m.group(2))
@@ -489,9 +519,36 @@ def _row_mismatch(cmd: PlaceCommand, market: Mapping[str, Any], side_one: bool |
     return None
 
 
+def _resolve_event(cmd: PlaceCommand, market: Mapping[str, Any], same_team_events: Any) -> None:
+    """§2.3bis across events (review P1-3): the command's teams must identify exactly ONE active event among
+    the signer's own reads (`same_team_events`: every active event whose provider team names equal the
+    market's, with kickoff, competition, country and category when the provider has them). Two events with
+    the same teams (a second leg, a U21 or Women event listed with identical names, a replay) are
+    COMMAND_AMBIGUOUS_EVENT unless the command names the provider event id ("evento <id>"). Exact canonical
+    names only: fuzzy or containment never counts."""
+    own = str(market.get("sportXeventId"))
+    if not isinstance(same_team_events, list) or not all(isinstance(e, Mapping) for e in same_team_events):
+        raise CommandRefused("SAME_TEAM_EVENTS_MISSING")
+    ids = {str(e.get("sportXeventId")) for e in same_team_events}
+    if own not in ids:
+        raise CommandRefused("SAME_TEAM_EVENTS_INCOMPLETE")
+    if cmd.event_id is not None:
+        return  # the provider id is unique by construction and was compared with the market row
+    want = (canonical_label(cmd.event_teams[0]), canonical_label(cmd.event_teams[1]))
+    matching = set()
+    for e in same_team_events:
+        one, two = e.get("teamOneName"), e.get("teamTwoName")
+        if not (isinstance(one, str) and isinstance(two, str)):
+            matching.add("<unverifiable>")  # an event we cannot read could be a second match: fail closed
+        elif (canonical_label(one), canonical_label(two)) == want:
+            matching.add(str(e.get("sportXeventId")))
+    if matching != {own}:
+        raise CommandRefused("COMMAND_AMBIGUOUS_EVENT")
+
+
 def verify_place(cmd: Any, *, intent: Mapping[str, Any], market: Mapping[str, Any], event_markets: Any,
-                 post_only: bool, currency: str, token_decimals: int, odds_ladder_step_size: int,
-                 market_time_in_force: str, limit_time_in_force: str) -> dict[str, Any]:
+                 same_team_events: Any, post_only: bool, currency: str, token_decimals: int,
+                 odds_ladder_step_size: int, market_time_in_force: str, limit_time_in_force: str) -> dict[str, Any]:
     """Compare EVERY field of the parsed command with the order. Raise COMMAND_MISMATCH_<FIELD> on the first
     difference; return the verified order description on success.
 
@@ -507,6 +564,7 @@ def verify_place(cmd: Any, *, intent: Mapping[str, Any], market: Mapping[str, An
     code = _row_mismatch(cmd, market, side_one)
     if code is not None:
         raise CommandRefused(code)
+    _resolve_event(cmd, market, same_team_events)
     if not isinstance(event_markets, list) or not all(isinstance(r, Mapping) for r in event_markets):
         raise CommandRefused("EVENT_MARKETS_MISSING")
     own = str(market.get("marketHash", "")).lower()
@@ -547,7 +605,8 @@ def verify_place(cmd: Any, *, intent: Mapping[str, Any], market: Mapping[str, An
     if bool(post_only) != cmd.post_only:
         raise CommandRefused("COMMAND_MISMATCH_POST_ONLY")
     return {"order_type": cmd.order_type, "time_in_force": tif, "post_only": cmd.post_only,
-            "event_id": str(market.get("sportXeventId")), "selection_label": labels[0 if side_one else 1],
+            "event_id": str(market.get("sportXeventId")), "market_hash": own, "side_one": bool(side_one),
+            "selection_label": labels[0 if side_one else 1],
             "line": None if mline is None else str(mline), "stake_base_units": units,
             "min_decimal_odds": _num_text(cmd.odds), "percentage_odds": signed}
 
@@ -568,6 +627,6 @@ def verify_cancel(cmd: Any, *, scope: str, order_ids: tuple[str, ...] = (), mark
 
 
 __all__ = ["CancelCommand", "CommandRefused", "OwnerCommandAuthorization", "PlaceCommand", "canonical_label",
-           "canonical_sha256", "canonical_text", "decimal_odds_of", "ladder_floor", "ledger_fields", "parse",
+           "cancel_fingerprint", "place_fingerprint", "decimal_odds_of", "ladder_floor", "ledger_fields", "parse",
            "requested_percentage_odds", "snapshot", "stake_base_units", "text_sha256", "verify_cancel",
            "verify_place", "verify_record"]

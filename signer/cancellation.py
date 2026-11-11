@@ -25,7 +25,7 @@ Flow (CancellationService, all under the gateway lock):
    ordini sul mercato 0x...", "... dell'evento <id>"), its sha256 and received_at inside the short window.
    The signer parses the text itself and the command must name exactly this operation: scope, the same
    set of order ids, the same market hash or event id (COMMAND_MISMATCH_<FIELD>). The command id and the
-   canonical text hash must be unused (COMMAND_ID_ALREADY_CONSUMED, COMMAND_TEXT_REPLAYED);
+   canonical text hash must be unused (COMMAND_ID_ALREADY_CONSUMED, COMMAND_REPLAYED);
 4. pre-check: every targeted ledger order is reconciled from exchange READS first; orders that the
    exchange already shows terminal (filled, cancelled, expired) are not sent (by id: reported
    ALREADY_TERMINAL; if nothing is left, nothing is sent and the command is NOT consumed). A subset of
@@ -52,12 +52,12 @@ from typing import Any, Callable, Mapping, Sequence
 
 from . import command as cmd
 from .gateway import GatewayRefused, SubmissionGateway
+from .risk import RiskLimits
 from .orders import (CANCELLED as ST_CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED, FILLED, OPEN, PARTIALLY_FILLED,
                      REJECTED, SETTLED, SUBMITTED, UNKNOWN as ST_UNKNOWN, LedgerError, OrderStateError)
 from .rest_adapter import ExchangeLimits, RestRequest, RestResponse
 
 CANCEL_BINDING_SCHEMA = "sxbet.cancel_binding.v1"
-DEFAULT_COMMAND_MAX_AGE_SECONDS = 120
 SCOPE_ORDER_IDS, SCOPE_MARKET, SCOPE_EVENT, SCOPE_ALL = "ORDER_IDS", "MARKET", "EVENT", "ALL"
 SCOPES = frozenset({SCOPE_ORDER_IDS, SCOPE_MARKET, SCOPE_EVENT, SCOPE_ALL})
 CANCELLED, NOT_CANCELLED, UNCONFIRMED, UNKNOWN = "CANCELLED", "NOT_CANCELLED", "UNCONFIRMED", "UNKNOWN"
@@ -196,14 +196,15 @@ def parse_cancel_scope(response: Any) -> ScopeOutcome:
 
 # ---------------------------------------------------------------- flow
 class CancellationService:
-    def __init__(self, gateway: SubmissionGateway, *, account_id: str,
-                 command_max_age_seconds: int = DEFAULT_COMMAND_MAX_AGE_SECONDS):
-        """`command_max_age_seconds`: the deployment wires the owner-signed risk config value
-        (`RiskLimits.command_max_age_seconds`, <= 300 s)."""
+    def __init__(self, gateway: SubmissionGateway, *, account_id: str, risk_limits: RiskLimits):
+        """`risk_limits`: the owner-signed risk config of this signer (review P3): the command window is
+        `risk_limits.command_max_age_seconds`, never a deployment constant."""
         if not isinstance(gateway, SubmissionGateway) or not gateway._official:
             raise CancelRefused("CANCEL_REQUIRES_OFFICIAL_ADAPTER")
         if not isinstance(account_id, str) or not account_id:
             raise CancelRefused("ACCOUNT_ID_MISSING")
+        command_max_age_seconds = getattr(risk_limits, "command_max_age_seconds", None) \
+            if isinstance(risk_limits, RiskLimits) else None
         if type(command_max_age_seconds) is not int or \
                 not 0 < command_max_age_seconds <= cmd.COMMAND_MAX_AGE_HARD_CAP_SECONDS:
             raise CancelRefused("COMMAND_WINDOW_NOT_CONFIGURED")
@@ -224,20 +225,25 @@ class CancellationService:
                                     market_hash=market_hash, event_id=event_id)
 
     def _authorize(self, authorization: Any, scope: str, *, order_ids: Sequence[str] = (),
-                   market_hash: str | None = None, event_id: str | None = None) -> cmd.OwnerCommandAuthorization:
-        """Verify the owner's cancel command WITHOUT consuming it; return the private snapshot."""
+                   market_hash: str | None = None,
+                   event_id: str | None = None) -> tuple[cmd.OwnerCommandAuthorization, str]:
+        """Verify the owner's cancel command WITHOUT consuming it; return the private snapshot + fingerprint.
+        A repeated (risk-reducing) cancel of the same scope needs a new reference token, e.g.
+        "Cancella tutti gli ordini (rif. 2)": the same command never authorises two operations."""
         try:
             auth = cmd.snapshot(authorization)
             cmd.verify_record(auth, now=self._now(), max_age_seconds=self._max_age)
             if self._ledger.command_consumed(auth.command_id):
                 raise cmd.CommandRefused("COMMAND_ID_ALREADY_CONSUMED")
-            if self._ledger.command_text_consumed(cmd.canonical_sha256(auth.command_text)):
-                raise cmd.CommandRefused("COMMAND_TEXT_REPLAYED")
-            cmd.verify_cancel(cmd.parse(auth.command_text), scope=scope, order_ids=tuple(order_ids),
-                              market_hash=market_hash, event_id=event_id)
+            parsed = cmd.parse(auth.command_text)
+            cmd.verify_cancel(parsed, scope=scope, order_ids=tuple(order_ids), market_hash=market_hash,
+                              event_id=event_id)
+            fp = cmd.cancel_fingerprint(parsed)
+            if self._ledger.command_fingerprint_consumed(fp):
+                raise cmd.CommandRefused("COMMAND_REPLAYED")
         except cmd.CommandRefused as exc:
             raise CancelRefused(exc.code) from None
-        return auth
+        return auth, fp
 
     def _still_valid(self, auth: cmd.OwnerCommandAuthorization) -> None:
         """The pre-check reads can take a while (up to 3 per order): flag and command window are checked
@@ -246,11 +252,11 @@ class CancellationService:
         if self._now() - auth.received_at > self._max_age:
             raise CancelRefused("COMMAND_EXPIRED")
 
-    def _consume(self, auth: cmd.OwnerCommandAuthorization, binding: Mapping[str, Any], scope: str,
+    def _consume(self, auth: cmd.OwnerCommandAuthorization, fp: str, binding: Mapping[str, Any], scope: str,
                  order_ids: list[str], market_hash: str | None = None, event_id: str | None = None) -> None:
         self._still_valid(auth)  # refused here => command NOT consumed, nothing sent
         try:
-            self._ledger.record_cancel_request(command=cmd.ledger_fields(auth), scope=scope,
+            self._ledger.record_cancel_request(command=cmd.ledger_fields(auth, fp), scope=scope,
                                                binding_sha256=binding_sha256(binding), order_ids=order_ids,
                                                market_hash=market_hash, event_id=event_id)
         except (OrderStateError, LedgerError) as exc:
@@ -294,7 +300,7 @@ class CancellationService:
             self._gw._check_flag()
             ids = _ids(order_ids, self._adapter.limits)
             binding = self._binding(SCOPE_ORDER_IDS, order_ids=ids)
-            auth = self._authorize(authorization, SCOPE_ORDER_IDS, order_ids=ids)
+            auth, fp = self._authorize(authorization, SCOPE_ORDER_IDS, order_ids=ids)
             known = [self._ledger.by_order_id(i) for i in ids]
             if any(o is None for o in known):
                 raise CancelRefused("CANCEL_ORDER_NOT_IN_LEDGER")
@@ -311,7 +317,7 @@ class CancellationService:
             if not to_send:
                 return {"scope": SCOPE_ORDER_IDS, "sent": False, "orders": report}  # command not consumed
             request = build_cancel_by_ids(to_send, limits=self._adapter.limits)
-            self._consume(auth, binding, SCOPE_ORDER_IDS, to_send)
+            self._consume(auth, fp, binding, SCOPE_ORDER_IDS, to_send)
             self._log("CANCEL_REQUESTED", SCOPE_ORDER_IDS, auth=auth)
             self._before_send(auth, SCOPE_ORDER_IDS)
             parsed = parse_cancel_by_ids(self._adapter.send(request), to_send)
@@ -342,7 +348,7 @@ class CancellationService:
             self._gw._check_flag()
             request = build()
             binding = self._binding(scope, market_hash=market_hash, event_id=event_id)
-            auth = self._authorize(authorization, scope, market_hash=market_hash, event_id=event_id)
+            auth, fp = self._authorize(authorization, scope, market_hash=market_hash, event_id=event_id)
             report: dict[str, dict[str, Any]] = {}
             targets = []
             for o in self._ledger.orders():
@@ -350,7 +356,7 @@ class CancellationService:
                     report[o.order_id] = {"client_order_id": o.client_order_id,
                                           "state_before": self._reconcile(o.client_order_id)}
                     targets.append(o.order_id)
-            self._consume(auth, binding, scope, sorted(targets), market_hash=market_hash, event_id=event_id)
+            self._consume(auth, fp, binding, scope, sorted(targets), market_hash=market_hash, event_id=event_id)
             self._log("CANCEL_REQUESTED", scope, auth=auth)
             self._before_send(auth, scope)
             outcome = parse_cancel_scope(self._adapter.send(request))

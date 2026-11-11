@@ -19,8 +19,9 @@ from eth_account import Account  # noqa: E402
 
 from signer import command as cm  # noqa: E402
 from signer.core import SignerRefused  # noqa: E402
-from sxbet_signer_kit import (EVENT_ID, H, NOW, Clock, context, decimal_odds_for, make_intent,  # noqa: E402
+from sxbet_signer_kit import (EVENT_ID, H, NOW, Clock, context, decimal_odds_for, event_of, make_intent,  # noqa: E402
                               make_signer, owner_command)
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 HEX = "0x" + "ab" * 32
 HEX2 = "0x" + "cd" * 32
@@ -227,12 +228,13 @@ def test_universal_coverage_every_sport_market_and_line(tmp_path, throwaway, own
     ctx = context(i)
     ctx["market"].update(row)
     ctx["event_markets"] = [ctx["market"]]
+    ctx["same_team_events"] = [event_of(ctx["market"])]
     event = f"{row['teamOneName']}–{row['teamTwoName']}"
     if tif == "GTC":
         text = f"Metti un Limit a quota 1,90 per 3,25 USDC su {selection} in {event}"
     else:
         text = f"Place 3.25 USDC on {selection} in {event.replace(chr(0x2013), ' vs ')} at min odds 1.90 {tif}"
-    out = s.sign_order(i, owner_command(text=text), ctx)
+    out = sign_with_reads(s, i, owner_command(text=text), ctx)
     assert out["cached"] is False and out["order_type"] == ("LIMIT" if tif == "GTC" else "MARKET")
     assert out["order"]["percentageOdds"] == str(52_625_000_000_000_000_000)   # ladder floor of 1/1.90
     assert out["order"]["totalBetSize"] == "3250000" and out["order"]["timeInForce"] == tif
@@ -245,12 +247,12 @@ def test_line_mismatch_and_missing_line(tmp_path, throwaway, owner):
     ctx["market"].update(_row("Home FC", "Away FC", "Over 2.5", "Under 2.5", line=2.5))
     ctx["event_markets"] = [ctx["market"]]
     base = "Metti un Limit a quota 1,90 per 5 USDC su {} in Home FC–Away FC"
-    assert refused(lambda: s.sign_order(i, owner_command(text=base.format("Over 3,5")), ctx)) == \
+    assert refused(lambda: sign_with_reads(s, i, owner_command(text=base.format("Over 3,5")), ctx)) == \
         "COMMAND_MISMATCH_LINE"
     ctx["market"].update(_row("Home FC", "Away FC", "Home FC -1.5", "Away FC +1.5", line=-1.5))
-    assert refused(lambda: s.sign_order(i, owner_command(text=base.format("Home FC")), ctx)) == \
+    assert refused(lambda: sign_with_reads(s, i, owner_command(text=base.format("Home FC")), ctx)) == \
         "COMMAND_INCOMPLETE_LINE"
-    assert s.sign_order(i, owner_command(text=base.format("Home FC -1,5")), ctx)["cached"] is False
+    assert sign_with_reads(s, i, owner_command(text=base.format("Home FC -1,5")), ctx)["cached"] is False
 
 
 def test_ambiguous_market_needs_an_explicit_market_type(tmp_path, throwaway, owner):
@@ -262,10 +264,10 @@ def test_ambiguous_market_needs_an_explicit_market_type(tmp_path, throwaway, own
     twin = {**ctx["market"], "marketHash": HEX2, "type": 226}
     ctx["event_markets"] = [ctx["market"], twin]
     plain = "Metti un Limit a quota 2,5 per 5 USDC su Home FC in Home FC–Away FC"
-    assert refused(lambda: s.sign_order(i, owner_command(text=plain), ctx)) == "COMMAND_AMBIGUOUS_MARKET"
-    assert refused(lambda: s.sign_order(i, owner_command(text=plain + " (tipo mercato 226)"), ctx)) == \
+    assert refused(lambda: sign_with_reads(s, i, owner_command(text=plain), ctx)) == "COMMAND_AMBIGUOUS_MARKET"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(text=plain + " (tipo mercato 226)"), ctx)) == \
         "COMMAND_MISMATCH_MARKET"
-    assert s.sign_order(i, owner_command(text=plain + " (tipo mercato 52)"), ctx)["cached"] is False
+    assert sign_with_reads(s, i, owner_command(text=plain + " (tipo mercato 52)"), ctx)["cached"] is False
 
 
 def test_unreadable_sibling_market_fails_closed(tmp_path, throwaway, owner):
@@ -273,7 +275,7 @@ def test_unreadable_sibling_market_fails_closed(tmp_path, throwaway, owner):
     i = make_intent(throwaway[0].address)
     ctx = context(i)
     ctx["event_markets"] = [ctx["market"], {**ctx["market"], "marketHash": HEX2, "line": {"weird": 1}}]
-    assert refused(lambda: s.sign_order(i, owner_command(i), ctx)) == "COMMAND_AMBIGUOUS_MARKET"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i), ctx)) == "COMMAND_AMBIGUOUS_MARKET"
 
 
 def test_explicit_tif_and_owner_signed_default(tmp_path, throwaway, owner):
@@ -281,19 +283,19 @@ def test_explicit_tif_and_owner_signed_default(tmp_path, throwaway, owner):
     ioc = make_intent(throwaway[0].address, time_in_force="IOC", idempotency_key="order-key-TIF1")
     fok = make_intent(throwaway[0].address, time_in_force="FOK", idempotency_key="order-key-TIF2")
     no_tif = "Piazza 5 USDC su Home FC in Home FC–Away FC a quota minima 2,5"
-    assert refused(lambda: s.sign_order(fok, owner_command(text=no_tif), context(fok))) == \
+    assert refused(lambda: sign_with_reads(s, fok, owner_command(text=no_tif), context(fok))) == \
         "COMMAND_MISMATCH_TIME_IN_FORCE"  # the owner-signed default is IOC, the model chose FOK
-    assert s.sign_order(ioc, owner_command(text=no_tif), context(ioc))["cached"] is False
-    assert s.sign_order(fok, owner_command(text=no_tif + " FOK"), context(fok))["cached"] is False
+    assert sign_with_reads(s, ioc, owner_command(text=no_tif), context(ioc))["cached"] is False
+    assert sign_with_reads(s, fok, owner_command(text=no_tif + " FOK"), context(fok))["cached"] is False
 
 
 def test_post_only_must_be_commanded(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     text = "Metti un Limit a quota 2,5 per 5 USDC su Home FC in Home FC–Away FC post-only"
-    assert refused(lambda: s.sign_order(i, owner_command(i), context(i), post_only=True)) == \
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i), context(i), post_only=True)) == \
         "COMMAND_MISMATCH_POST_ONLY"
-    out = s.sign_order(i, owner_command(text=text), context(i), post_only=True)
+    out = sign_with_reads(s, i, owner_command(text=text), context(i), post_only=True)
     assert out["post_only"] is True
 
 
@@ -309,7 +311,7 @@ def test_concurrent_commands_with_the_same_id_one_wins(tmp_path, throwaway, owne
     def worker(i, a):
         barrier.wait()
         try:
-            ok.append(s.sign_order(i, a, context(i)))
+            ok.append(sign_with_reads(s, i, a, context(i)))
         except SignerRefused as e:
             bad.append(e.code)
 
@@ -330,14 +332,14 @@ def test_concurrent_same_text_different_ids_one_wins(tmp_path, throwaway, owner)
     def worker(i):
         barrier.wait()
         try:
-            ok.append(s.sign_order(i, owner_command(text=text), context(i)))
+            ok.append(sign_with_reads(s, i, owner_command(text=text), context(i)))
         except SignerRefused as e:
             bad.append(e.code)
 
     ts = [threading.Thread(target=worker, args=(i,)) for i in intents]
     [t.start() for t in ts]
     [t.join() for t in ts]
-    assert len(ok) == 1 and bad == ["COMMAND_TEXT_REPLAYED"] * 5
+    assert len(ok) == 1 and bad == ["COMMAND_REPLAYED"] * 5
 
 
 def test_replay_across_restart_regardless_of_window(tmp_path, throwaway, owner):
@@ -345,22 +347,22 @@ def test_replay_across_restart_regardless_of_window(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, clock=clock)
     i = make_intent(throwaway[0].address, idempotency_key="order-key-RS01")
     a = owner_command(i)
-    s.sign_order(i, a, context(i))
+    sign_with_reads(s, i, a, context(i))
     clock.t = NOW + 10 * 86_400                                  # long after any window
     r = make_signer(tmp_path, throwaway, owner, clock=clock)
     j = make_intent(throwaway[0].address, idempotency_key="order-key-RS02", now=clock.t, expiry=clock.t + 3600)
     fresh_same_id = owner_command(j, command_id=a.command_id, received_at=clock.t)
-    assert refused(lambda: r.sign_order(j, fresh_same_id, context(j, now=clock.t))) == "COMMAND_ID_ALREADY_CONSUMED"
+    assert refused(lambda: sign_with_reads(r, j, fresh_same_id, context(j, now=clock.t))) == "COMMAND_ID_ALREADY_CONSUMED"
     # Same text, case / spacing changed, new id: still the same command.
     same_text = owner_command(text="  " + a.command_text.upper() + "  ", received_at=clock.t)
-    assert refused(lambda: r.sign_order(j, same_text, context(j, now=clock.t))) == "COMMAND_TEXT_REPLAYED"
+    assert refused(lambda: sign_with_reads(r, j, same_text, context(j, now=clock.t))) == "COMMAND_REPLAYED"
 
 
 def test_command_text_never_written_only_hashes(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     a = owner_command(i)
-    s.sign_order(i, a, context(i))
+    sign_with_reads(s, i, a, context(i))
     for f in ("ledger.jsonl", "audit.jsonl"):
         body = (tmp_path / f).read_text()
         assert a.command_text not in body and "Metti un Limit" not in body
@@ -373,19 +375,19 @@ def test_modification_is_cancel_plus_new_order_two_commands(tmp_path, throwaway,
     verified on its own with its own single-use id."""
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    s.sign_order(i, owner_command(i), context(i))
+    sign_with_reads(s, i, owner_command(i), context(i))
     oid = s._ledger.get(i["idempotency_key"]).order_id
     modify = owner_command(text=f"Modifica l'ordine {oid} a quota 2,6")
     j = make_intent(throwaway[0].address, idempotency_key="order-key-MOD2",
                     requested_percentage_odds=38_461_538_461_538_461_538)
-    assert refused(lambda: s.sign_order(j, modify, context(j))) == "COMMAND_MODIFY_NOT_SUPPORTED"
+    assert refused(lambda: sign_with_reads(s, j, modify, context(j))) == "COMMAND_MODIFY_NOT_SUPPORTED"
     cancel = cm.parse(f"Cancella l'ordine {oid}")
     cm.verify_cancel(cancel, scope="ORDER_IDS", order_ids=(oid,))                 # the cancel command, alone
     new = owner_command(text="Metti un Limit a quota 2,6 per 5 USDC su Home FC in Home FC–Away FC")
-    assert s.sign_order(j, new, context(j))["cached"] is False                  # the new order command, alone
+    assert sign_with_reads(s, j, new, context(j))["cached"] is False                  # the new order command, alone
     with pytest.raises(cm.CommandRefused) as e:                                 # a cancel cannot place an order
         cm.verify_place(cancel, intent=j, market=context(j)["market"], event_markets=[context(j)["market"]],
-                        post_only=False, currency="USDC", token_decimals=6, odds_ladder_step_size=125,
+                        same_team_events=context(j)["same_team_events"], post_only=False, currency="USDC", token_decimals=6, odds_ladder_step_size=125,
                         market_time_in_force="FOK", limit_time_in_force="GTC")
     assert e.value.code == "COMMAND_MISMATCH_OPERATION"
 
@@ -400,5 +402,5 @@ def test_event_by_provider_id(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     text = f"Metti un Limit a quota 2,5 per 5 USDC su Home FC in evento {EVENT_ID}"
-    assert s.sign_order(i, owner_command(text=text), context(i))["cached"] is False
+    assert sign_with_reads(s, i, owner_command(text=text), context(i))["cached"] is False
     assert context(i)["market"]["marketHash"] == H

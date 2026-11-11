@@ -21,6 +21,7 @@ from signer import rest_adapter as ra  # noqa: E402
 from signer.audit import AuditLog  # noqa: E402
 from sxbet_exchange_kit import FakeSender, ok, order_row, submitted_row  # noqa: E402
 from sxbet_signer_kit import NOW, SIGNER_ID, Clock, owner_command, context, make_intent, make_signer  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 LIMITS = ra.ExchangeLimits(max_create_orders=10, max_cancel_orders=100)
 MAKER = "0x" + "aa" * 20
@@ -92,12 +93,18 @@ def test_wait_for_outcome_and_max_wait_time():
 
 
 def test_post_only_only_on_gtc():
-    opts = ra.SubmitOptions(post_only=True)
-    req = ra.build_create_orders([wire()], limits=LIMITS, options=opts)
+    """Intentional change (review #196 P2-3): post-only is per order (the clientOrderIds whose AUTHORIZE line
+    records an owner-commanded post-only), not a global SubmitOptions field."""
+    opts = ra.SubmitOptions()
+    with pytest.raises(TypeError):
+        ra.SubmitOptions(post_only=True)
+    cid = wire()["clientOrderId"]
+    req = ra.build_create_orders([wire()], limits=LIMITS, options=opts, post_only=frozenset({cid}))
     assert req.body["orders"][0]["postOnly"] is True
+    assert "postOnly" not in ra.build_create_orders([wire()], limits=LIMITS, options=opts).body["orders"][0]
     for tif in ("IOC", "FOK"):
-        assert code(lambda: ra.build_create_orders([wire(timeInForce=tif)], limits=LIMITS,
-                                                    options=opts)) == "POST_ONLY_REQUIRES_GTC"
+        assert code(lambda: ra.build_create_orders([wire(timeInForce=tif)], limits=LIMITS, options=opts,
+                                                    post_only=frozenset({cid}))) == "POST_ONLY_REQUIRES_GTC"
 
 
 @pytest.mark.parametrize("tif", ["GTC", "IOC", "FOK"])
@@ -309,9 +316,9 @@ def test_malformed_read_bodies_are_errors():
 
 
 # ---------------------------------------------------------------- gateway integration
-def write_flag(path, owner, expires=NOW + 3600):
+def write_flag(path, owner, expires=NOW + 3600, genesis=None):
     body = {"live_trading": "ENABLED", "signer_id": SIGNER_ID, "network": "mainnet", "issued_at": NOW,
-            "expires_at": expires}
+            "expires_at": expires, "ledger_genesis_sha256": genesis}
     body["signature"] = owner.sign(gw.live_flag_message(body)).hex()
     path.write_text(json.dumps(body))
     return str(path)
@@ -325,10 +332,11 @@ def setup(tmp_path, throwaway, owner, *, options=None, keys=("order-key-R001",),
     for n, k in enumerate(keys):
         i = make_intent(throwaway[0].address, idempotency_key=k, stake_base_units=2_000_000,
                         time_in_force=(tifs or {}).get(k, "GTC"))
-        signed.append((s.sign_order(i, owner_command(i), context(i)), i))
+        signed.append((sign_with_reads(s, i, owner_command(i), context(i)), i))
     sender = FakeSender()
     adapter = ra.OfficialRestAdapter(sender, limits=limits, options=options or ra.SubmitOptions())
-    flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner), owner.public_key(),
+    flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner, genesis=s._ledger.genesis_sha256),
+                                     owner.public_key(),
                                      signer_id=SIGNER_ID, network="mainnet", now=NOW)
     g = gw.SubmissionGateway(flag, owner_public_key=owner.public_key(), transport=adapter, ledger=s._ledger,
                              audit=AuditLog(str(tmp_path / "gw-audit.jsonl")), odds_ladder_step_size=125,
@@ -433,9 +441,14 @@ def test_taker_ioc_partial_fill_done_releases_only_after_read(tmp_path, throwawa
     assert s.committed_exposure_base_units == 500_000  # matched part only
 
 
-def test_gateway_builder_refusal_happens_before_write_ahead(tmp_path, throwaway, owner):
-    s, [(sg, i)], sender, g, _ = setup(tmp_path, throwaway, owner, options=ra.SubmitOptions(post_only=True),
-                                       tifs={"order-key-R001": "FOK"})
+def test_gateway_builder_refusal_happens_before_write_ahead(tmp_path, throwaway, owner, monkeypatch):
+    """Intentional change (review #196 P2-3): a FOK can no longer be made post-only through a global option;
+    the builder refusal is provoked directly (the property under test is unchanged: nothing written or sent)."""
+    s, [(sg, i)], sender, g, _ = setup(tmp_path, throwaway, owner, tifs={"order-key-R001": "FOK"})
+    real = g._transport.build_create
+    forced = frozenset({i["idempotency_key"]})
+    monkeypatch.setattr(g._transport, "build_create",
+                        lambda payload, post_only=frozenset(): real(payload, post_only=forced))
     with pytest.raises(gw.GatewayRefused, match="POST_ONLY_REQUIRES_GTC"):
         g.submit(sg, i)
     assert sender.requests == [] and s._ledger.get(i["idempotency_key"]).state == od.SIGNED

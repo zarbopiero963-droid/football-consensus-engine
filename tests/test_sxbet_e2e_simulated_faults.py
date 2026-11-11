@@ -19,6 +19,7 @@ from signer.core import Signer, SignerRefused  # noqa: E402
 from signer.orders import LedgerError  # noqa: E402
 from sxbet_e2e_kit import USDC, Stack  # noqa: E402
 from sxbet_sim_exchange import SimCrash  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 KEY = "order-key-F001"
 
@@ -111,12 +112,12 @@ def test_simulated_crash_after_authorize_before_signature(tmp_path, monkeypatch)
 
     monkeypatch.setattr(Signer, "_produce_signature", die)
     with pytest.raises(SimCrash):
-        s.signer.sign_order(i, approval, ctx)
+        sign_with_reads(s.signer, i, approval, ctx)
     monkeypatch.undo()
     _restart_consistent(s, KEY, od.AUTHORIZED, 5 * USDC)                    # reservation not lost
     assert s.ledger.command_consumed(approval.command_id)
     with pytest.raises(SignerRefused) as e:
-        s.signer.sign_order(i, approval, s.context(i))
+        sign_with_reads(s.signer, i, approval, s.context(i))
     assert e.value.code == "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST"
     assert s.signer.abandon_unsigned(KEY) == od.REJECTED and s.exposure().total == 0
     assert s.sim.writes() == []
@@ -244,7 +245,7 @@ def test_simulated_concurrent_distinct_orders_respect_open_order_limit(tmp_path)
     def go(i, a, ctx):
         barrier.wait()
         try:
-            sg = s.signer.sign_order(i, a, ctx)
+            sg = sign_with_reads(s.signer, i, a, ctx)
             results.append(s.gw.submit(sg, i)["state"])
         except SignerRefused as exc:
             results.append(exc.code)

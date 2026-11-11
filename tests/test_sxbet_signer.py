@@ -22,6 +22,7 @@ from signer.orders import OrderLedger  # noqa: E402
 from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, H, META_RAW, NOW, SIGNER_ID, TOKEN, Clock, context, owner_command,  # noqa: E402
                               make_intent, pub)
 from sxbet_signer_kit import make_signer as _make_signer  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def make_signer(tmp_path, throwaway, owner, *, max_stake=10_000_000, max_exposur
 
 
 def sign(s, i, a, ctx=None):
-    return s.sign_order(i, a, context(i) if ctx is None else ctx)
+    return sign_with_reads(s, i, a, context(i) if ctx is None else ctx)
 
 
 def refused(fn):

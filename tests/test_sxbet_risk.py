@@ -20,7 +20,9 @@ from signer.audit import AuditLog  # noqa: E402
 from signer.core import KEY_ENV, Signer, SignerConfig, SignerConfigError, SignerRefused  # noqa: E402
 from signer.orders import OrderLedger  # noqa: E402
 from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, GENEROUS, SIGNER_ID, TOKEN, pub, NOW, Clock, context,  # noqa: E402
-                              make_intent, make_signer, owner_command, write_risk_config)
+                              make_intent, make_signer, owner_command, signer_config,
+                              write_risk_config)
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 
 @pytest.fixture
@@ -41,7 +43,7 @@ def refused(fn):
 
 
 def attempt(s, owner, i, ctx=None, **kw):
-    return refused(lambda: s.sign_order(i, owner_command(i, **kw), context(i) if ctx is None else ctx))
+    return refused(lambda: sign_with_reads(s, i, owner_command(i, **kw), context(i) if ctx is None else ctx))
 
 
 def load(path, owner, network="mainnet"):
@@ -106,12 +108,12 @@ def test_testnet_and_mainnet_values_are_separate(tmp_path, throwaway, owner):
 def test_config_loaded_from_env_path(tmp_path, throwaway, owner):
     path = write_risk_config(tmp_path / "env.json", owner)
     led = OrderLedger.create(str(tmp_path / "l"), signer_id=SIGNER_ID, signer_address=throwaway[0].address)
-    cfg = SignerConfig(SIGNER_ID, "mainnet", 4162, ESCROW, TOKEN, 125, account_id=ACCOUNT_ID)
+    cfg = signer_config()
     s = Signer(cfg, owner_public_key=pub(owner), ledger=led, audit=AuditLog(str(tmp_path / "a")),
                env={KEY_ENV: throwaway[1], risk.RISK_CONFIG_ENV: path}, clock=Clock())
     assert s.risk_config_source == "OWNER_SIGNED"
     i = make_intent(throwaway[0].address)
-    assert s.sign_order(i, owner_command(i), context(i))["cached"] is False
+    assert sign_with_reads(s, i, owner_command(i), context(i))["cached"] is False
 
 
 def test_limits_cannot_be_changed_through_intent_or_approval(tmp_path, throwaway, owner):
@@ -120,10 +122,10 @@ def test_limits_cannot_be_changed_through_intent_or_approval(tmp_path, throwaway
     with pytest.raises(Exception):
         s._risk.limits.max_stake_per_order_base_units = 10 ** 12  # frozen
     # Extra intent / context fields never reach the limits.
-    assert refused(lambda: s.sign_order({**i, "max_stake": "9" * 20}, owner_command(i), context(i))) \
+    assert refused(lambda: sign_with_reads(s, {**i, "max_stake": "9" * 20}, owner_command(i), context(i))) \
         == "INTENT_KEYS_MISMATCH"
     ctx = {**context(i), "limits": {"max_stake_per_order_base_units": 10 ** 12}}
-    assert refused(lambda: s.sign_order(i, owner_command(i), ctx)) == "STAKE_ABOVE_LIMIT"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i), ctx)) == "STAKE_ABOVE_LIMIT"
 
 
 _POSITIVE = sorted(f for f in risk.LIMIT_FIELDS if f in risk._INT_FIELDS and f != "min_seconds_between_orders")
@@ -149,7 +151,7 @@ def test_max_stake_per_order(tmp_path, throwaway, owner):
 
 
 def _sign(s, owner, i, **kw):
-    return s.sign_order(i, owner_command(i, **kw), context(i, now=kw.get("received_at") or NOW))
+    return sign_with_reads(s, i, owner_command(i, **kw), context(i, now=kw.get("received_at") or NOW))
 
 
 def test_max_exposure_per_market(tmp_path, throwaway, owner):
@@ -214,7 +216,7 @@ def test_daily_loss_limit_counts_today_only(tmp_path, throwaway, owner):
     clock.t = NOW + 86_400
     nxt = make_signer(tmp_path, throwaway, owner, clock=clock, limits={"max_daily_loss_base_units": 9_000_000})
     i = make_intent(throwaway[0].address, idempotency_key="order-key-D003", now=clock.t, expiry=clock.t + 3600)
-    assert nxt.sign_order(i, owner_command(i, received_at=clock.t), context(i, now=clock.t))["cached"] is False
+    assert sign_with_reads(nxt, i, owner_command(i, received_at=clock.t), context(i, now=clock.t))["cached"] is False
 
 
 def test_max_stake_per_utc_day_rebuilt_after_restart(tmp_path, throwaway, owner):
@@ -230,7 +232,7 @@ def test_max_stake_per_utc_day_rebuilt_after_restart(tmp_path, throwaway, owner)
     clock.t = NOW + 86_400
     r2 = make_signer(tmp_path, throwaway, owner, clock=clock, limits=lim)
     i = make_intent(throwaway[0].address, idempotency_key="order-key-Y004", now=clock.t, expiry=clock.t + 3600)
-    assert r2.sign_order(i, owner_command(i, received_at=clock.t), context(i, now=clock.t))["cached"] is False
+    assert sign_with_reads(r2, i, owner_command(i, received_at=clock.t), context(i, now=clock.t))["cached"] is False
 
 
 def test_max_orders_per_hour_and_day_rebuilt_after_restart(tmp_path, throwaway, owner):
@@ -247,12 +249,12 @@ def test_max_orders_per_hour_and_day_rebuilt_after_restart(tmp_path, throwaway, 
     r = make_signer(tmp_path, throwaway, owner, clock=clock, limits=lim)
     i = make_intent(throwaway[0].address, idempotency_key="order-key-H004", stake_base_units=1_000_000,
                     now=clock.t, expiry=clock.t + 3600)
-    r.sign_order(i, owner_command(i, received_at=clock.t), context(i, now=clock.t))
+    sign_with_reads(r, i, owner_command(i, received_at=clock.t), context(i, now=clock.t))
     clock.t = NOW + 7300
     r = make_signer(tmp_path, throwaway, owner, clock=clock, limits=lim)
     j = make_intent(throwaway[0].address, idempotency_key="order-key-H005", stake_base_units=1_000_000,
                     now=clock.t, expiry=clock.t + 3600)
-    assert refused(lambda: r.sign_order(j, owner_command(j, received_at=clock.t), context(j, now=clock.t))) \
+    assert refused(lambda: sign_with_reads(r, j, owner_command(j, received_at=clock.t), context(j, now=clock.t))) \
         == "ORDERS_PER_DAY_ABOVE_LIMIT"
 
 
@@ -264,10 +266,10 @@ def test_min_seconds_between_orders_rebuilt_after_restart(tmp_path, throwaway, o
     clock.t = NOW + 29
     r = make_signer(tmp_path, throwaway, owner, clock=clock, limits=lim)
     i = make_intent(throwaway[0].address, idempotency_key="order-key-P002")
-    assert refused(lambda: r.sign_order(i, owner_command(i, received_at=clock.t), context(i, now=clock.t))) \
+    assert refused(lambda: sign_with_reads(r, i, owner_command(i, received_at=clock.t), context(i, now=clock.t))) \
         == "ORDER_PACE_TOO_FAST"
     clock.t = NOW + 30
-    assert r.sign_order(i, owner_command(i, received_at=clock.t), context(i, now=clock.t))["cached"] is False
+    assert sign_with_reads(r, i, owner_command(i, received_at=clock.t), context(i, now=clock.t))["cached"] is False
 
 
 @pytest.mark.parametrize("lo,hi,ok", [("1.01", "1000", True), ("2.6", "1000", False), ("1.01", "2.4", False),
@@ -287,10 +289,10 @@ def test_odds_moved_beyond_slippage(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     worse = make_intent(throwaway[0].address, requested_percentage_odds=40 * 10 ** 18 + 125 * 10 ** 15)
-    assert refused(lambda: s.sign_order(worse, owner_command(i), context(worse))) == "COMMAND_MISMATCH_ODDS"
+    assert refused(lambda: sign_with_reads(s, worse, owner_command(i), context(worse))) == "COMMAND_MISMATCH_ODDS"
     c = context(i)
     c["quote"] = {**c["quote"], "best_percentage_odds": str(38 * 10 ** 18)}  # the book moved in our favour
-    out = s.sign_order(i, owner_command(i), c)
+    out = sign_with_reads(s, i, owner_command(i), c)
     assert out["order"]["percentageOdds"] == str(40 * 10 ** 18)
 
 
@@ -298,7 +300,7 @@ def test_zero_slippage_tolerance_refuses_any_adverse_tick(tmp_path, throwaway, o
     """v2: the smallest adverse change of the signed price (one ladder tick) is refused."""
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address, requested_percentage_odds=40 * 10 ** 18 + 125 * 10 ** 15)
-    assert refused(lambda: s.sign_order(i, owner_command(i, odds_text="2,5"), context(i))) == "COMMAND_MISMATCH_ODDS"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i, odds_text="2,5"), context(i))) == "COMMAND_MISMATCH_ODDS"
 
 
 # ---------------------------------------------------------------- owner policy: allowlists, pre-match
@@ -316,13 +318,13 @@ def test_allowlists_are_owner_policy(tmp_path, throwaway, owner, field, row_key,
     c = context(i)
     del c["market"][row_key]
     assert attempt(s, owner, i, c) == code + "_MISSING"
-    assert s.sign_order(i, owner_command(i), context(i))["cached"] is False
+    assert sign_with_reads(s, i, owner_command(i), context(i))["cached"] is False
     # "ANY" (the default here) does not even need the field.
     s2 = make_signer(tmp_path, throwaway, owner)
     j = make_intent(throwaway[0].address, idempotency_key="order-key-AL02")
     c2 = context(j)
     del c2["market"][row_key]
-    assert s2.sign_order(j, owner_command(j), c2)["cached"] is False
+    assert sign_with_reads(s2, j, owner_command(j), c2)["cached"] is False
 
 
 def test_pregame_only(tmp_path, throwaway, owner):
@@ -335,7 +337,7 @@ def test_pregame_only(tmp_path, throwaway, owner):
     assert attempt(s, owner, i, c) == "GAME_TIME_MISSING"
     live = make_signer(tmp_path, throwaway, owner, limits={"pregame_only": False})
     c["market"]["gameTime"] = NOW - 600
-    assert live.sign_order(i, owner_command(i), c)["cached"] is False
+    assert sign_with_reads(live, i, owner_command(i), c)["cached"] is False
 
 
 # ---------------------------------------------------------------- runtime exchange metadata (never hardcoded)
@@ -352,7 +354,7 @@ def test_min_order_size_from_runtime_metadata(tmp_path, throwaway, owner, tif, m
     c["exchange_limits"] = {**c["exchange_limits"], "order_size_minimum_base_units": minimum,
                             "min_resting_order_size_base_units": resting}
     if code is None:
-        assert s.sign_order(i, owner_command(i), c)["cached"] is False
+        assert sign_with_reads(s, i, owner_command(i), c)["cached"] is False
     else:
         assert attempt(s, owner, i, c) == code
 
@@ -374,7 +376,7 @@ def test_missing_context_items_fail_closed(tmp_path, throwaway, owner, key, code
 def test_no_context_at_all_fails_closed(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    assert refused(lambda: s.sign_order(i, owner_command(i))) == "RISK_CONTEXT_MISSING"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i))) == "RISK_CONTEXT_MISSING"
 
 
 @pytest.mark.parametrize("mutate,code", [
@@ -385,7 +387,9 @@ def test_no_context_at_all_fails_closed(tmp_path, throwaway, owner):
     (lambda c: c["balance"].update(observed_at=NOW - 31), "BALANCE_STALE"),
     (lambda c: c["exchange_limits"].update(observed_at=NOW - 31), "EXCHANGE_LIMITS_STALE"),
     (lambda c: c["exchange_limits"].update(order_size_minimum_base_units=None), "EXCHANGE_LIMITS_MISSING"),
-    (lambda c: c["exchange_limits"].update(base_token_decimals="6"), "EXCHANGE_LIMITS_MISSING"),
+    # intentional (review #196 P1-2): decimals come from the signer's owner config; an exchange value that
+    # differs is a refusal (was EXCHANGE_LIMITS_MISSING when the decimals came from the caller)
+    (lambda c: c["exchange_limits"].update(base_token_decimals="6"), "TOKEN_DECIMALS_DIFFER_FROM_EXCHANGE"),
     (lambda c: c["quote"].update(best_percentage_odds=None), "QUOTE_PRICE_MISSING"),
     (lambda c: c["quote"].update(available_liquidity_base_units=None), "LIQUIDITY_MISSING"),
     (lambda c: c["quote"].update(outcome=2), "QUOTE_SIDE_MISMATCH"),
@@ -423,7 +427,7 @@ def test_insufficient_balance_counts_other_unmatched_reservations(tmp_path, thro
     c["balance"] = {"available_base_units": "9999999", "observed_at": NOW}  # < 5M reserved + 5M new
     assert attempt(s, owner, nxt, c) == "INSUFFICIENT_BALANCE"
     c["balance"]["available_base_units"] = "10000000"
-    assert s.sign_order(nxt, owner_command(nxt), c)["cached"] is False
+    assert sign_with_reads(s, nxt, owner_command(nxt), c)["cached"] is False
 
 
 @pytest.mark.parametrize("tif,liquidity,ok", [("FOK", "4999999", False), ("IOC", "4999999", False),
@@ -434,7 +438,7 @@ def test_insufficient_liquidity_for_taking_orders(tmp_path, throwaway, owner, ti
     c = context(i)
     c["quote"] = {**c["quote"], "available_liquidity_base_units": liquidity}
     if ok:
-        assert s.sign_order(i, owner_command(i), c)["cached"] is False
+        assert sign_with_reads(s, i, owner_command(i), c)["cached"] is False
     else:
         assert attempt(s, owner, i, c) == "INSUFFICIENT_LIQUIDITY"
 

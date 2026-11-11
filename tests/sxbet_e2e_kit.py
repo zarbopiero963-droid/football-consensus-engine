@@ -28,8 +28,10 @@ from signer.audit import AuditLog
 from signer.core import KEY_ENV, Signer, SignerConfig
 from signer.orders import OrderLedger
 from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, EVENT_ID, EXCHANGE_LIMITS, FEES, GENEROUS, H, META_RAW, NOW,
-                              SIGNER_ID, TOKEN, Clock, command_text, load_limits, make_signer, pub)
+                              SIGNER_ID, TOKEN, Clock, command_text, event_of, load_limits, make_signer, pub,
+                              signer_config)
 from sxbet_sim_exchange import ODDS, SimExchange
+from sxbet_signer_kit import sign_with_reads
 
 P = 10 ** 18          # one implied-probability point
 USDC = 1_000_000      # one USDC in base units (6 decimals)
@@ -88,20 +90,20 @@ class Stack:
             else:
                 led = OrderLedger.create(path, **kw)
             self.owner_ack = None
-            cfg = SignerConfig(signer_id=SIGNER_ID, network="mainnet", chain_id=4162, verifying_contract=ESCROW,
-                               base_token=TOKEN, odds_ladder_step_size=125, account_id=ACCOUNT_ID)
+            cfg = signer_config()
             self.signer = Signer(cfg, owner_public_key=pub(self.owner), ledger=led,
                                  audit=AuditLog(str(self.tmp / "audit.jsonl")), risk_config=self.risk,
                                  env={KEY_ENV: self.key}, clock=self.clock)
         self.ledger = self.signer._ledger
         self.adapter = ra.OfficialRestAdapter(self.sim, limits=LIMITS, options=self.options)
-        self.gw = gw.SubmissionGateway(self.flag(), owner_public_key=self.owner.public_key(), transport=self.adapter,
+        self.live_flag = self.flag()
+        self.gw = gw.SubmissionGateway(self.live_flag, owner_public_key=self.owner.public_key(), transport=self.adapter,
                                        ledger=self.ledger, audit=AuditLog(str(self.tmp / "gw-audit.jsonl")),
                                        odds_ladder_step_size=125, network="mainnet", clock=self.clock)
-        self.cx = cx.CancellationService(self.gw, account_id=ACCOUNT_ID)
+        self.cx = cx.CancellationService(self.gw, account_id=ACCOUNT_ID, risk_limits=self.signer._risk.limits)
 
     # ------------------------------------------------------------ cross-process handoff (tests only)
-    _PROCESS_LOCAL = ("signer", "ledger", "adapter", "gw", "cx")
+    _PROCESS_LOCAL = ("signer", "ledger", "adapter", "gw", "cx", "live_flag")
 
     def handoff(self) -> dict:
         """Picklable copy of this stack for a "spawn" child process, WITHOUT the process-local objects
@@ -124,7 +126,8 @@ class Stack:
     def flag(self):
         """TEST-ONLY owner-signed LIVE_TRADING flag (throwaway owner key, 1 h). Never a production path."""
         body = {"live_trading": "ENABLED", "signer_id": SIGNER_ID, "network": "mainnet",
-                "issued_at": int(self.clock()) - 1, "expires_at": int(self.clock()) + 3600}
+                "issued_at": int(self.clock()) - 1, "expires_at": int(self.clock()) + 3600,
+                "ledger_genesis_sha256": self.ledger.genesis_sha256}
         body["signature"] = self.owner.sign(gw.live_flag_message(body)).hex()
         p = self.tmp / "flag.json"
         p.write_text(json.dumps(body))
@@ -154,6 +157,9 @@ class Stack:
         rows = get(self.sim, "/markets/find", marketHashes=",".join(sorted(self.sim.markets)))
         return {"market": market, "market_observed_at": now,
                 "event_markets": [r for r in rows if r["sportXeventId"] == market["sportXeventId"]],
+                "same_team_events": list({r["sportXeventId"]: event_of(r) for r in rows
+                                          if (r["teamOneName"], r["teamTwoName"]) ==
+                                          (market["teamOneName"], market["teamTwoName"])}.values()),
                 "quote": {"outcome": 1 if one else 2, "best_percentage_odds": str(best if best else 0),
                           "available_liquidity_base_units": str(liq), "observed_at": now},
                 "balance": {"available_base_units": bal["availableAmount"], "observed_at": now},
@@ -177,20 +183,22 @@ class Stack:
             received_at=int(self.clock()) if received_at is None else received_at,
             client_ref_sha256=cmd.text_sha256("e2e-conversation"))
 
-    def command(self, intent, ctx, *, command_id=None, received_at=None, text=None):
+    def command(self, intent, ctx, *, command_id=None, received_at=None, text=None, post_only=False):
         """The OWNER's literal command in the trading chat for exactly this intent, as the MCP forwards it."""
         m = ctx["market"]
         label = m["outcomeOneName" if intent["is_maker_betting_outcome_one"] else "outcomeTwoName"]
-        text = text or command_text(intent, label=label, teams=(m["teamOneName"], m["teamTwoName"]))
+        text = text or command_text(intent, label=label, teams=(m["teamOneName"], m["teamTwoName"]),
+                                    post_only=post_only)
         return self._auth(text, "e2e-cmd", command_id, received_at)
 
-    def sign(self, intent, command=None, ctx=None):
+    def sign(self, intent, command=None, ctx=None, post_only=False):
         ctx = ctx or self.context(intent)
-        return self.signer.sign_order(intent, command or self.command(intent, ctx), ctx)
+        return sign_with_reads(self.signer, intent, command or self.command(intent, ctx, post_only=post_only), ctx,
+                               post_only=post_only)
 
-    def place(self, key, **kw):
+    def place(self, key, post_only=False, **kw):
         i = self.intent(key, **kw)
-        signed = self.sign(i)
+        signed = self.sign(i, post_only=post_only)
         return i, signed, self.gw.submit(signed, i)
 
     def state(self, key):

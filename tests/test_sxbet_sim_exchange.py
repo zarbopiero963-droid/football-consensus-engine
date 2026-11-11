@@ -55,8 +55,9 @@ def test_sim_lifecycle_pending_active_inactive_and_purge(tmp_path):
 
 
 def test_sim_post_only_would_cross(tmp_path):
-    s = Stack(tmp_path, options=ra.SubmitOptions(post_only=True))
-    i, sg, r = s.place("order-key-Z003", stake=2 * USDC, odds=41 * P)   # GTC at 41% would cross the 59% maker
+    s = Stack(tmp_path)   # intentional (review #196 P2-3): post-only is commanded per order, not a global option
+    i, sg, r = s.place("order-key-Z003", stake=2 * USDC, odds=41 * P, post_only=True)  # would cross the 59% maker
+    assert s.ledger.get("order-key-Z003").post_only is True
     assert s.gw.reconcile("order-key-Z003")["state"] == od.CANCELLED
     assert get(s.sim, "/orders-v3/" + sg["order_id"])["order"]["inactiveReason"] == "POST_ONLY_WOULD_CROSS"
     assert s.all_fills() == []

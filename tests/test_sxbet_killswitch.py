@@ -70,7 +70,9 @@ def test_engage_blocks_new_orders_in_signer_and_gateway(s):
     before = s.exposure().total
     rep = k.engage("OWNER_MANUAL_STOP")
     assert rep["engaged"] and rep["cancels_sent"] is False and rep["persisted"] is True
-    assert rep["cancel_intents"] == [sg1["order_id"]]             # only orders that may be on the book
+    # Orders that may be on the book, and (review #196, intentional change) a SIGNED order whose signature left
+    # the signer: it may still be posted by whoever holds it, so it is cancelled too.
+    assert rep["cancel_intents"] == sorted([sg1["order_id"], sg2["order_id"]])
     assert s.exposure().total == before                           # never creates (or releases) exposure
     i3 = s.intent("order-key-K003")
     assert refused(lambda: s.sign(i3)) == "KILL_SWITCH_ENGAGED"
@@ -183,7 +185,9 @@ def test_poisoned_ledger_engages_in_memory_and_is_audited(s):
     rep = k.evaluate_automatic(s.signer._risk.limits)
     assert rep["trigger"] == ks.LEDGER_ANCHOR_FORK and rep["persisted"] is False and k.engaged
     assert "KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE" in [r["decision"] for r in ks_audit(s)]
-    assert refused(lambda: s.sign(s.intent("order-key-L020"))) == "LEDGER_POISONED"   # the signer refuses anyway
+    # Review #196 P3 (intentional change): the volatile engagement is visible to the signer and the gateway.
+    assert refused(lambda: s.sign(s.intent("order-key-L020"))) == "KILL_SWITCH_ENGAGED"
+    assert s.ledger.kill_switch_engaged
 
 
 def test_automatic_evaluation_is_deterministic(tmp_path):

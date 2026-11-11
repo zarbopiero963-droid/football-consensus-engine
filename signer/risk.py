@@ -32,20 +32,20 @@ NEVER kept in memory only: `ExposureView` is computed inside the ledger lock by 
 ledger (signer/orders.py), so a restart rebuilds them exactly. Every AUTHORIZE counts, also one later
 rejected or abandoned (conservative).
 
-Risk context (evidence the caller read from the exchange; every item is required, missing or stale =>
-refuse):
+Risk context: the SIGNER'S OWN reads (signer/market_data.py, `SignerConfig.market_data`; review PR #196 P1-1);
+every item is required, missing or stale => refuse:
     market:  GET /markets/find row {marketHash, status, sportXeventId, outcomeOneName, outcomeTwoName,
              teamOneName, teamTwoName, line, type, sportId, leagueId, gameTime}
     market_observed_at: unix seconds
     quote:   {outcome: 1|2, best_percentage_odds: str, available_liquidity_base_units: str, observed_at}
     balance: {available_base_units: str, observed_at}   from GET /user/balance-v3 availableAmount
     fees:    GET /user/fees-v3 `data` snapshot (well formed; null stays null)
-    exchange_limits: {order_size_minimum_base_units: str, min_resting_order_size_base_units: str,
-             base_token_symbol: str, base_token_decimals: int, observed_at} from GET /metadata/obv3
-             (`limits` and `activeAsset`: runtime metadata, never hardcoded; the symbol and decimals are what
-             the owner command's stake is converted with, Decimal-exact, in signer/command.py)
-The signer cannot authenticate this evidence itself yet (its own reads come with the sender PR); freshness,
-completeness and cross-checks are enforced here, provenance is a documented remaining gap.
+    exchange_limits: {order_size_minimum_base_units: str, min_resting_order_size_base_units: str, observed_at,
+             base_token_decimals (optional cross-check)} from GET /metadata/obv3 (runtime, never hardcoded).
+             The token symbol and decimals the stake is converted with come from SignerConfig (owner config
+             bound to base_token; review PR #196 P1-2), never from these reads or from a caller.
+The network provider comes with the sender PR; until then a signer without a provider refuses every order.
+Freshness, completeness and cross-checks are enforced here.
 """
 from __future__ import annotations
 

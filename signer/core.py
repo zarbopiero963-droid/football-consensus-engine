@@ -45,9 +45,11 @@ from . import eip712
 from . import risk as rk
 from .audit import AuditLog
 from .intent import IntentInvalid, intent_hash, validate
+from .market_data import MarketDataProvider
 from .orders import AUTHORIZED, REJECTED, SIGNED, ExposureView, LedgerError, OrderLedger, OrderStateError
 
 KEY_ENV = "SXBET_SIGNER_PRIVATE_KEY"
+CLOCK_JUMP_TOLERANCE_SECONDS = 120
 MIN_EXPIRY_MARGIN_SECONDS = 12  # docs: expiry inside betting delay + 2 s is rejected; local margin on top
 _KEY = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 _ADDRESS = re.compile(r"^0x[0-9a-f]{40}$")
@@ -104,6 +106,13 @@ class SignerConfig:
     base_token: str          # lowercase hex
     odds_ladder_step_size: int
     account_id: str = ""     # SX Bet API identity of this signer; empty => every request refused
+    # Review P1-2: the token the owner's stake is converted with is owner configuration bound to `base_token`,
+    # never a caller-supplied value. Empty / None => every order refused (SIGNER_TOKEN_CONFIG_MISSING).
+    base_token_symbol: str = ""
+    base_token_decimals: int | None = None
+    # Review P1-1: the signer's OWN market reads (signer/market_data.py), configured here, never per call.
+    # None => every order refused (SIGNER_MARKET_READS_UNAVAILABLE). No network provider ships in this PR.
+    market_data: Any = None
 
 
 class Signer:
@@ -142,6 +151,11 @@ class Signer:
             raise SignerConfigError("RISK_CONFIG_NETWORK_MISMATCH")  # testnet limits never feed mainnet
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[str, dict[str, Any]]] = {}
+        # Host clock sanity (review P3): the wall clock is a trust root (windows, expiries, UTC-day counters).
+        # With the real clock a forward / backward jump against the monotonic clock beyond the tolerance stops
+        # signing (SIGNER_CLOCK_JUMP_DETECTED) until restart; injected test clocks are not checked.
+        self._real_clock = clock is time.time
+        self._wall0, self._mono0 = clock(), time.monotonic()
 
     # ---- never leak the key ----
     def __repr__(self) -> str:
@@ -170,8 +184,34 @@ class Signer:
         return self.__account.sign_message(msg).signature.to_0x_hex()
 
     # ---- the only signing entry point ----
-    def sign_order(self, intent: Mapping[str, Any], authorization: cmd.OwnerCommandAuthorization,
-                   context: Mapping[str, Any] | None = None, *, post_only: bool = False) -> dict[str, Any]:
+    def _clock_sane(self) -> bool:
+        if not self._real_clock:
+            return True
+        drift = (self._clock() - self._wall0) - (time.monotonic() - self._mono0)
+        return abs(drift) <= CLOCK_JUMP_TOLERANCE_SECONDS
+
+    def _reads(self, clean: Mapping[str, Any], now: int) -> Any:
+        """The signer's OWN reads (review P1-1): never the caller's. Snapshotted into plain values."""
+        provider = self.config.market_data
+        if provider is None or not isinstance(provider, MarketDataProvider):
+            raise SignerRefused("SIGNER_MARKET_READS_UNAVAILABLE")
+        try:
+            raw = provider.read(market_hash=clean["market_hash"], outcome_one=clean["is_maker_betting_outcome_one"],
+                                percentage_odds=int(clean["percentage_odds"]), now=now)
+        except Exception:
+            raise SignerRefused("SIGNER_MARKET_READS_FAILED") from None
+        if raw is None:
+            return None
+        try:
+            return _plain(raw)
+        except Exception:
+            raise SignerRefused("RISK_CONTEXT_MALFORMED") from None
+
+    def sign_order(self, intent: Mapping[str, Any], authorization: cmd.OwnerCommandAuthorization, *,
+                   post_only: bool = False) -> dict[str, Any]:
+        """There is no context parameter (review P1-1, intentional change): market data, event markets, events
+        with the same teams, quote, balance, fees and exchange metadata come only from the signer's own
+        provider (`SignerConfig.market_data`)."""
         with self._lock:
             key = intent.get("idempotency_key") if isinstance(intent, Mapping) else None
             ihash = None
@@ -182,11 +222,6 @@ class Signer:
                     auth = cmd.snapshot(authorization)
                 except cmd.CommandRefused as exc:
                     raise SignerRefused(exc.code) from None
-                if context is not None:
-                    try:
-                        context = _plain(context)
-                    except Exception:
-                        raise SignerRefused("RISK_CONTEXT_MALFORMED") from None
                 try:
                     clean = validate(intent, odds_ladder_step_size=self.config.odds_ladder_step_size)
                 except IntentInvalid as exc:
@@ -217,18 +252,26 @@ class Signer:
                     raise SignerRefused("EXPOSURE_LIMIT_ZERO")  # safe default: zero live exposure
                 if not self.config.account_id:
                     raise SignerRefused("ACCOUNT_ID_NOT_CONFIGURED")
+                c = self.config
+                if not (isinstance(c.base_token_symbol, str) and c.base_token_symbol
+                        and type(c.base_token_decimals) is int and 0 <= c.base_token_decimals <= 36):
+                    raise SignerRefused("SIGNER_TOKEN_CONFIG_MISSING")
+                if not self._clock_sane():
+                    raise SignerRefused("SIGNER_CLOCK_JUMP_DETECTED")
 
                 # 1. the owner command: record, single use, grammar, field-by-field -- nothing consumed yet
                 try:
                     cmd.verify_record(auth, now=now, max_age_seconds=limits.command_max_age_seconds)
                 except cmd.CommandRefused as exc:
                     raise SignerRefused(exc.code) from None
-                fields = cmd.ledger_fields(auth)
                 if self._ledger.command_consumed(auth.command_id):
                     raise SignerRefused("COMMAND_ID_ALREADY_CONSUMED")
-                if self._ledger.command_text_consumed(fields["command_canonical_sha256"]):
-                    raise SignerRefused("COMMAND_TEXT_REPLAYED")
-                verified = self._verify_command(auth, clean, context, post_only, limits)
+                context = self._reads(clean, now)
+                verified, reference = self._verify_command(auth, clean, context, post_only, limits)
+                # Replay fingerprint of the PARSED, resolved operation + its reference token (review P2-2).
+                fields = cmd.ledger_fields(auth, cmd.place_fingerprint(verified, reference))
+                if self._ledger.command_fingerprint_consumed(fields["command_fingerprint_sha256"]):
+                    raise SignerRefused("COMMAND_REPLAYED")
                 msg = eip712.signable(clean)
                 oid = eip712.order_id(msg)
 
@@ -248,6 +291,14 @@ class Signer:
                 except (OrderStateError, LedgerError) as exc:
                     raise SignerRefused(exc.code) from None
                 self._log("AUTHORIZED", None, key, ihash, oid, clean, auth=auth)
+                # Review P2-1: an engagement between AUTHORIZE and here stops the signature from ever being made
+                # (the order is in the kill switch's intents as AUTHORIZED and is released as never signed).
+                if self._ledger.kill_switch_engaged:
+                    try:
+                        self._ledger.transition(key, REJECTED, reason="KILL_SWITCH_ENGAGED")
+                    except LedgerError:
+                        pass  # stays AUTHORIZED (reserved, never signed): abandon_unsigned after restart
+                    raise SignerRefused("KILL_SWITCH_ENGAGED")
 
                 # 4. sign; persist SIGNED before the signature leaves this function
                 try:
@@ -279,8 +330,9 @@ class Signer:
                 raise
 
     def _verify_command(self, auth: cmd.OwnerCommandAuthorization, clean: Mapping[str, Any], context: Any,
-                        post_only: bool, limits: rk.RiskLimits) -> dict[str, Any]:
-        """Parse the literal command and compare every field with the order and the signer's market row."""
+                        post_only: bool, limits: rk.RiskLimits) -> tuple[dict[str, Any], str | None]:
+        """Parse the literal command and compare every field with the order and the signer's OWN reads; the
+        market resolved from those reads (one event, one market) must be the market being signed."""
         try:
             parsed = cmd.parse(auth.command_text)
         except cmd.CommandRefused as exc:
@@ -293,18 +345,23 @@ class Signer:
         if not isinstance(market.get("marketHash"), str) or market["marketHash"].lower() != clean["market_hash"]:
             raise SignerRefused("MARKET_MISMATCH")
         xl = context.get("exchange_limits")
-        if not isinstance(xl, Mapping) or not isinstance(xl.get("base_token_symbol"), str) \
-                or type(xl.get("base_token_decimals")) is not int:
-            raise SignerRefused("EXCHANGE_LIMITS_MISSING")
+        if isinstance(xl, Mapping) and "base_token_decimals" in xl \
+                and xl["base_token_decimals"] != self.config.base_token_decimals:
+            raise SignerRefused("TOKEN_DECIMALS_DIFFER_FROM_EXCHANGE")  # cross-check only: config is the source
         try:
-            return cmd.verify_place(parsed, intent=clean, market=market,
-                                    event_markets=context.get("event_markets"), post_only=post_only,
-                                    currency=xl["base_token_symbol"], token_decimals=xl["base_token_decimals"],
-                                    odds_ladder_step_size=self.config.odds_ladder_step_size,
-                                    market_time_in_force=limits.market_time_in_force,
-                                    limit_time_in_force=limits.limit_time_in_force)
+            verified = cmd.verify_place(parsed, intent=clean, market=market,
+                                        event_markets=context.get("event_markets"),
+                                        same_team_events=context.get("same_team_events"), post_only=post_only,
+                                        currency=self.config.base_token_symbol,
+                                        token_decimals=self.config.base_token_decimals,
+                                        odds_ladder_step_size=self.config.odds_ladder_step_size,
+                                        market_time_in_force=limits.market_time_in_force,
+                                        limit_time_in_force=limits.limit_time_in_force)
         except cmd.CommandRefused as exc:
             raise SignerRefused(exc.code) from None
+        if verified["market_hash"] != clean["market_hash"]:
+            raise SignerRefused("COMMAND_MISMATCH_MARKET")  # defence in depth: resolved hash == signed hash
+        return verified, parsed.reference
 
     def abandon_unsigned(self, client_order_id: str) -> str:
         """Release an order left AUTHORIZED by a crash between command consumption and signing.

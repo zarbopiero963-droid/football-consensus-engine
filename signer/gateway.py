@@ -65,7 +65,6 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 import time
 from typing import Any, Callable, Mapping, Protocol
 
@@ -89,7 +88,8 @@ PAYLOAD_ORDER_KEYS = frozenset({"marketHash", "maker", "totalBetSize", "percenta
                                 "baseToken", "isMakerBettingOutcomeOne", "timeInForce", "orderSignature",
                                 "clientOrderId"})
 _HEX_SIG = re.compile(r"^[0-9a-f]{128}$")
-_FLAG_BODY_KEYS = frozenset({"live_trading", "signer_id", "network", "issued_at", "expires_at"})
+_FLAG_BODY_KEYS = frozenset({"live_trading", "signer_id", "network", "issued_at", "expires_at",
+                             "ledger_genesis_sha256"})  # ledger identity: review P2-5 (intentional change)
 _SEAL = object()  # module-private: only this module constructs LiveTradingFlag (see module docstring)
 
 
@@ -181,7 +181,8 @@ def live_flag_message(body: Mapping[str, Any]) -> bytes:
                       ensure_ascii=True).encode("ascii")
 
 
-def _verified_flag_body(flag: Any, owner_public_key: Any, *, signer_id: str, network: str, now: int) -> str:
+def _verified_flag_body(flag: Any, owner_public_key: Any, *, signer_id: str, network: str, now: int,
+                        ledger_genesis_sha256: Any = None) -> str:
     """'' if the flag's owner signature, binding and validity window all verify at `now`, else a fixed code."""
     if not isinstance(flag, LiveTradingFlag) or flag.enabled is not True or flag.source != "OWNER_SIGNED":
         return "LIVE_TRADING_DISABLED"
@@ -197,6 +198,11 @@ def _verified_flag_body(flag: Any, owner_public_key: Any, *, signer_id: str, net
         return "LIVE_TRADING_FLAG_SIGNATURE_INVALID"
     if body["live_trading"] != "ENABLED" or body["signer_id"] != signer_id or body["network"] != network:
         return "LIVE_TRADING_FLAG_NOT_FOR_THIS_SIGNER"
+    # Review P2-5: the owner signs the flag for ONE ledger file (sha256 of its GENESIS line, which carries a random
+    # nonce). A new ledger file (consumed ids, kill switch, counters starting from zero) is never live without a
+    # new owner-signed flag.
+    if not isinstance(ledger_genesis_sha256, str) or body["ledger_genesis_sha256"] != ledger_genesis_sha256:
+        return "LIVE_TRADING_FLAG_NOT_FOR_THIS_LEDGER"
     issued, expires = body["issued_at"], body["expires_at"]
     if type(issued) is not int or type(expires) is not int or expires - issued > MAX_FLAG_TTL_SECONDS \
             or issued >= expires or issued > now:
@@ -208,7 +214,7 @@ def _verified_flag_body(flag: Any, owner_public_key: Any, *, signer_id: str, net
 
 def load_live_trading_flag(path: str | None, owner_public_key: Ed25519PublicKey, *, signer_id: str, network: str,
                            now: int) -> LiveTradingFlag:
-    """Owner-signed file {"live_trading": "ENABLED", "signer_id", "network", "issued_at", "expires_at",
+    """Owner-signed file {"live_trading": "ENABLED", "signer_id", "network", "issued_at", "expires_at", "ledger_genesis_sha256",
     "signature"}. Anything else (missing, unsigned, bad signature, other signer/network, expired) => DISABLED."""
     if not path:
         return DISABLED
@@ -244,7 +250,7 @@ class SubmissionGateway:
         if not isinstance(ledger, OrderLedger):
             raise GatewayDisabled("LIVE_TRADING_DISABLED")
         code = _verified_flag_body(flag, owner_public_key, signer_id=ledger.signer_id, network=network,
-                                   now=int(clock()))
+                                   now=int(clock()), ledger_genesis_sha256=ledger.genesis_sha256)
         if code:
             raise GatewayDisabled(code)
         self._flag = flag
@@ -259,7 +265,9 @@ class SubmissionGateway:
         self._step = odds_ladder_step_size
         self._network = network
         self._clock = clock
-        self._lock = threading.Lock()  # one send at a time: duplicate protection across threads
+        # One send at a time, across threads AND across every gateway / cancellation service / monitor of this
+        # ledger: the lock belongs to the ledger (review P2-4).
+        self._lock = ledger.send_lock
 
     def _log(self, decision: str, reason: str | None, o, command_id: str | None = None) -> None:
         extra = {} if command_id is None else {"command_id": command_id[:64]}
@@ -276,7 +284,8 @@ class SubmissionGateway:
     def _check_flag(self) -> None:
         # Re-verified on every financial operation: owner signature over the flag bytes, binding, expiry.
         code = _verified_flag_body(self._flag, self._owner_key, signer_id=self._ledger.signer_id,
-                                   network=self._network, now=int(self._clock()))
+                                   network=self._network, now=int(self._clock()),
+                                   ledger_genesis_sha256=self._ledger.genesis_sha256)
         if code:
             raise GatewayRefused(code)
 
@@ -374,7 +383,9 @@ class SubmissionGateway:
         request = None
         if self._official:
             try:
-                request = self._transport.build_create(payload)  # refused here => nothing written, nothing sent
+                # post-only is per order, from the owner-commanded AUTHORIZE line (review P2-3)
+                request = self._transport.build_create(
+                    payload, post_only=frozenset(o.client_order_id for o in orders if o.post_only))
             except AdapterRefused as exc:
                 raise GatewayRefused(exc.code) from None
         # Write-ahead: a crash from here on leaves UNKNOWN, never "not placed".

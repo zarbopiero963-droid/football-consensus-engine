@@ -145,11 +145,10 @@ class SubmitOptions:
     """Owner/deployment configuration of the create request. Never an MCP tool argument."""
     wait_for_outcome: bool = False
     max_wait_time_ms: int | None = None
-    post_only: bool = False          # applied to GTC orders; an IOC/FOK order is refused locally
     salt_format: str = SALT_HEX32    # DOCS_UNVERIFIED (see module docstring)
 
     def __post_init__(self):
-        if type(self.wait_for_outcome) is not bool or type(self.post_only) is not bool:
+        if type(self.wait_for_outcome) is not bool:
             raise AdapterRefused("SUBMIT_OPTIONS_INVALID")
         if self.salt_format not in SALT_FORMATS:
             raise AdapterRefused("SALT_FORMAT_INVALID")
@@ -200,7 +199,9 @@ def wire_salt(salt: Any, salt_format: str) -> str:
 
 # ---------------------------------------------------------------- POST /orders-v3
 def build_create_orders(orders: Sequence[Mapping[str, Any]], *, limits: ExchangeLimits,
-                        options: SubmitOptions) -> RestRequest:
+                        options: SubmitOptions, post_only: frozenset[str] = frozenset()) -> RestRequest:
+    """`post_only`: the clientOrderIds whose AUTHORIZE line records an owner-commanded post-only. It is per order
+    (review P2-3 of PR #196): there is no global post-only option any more (intentional change)."""
     if not isinstance(orders, (list, tuple)) or not 1 <= len(orders) <= limits.max_create_orders:
         raise AdapterRefused("BATCH_SIZE_INVALID")
     out, makers, client_ids = [], set(), set()
@@ -231,7 +232,7 @@ def build_create_orders(orders: Sequence[Mapping[str, Any]], *, limits: Exchange
         makers.add(o["maker"].lower())
         item = dict(o)
         item["salt"] = wire_salt(o["salt"], options.salt_format)
-        if options.post_only:
+        if o["clientOrderId"] in post_only:
             if o["timeInForce"] != "GTC":
                 raise AdapterRefused("POST_ONLY_REQUIRES_GTC")
             item["postOnly"] = True
@@ -415,9 +416,9 @@ class OfficialRestAdapter:
         return resp
 
     # ---- create ----
-    def build_create(self, payload: Mapping[str, Any]) -> RestRequest:
+    def build_create(self, payload: Mapping[str, Any], post_only: frozenset[str] = frozenset()) -> RestRequest:
         orders = payload.get("orders") if isinstance(payload, Mapping) else None
-        return build_create_orders(orders, limits=self.limits, options=self.options)
+        return build_create_orders(orders, limits=self.limits, options=self.options, post_only=post_only)
 
     def submit_orders(self, payload: Mapping[str, Any]) -> RestResponse:
         """SubmissionTransport compatibility: build + send; raises SenderTimeout when unknown."""

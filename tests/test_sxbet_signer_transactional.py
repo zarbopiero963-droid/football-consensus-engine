@@ -22,6 +22,7 @@ from signer.core import Signer, SignerRefused  # noqa: E402
 from signer.orders import AUTHORIZED, REJECTED, SIGNED, LedgerError, OrderLedger, OrderStateError  # noqa: E402
 from sxbet_signer_kit import (NOW, SIGNER_ID, context, make_intent, make_signer,  # noqa: E402
                               owner_command)
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 
 @pytest.fixture
@@ -52,24 +53,24 @@ def test_refused_by_risk_then_retry_with_same_approval_succeeds(tmp_path, throwa
     a = owner_command(i)
     # Balance too low: refused AFTER the command verified, BEFORE consumption.
     poor = context(i, balance={"available_base_units": "1000", "observed_at": NOW})
-    assert refused(lambda: s.sign_order(i, a, poor)) == "INSUFFICIENT_BALANCE"
+    assert refused(lambda: sign_with_reads(s, i, a, poor)) == "INSUFFICIENT_BALANCE"
     assert not s._ledger.command_consumed(a.command_id)
     assert [r["kind"] for r in ledger_rows(tmp_path)] == ["GENESIS"]
-    out = s.sign_order(i, a, context(i))  # same command, limits now allow
+    out = sign_with_reads(s, i, a, context(i))  # same command, limits now allow
     assert out["cached"] is False and s._ledger.command_consumed(a.command_id)
 
 
 def test_refused_by_exposure_then_retry_after_release(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, limits={"max_total_exposure_base_units": 6_000_000})
     first = make_intent(throwaway[0].address, idempotency_key="order-key-T001")
-    s.sign_order(first, owner_command(first), context(first))
+    sign_with_reads(s, first, owner_command(first), context(first))
     second = make_intent(throwaway[0].address, idempotency_key="order-key-T002")
     a2 = owner_command(second)
-    assert refused(lambda: s.sign_order(second, a2, context(second))) == "EXPOSURE_ABOVE_LIMIT"
+    assert refused(lambda: sign_with_reads(s, second, a2, context(second))) == "EXPOSURE_ABOVE_LIMIT"
     # Exchange confirms the first order cancelled with nothing matched: reservation released.
     s._ledger.transition("order-key-T001", "SUBMITTED", reason="TEST_SETUP")
     s._ledger.transition("order-key-T001", "CANCELLED", reason="EXCHANGE_ORDER_INACTIVE", filled=0)
-    assert s.sign_order(second, a2, context(second))["cached"] is False
+    assert sign_with_reads(s, second, a2, context(second))["cached"] is False
 
 
 def test_one_approval_two_concurrent_requests_exactly_one_signature(tmp_path, throwaway, owner):
@@ -82,7 +83,7 @@ def test_one_approval_two_concurrent_requests_exactly_one_signature(tmp_path, th
     def worker():
         barrier.wait()
         try:
-            results.append(s.sign_order(i, a, context(i)))
+            results.append(sign_with_reads(s, i, a, context(i)))
         except SignerRefused as e:
             errors.append(e.code)
 
@@ -130,7 +131,7 @@ def test_crash_between_consume_and_sign_keeps_nonce_consumed(tmp_path, throwaway
 
     monkeypatch.setattr(Signer, "_produce_signature", crash)
     with pytest.raises(SimulatedCrash):
-        s.sign_order(i, a, context(i))
+        sign_with_reads(s, i, a, context(i))
     monkeypatch.undo()
     rows = ledger_rows(tmp_path)
     assert [r["kind"] for r in rows] == ["GENESIS", "AUTHORIZE"]  # consumed + reserved, never SIGNED
@@ -140,10 +141,10 @@ def test_crash_between_consume_and_sign_keeps_nonce_consumed(tmp_path, throwaway
     r = make_signer(tmp_path, throwaway, owner)
     assert r._ledger.get(i["idempotency_key"]).state == AUTHORIZED
     assert r.committed_exposure_base_units == 5_000_000
-    assert refused(lambda: r.sign_order(i, a, context(i))) == "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST"
+    assert refused(lambda: sign_with_reads(r, i, a, context(i))) == "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST"
     other = make_intent(throwaway[0].address, idempotency_key="order-key-X002")
     replay = owner_command(other, command_id=a.command_id)
-    assert refused(lambda: r.sign_order(other, replay, context(other))) == "COMMAND_ID_ALREADY_CONSUMED"
+    assert refused(lambda: sign_with_reads(r, other, replay, context(other))) == "COMMAND_ID_ALREADY_CONSUMED"
     # Explicit release (no signature ever left): exposure back to zero, command still consumed.
     assert r.abandon_unsigned(i["idempotency_key"]) == REJECTED
     assert r.committed_exposure_base_units == 0
@@ -156,7 +157,7 @@ def test_in_process_signing_failure_releases_and_never_returns_signature(tmp_pat
     i = make_intent(throwaway[0].address)
     a = owner_command(i)
     monkeypatch.setattr(Signer, "_produce_signature", lambda self, msg: (_ for _ in ()).throw(RuntimeError("hsm")))
-    assert refused(lambda: s.sign_order(i, a, context(i))) == "SIGNING_FAILED"
+    assert refused(lambda: sign_with_reads(s, i, a, context(i))) == "SIGNING_FAILED"
     assert s._ledger.get(i["idempotency_key"]).state == REJECTED and s.committed_exposure_base_units == 0
     assert s._ledger.command_consumed(a.command_id)
 
@@ -164,7 +165,7 @@ def test_in_process_signing_failure_releases_and_never_returns_signature(tmp_pat
 def test_signed_is_persisted_before_signature_release(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    s.sign_order(i, owner_command(i), context(i))
+    sign_with_reads(s, i, owner_command(i), context(i))
     assert [r.get("to") for r in ledger_rows(tmp_path)][-1] == SIGNED
     assert refused(lambda: s.abandon_unsigned(i["idempotency_key"])) == "NOT_AN_ABANDONED_AUTHORIZATION"
 
@@ -173,22 +174,22 @@ def test_replay_after_restart_refused(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     a = owner_command(i)
-    s.sign_order(i, a, context(i))
+    sign_with_reads(s, i, a, context(i))
     r = make_signer(tmp_path, throwaway, owner)
     other = make_intent(throwaway[0].address, idempotency_key="order-key-X003")
-    assert refused(lambda: r.sign_order(other, owner_command(other, command_id=a.command_id),
+    assert refused(lambda: sign_with_reads(r, other, owner_command(other, command_id=a.command_id),
                                         context(other))) == "COMMAND_ID_ALREADY_CONSUMED"
     # The same TEXT under a new id is refused too (one command = one operation).
-    assert refused(lambda: r.sign_order(other, owner_command(other, text=a.command_text),
-                                        context(other))) == "COMMAND_TEXT_REPLAYED"
+    assert refused(lambda: sign_with_reads(r, other, owner_command(other, text=a.command_text),
+                                        context(other))) == "COMMAND_REPLAYED"
 
 
 def test_same_digest_under_new_key_refused(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address, salt=7)
-    s.sign_order(i, owner_command(i), context(i))
+    sign_with_reads(s, i, owner_command(i), context(i))
     twin = make_intent(throwaway[0].address, salt=7, idempotency_key="order-key-TWIN")  # same signed struct
-    assert refused(lambda: s.sign_order(twin, owner_command(twin), context(twin))) == "ORDER_ID_ALREADY_AUTHORIZED"
+    assert refused(lambda: sign_with_reads(s, twin, owner_command(twin), context(twin))) == "ORDER_ID_ALREADY_AUTHORIZED"
 
 
 # ---------------------------------------------------------------- ledger fail-closed (signer refuses)
@@ -235,9 +236,9 @@ def test_owner_signed_binding_must_match_every_field(tmp_path, throwaway, owner,
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     a = owner_command(i, text=text)
-    assert refused(lambda: s.sign_order(i, a, context(i))) == code
+    assert refused(lambda: sign_with_reads(s, i, a, context(i))) == code
     assert not s._ledger.command_consumed(a.command_id)  # refusal never burns the command
-    assert s.sign_order(i, owner_command(i), context(i))["cached"] is False  # the exact command still works
+    assert sign_with_reads(s, i, owner_command(i), context(i))["cached"] is False  # the exact command still works
 
 
 @pytest.mark.parametrize("field,value,code", [
@@ -252,7 +253,7 @@ def test_signer_config_fields_still_bound_to_the_intent(tmp_path, throwaway, own
     s = make_signer(tmp_path, throwaway, owner)
     i = {**make_intent(throwaway[0].address), field: value}
     a = owner_command(make_intent(throwaway[0].address))
-    assert refused(lambda: s.sign_order(i, a, context(i))) == code
+    assert refused(lambda: sign_with_reads(s, i, a, context(i))) == code
     assert not s._ledger.command_consumed(a.command_id)
 
 
@@ -261,7 +262,7 @@ def test_binding_side_inconsistent_with_selection_is_malformed(tmp_path, throwaw
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address, betting_outcome_one=False)
     a = owner_command(i, label="Home FC")  # outcome two is "Away FC"
-    assert refused(lambda: s.sign_order(i, a, context(i))) == "COMMAND_MISMATCH_SELECTION"
+    assert refused(lambda: sign_with_reads(s, i, a, context(i))) == "COMMAND_MISMATCH_SELECTION"
 
 
 def test_any_field_edited_after_owner_signature_breaks_it(tmp_path, throwaway, owner):
@@ -270,7 +271,7 @@ def test_any_field_edited_after_owner_signature_breaks_it(tmp_path, throwaway, o
     a = owner_command(i)
     edited = cm.OwnerCommandAuthorization(a.command_id, a.command_text.replace("quota 2,5", "quota 2,4"),
                                           a.command_text_sha256, a.received_at, a.client_ref_sha256)
-    assert refused(lambda: s.sign_order(i, edited, context(i))) == "COMMAND_TEXT_HASH_MISMATCH"
+    assert refused(lambda: sign_with_reads(s, i, edited, context(i))) == "COMMAND_TEXT_HASH_MISMATCH"
 
 
 @dataclass(frozen=True)
@@ -289,7 +290,7 @@ def test_v1_style_approval_is_refused(tmp_path, throwaway, owner):
     i = make_intent(throwaway[0].address)
     legacy = LegacyApproval({"intent_hash": "sha256:" + "0" * 64}, "nonce-0000000000000001", NOW, NOW + 60,
                             SIGNER_ID, bytes(64))
-    assert refused(lambda: s.sign_order(i, legacy, context(i))) == "COMMAND_MISSING"
+    assert refused(lambda: sign_with_reads(s, i, legacy, context(i))) == "COMMAND_MISSING"
 
 
 def test_ttl_cap_and_clock(tmp_path, throwaway, owner):
@@ -299,13 +300,13 @@ def test_ttl_cap_and_clock(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, limits={"command_max_age_seconds": 301})
     assert s.risk_config_source == "MALFORMED"
     i = make_intent(throwaway[0].address)
-    assert refused(lambda: s.sign_order(i, owner_command(i), context(i))) == "EXPOSURE_LIMIT_ZERO"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i), context(i))) == "EXPOSURE_LIMIT_ZERO"
 
 
 def test_signer_without_account_id_refuses(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, account_id="")
     i = make_intent(throwaway[0].address)
-    assert refused(lambda: s.sign_order(i, owner_command(i), context(i))) == "ACCOUNT_ID_NOT_CONFIGURED"
+    assert refused(lambda: sign_with_reads(s, i, owner_command(i), context(i))) == "ACCOUNT_ID_NOT_CONFIGURED"
 
 
 # ---------------------------------------------------------------- L1: command / context snapshot
@@ -328,10 +329,10 @@ def test_l1_binding_mutated_during_risk_evaluation_has_no_effect(tmp_path, throw
 
     sh = Shifty(good.command_id, good.command_text, good.command_text_sha256, good.received_at,
                 good.client_ref_sha256)
-    assert s.sign_order(i, sh, context(i))["cached"] is False
+    assert sign_with_reads(s, i, sh, context(i))["cached"] is False
     (auth,) = [r for r in ledger_rows(tmp_path) if r["kind"] == "AUTHORIZE"]
     assert auth["command_text_sha256"] == cm.text_sha256(good.command_text)
-    assert auth["command_canonical_sha256"] == cm.canonical_sha256(good.command_text)
+    assert auth["command_fingerprint_sha256"].startswith("sha256:")  # fingerprint of the parsed, verified order
 
 
 def test_l1_snapshot_refuses_non_plain_binding(tmp_path, throwaway, owner):
@@ -340,9 +341,9 @@ def test_l1_snapshot_refuses_non_plain_binding(tmp_path, throwaway, owner):
     a = owner_command(i)
     weird = cm.OwnerCommandAuthorization(a.command_id, a.command_text.encode(), a.command_text_sha256,
                                          a.received_at, a.client_ref_sha256)
-    assert refused(lambda: s.sign_order(i, weird, context(i))) == "COMMAND_MALFORMED"
+    assert refused(lambda: sign_with_reads(s, i, weird, context(i))) == "COMMAND_MALFORMED"
     ctx = {**context(i), "quote": {**context(i)["quote"], "observed_at": object()}}
-    assert refused(lambda: s.sign_order(i, a, ctx)) == "RISK_CONTEXT_MALFORMED"
+    assert refused(lambda: sign_with_reads(s, i, a, ctx)) == "RISK_CONTEXT_MALFORMED"
     assert not s._ledger.command_consumed(a.command_id)
 
 
@@ -360,8 +361,8 @@ def test_l3_signed_line_not_persisted_means_no_signature_returned(tmp_path, thro
         return real(self, rec)
 
     monkeypatch.setattr(od.OrderLedger, "_append", fail_on_signed)
-    assert refused(lambda: s.sign_order(i, a, context(i))) == "LEDGER_WRITE_FAILED"
+    assert refused(lambda: sign_with_reads(s, i, a, context(i))) == "LEDGER_WRITE_FAILED"
     monkeypatch.undo()
     assert s._ledger.get(i["idempotency_key"]).state == AUTHORIZED  # reserved, never handed out
     other = make_intent(throwaway[0].address, idempotency_key="order-key-P002")
-    assert refused(lambda: s.sign_order(other, owner_command(other), context(other))) == "LEDGER_POISONED"
+    assert refused(lambda: sign_with_reads(s, other, owner_command(other), context(other))) == "LEDGER_POISONED"
