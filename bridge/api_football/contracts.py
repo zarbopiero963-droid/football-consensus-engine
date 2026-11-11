@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from .catalog import documented_path
@@ -291,18 +292,24 @@ class CombinationRejected(ParameterError):
 
     def __init__(self, evidence: Mapping[str, Any]):
         super().__init__(FIXTURE_COMBINATION_REJECTED_CODE)
-        self.combination = dict(evidence)
+        self.combination = {k: (list(v) if isinstance(v, tuple) else v) for k, v in evidence.items()}
 
 
-# Real certification of 2026-11-11 (MCP -> Render, case A04): apifootball_fixtures(venue=556,
-# season=2026) -> PROVIDER_DECLARED_ERRORS, keys ["season", "venue"], category
-# INVALID_PARAMETER (1 provider call spent). Exactly this key set (no timezone, no other filter).
+# Real certification of 2026-11-11 (MCP -> Render), two independent observations of the same
+# key set with different values, both -> PROVIDER_DECLARED_ERRORS, keys ["season", "venue"],
+# category INVALID_PARAMETER (1 provider call each):
+#   case A04   apifootball_fixtures(venue=556, season=2026)  07:45:56Z (current season)
+#   case A04b  apifootball_fixtures(venue=555, season=2025)  08:21:39Z (other venue, past season)
+# The provider's error messages are not exposed by the bridge (fixed codes), so the cause is not
+# recorded; the refusal applies to exactly this key set (no timezone, no other filter).
 _FIXTURE_PROVIDER_REJECTED = (
-    (frozenset({"season", "venue"}), {
+    (frozenset({"season", "venue"}), MappingProxyType({
         "status": PROVIDER_REJECTED_OBSERVED, "rule": "F-REJECTED-season+venue",
-        "observed_on_utc": "2026-11-11", "evidence": "REAL_CERTIFICATION_2026-11-11_A04",
-        "provider_error_keys": ["season", "venue"], "provider_error_category": "INVALID_PARAMETER",
-    }),
+        "observed_on_utc": "2026-11-11",
+        "evidence": ("REAL_CERTIFICATION_2026-11-11_A04", "REAL_CERTIFICATION_2026-11-11_A04b"),
+        "observations": 2, "values_varied": ("venue", "season"),
+        "provider_error_keys": ("season", "venue"), "provider_error_category": "INVALID_PARAMETER",
+    })),
 )
 
 _FIXTURE_DOCUMENTED = (

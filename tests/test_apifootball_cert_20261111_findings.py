@@ -96,9 +96,15 @@ def test_a04_observed_rejection_is_refused_locally_with_zero_calls():
     assert out["error"] == {"code": "FIXTURE_COMBINATION_PROVIDER_REJECTED"}
     assert out["combination"] == {
         "status": "PROVIDER_REJECTED_OBSERVED", "rule": "F-REJECTED-season+venue",
-        "observed_on_utc": "2026-11-11", "evidence": "REAL_CERTIFICATION_2026-11-11_A04",
+        "observed_on_utc": "2026-11-11",
+        "evidence": ["REAL_CERTIFICATION_2026-11-11_A04", "REAL_CERTIFICATION_2026-11-11_A04b"],
+        "observations": 2, "values_varied": ["venue", "season"],
         "provider_error_keys": ["season", "venue"], "provider_error_category": "INVALID_PARAMETER"}
     assert "556" not in json.dumps(out)                # fixed evidence only, never the request values
+    # the reply is a copy: mutating it never alters the module evidence (review P3)
+    out["combination"]["provider_error_keys"].append("x")
+    from bridge.api_football import contracts as _c
+    assert _c._FIXTURE_PROVIDER_REJECTED[0][1]["provider_error_keys"] == ("season", "venue")
     assert out["data"] is None and out["retrieved_at_utc"] is None
 
 
