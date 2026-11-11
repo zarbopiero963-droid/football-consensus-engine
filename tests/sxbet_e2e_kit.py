@@ -1,9 +1,12 @@
-"""SIMULATED end-to-end stack: intent -> risk -> owner approval -> signer -> gateway -> SimExchange -> ledger.
+"""SIMULATED end-to-end stack: intent -> owner command -> risk -> signer -> gateway -> SimExchange -> ledger.
 
 TESTS ONLY. Every key is a fresh THROWAWAY key (Ed25519 owner key, never-funded EOA), every limit is a small
-test limit in an owner-signed (test key) risk config, and the LIVE_TRADING flag is a TEST flag signed by the
+test limit in an owner-signed (test key) risk config v2, and the LIVE_TRADING flag is a TEST flag signed by the
 test owner key, exactly as tests/test_sxbet_gateway.py does. The exchange is `SimExchange` (in memory): no
 network, no API key, no production code path. Results are SIMULATED, not evidence of SX Bet behaviour.
+
+Intentional change (§2.6 rewrite, #187): `command()` / `cancel_command()` build the owner's literal chat
+command (`OwnerCommandAuthorization`) that replaced the per-order / per-cancel Ed25519 approvals.
 """
 from __future__ import annotations
 
@@ -20,24 +23,25 @@ from bridge.sxbet import simulation as bsim
 from signer import cancellation as cx
 from signer import gateway as gw
 from signer import rest_adapter as ra
-from signer.approval import Approval, approval_message, build_binding
+from signer import command as cmd
 from signer.audit import AuditLog
 from signer.core import KEY_ENV, Signer, SignerConfig
-from signer.intent import intent_hash
 from signer.orders import OrderLedger
-from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, EVENT_ID, FEES, H, META_RAW, NOW, SIGNER_ID, TOKEN, Clock,
-                              load_limits, make_signer, pub)
+from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, EVENT_ID, EXCHANGE_LIMITS, FEES, GENEROUS, H, META_RAW, NOW,
+                              SIGNER_ID, TOKEN, Clock, command_text, event_of, load_limits, make_signer, pub,
+                              signer_config)
 from sxbet_sim_exchange import ODDS, SimExchange
+from sxbet_signer_kit import sign_with_reads
 
 P = 10 ** 18          # one implied-probability point
 USDC = 1_000_000      # one USDC in base units (6 decimals)
 LIMITS = ra.ExchangeLimits(max_create_orders=10, max_cancel_orders=100)
 # Small TEST limits (owner-signed with the throwaway owner key).
-SMALL_LIMITS = dict(max_stake_per_order_base_units=10 * USDC, max_exposure_per_market_base_units=20 * USDC,
+# v2: the daily loss limit also counts the worst case of open orders, so it is above the total exposure here.
+SMALL_LIMITS = dict(GENEROUS, max_stake_per_order_base_units=10 * USDC, max_exposure_per_market_base_units=20 * USDC,
                     max_exposure_per_event_base_units=25 * USDC, max_total_exposure_base_units=30 * USDC,
-                    session_loss_limit_base_units=15 * USDC, daily_loss_limit_base_units=15 * USDC,
-                    max_open_orders=5, slippage_tolerance_bps=100, min_percentage_odds=10 * P,
-                    max_percentage_odds=90 * P, max_quote_age_seconds=30)
+                    max_daily_loss_base_units=45 * USDC, max_open_orders=5, min_decimal_odds="1.11",
+                    max_decimal_odds="10", max_quote_age_seconds=30, pregame_only=False)
 
 
 def get(sender, path, **query):
@@ -86,20 +90,20 @@ class Stack:
             else:
                 led = OrderLedger.create(path, **kw)
             self.owner_ack = None
-            cfg = SignerConfig(signer_id=SIGNER_ID, network="mainnet", chain_id=4162, verifying_contract=ESCROW,
-                               base_token=TOKEN, odds_ladder_step_size=125, account_id=ACCOUNT_ID)
+            cfg = signer_config()
             self.signer = Signer(cfg, owner_public_key=pub(self.owner), ledger=led,
                                  audit=AuditLog(str(self.tmp / "audit.jsonl")), risk_config=self.risk,
                                  env={KEY_ENV: self.key}, clock=self.clock)
         self.ledger = self.signer._ledger
         self.adapter = ra.OfficialRestAdapter(self.sim, limits=LIMITS, options=self.options)
-        self.gw = gw.SubmissionGateway(self.flag(), owner_public_key=self.owner.public_key(), transport=self.adapter,
+        self.live_flag = self.flag()
+        self.gw = gw.SubmissionGateway(self.live_flag, owner_public_key=self.owner.public_key(), transport=self.adapter,
                                        ledger=self.ledger, audit=AuditLog(str(self.tmp / "gw-audit.jsonl")),
                                        odds_ladder_step_size=125, network="mainnet", clock=self.clock)
-        self.cx = cx.CancellationService(self.gw, owner_public_key=self.owner.public_key(), account_id=ACCOUNT_ID)
+        self.cx = cx.CancellationService(self.gw, account_id=ACCOUNT_ID, risk_limits=self.signer._risk.limits)
 
     # ------------------------------------------------------------ cross-process handoff (tests only)
-    _PROCESS_LOCAL = ("signer", "ledger", "adapter", "gw", "cx")
+    _PROCESS_LOCAL = ("signer", "ledger", "adapter", "gw", "cx", "live_flag")
 
     def handoff(self) -> dict:
         """Picklable copy of this stack for a "spawn" child process, WITHOUT the process-local objects
@@ -122,7 +126,8 @@ class Stack:
     def flag(self):
         """TEST-ONLY owner-signed LIVE_TRADING flag (throwaway owner key, 1 h). Never a production path."""
         body = {"live_trading": "ENABLED", "signer_id": SIGNER_ID, "network": "mainnet",
-                "issued_at": int(self.clock()) - 1, "expires_at": int(self.clock()) + 3600}
+                "issued_at": int(self.clock()) - 1, "expires_at": int(self.clock()) + 3600,
+                "ledger_genesis_sha256": self.ledger.genesis_sha256}
         body["signature"] = self.owner.sign(gw.live_flag_message(body)).hex()
         p = self.tmp / "flag.json"
         p.write_text(json.dumps(body))
@@ -149,13 +154,19 @@ class Stack:
         now = int(self.clock())
         (market,) = get(self.sim, "/markets/find", marketHashes=intent["market_hash"])
         bal = get(self.sim, "/user/balance-v3")["balances"][0]
+        rows = get(self.sim, "/markets/find", marketHashes=",".join(sorted(self.sim.markets)))
         return {"market": market, "market_observed_at": now,
+                "event_markets": [r for r in rows if r["sportXeventId"] == market["sportXeventId"]],
+                "same_team_events": list({r["sportXeventId"]: event_of(r) for r in rows
+                                          if (r["teamOneName"], r["teamTwoName"]) ==
+                                          (market["teamOneName"], market["teamTwoName"])}.values()),
                 "quote": {"outcome": 1 if one else 2, "best_percentage_odds": str(best if best else 0),
                           "available_liquidity_base_units": str(liq), "observed_at": now},
                 "balance": {"available_base_units": bal["availableAmount"], "observed_at": now},
-                "fees": get(self.sim, "/user/fees-v3")}
+                "fees": get(self.sim, "/user/fees-v3"),
+                "exchange_limits": {**EXCHANGE_LIMITS, "observed_at": now}}
 
-    # ------------------------------------------------------------ the owner-approved order path
+    # ------------------------------------------------------------ the owner-commanded order path
     def intent(self, key, *, outcome_one=True, stake=5 * USDC, odds=40 * P, tif="GTC", expiry=None, market=H):
         salt = int(hashlib.sha256(key.encode()).hexdigest(), 16)
         return bsim.build_intent(network="mainnet", metadata=self.metadata, market_hash=market,
@@ -164,29 +175,30 @@ class Stack:
                                  expiry=expiry or int(self.clock()) + 3600, idempotency_key=key,
                                  now=int(self.clock()), maker=self.acct.address, salt=salt)
 
-    def approve(self, intent, ctx, *, quoted=None, nonce=None, ttl=60, issued=None):
-        """The OWNER's device: shows the binding (incl. the quote the owner saw) and signs it (test key)."""
+    def _auth(self, text, prefix, command_id=None, received_at=None):
         self._n += 1
-        one = intent["is_maker_betting_outcome_one"]
-        label = ctx["market"]["outcomeOneName" if one else "outcomeTwoName"]
-        quoted = quoted if quoted is not None else int(ctx["quote"]["best_percentage_odds"])
-        binding = build_binding(intent, account_id=ACCOUNT_ID, event_id=ctx["market"]["sportXeventId"],
-                                selection_label=label, expected_fees=ctx["fees"],
-                                max_exposure_base_units=int(intent["total_bet_size"]), quoted_percentage_odds=quoted,
-                                intent_hash=intent_hash(intent))
-        nonce = nonce or f"e2e-nonce-{self._n:012d}-{intent['idempotency_key'][:16]}"
-        issued = int(self.clock()) if issued is None else issued
-        msg = approval_message(binding=binding, approval_nonce=nonce, issued_at=issued, expires_at=issued + ttl,
-                               signer_id=SIGNER_ID)
-        return Approval(binding, nonce, issued, issued + ttl, SIGNER_ID, self.owner.sign(msg))
+        return cmd.OwnerCommandAuthorization(
+            command_id=command_id or f"{prefix}-{self._n:012d}", command_text=text,
+            command_text_sha256=cmd.text_sha256(text),
+            received_at=int(self.clock()) if received_at is None else received_at,
+            client_ref_sha256=cmd.text_sha256("e2e-conversation"))
 
-    def sign(self, intent, approval=None, ctx=None):
+    def command(self, intent, ctx, *, command_id=None, received_at=None, text=None, post_only=False):
+        """The OWNER's literal command in the trading chat for exactly this intent, as the MCP forwards it."""
+        m = ctx["market"]
+        label = m["outcomeOneName" if intent["is_maker_betting_outcome_one"] else "outcomeTwoName"]
+        text = text or command_text(intent, label=label, teams=(m["teamOneName"], m["teamTwoName"]),
+                                    post_only=post_only)
+        return self._auth(text, "e2e-cmd", command_id, received_at)
+
+    def sign(self, intent, command=None, ctx=None, post_only=False):
         ctx = ctx or self.context(intent)
-        return self.signer.sign_order(intent, approval or self.approve(intent, ctx), ctx)
+        return sign_with_reads(self.signer, intent, command or self.command(intent, ctx, post_only=post_only), ctx,
+                               post_only=post_only)
 
-    def place(self, key, **kw):
+    def place(self, key, post_only=False, **kw):
         i = self.intent(key, **kw)
-        signed = self.sign(i)
+        signed = self.sign(i, post_only=post_only)
         return i, signed, self.gw.submit(signed, i)
 
     def state(self, key):
@@ -195,16 +207,20 @@ class Stack:
     def exposure(self):
         return self.ledger.exposure()
 
-    # ------------------------------------------------------------ cancel approvals (owner, per operation)
-    def cancel_approval(self, scope, *, order_ids=(), market_hash=None, event_id=None, ttl=60, nonce=None):
-        self._n += 1
-        binding = cx.build_cancel_binding(account_id=ACCOUNT_ID, maker=self.maker, network="mainnet", scope=scope,
-                                          order_ids=order_ids, market_hash=market_hash, event_id=event_id)
-        nonce = nonce or f"e2e-cancel-{self._n:012d}"
-        now = int(self.clock())
-        msg = cx.cancel_approval_message(binding=binding, approval_nonce=nonce, issued_at=now, expires_at=now + ttl,
-                                         signer_id=SIGNER_ID)
-        return cx.CancelApproval(binding, nonce, now, now + ttl, SIGNER_ID, self.owner.sign(msg))
+    # ------------------------------------------------------------ cancel commands (owner, per operation)
+    def cancel_command(self, scope, *, order_ids=(), market_hash=None, event_id=None, command_id=None,
+                       received_at=None):
+        ref = f" (rif. c{self._n + 1})"
+        if scope == cx.SCOPE_ORDER_IDS:
+            text = ("Cancella l'ordine " + order_ids[0]) if len(order_ids) == 1 else \
+                ("Cancella gli ordini " + ", ".join(order_ids))
+        elif scope == cx.SCOPE_MARKET:
+            text = f"Cancella gli ordini sul mercato {market_hash}"
+        elif scope == cx.SCOPE_EVENT:
+            text = f"Cancella gli ordini dell'evento {event_id}"
+        else:
+            text = "Cancella tutti gli ordini"
+        return self._auth(text + ref, "e2e-cancel", command_id, received_at)
 
     # ------------------------------------------------------------ positions from the exchange reads
     def all_fills(self):
@@ -258,8 +274,8 @@ class Stack:
                 "hedge": hedge}
 
     def execute_proposal(self, params, key, *, tif="IOC"):
-        """OWNER-APPROVED execution of a proposal (SIMULATED): the proposal's exact parameters become an intent,
-        the owner signs that binding, the signer runs every check. Ours, not a native SX Bet feature."""
+        """OWNER-COMMANDED execution of a proposal (SIMULATED): the proposal's exact parameters become an intent,
+        the owner commands exactly those parameters, the signer runs every check. Ours, not a native SX Bet feature."""
         i = self.intent(key, outcome_one=params["betting_outcome_one"], stake=int(params["stake_base_units"]),
                         odds=int(params["percentage_odds_limit"]), tif=tif, market=params["market_hash"])
         sg = self.sign(i)

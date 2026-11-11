@@ -14,6 +14,7 @@ from signer import orders as od  # noqa: E402
 from signer.orders import LedgerError, OrderLedger  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 from sxbet_exchange_kit import MemoryAnchorStore  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 SIGNER_ID = "signer-test-1"
 ADDR = "0x" + "aa" * 20
@@ -308,23 +309,23 @@ def test_signer_refuses_to_sign_when_the_anchor_write_fails(tmp_path, store, clo
 
     from signer.audit import AuditLog
     from signer.core import KEY_ENV, Signer, SignerConfig, SignerRefused
-    from sxbet_signer_kit import ACCOUNT_ID, ESCROW, TOKEN, approve, context, load_limits, make_intent, pub
+    from sxbet_signer_kit import ACCOUNT_ID, ESCROW, TOKEN, owner_command, context, load_limits, make_intent, pub
 
     acct = Account.create()
     owner = Ed25519PrivateKey.generate()
     led = OrderLedger.create(path(tmp_path), signer_id=SIGNER_ID, signer_address=acct.address, clock=clock,
                              anchor=store)
-    cfg = SignerConfig(signer_id=SIGNER_ID, network="mainnet", chain_id=4162, verifying_contract=ESCROW,
-                       base_token=TOKEN, odds_ladder_step_size=125, account_id=ACCOUNT_ID)
+    from sxbet_signer_kit import signer_config
+    cfg = signer_config()
     s = Signer(cfg, owner_public_key=pub(owner), ledger=led, audit=AuditLog(str(tmp_path / "a.jsonl")),
                risk_config=load_limits(tmp_path, owner), env={KEY_ENV: acct.key.hex()}, clock=clock)
     i = make_intent(acct.address, idempotency_key="order-key-A001")
-    out = s.sign_order(i, approve(owner, i), context(i))
+    out = sign_with_reads(s, i, owner_command(i), context(i))
     assert out["order_id"] and store.head(led.ledger_id).seq == 3
     i2 = make_intent(acct.address, idempotency_key="order-key-A002")
     store.unreachable = True
     with pytest.raises(SignerRefused) as e:
-        s.sign_order(i2, approve(owner, i2), context(i2))
+        sign_with_reads(s, i2, owner_command(i2), context(i2))
     assert e.value.code == "LEDGER_ANCHOR_WRITE_FAILED"
 
 

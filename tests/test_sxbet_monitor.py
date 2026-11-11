@@ -29,7 +29,7 @@ def s(tmp_path):
 
 def make(s, tmp_path, name="monitor.json", **kw):
     st = MonitorState.create(str(tmp_path / name), ledger_id=s.ledger.ledger_id)
-    return Monitor(s.ledger, s.adapter, st, clock=s.clock, lock=s.gw._lock, **kw)
+    return Monitor(s.ledger, s.adapter, st, clock=s.clock, **kw)
 
 
 # ---------------------------------------------------------------- reconciliation
@@ -152,8 +152,7 @@ def test_monitor_state_is_explicit_integrity_checked_and_bound(s, tmp_path):
         MonitorState.open(str(p), ledger_id=s.ledger.ledger_id)
     assert e.value.code == "MONITOR_STATE_CORRUPT"
     with pytest.raises(MonitorError) as e:
-        Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "x.json"), ledger_id="other:0x" + "00" * 20),
-                lock=s.gw._lock)
+        Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "x.json"), ledger_id="other:0x" + "00" * 20))
     assert e.value.code == "MONITOR_STATE_FOREIGN"
 
 
@@ -167,7 +166,7 @@ def test_monitor_restart_recovers_from_ledger_and_state(s, tmp_path):
     s.sim.fill_maker_order(sg["order_id"], 2 * USDC)        # happens while the monitor is down
     s.restart()
     m2 = Monitor(s.ledger, s.adapter, MonitorState.open(str(tmp_path / "monitor.json"), ledger_id=s.ledger.ledger_id),
-                 clock=s.clock, lock=s.gw._lock)
+                 clock=s.clock)
     assert m2._state.ticks == ticks and s.state("order-key-W006") == od.OPEN    # ledger replay: as before the fill
     m2.tick()
     assert s.state("order-key-W006") == od.PARTIALLY_FILLED and m2._state.peak(H) == 123
@@ -188,7 +187,7 @@ def test_monitor_proposal_claiming_executable_is_refused(s, tmp_path):
     assert e.value.code == "MONITOR_PROPOSAL_CLAIMS_EXECUTABLE"
     with pytest.raises(MonitorError):
         Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "y.json"), ledger_id=s.ledger.ledger_id),
-                rules={}, lock=s.gw._lock)
+                rules={})
 
 
 def test_monitor_reaches_only_the_three_reads():
@@ -253,7 +252,7 @@ def test_monitor_stale_absent_snapshot_never_reopens_a_resent_order(s, tmp_path)
 
     reads = _DifferingBytesReads(s.adapter, race)
     m = Monitor(s.ledger, reads, MonitorState.create(str(tmp_path / "race.json"), ledger_id=s.ledger.ledger_id),
-                clock=s.clock, lock=s.gw._lock)
+                clock=s.clock)
     m.tick()
     race.t.join(5)
     assert s.sim.accepted_count("order-key-W008") == 1
@@ -266,9 +265,120 @@ def test_monitor_stale_absent_snapshot_never_reopens_a_resent_order(s, tmp_path)
 
 
 def test_monitor_requires_the_shared_lock(s, tmp_path):
+    """Review #195 P3 + #196 P2-4 (intentional change): the monitor takes the ONE send lock owned by its
+    ledger (the same object every gateway / cancellation service of that ledger uses). No lock, context
+    manager or gateway can be passed in."""
+    import contextlib
+
     st = MonitorState.create(str(tmp_path / "lk.json"), ledger_id=s.ledger.ledger_id)
+    m = Monitor(s.ledger, s.adapter, st, clock=s.clock)
+    assert m._lock is s.ledger.send_lock is s.gw._lock
     with pytest.raises(TypeError):
-        Monitor(s.ledger, s.adapter, st, clock=s.clock)               # no silent private lock any more
+        Monitor(s.ledger, s.adapter, st, clock=s.clock, lock=contextlib.nullcontext())  # the old parameter is gone
+    with pytest.raises(TypeError):
+        Monitor(s.ledger, s.adapter, st, clock=s.clock, gateway=s.gw)                  # and so is this one
+
+
+def test_monitor_runs_without_a_live_flag(s, tmp_path):
+    """Review #196 P2-4: after the LIVE flag expired no gateway can be built, but the monitor still reconciles,
+    alerts and feeds the kill switch (RED before: Monitor required a submittable gateway)."""
+    from signer import gateway as gw_mod
+
+    i, sg, _ = s.place("order-key-W020")
+    s.clock.t += 3 * 3600                                  # the 1 h test flag is long expired
+    with pytest.raises(gw_mod.GatewayDisabled):
+        gw_mod.SubmissionGateway(s.live_flag, owner_public_key=s.owner.public_key(), transport=s.adapter,
+                                 ledger=s.ledger, audit=None, odds_ladder_step_size=125, network="mainnet",
+                                 clock=s.clock)
+    m = Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "nf.json"), ledger_id=s.ledger.ledger_id),
+                clock=s.clock)
+    rep = m.tick()
+    assert rep["exchange_reads"] > 0 and s.ledger.get("order-key-W020").state in (od.EXPIRED, od.OPEN, od.SUBMITTED)
+
+
+# ---------------------------------------------------------------- review #195 P3: state integrity, peak, counters
+def test_monitor_state_fields_are_type_checked(s, tmp_path):
+    import hashlib
+
+    p = tmp_path / "typed.json"
+    MonitorState.create(str(p), ledger_id=s.ledger.ledger_id)
+    bad_bodies = [
+        lambda b: b["trailing"].update({H: {"peak": 1}}),                       # missing updated_at
+        lambda b: b["trailing"].update({H: {"peak": "1", "updated_at": 0}}),    # peak not an int
+        lambda b: b.update(heartbeat_ack_at="yesterday"),
+        lambda b: b.update(proposals_seen=[1, 2]),
+        lambda b: b.update(ticks=-1),
+        lambda b: b.update(extra=True),
+        lambda b: b.pop("ticks"),
+    ]
+    for mutate in bad_bodies:
+        doc = json.loads(p.read_text())
+        mutate(doc["body"])
+        # Re-hashed: the sha256 matches, the content is still refused.
+        doc["sha256"] = hashlib.sha256(mn._canon(doc["body"])).hexdigest()
+        q = tmp_path / "typed-bad.json"
+        q.write_text(json.dumps(doc))
+        with pytest.raises(MonitorError) as e:
+            MonitorState.open(str(q), ledger_id=s.ledger.ledger_id)
+        assert e.value.code == "MONITOR_STATE_CORRUPT"
+
+
+def test_monitor_state_keyed_mac(s, tmp_path):
+    import hashlib
+
+    key = b"k" * 32
+    p = tmp_path / "mac.json"
+    st = MonitorState.create(str(p), ledger_id=s.ledger.ledger_id, mac_key=key)
+    st.raise_peak(H, 10, NOW)
+    st.save()
+    assert MonitorState.open(str(p), ledger_id=s.ledger.ledger_id, mac_key=key).peak(H) == 10
+    doc = json.loads(p.read_text())
+    assert set(doc) == {"body", "hmac_sha256"}
+    for bad_key, code in ((b"x" * 32, "MONITOR_STATE_MAC_INVALID"), (None, "MONITOR_STATE_MAC_KEY_REQUIRED")):
+        with pytest.raises(MonitorError) as e:
+            MonitorState.open(str(p), ledger_id=s.ledger.ledger_id, mac_key=bad_key)
+        assert e.value.code == code
+    # Someone with write access but without the key forges a peak and a matching plain sha256: refused.
+    doc["body"]["trailing"][H]["peak"] = 99
+    forged = {"body": doc["body"], "sha256": hashlib.sha256(mn._canon(doc["body"])).hexdigest()}
+    p.write_text(json.dumps(forged))
     with pytest.raises(MonitorError) as e:
-        Monitor(s.ledger, s.adapter, st, clock=s.clock, lock=None)
-    assert e.value.code == "MONITOR_LOCK_REQUIRED"
+        MonitorState.open(str(p), ledger_id=s.ledger.ledger_id, mac_key=key)
+    assert e.value.code == "MONITOR_STATE_MAC_MISSING"   # no downgrade to an unkeyed file
+    with pytest.raises(MonitorError) as e:
+        MonitorState.create(str(tmp_path / "short.json"), ledger_id=s.ledger.ledger_id, mac_key=b"short")
+    assert e.value.code == "MONITOR_STATE_MAC_KEY_INVALID"
+
+
+def test_missing_mark_to_market_peak_is_none_not_zero(s, tmp_path):
+    """Review #195 P3: no stored peak and no integer mark-to-market => the peak is passed as None (missing stays
+    missing). An evaluator that refuses None yields an alert; nothing is invented."""
+    seen = []
+
+    def evaluator(cfg, **kw):
+        seen.append(cfg["trailing_stop"]["peak_mark_to_market_base_units"])
+        if seen[-1] is None:
+            raise ValueError("INVALID_PEAK_MARK_TO_MARKET_BASE_UNITS")
+        return {"results": [], "proposal": None}
+
+    s.place("order-key-W010")
+    s.sim.fill_maker_order(s.ledger.get("order-key-W010").order_id, 5 * USDC)
+    snap = {"market_position": {"mark_to_market": {"value_base_units": None}}, "market": {}}
+    m = make(s, tmp_path, rules={"trailing_stop": {"enabled": True, "trail_base_units": 1}},
+             evaluate_rules=evaluator, market_snapshot=lambda mh: snap)
+    rep = m.tick()
+    assert seen == [None] and "RULES_EVALUATION_REFUSED" in codes(rep)
+    assert m._state.peak(H) is None                        # nothing stored either
+    snap["market_position"]["mark_to_market"]["value_base_units"] = 7
+    m.tick()
+    assert seen[-1] == 7 and m._state.peak(H) == 7
+
+
+def test_tick_report_write_counters_are_labelled_and_reads_measured(s, tmp_path):
+    s.place("order-key-W011")
+    m = make(s, tmp_path)
+    rep = m.tick()
+    assert rep["write_counters"] == "CONSTANT_BY_CONSTRUCTION"
+    assert (rep["orders_submitted"], rep["orders_cancelled"], rep["network_writes"]) == (0, 0, 0)
+    assert rep["exchange_reads"] == 3                      # one live order: order, client id, fills
+    assert m.tick()["exchange_reads"] == 3

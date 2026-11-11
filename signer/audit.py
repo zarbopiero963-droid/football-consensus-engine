@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 ALLOWED_FIELDS = frozenset({"event", "decision", "reason", "signer_id", "idempotency_key", "intent_hash",
                             "order_id", "total_bet_size", "approval_nonce_prefix", "network", "command_id",
-                            "scope", "bucket"})
+                            "scope", "bucket", "owner_command_id", "owner_command_sha256"})
 GENESIS = "sha256:" + "0" * 64
 
 

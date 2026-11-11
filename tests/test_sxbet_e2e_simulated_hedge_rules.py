@@ -76,7 +76,7 @@ def test_simulated_close_position_is_ours_cancel_then_opposite_outcome_order(tmp
             "step_2_hedge": snap["hedge"]["order_parameters_for_owner_review"]}
     assert plan["step_1_cancel"] == [sg["order_id"]]
     oid = sg["order_id"]
-    s.cx.cancel_orders([oid], s.cancel_approval(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     assert s.state("order-key-H010") == od.CANCELLED and s.exposure().total == 2 * USDC
     snap = s.snapshot()                     # re-simulate after the cancel: P1 = 3, P2 = -2 -> back outcome two
     assert snap["market_position"]["pnl_base_units"]["if_outcome_one"] == 3 * USDC
@@ -130,7 +130,7 @@ def test_simulated_trailing_stop_monitor_persists_peak_across_restart(tmp_path):
 
     def monitor(state):
         return Monitor(s.ledger, s.adapter, state, clock=s.clock, rules=cfg, evaluate_rules=rl.evaluate,
-                       market_snapshot=lambda mh: s.snapshot(mh), lock=s.gw._lock)
+                       market_snapshot=lambda mh: s.snapshot(mh))
 
     m = monitor(MonitorState.create(state_path, ledger_id=s.ledger.ledger_id))
     writes = len(s.sim.writes())

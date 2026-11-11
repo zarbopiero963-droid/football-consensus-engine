@@ -685,9 +685,11 @@ class SimExchange:
         return ok(data)
 
     def _market_row(self, m: SimMarket) -> dict:
+        # Moneyline-style row (type 52): the team names are the outcome names; sport / league ids are test values.
         return {"marketHash": m.market_hash, "status": m.status, "sportXeventId": m.event_id,
                 "outcomeOneName": m.outcome_one_name, "outcomeTwoName": m.outcome_two_name,
-                "gameTime": m.game_time, "type": 52}
+                "teamOneName": m.outcome_one_name, "teamTwoName": m.outcome_two_name, "sportId": 5,
+                "leagueId": 1236, "gameTime": m.game_time, "type": 52}
 
     def _levels(self, market_hash: str, outcome_one: bool) -> list[tuple[int, int]]:
         acc: dict[int, int] = {}

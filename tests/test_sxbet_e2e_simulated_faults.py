@@ -19,6 +19,7 @@ from signer.core import Signer, SignerRefused  # noqa: E402
 from signer.orders import LedgerError  # noqa: E402
 from sxbet_e2e_kit import USDC, Stack  # noqa: E402
 from sxbet_sim_exchange import SimCrash  # noqa: E402
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 KEY = "order-key-F001"
 
@@ -104,19 +105,19 @@ def test_simulated_crash_after_authorize_before_signature(tmp_path, monkeypatch)
     s = Stack(tmp_path)
     i = s.intent(KEY)
     ctx = s.context(i)
-    approval = s.approve(i, ctx)
+    approval = s.command(i, ctx)
 
     def die(self, msg):
         raise SimCrash("signer process killed while signing")
 
     monkeypatch.setattr(Signer, "_produce_signature", die)
     with pytest.raises(SimCrash):
-        s.signer.sign_order(i, approval, ctx)
+        sign_with_reads(s.signer, i, approval, ctx)
     monkeypatch.undo()
     _restart_consistent(s, KEY, od.AUTHORIZED, 5 * USDC)                    # reservation not lost
-    assert s.ledger.nonce_consumed(approval.approval_nonce)
+    assert s.ledger.command_consumed(approval.command_id)
     with pytest.raises(SignerRefused) as e:
-        s.signer.sign_order(i, approval, s.context(i))
+        sign_with_reads(s.signer, i, approval, s.context(i))
     assert e.value.code == "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST"
     assert s.signer.abandon_unsigned(KEY) == od.REJECTED and s.exposure().total == 0
     assert s.sim.writes() == []
@@ -190,22 +191,22 @@ def test_simulated_crash_after_reply_recorded(tmp_path, monkeypatch):
     assert s.gw.submit(sg, i)["sent"] is False and s.sim.accepted_count(KEY) == 1
 
 
-def test_simulated_crash_mid_cancel_after_nonce_consumed(tmp_path):
+def test_simulated_crash_mid_cancel_after_command_consumed(tmp_path):
     from signer import cancellation as cx
     s = Stack(tmp_path)
     i, sg = signed(s)
     s.gw.submit(sg, i)
     oid = sg["order_id"]
-    a = s.cancel_approval(cx.SCOPE_ORDER_IDS, order_ids=[oid])
+    a = s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid])
     s.sim.inject("DELETE", "/orders-v3", "crash_before")
     with pytest.raises(SimCrash):
         s.cx.cancel_orders([oid], a)
     _restart_consistent(s, KEY, od.OPEN, 5 * USDC)                          # nothing cancelled, still reserved
-    assert s.ledger.nonce_consumed(a.approval_nonce)
+    assert s.ledger.command_consumed(a.command_id)
     with pytest.raises(cx.CancelRefused) as e:
         s.cx.cancel_orders([oid], a)
-    assert e.value.code == "CANCEL_APPROVAL_NONCE_REPLAYED"                   # a new owner approval is needed
-    rep = s.cx.cancel_orders([oid], s.cancel_approval(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    assert e.value.code == "COMMAND_ID_ALREADY_CONSUMED"                      # a new owner command is needed
+    rep = s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     assert rep["orders"][oid]["state"] == od.CANCELLED and s.exposure().total == 0
 
 
@@ -237,14 +238,14 @@ def test_simulated_concurrent_distinct_orders_respect_open_order_limit(tmp_path)
     for k in keys:
         i = s.intent(k, stake=2 * USDC)
         ctx = s.context(i)
-        pre.append((i, s.approve(i, ctx), ctx))
+        pre.append((i, s.command(i, ctx), ctx))
     barrier = threading.Barrier(len(pre))
     results = []
 
     def go(i, a, ctx):
         barrier.wait()
         try:
-            sg = s.signer.sign_order(i, a, ctx)
+            sg = sign_with_reads(s.signer, i, a, ctx)
             results.append(s.gw.submit(sg, i)["state"])
         except SignerRefused as exc:
             results.append(exc.code)

@@ -1,4 +1,4 @@
-"""D: cancellation (§2.6 financial operation): builders, parsers, owner approval per cancel, reconcile-only release.
+"""D: cancellation (§2.6 financial operation): builders, parsers, owner command per cancel, reconcile-only release.
 
 Contract: https://docs.sx.bet/developers/cancelling-orders, api-reference/delete-orders-v3, delete-orders-v3-market,
 delete-orders-v3-event, delete-orders-v3-all (fetched 01-11-2026). In-memory FakeSender only.
@@ -14,13 +14,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey 
 from eth_account import Account  # noqa: E402
 
 from signer import cancellation as cx  # noqa: E402
+from signer import command as cm  # noqa: E402
 from signer import gateway as gw  # noqa: E402
 from signer import orders as od  # noqa: E402
 from signer import rest_adapter as ra  # noqa: E402
 from signer.audit import AuditLog  # noqa: E402
 from sxbet_exchange_kit import FakeSender, ok, order_row, submitted_row  # noqa: E402
-from sxbet_signer_kit import (ACCOUNT_ID, EVENT_ID, H, NOW, SIGNER_ID, Clock, approve, context,  # noqa: E402
+from sxbet_signer_kit import (ACCOUNT_ID, EVENT_ID, H, NOW, SIGNER_ID, Clock, context, owner_command,  # noqa: E402
                               make_intent, make_signer)
+from sxbet_signer_kit import sign_with_reads  # noqa: E402
 
 LIMITS = ra.ExchangeLimits(max_create_orders=10, max_cancel_orders=100)
 STAKE = 2_000_000
@@ -119,9 +121,9 @@ def test_parse_scope_only_confirms_the_command():
 
 
 # ---------------------------------------------------------------- flow
-def write_flag(path, owner, expires=NOW + 3600):
+def write_flag(path, owner, expires=NOW + 3600, genesis=None):
     body = {"live_trading": "ENABLED", "signer_id": SIGNER_ID, "network": "mainnet", "issued_at": NOW,
-            "expires_at": expires}
+            "expires_at": expires, "ledger_genesis_sha256": genesis}
     body["signature"] = owner.sign(gw.live_flag_message(body)).hex()
     path.write_text(json.dumps(body))
     return str(path)
@@ -134,19 +136,20 @@ class Env:
 def setup(tmp_path, throwaway, owner, keys=("order-key-X001",), flag_expires=NOW + 3600):
     e = Env()
     e.clock = Clock()
-    e.signer = make_signer(tmp_path, throwaway, owner, clock=e.clock)
+    e.signer = make_signer(tmp_path, throwaway, owner, clock=e.clock, limits={"command_max_age_seconds": 60})
     e.sender = FakeSender()
     e.adapter = ra.OfficialRestAdapter(e.sender, limits=LIMITS)
-    flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner, flag_expires), owner.public_key(),
+    flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner, flag_expires,
+                                                genesis=e.signer._ledger.genesis_sha256), owner.public_key(),
                                      signer_id=SIGNER_ID, network="mainnet", now=NOW)
     e.gw = gw.SubmissionGateway(flag, owner_public_key=owner.public_key(), transport=e.adapter,
                                 ledger=e.signer._ledger, audit=AuditLog(str(tmp_path / "gw-audit.jsonl")),
                                 odds_ladder_step_size=125, network="mainnet", clock=e.clock)
-    e.svc = cx.CancellationService(e.gw, owner_public_key=owner.public_key(), account_id=ACCOUNT_ID)
+    e.svc = cx.CancellationService(e.gw, account_id=ACCOUNT_ID, risk_limits=e.signer._risk.limits)
     e.orders = []
     for k in keys:
         i = make_intent(throwaway[0].address, idempotency_key=k, stake_base_units=STAKE)
-        sg = e.signer.sign_order(i, approve(owner, i), context(i))
+        sg = sign_with_reads(e.signer, i, owner_command(i), context(i))
         e.sender.script = [ok([submitted_row(sg["order_id"], k)])]
         assert e.gw.submit(sg, i)["state"] == od.SUBMITTED
         e.sender.orders[sg["order_id"]] = order_row(sg["order_id"], "ACTIVE", STAKE, total=STAKE)
@@ -160,16 +163,26 @@ def setup(tmp_path, throwaway, owner, keys=("order-key-X001",), flag_expires=NOW
 _n = [0]
 
 
-def cancel_approval(e, scope, *, order_ids=(), market_hash=None, event_id=None, ttl=60, issued=NOW, key=None,
-                    nonce=None, signer_id=SIGNER_ID, **overrides):
+def cancel_text(scope, *, order_ids=(), market_hash=None, event_id=None):
+    if scope == cx.SCOPE_ORDER_IDS:
+        return ("Cancella l'ordine " + order_ids[0]) if len(order_ids) == 1 else \
+            ("Cancel orders " + " and ".join(order_ids))
+    if scope == cx.SCOPE_MARKET:
+        return f"Cancella gli ordini sul mercato {market_hash}"
+    if scope == cx.SCOPE_EVENT:
+        return f"Cancel all orders on event {event_id}"
+    return "Cancella tutti gli ordini"
+
+
+def cancel_command(e, scope, *, order_ids=(), market_hash=None, event_id=None, received_at=NOW, command_id=None,
+                   text=None, text_hash=None):
+    """Intentional change: the owner's literal cancel command (OwnerCommandAuthorization) replaces the per-cancel
+    Ed25519 CancelApproval (§2.6 as rewritten). A unique reference keeps repeated commands distinct."""
     _n[0] += 1
-    binding = cx.build_cancel_binding(account_id=ACCOUNT_ID, maker=e.maker, network="mainnet", scope=scope,
-                                      order_ids=order_ids, market_hash=market_hash, event_id=event_id)
-    binding.update(overrides)
-    nonce = nonce or f"cancel-nonce-{_n[0]:012d}"
-    msg = cx.cancel_approval_message(binding=binding, approval_nonce=nonce, issued_at=issued,
-                                     expires_at=issued + ttl, signer_id=signer_id)
-    return cx.CancelApproval(binding, nonce, issued, issued + ttl, signer_id, (key or e.owner).sign(msg))
+    text = text or (cancel_text(scope, order_ids=order_ids, market_hash=market_hash, event_id=event_id)
+                    + f" (rif. {_n[0]})")
+    return cm.OwnerCommandAuthorization(command_id or f"cancel-cmd-{_n[0]:012d}", text,
+                                        text_hash or cm.text_sha256(text), received_at, cm.text_sha256("conv"))
 
 
 def cancelled_reply(*ids):
@@ -190,7 +203,7 @@ def test_cancel_confirmed_by_read_releases(tmp_path, throwaway, owner):
 
     e.sender.on_delete = engine
     e.sender.script = [cancelled_reply(oid)]
-    rep = e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    rep = e.svc.cancel_orders([oid], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     assert rep["sent"] is True
     assert rep["orders"][oid]["bucket"] == cx.CANCELLED and rep["orders"][oid]["state"] == od.CANCELLED
     (req,) = deletes(e)
@@ -202,7 +215,7 @@ def test_cancelled_bucket_alone_never_releases(tmp_path, throwaway, owner):
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
     e.sender.script = [cancelled_reply(oid)]  # exchange row still ACTIVE (read lag)
-    rep = e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    rep = e.svc.cancel_orders([oid], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     assert rep["orders"][oid]["bucket"] == cx.CANCELLED and rep["orders"][oid]["state"] == od.OPEN
     assert e.signer.committed_exposure_base_units == STAKE
     e.sender.get_error = 503  # reads failing: still nothing released
@@ -223,7 +236,7 @@ def test_partially_filled_then_cancelled(tmp_path, throwaway, owner):
 
     e.sender.on_delete = engine
     e.sender.script = [cancelled_reply(oid)]
-    rep = e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    rep = e.svc.cancel_orders([oid], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     assert rep["orders"][oid]["state_before"] == od.PARTIALLY_FILLED  # pre-check read
     o = e.signer._ledger.get(key)
     assert o.state == od.CANCELLED and o.filled == 500_000
@@ -234,11 +247,11 @@ def test_already_filled_is_not_sent_and_approval_not_consumed(tmp_path, throwawa
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
     e.sender.orders[oid] = order_row(oid, "INACTIVE", 0, "FILLED", total=STAKE)
-    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
+    appr = cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
     rep = e.svc.cancel_orders([oid], appr)
     assert rep["sent"] is False and rep["orders"][oid]["bucket"] == "ALREADY_TERMINAL"
     assert rep["orders"][oid]["state"] == od.FILLED and deletes(e) == []
-    assert not e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert not e.signer._ledger.command_consumed(appr.command_id)
 
 
 def test_fill_racing_the_cancel(tmp_path, throwaway, owner):
@@ -251,7 +264,7 @@ def test_fill_racing_the_cancel(tmp_path, throwaway, owner):
     e.sender.on_delete = engine
     e.sender.script = [by_ids({"cancelled": [], "notCancelled": [{"orderId": oid, "reason": "NOT_ACTIVE"}],
                                "unconfirmed": []})]
-    rep = e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    rep = e.svc.cancel_orders([oid], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     assert rep["orders"][oid]["bucket"] == cx.NOT_CANCELLED and rep["orders"][oid]["state"] == od.FILLED
     assert e.signer.committed_exposure_base_units == STAKE  # matched, held until settled
 
@@ -263,12 +276,12 @@ def test_timeout_or_unconfirmed_stays_reserved_and_nonce_is_spent(tmp_path, thro
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
     e.sender.script = [reply]
-    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
+    appr = cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
     rep = e.svc.cancel_orders([oid], appr)
     assert rep["orders"][oid]["bucket"] in (cx.UNKNOWN, cx.UNCONFIRMED)
     assert rep["orders"][oid]["state"] == od.OPEN and e.signer.committed_exposure_base_units == STAKE
-    assert e.signer._ledger.nonce_consumed(appr.approval_nonce)
-    assert code(lambda: e.svc.cancel_orders([oid], appr)) == "CANCEL_APPROVAL_NONCE_REPLAYED"
+    assert e.signer._ledger.command_consumed(appr.command_id)
+    assert code(lambda: e.svc.cancel_orders([oid], appr)) == "COMMAND_ID_ALREADY_CONSUMED"
     assert len(deletes(e)) == 1
 
 
@@ -276,12 +289,12 @@ def test_cancel_nonce_survives_restart(tmp_path, throwaway, owner):
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
     e.sender.script = [cancelled_reply(oid)]
-    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
+    appr = cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
     e.svc.cancel_orders([oid], appr)
     e.signer._ledger.close()
     r = od.OrderLedger.open(str(tmp_path / "ledger.jsonl"), signer_id=SIGNER_ID, signer_address=e.maker,
                             clock=e.clock)
-    assert r.nonce_consumed(appr.approval_nonce)
+    assert r.command_consumed(appr.command_id)
     rows = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text().splitlines()]
     (creq,) = [x for x in rows if x["kind"] == "CANCEL_REQUEST"]
     assert creq["scope"] == cx.SCOPE_ORDER_IDS and creq["order_ids"] == [oid]
@@ -290,22 +303,27 @@ def test_cancel_nonce_survives_restart(tmp_path, throwaway, owner):
 
 
 @pytest.mark.parametrize("make,expected", [
-    (lambda e, oid: None, "CANCEL_APPROVAL_MISSING"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], key=Ed25519PrivateKey.generate()),
-     "CANCEL_APPROVAL_SIGNATURE_INVALID"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], issued=NOW - 120),
-     "CANCEL_APPROVAL_EXPIRED"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], ttl=121), "CANCEL_APPROVAL_TTL_TOO_LONG"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], signer_id="other"),
-     "CANCEL_APPROVAL_WRONG_SIGNER"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[O2]), "CANCEL_APPROVAL_BINDING_MISMATCH"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid, O2]), "CANCEL_APPROVAL_BINDING_MISMATCH"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_MARKET, market_hash=H), "CANCEL_APPROVAL_BINDING_MISMATCH"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], account_id="other-account"),
-     "CANCEL_APPROVAL_BINDING_MISMATCH"),
-    (lambda e, oid: cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], maker="0x" + "cc" * 20),
-     "CANCEL_APPROVAL_BINDING_MISMATCH"),
-    (lambda e, oid: "approved: cancel it", "CANCEL_APPROVAL_MISSING"),  # chat text is not an approval
+    # Intentional change: owner COMMAND codes replace the CancelApproval codes (signature / TTL / signer id /
+    # binding no longer exist for a cancel; the literal command must name exactly this operation).
+    (lambda e, oid: None, "COMMAND_MISSING"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], text_hash="sha256:" + "0" * 64),
+     "COMMAND_TEXT_HASH_MISMATCH"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], received_at=NOW - 61),
+     "COMMAND_EXPIRED"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], received_at=NOW + 60),
+     "COMMAND_NOT_YET_VALID"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, text="Modifica l'ordine " + oid),
+     "COMMAND_MODIFY_NOT_SUPPORTED"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[O2]), "COMMAND_MISMATCH_ORDER_IDS"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid, O2]), "COMMAND_MISMATCH_ORDER_IDS"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_MARKET, market_hash=H), "COMMAND_MISMATCH_SCOPE"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ALL), "COMMAND_MISMATCH_SCOPE"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, text="Cancella l'ordine"), "COMMAND_INCOMPLETE_ORDER_IDS"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, text="Piazza 2 USDC su Home FC in Home FC–Away FC "
+                                   "a quota minima 2,5"), "COMMAND_MISMATCH_OPERATION"),
+    (lambda e, oid: cancel_command(e, cx.SCOPE_ORDER_IDS, text=f"Cancella l'ordine {oid} e piazza 2 USDC"),
+     "COMMAND_MULTIPLE_OPERATIONS"),
+    (lambda e, oid: "approved: cancel it", "COMMAND_MISSING"),  # chat text alone is not an authorization
 ])
 def test_cancel_requires_a_matching_owner_approval(tmp_path, throwaway, owner, make, expected):
     e = setup(tmp_path, throwaway, owner)
@@ -317,11 +335,11 @@ def test_cancel_requires_a_matching_owner_approval(tmp_path, throwaway, owner, m
 def test_cancel_unknown_order_or_expired_flag_refused(tmp_path, throwaway, owner):
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
-    assert code(lambda: e.svc.cancel_orders([O3], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[O3]))) == \
+    assert code(lambda: e.svc.cancel_orders([O3], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[O3]))) == \
         "CANCEL_ORDER_NOT_IN_LEDGER"
     e.clock.t = NOW + 3600
-    assert code(lambda: e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid],
-                                                                    issued=NOW + 3600)),
+    assert code(lambda: e.svc.cancel_orders([oid], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid],
+                                                                    received_at=NOW + 3600)),
                 gw.GatewayRefused) == "LIVE_TRADING_FLAG_EXPIRED"
     assert deletes(e) == []
 
@@ -337,9 +355,9 @@ def test_cancel_market_scope(tmp_path, throwaway, owner):
     e.sender.script = [ra.RestResponse(200, {"status": "success", "data": {"cancelledSubmitted": [
         {"orderId": o1, "commandId": "c1"}, {"orderId": o2, "commandId": "c2"},
         {"orderId": O3, "commandId": "c3"}]}})]
-    assert code(lambda: e.svc.cancel_market(H, cancel_approval(e, cx.SCOPE_EVENT, event_id=EVENT_ID))) == \
-        "CANCEL_APPROVAL_BINDING_MISMATCH"
-    rep = e.svc.cancel_market(H, cancel_approval(e, cx.SCOPE_MARKET, market_hash=H))
+    assert code(lambda: e.svc.cancel_market(H, cancel_command(e, cx.SCOPE_EVENT, event_id=EVENT_ID))) == \
+        "COMMAND_MISMATCH_SCOPE"  # intentional: was CANCEL_APPROVAL_BINDING_MISMATCH
+    rep = e.svc.cancel_market(H, cancel_command(e, cx.SCOPE_MARKET, market_hash=H))
     (req,) = deletes(e)
     assert (req.path, req.query, req.body) == ("/orders-v3/market", (("marketHash", H),), None)
     assert rep["accepted"] is True and rep["foreign_order_ids"] == [O3]
@@ -353,15 +371,15 @@ def test_cancel_event_and_all_scopes(tmp_path, throwaway, owner, scope):
     oid, key = e.orders[0]
     e.sender.script = [ra.RestResponse(500, {"message": "Failed to publish cancel command(s) to the orderbook"})]
     if scope == cx.SCOPE_EVENT:
-        appr = cancel_approval(e, scope, event_id=EVENT_ID)
+        appr = cancel_command(e, scope, event_id=EVENT_ID)
         rep = e.svc.cancel_event(EVENT_ID, appr)
         assert deletes(e)[0].query == (("eventId", EVENT_ID),) and deletes(e)[0].path == "/orders-v3/event"
     else:
-        appr = cancel_approval(e, scope)
+        appr = cancel_command(e, scope)
         rep = e.svc.cancel_all(appr)
         assert deletes(e)[0].path == "/orders-v3/all" and deletes(e)[0].query == ()
     assert rep["accepted"] is False and rep["orders"][oid]["state"] == od.OPEN
-    assert e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert e.signer._ledger.command_consumed(appr.command_id)
     assert e.signer.committed_exposure_base_units == STAKE
 
 
@@ -369,7 +387,7 @@ def test_cancel_audit_is_allowlisted(tmp_path, throwaway, owner):
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
     e.sender.script = [cancelled_reply(oid)]
-    e.svc.cancel_orders([oid], cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    e.svc.cancel_orders([oid], cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     decisions = [json.loads(l)["decision"] for l in (tmp_path / "gw-audit.jsonl").read_text().splitlines()]
     assert "CANCEL_REQUESTED" in decisions and "CANCEL_RESULT_CANCELLED" in decisions
 
@@ -390,15 +408,15 @@ def _slow_reads(e, seconds):
 def test_approval_expiring_during_precheck_reads_is_refused_and_not_consumed(tmp_path, throwaway, owner, scope):
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
-    appr = {cx.SCOPE_ORDER_IDS: lambda: cancel_approval(e, scope, order_ids=[oid], ttl=60),
-            cx.SCOPE_MARKET: lambda: cancel_approval(e, scope, market_hash=H, ttl=60),
-            cx.SCOPE_ALL: lambda: cancel_approval(e, scope, ttl=60)}[scope]()
+    appr = {cx.SCOPE_ORDER_IDS: lambda: cancel_command(e, scope, order_ids=[oid]),
+            cx.SCOPE_MARKET: lambda: cancel_command(e, scope, market_hash=H),
+            cx.SCOPE_ALL: lambda: cancel_command(e, scope)}[scope]()
     run = {cx.SCOPE_ORDER_IDS: lambda: e.svc.cancel_orders([oid], appr),
            cx.SCOPE_MARKET: lambda: e.svc.cancel_market(H, appr),
            cx.SCOPE_ALL: lambda: e.svc.cancel_all(appr)}[scope]
     _slow_reads(e, 25)  # 3 reads -> now = NOW + 75 >= expires_at = NOW + 60
-    assert code(run) == "CANCEL_APPROVAL_EXPIRED"
-    assert deletes(e) == [] and not e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert code(run) == "COMMAND_EXPIRED"
+    assert deletes(e) == [] and not e.signer._ledger.command_consumed(appr.command_id)
     assert e.signer.committed_exposure_base_units == STAKE
 
 
@@ -407,41 +425,41 @@ def test_live_flag_expiring_during_precheck_reads_is_refused_and_not_consumed(tm
     e = setup(tmp_path, throwaway, owner, flag_expires=NOW + 50)
     oid, key = e.orders[0]
     if scope == cx.SCOPE_ORDER_IDS:
-        appr = cancel_approval(e, scope, order_ids=[oid], ttl=120)
+        appr = cancel_command(e, scope, order_ids=[oid])
         run = lambda: e.svc.cancel_orders([oid], appr)  # noqa: E731
     else:
-        appr = cancel_approval(e, scope, event_id=EVENT_ID, ttl=120)
+        appr = cancel_command(e, scope, event_id=EVENT_ID)
         run = lambda: e.svc.cancel_event(EVENT_ID, appr)  # noqa: E731
     _slow_reads(e, 20)  # now = NOW + 60: flag expired (NOW + 50), approval still valid (NOW + 120)
     assert code(run, gw.GatewayRefused) == "LIVE_TRADING_FLAG_EXPIRED"
-    assert deletes(e) == [] and not e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert deletes(e) == [] and not e.signer._ledger.command_consumed(appr.command_id)
 
 
 def test_approval_still_valid_after_reads_is_sent(tmp_path, throwaway, owner):
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
-    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], ttl=60)
+    appr = cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
     _slow_reads(e, 10)  # now = NOW + 30 < NOW + 60
     e.sender.script = [cancelled_reply(oid)]
     assert e.svc.cancel_orders([oid], appr)["sent"] is True
-    assert len(deletes(e)) == 1 and e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert len(deletes(e)) == 1 and e.signer._ledger.command_consumed(appr.command_id)
 
 
 def test_expiry_between_consume_and_send_sends_nothing(tmp_path, throwaway, owner):
     """Last check right before the request leaves: the nonce is spent (fail closed) but nothing is sent."""
     e = setup(tmp_path, throwaway, owner)
     oid, key = e.orders[0]
-    appr = cancel_approval(e, cx.SCOPE_ORDER_IDS, order_ids=[oid], ttl=60)
+    appr = cancel_command(e, cx.SCOPE_ORDER_IDS, order_ids=[oid])
     real_log = e.svc._log
 
     def slow_log(decision, *a, **k):
         real_log(decision, *a, **k)
         if decision == "CANCEL_REQUESTED":
-            e.clock.t = appr.expires_at  # e.g. a slow fsync of the audit line
+            e.clock.t = appr.received_at + 61  # e.g. a slow fsync of the audit line (window: 60 s)
 
     e.svc._log = slow_log
-    assert code(lambda: e.svc.cancel_orders([oid], appr)) == "CANCEL_APPROVAL_EXPIRED"
-    assert deletes(e) == [] and e.signer._ledger.nonce_consumed(appr.approval_nonce)
+    assert code(lambda: e.svc.cancel_orders([oid], appr)) == "COMMAND_EXPIRED"
+    assert deletes(e) == [] and e.signer._ledger.command_consumed(appr.command_id)
     assert e.signer.committed_exposure_base_units == STAKE
     decisions = [json.loads(l)["decision"] for l in (tmp_path / "gw-audit.jsonl").read_text().splitlines()]
     assert decisions[-1] == "CANCEL_NOT_SENT"

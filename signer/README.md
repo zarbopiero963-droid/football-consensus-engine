@@ -24,57 +24,104 @@ Contratto ufficiale (verificato il 01-11-2026):
 ## Architettura
 
 ```
-client MCP ─► bridge: sxbet_simulate_order ─► intent canonico + intent_hash   (nessuna chiave, nessuna firma)
-                                                   │
-                                                   ▼
-              dispositivo dell'owner: mostra il binding v2 e firma con Ed25519 (chiave privata solo lì)
-                                                   │  Approval(binding, nonce, issued_at, expires_at, signer_id)
+client MCP (chat dell'owner) ─► bridge: intent canonico + testo letterale del comando dell'owner
+                                 (nessuna chiave, nessuna firma; client e tool MCP: PR successive)
+                                                   │  OwnerCommandAuthorization(command_id monouso, command_text,
+                                                   │  command_text_sha256, received_at, client_ref_sha256)
                                                    ▼
 signer/ (processo separato, SXBET_SIGNER_PROCESS=1, mai su Render MCP)
-  core.py    1. rivalida l'intent e ricalcola l'hash
-             2. verifica l'approvazione SENZA consumarla (firma, TTL ≤ 120 s, signer_id, binding)
-             3. risk.py: limiti dell'owner + dati di mercato freschi (contesto di rischio)
-             4. orders.py: una riga fsync = nonce consumato + AUTHORIZED + esposizione riservata (lock unico)
+  core.py    0. kill switch (ledger): se ingaggiato, nessun ordine nuovo
+             1. rivalida l'intent e ricalcola l'hash
+             2. command.py: verifica il comando SENZA consumarlo (hash del testo, finestra breve firmata
+                dall'owner, id e testo mai usati), lo analizza con la propria grammatica (IT/EN) e confronta
+                OGNI campo con l'ordine e con la riga di mercato (COMMAND_MISMATCH_<CAMPO>)
+             3. risk.py v2: limiti firmati dall'owner + dati di mercato freschi, contatori dal ledger
+             4. orders.py: una riga fsync = id e testo del comando consumati + AUTHORIZED + esposizione riservata
              5. firma EIP-712; la riga SIGNED è persistita prima di restituire la firma
-  gateway.py DISABILITATO salvo flag firmato dall'owner; trasporto astratto, nessuna implementazione di rete
-             verifica firma ↔ intent approvato, idempotenza, write-ahead UNKNOWN, batch non atomici, riconciliazione
+  gateway.py DISABILITATO salvo flag firmato dall'owner; rifiuta ogni invio a kill switch ingaggiato;
+             verifica firma ↔ intent autorizzato, idempotenza, write-ahead UNKNOWN, batch non atomici, riconciliazione
   rest_adapter.py  builder di POST /orders-v3 e delle letture + parser delle risposte (RestSender astratto)
-  cancellation.py  cancel per id / mercato / evento / tutti: approvazione dell'owner per ogni cancel,
+  cancellation.py  cancel per id / mercato / evento / tutti: comando esplicito dell'owner per ogni cancel,
              rilascio dell'esposizione solo da letture dell'exchange
+  killswitch.py    stop di emergenza (manuale o automatico deterministico): blocca, registra gli intenti di
+             cancel, verifica dalle letture; rilascio solo con atto firmato dall'owner. Non invia nulla
   anchor.py  ancoraggio esterno della testa del ledger + lease di scrittura con fencing token (PostgreSQL)
-  audit.py   audit JSONL append-only con hash chain (allowlist di campi, mai chiave né firma)
+  audit.py   audit JSONL append-only con hash chain (allowlist di campi, mai chiave, firma o testo del comando)
 ```
 
-## Binding dell'approvazione (v2)
+## Comando esplicito dell'owner (`signer/command.py`) — sostituisce l'`Approval` Ed25519 per ordine
 
-L'owner firma `approval_message(binding=…, approval_nonce, issued_at, expires_at, signer_id)` con dominio `sxbet.order_approval.v2`. Il `binding` (`signer/approval.py::BINDING_KEYS`) contiene: `account_id` (identità API), `maker`, `network`, `chain_id`, `verifying_contract`, `base_token`, `event_id`, `market_hash`, `selection` (`outcome` 1|2 ed etichetta leggibile), `is_maker_betting_outcome_one` (lato), `time_in_force`, `stake_base_units`, `percentage_odds_limit`, `quoted_percentage_odds` (la quota vista dall'owner), `expected_fees` (snapshot di `GET /user/fees-v3`), `max_exposure_base_units`, `order_expiry`, `client_order_id` e `intent_hash`.
+Governance §2.6 (riscritta) e decisioni dell'owner nella issue #187. **Modifica non retrocompatibile, intenzionale:** l'`Approval` Ed25519 per singolo ordine e la `CancelApproval` per singolo cancel non esistono più (`signer/approval.py` è stato rimosso); i test che li usavano sono stati aggiornati. Restano firmati dall'owner solo gli atti non legati a un singolo ordine: configurazione di rischio, flag `LIVE_TRADING`, conferma della testa del ledger e rilascio del kill switch.
 
-- Cambiare un campo dopo la firma rompe la firma (`APPROVAL_SIGNATURE_INVALID`).
-- Il signer ricava di nuovo ogni campo da intent, configurazione e contesto di rischio. Un binding firmato ma incoerente viene rifiutato (`APPROVAL_BINDING_MISMATCH_<CAMPO>`, `FEES_CHANGED_SINCE_APPROVAL`, `ORDER_EXPOSURE_ABOVE_APPROVED_MAX`).
-- **Modifica non retrocompatibile, intenzionale:** le approvazioni v1 (solo `intent_hash`) sono rifiutate (`APPROVAL_MALFORMED`). I test sono stati aggiornati di conseguenza.
-- Monouso, TTL ≤ 120 s, tolleranza di clock di 5 s. Il nonce si consuma solo nella riga `AUTHORIZE` del ledger, quindi resta consumato anche dopo un riavvio.
+Il signer riceve un `OwnerCommandAuthorization`:
+- `command_id`: identificativo **nuovo e monouso** del comando (decisione 2). Si consuma nella riga `AUTHORIZE` / `CANCEL_REQUEST` del ledger e resta consumato per sempre, a prescindere dalla finestra temporale e anche dopo un riavvio (`COMMAND_ID_ALREADY_CONSUMED`);
+- `command_text`: il testo letterale scritto dall'owner; `command_text_sha256` il suo sha256 UTF-8, ricalcolato dal signer (`COMMAND_TEXT_HASH_MISMATCH`). Nel ledger e nell'audit finiscono **solo gli hash**, mai il testo;
+- `received_at`: istante di ricezione da parte del MCP. Finestra breve `command_max_age_seconds` della configurazione di rischio firmata (massimo 300 s): `COMMAND_EXPIRED`, `COMMAND_NOT_YET_VALID`;
+- `client_ref_sha256`: hash del riferimento al client / conversazione (solo audit).
 
-## Perché un testo in chat non è una conferma
+Si consuma anche l'**impronta del comando analizzato** (`command_fingerprint_sha256`, revisione PR #196 P2-2): evento, mercato, lato, importo in unità base, prezzo firmato, tipo d'ordine, time in force dopo i default firmati, post-only **e il token di riferimento esplicito**. Scritture equivalenti (maiuscole, virgola finale, «2,5»/«2.50», FOK esplicito uguale al default) hanno la stessa impronta: lo stesso comando non autorizza una seconda operazione (`COMMAND_REPLAYED`). Per ripetere deliberatamente lo stesso ordine (o un cancel / cancel-all di riduzione del rischio) l'owner scrive un nuovo comando con un **nuovo token di riferimento**, per esempio «(rif. 2)».
 
-> **Nota:** la governance §2.6 aggiornata sostituisce la conferma fuori banda per ordine con il comando esplicito e completo dell'owner, verificato dal signer entro limiti obbligatori, accettando il rischio residuo descritto qui sotto. Il codice attuale (`Approval` Ed25519) non è ancora stato adattato: vedi [docs/sxbet/owner_commanded_execution.md](../docs/sxbet/owner_commanded_execution.md).
+**Un comando = una operazione.** Due operazioni nello stesso testo → `COMMAND_MULTIPLE_OPERATIONS`; una modifica → `COMMAND_MODIFY_NOT_SUPPORTED` (decisione 1: modifica = comando di cancel + comando di nuovo ordine, verificati separatamente).
 
-Un testo in chat, in un output di tool o in una pagina web può essere scritto da chiunque: dal modello stesso, da una prompt injection, da un terzo. Il signer accetta solo un oggetto `Approval` con una **firma Ed25519** valida della chiave dell'owner, che il signer non possiede (conserva solo la chiave pubblica).
+Grammatica deterministica (IT + EN, virgola o punto decimale, nessun separatore delle migliaia):
+- `Piazza 10 USDC su Over 2,5 in Cape Verde–Liberia a quota minima 1,90` → ordine **Market** (taker, `FOK`/`IOC`; default firmato `market_time_in_force`, oppure esplicito «FOK»/«IOC»/«tutto o niente»);
+- `Metti un Limit a quota 2,10 per 10 USDC su Over 2,5 in Cape Verde–Liberia [post-only]` → ordine **Limit** (maker, `GTC`);
+- `Place 10 USDC on Liberia +1.5 in Cape Verde vs Liberia at min odds 1.90 FOK`;
+- evento come `Squadra1–Squadra2` / `Squadra1 vs Squadra2` oppure `evento <sportXeventId>`; tipo di mercato del provider facoltativo `(tipo mercato 52)`;
+- `Cancella l'ordine 0x…`, `Cancella gli ordini 0x… e 0x…`, `Cancella gli ordini sul mercato 0x…`, `Cancella gli ordini dell'evento <id>`, `Cancella tutti gli ordini` / `Cancel all orders`.
+
+Ogni altra parola è un rifiuto (`COMMAND_UNPARSEABLE`): nessuna lettura fuzzy. Slot mancante → `COMMAND_INCOMPLETE_<CAMPO>` (`EVENT`, `SELECTION`, `STAKE`, `CURRENCY`, `ODDS`, `ORDER_TYPE`, `LINE`, `ORDER_IDS`); doppia lettura → `COMMAND_AMBIGUOUS_<CAMPO>` (per esempio «1.000 USDC»: migliaia o decimali?).
+
+Confronto campo per campo (`verify_place`), su dati del signer e mai sul parsing del chiamante:
+- **evento** (§2.3bis): nomi canonici esatti di `teamOneName`/`teamTwoName` nell'ordine del provider, oppure l'id `sportXeventId`;
+- **mercato e linea**: Over/Under richiede etichette Over/Under e una linea; una linea con segno richiede una linea del mercato; un mercato con linea non citata è `COMMAND_INCOMPLETE_LINE`; |linea| uguale; tipo del provider se citato;
+- **selezione**: etichetta canonica esatta dell'esito firmato (`outcomeOneName`/`outcomeTwoName`);
+- **unicità** (§2.3bis, ambiguità = nessun match): fra tutti i mercati dell'evento (`event_markets`, da `GET /markets/active?eventId=`) il comando deve identificarne **uno solo**, quello dell'ordine (`COMMAND_AMBIGUOUS_MARKET`, `EVENT_MARKETS_MISSING`, `EVENT_MARKETS_INCOMPLETE`);
+- **importo e valuta**: Decimal esatto → unità base con i decimali del token presi dai metadati runtime (`COMMAND_INVALID_STAKE_PRECISION` sotto l'unità base, mai arrotondato); simbolo uguale a quello dei metadati;
+- **quota**: probabilità implicita `floor(1e20 / quota)` e arrotondamento **per difetto** sulla scala: il prezzo firmato non è mai peggiore del limite dell'owner, ed è esattamente quello (nessuna tolleranza di slippage);
+- **tipo d'ordine, time in force, post-only**: dal comando o dai default firmati dall'owner, mai una scelta del modello.
+
+Copertura universale (decisione 4): nessuna whitelist funzionale di sport, tipi di mercato o linee; le allowlist sono politica dell'owner nella configurazione di rischio (default ammesso `ANY`).
+
+### Rischio residuo accettato dall'owner
+
+Un testo in chat, in un output di tool o in una pagina web può essere scritto da chiunque: dal modello stesso, da una prompt injection, da un terzo. Senza un fattore fuori banda il signer **non può distinguere crittograficamente** un comando dell'owner da uno iniettato o generato per errore. I controlli sopra (testo completo e coerente, monouso, finestra breve, unicità del mercato) e soprattutto i **limiti obbligatori** firmati dall'owner e il kill switch **limitano** il danno, non lo eliminano (§2.6).
 
 ## Autorizzazione transazionale
 
-0. **Snapshot:** binding dell'approvazione e contesto di rischio vengono copiati in valori JSON semplici (dict/list/str/int/bool/None) prima di ogni verifica; da lì in poi si usa solo la copia. Un oggetto del chiamante modificato durante la firma non cambia ciò che è verificato o registrato. Un valore non semplice produce `APPROVAL_MALFORMED` o `RISK_CONTEXT_MALFORMED`.
-1. Verifica dell'approvazione senza consumo e controllo `nonce_consumed`.
-2. Il risk engine gira **dentro il lock del ledger**, sull'esposizione corrente.
-3. Solo se tutto passa viene scritta una riga `AUTHORIZE` (fsync) che consuma il nonce e riserva l'importo.
+0. **Snapshot:** il comando (ogni campo letto una sola volta, tipi controllati) e le **letture del signer** (dal suo provider, mai dal chiamante) vengono copiati in valori semplici prima di ogni verifica; da lì in poi si usa solo la copia. Un valore non semplice produce `COMMAND_MALFORMED` o `RISK_CONTEXT_MALFORMED`.
+1. Verifica del comando senza consumo, controllo di id e testo già consumati.
+2. Il risk engine gira **dentro il lock del ledger**, sull'esposizione e sui contatori correnti.
+3. Solo se tutto passa viene scritta una riga `AUTHORIZE` (fsync) che consuma id e hash del testo e riserva l'importo.
 4. Firma; poi la riga `SIGNED`; solo allora la firma esce dalla funzione.
 
 Ne seguono queste proprietà:
-- un rifiuto (limiti, saldo, dati scaduti…) **non** consuma l'approvazione, che si può riusare quando i limiti lo permettono;
-- due richieste concorrenti con la stessa approvazione producono una sola firma;
-- un crash tra consumo e firma lascia l'ordine `AUTHORIZED` con il nonce consumato e nessuna firma emessa. Dopo il riavvio `Signer.abandon_unsigned(client_order_id)` lo porta a `REJECTED` e libera l'esposizione. È sicuro perché nessuna firma esce prima della riga `SIGNED`;
+- un rifiuto (limiti, saldo, dati scaduti…) **non** consuma il comando, che si può riusare entro la finestra quando i limiti lo permettono;
+- due richieste concorrenti con lo stesso id (o lo stesso testo) producono una sola autorizzazione;
+- un crash tra consumo e firma lascia l'ordine `AUTHORIZED` con il comando consumato e nessuna firma emessa. Dopo il riavvio `Signer.abandon_unsigned(client_order_id)` lo porta a `REJECTED` e libera l'esposizione. È sicuro perché nessuna firma esce prima della riga `SIGNED`;
 - un fallimento della firma nel processo porta subito a `REJECTED` (`SIGNING_FAILED`);
 - se la riga `SIGNED` non si riesce a scrivere, la firma viene scartata e non esce (`LEDGER_WRITE_FAILED`): l'ordine resta `AUTHORIZED` e riservato;
 - due `client_order_id` con lo stesso digest EIP-712 sono rifiutati (`ORDER_ID_ALREADY_AUTHORIZED`).
+
+## Revisione avversaria della PR #196 (esito UNSAFE): correzioni
+
+- **P1-1 letture del signer:** `sign_order(intent, authorization, *, post_only)` non accetta più un contesto (modifica intenzionale). Mercato, mercati dell'evento, eventi con le stesse squadre, quota, saldo, commissioni e metadati arrivano solo dal `MarketDataProvider` configurato in `SignerConfig.market_data`; senza provider `SIGNER_MARKET_READS_UNAVAILABLE`, errore del provider `SIGNER_MARKET_READS_FAILED`. Il mercato risolto dalle letture (un evento, un mercato) deve essere quello firmato (`COMMAND_MISMATCH_MARKET`).
+- **P1-2 token:** simbolo e decimali del token sono configurazione dell'owner (`SignerConfig.base_token_symbol`, `base_token_decimals`, legati a `base_token`); mancanti → `SIGNER_TOKEN_CONFIG_MISSING`; un valore dei metadati diverso → `TOKEN_DECIMALS_DIFFER_FROM_EXCHANGE`.
+- **P1-3 ambiguità fra eventi (§2.3bis):** il provider restituisce anche gli eventi attivi con gli stessi nomi delle squadre (con orario, competizione, paese, categoria se disponibili); se il comando ne identifica più di uno → `COMMAND_AMBIGUOUS_EVENT`, salvo `evento <id>`. Solo nomi canonici esatti; nessun fuzzy o contenimento. `SAME_TEAM_EVENTS_MISSING` / `_INCOMPLETE` se la lettura manca o non contiene l'evento dell'ordine.
+- **P2-1 kill switch:** il controllo si ripete sotto il lock del ledger dentro `authorize` (prima e dopo i controlli di rischio) e dopo `AUTHORIZE` (un ingaggio in quel momento porta l'ordine a `REJECTED` senza firma). `ENGAGE` e la fotografia degli intenti (`AUTHORIZED`, `SIGNED` non scaduti, ordini sul book) sono scritti sotto un unico possesso del lock.
+- **P2-2 replay:** impronta del comando analizzato + token di riferimento (vedi sopra).
+- **P2-3 post-only per ordine** (vedi Adapter REST).
+- **P2-4 monitor senza flag:** il lock di invio appartiene al ledger (`ledger.send_lock`, usato da gateway, cancellazioni e monitor); il monitor non richiede più un gateway costruibile, quindi riconcilia e alimenta il kill switch anche a flag scaduto.
+- **P2-5 identità del ledger:** la riga `GENESIS` contiene un nonce casuale e il flag `LIVE_TRADING` firmato dall'owner contiene `ledger_genesis_sha256`: un nuovo file di ledger (id consumati, kill switch e contatori azzerati) non è mai live senza un nuovo flag (`LIVE_TRADING_FLAG_NOT_FOR_THIS_LEDGER`). Modifica intenzionale del formato del flag.
+- **P3:** solo cifre ASCII (`COMMAND_NON_ASCII_DIGITS`); ogni numero con esattamente tre decimali è ambiguo (`COMMAND_AMBIGUOUS_STAKE` / `_ODDS` / `_LINE`; si scrive «2,0000»); la finestra della `CancellationService` viene dalla configurazione di rischio firmata (`risk_limits=`); l'ingaggio volatile del kill switch è visto da signer e gateway; l'orologio dell'host è una radice di fiducia: con l'orologio reale uno scarto oltre 120 s rispetto all'orologio monotono blocca la firma (`SIGNER_CLOCK_JUMP_DETECTED`).
+
+## Kill switch (`signer/killswitch.py`, decisione D7 / #187 decisione 3)
+
+- **Attivazione** manuale (`engage`, non serve firma: riduce solo il rischio) o **automatica** (`evaluate_automatic`) solo a condizioni deterministiche: `DAILY_LOSS_LIMIT_BREACHED` (perdita realizzata del giorno UTC > 0 e ≥ `max_daily_loss_base_units`), `EXPOSURE_ABOVE_LIMIT` (esposizione del ledger oltre `max_total_exposure_base_units`, per esempio per fill tardivi), `RECONCILIATION_MISMATCH` (ordini nostri sconosciuti al ledger o evidenze in conflitto, per esempio gli alert `EVIDENCE_CONFLICT` del monitor), `LEDGER_ANCHOR_FORK` (fork, fencing, testa diversa, ledger avvelenato). Stessi input, stessa decisione.
+- **Effetti**, tutti nel ledger append-only (sopravvivono al riavvio) e nell'audit: riga `KILL_SWITCH ENGAGE`; da quel momento `sign_order` e il gateway rifiutano ogni nuovo ordine (`KILL_SWITCH_ENGAGED`), mentre letture, riconciliazione e cancel comandati dall'owner restano possibili; riga `CANCEL_INTENT` con gli id degli ordini che possono essere sul book.
+- **Nessun invio in questa PR:** il kill switch non ha trasporto, non firma e non crea esposizione; registra gli **intenti** di cancel. L'invio effettivo (solo per ridurre il rischio, solo su quella lista) arriva con la PR del sender. `verify_cancellations` registra (`CANCEL_VERIFIED`) quali cancel risultano davvero avvenuti nel ledger riconciliato (`CONFIRMED`) e quali no (`STILL_OPEN`): una risposta di cancel non è mai una prova.
+- Se il ledger non è scrivibile (anomalia, avvelenato) il kill switch resta attivo in memoria e lo registra nell'audit; il signer rifiuta comunque ogni firma su un ledger avvelenato.
+- **Rilascio** solo con un atto dell'owner fuori dal MCP: `KillSwitchRelease` firmato Ed25519 (dominio `sxbet.kill_switch_release.v1`) su `{ledger_id, engage_seq, release_id, issued_at, expires_at}`, TTL ≤ 300 s, verificato con la chiave pubblica della configurazione del signer (anche da file, `load_release_file`). È legato alla riga `ENGAGE` che rilascia e il suo id è monouso (`KILL_SWITCH_RELEASE_*`). Una condizione automatica ancora vera riattiva il kill switch alla valutazione successiva.
 
 ## Stati degli ordini ed esposizione (`signer/orders.py`)
 
@@ -102,14 +149,14 @@ Stati: `PREPARED`, `AUTHORIZED`, `SIGNED`, `SUBMITTED`, `OPEN`, `PARTIALLY_FILLE
 - **Un fill tardivo non si perde mai:** in `EXPIRED_UNCONFIRMED`, `EXPIRED` o `CANCELLED` un fill nuovo (dalla riga dell'exchange o, con 404, da fill completi tutti di quest'ordine; i fill `FAILED` non contano) aumenta il matched con una auto-transizione, e `EXPIRED → FILLED` è ammesso. L'esposizione eseguita torna a essere contata dal risk engine.
 - Da `UNKNOWN` si torna a `SIGNED` (unico percorso verso un reinvio) solo con: 404 per id **e** per `clientOrderId`, fill vuoti e almeno 60 s dall'ultimo tentativo. Il reinvio usa **lo stesso ordine firmato e lo stesso `clientOrderId`**.
 - Evidenze duplicate o che non cambiano nulla non scrivono righe. Il matched non scende mai e non supera l'importo.
-- **Persistenza:** JSONL append-only, fsync per riga, hash chain, `GENESIS` legato a `signer_id` e indirizzo. Stato, nonce, idempotenza, esposizione e P&L si **ricostruiscono sempre** rileggendo il ledger e ripassando ogni riga dalla macchina a stati.
+- **Persistenza:** JSONL append-only, fsync per riga, hash chain, `GENESIS` legato a `signer_id` e indirizzo. Stato, nonce e id dei comandi consumati, idempotenza, esposizione, contatori di rischio, kill switch e P&L si **ricostruiscono sempre** rileggendo il ledger e ripassando ogni riga dalla macchina a stati.
   - Un ledger mancante, vuoto, estraneo, manomesso o con una storia illegale (anche se re-hashata) genera `LedgerError`, e il signer non si avvia.
   - Un nuovo ledger si crea solo con `OrderLedger.create` esplicito, mai "partendo da zero" in silenzio.
-- **Un solo scrittore:** un `OrderLedger` tiene un `flock` esclusivo non bloccante sul file per tutta la sua vita (fino a `close()`), sia in modalità locale sia in modalità ancorata. Una seconda istanza, nello stesso processo o in un altro, fallisce con `LEDGER_LOCKED`: due signer non possono accettare lo stesso nonce.
+- **Un solo scrittore:** un `OrderLedger` tiene un `flock` esclusivo non bloccante sul file per tutta la sua vita (fino a `close()`), sia in modalità locale sia in modalità ancorata. Una seconda istanza, nello stesso processo o in un altro, fallisce con `LEDGER_LOCKED`: due signer non possono accettare lo stesso nonce o lo stesso comando.
   - Prima di ogni append l'istanza verifica che il file sia ancora quello bloccato (stesso inode), che abbia la dimensione che ha scritto e che termini con la riga il cui hash è la testa in memoria. Altrimenti (uno scrittore esterno che ignora il lock advisory, un file sostituito) `LEDGER_HEAD_MISMATCH`.
   - Un append fallito o parziale, o una testa diversa, **avvelena** l'istanza: ogni scrittura successiva dà `LEDGER_POISONED` fino a riavvio e replay. Una riga finale troncata fa poi fallire il replay (`LEDGER_CORRUPT`) e richiede una decisione dell'owner.
   - Limiti residui: il controllo prima dell'append legge solo dimensione e ultima riga (una riscrittura di righe precedenti a parità di dimensione si rileva al replay successivo); in modalità locale `flock` è advisory e locale, quindi il ledger deve stare su un filesystem locale dell'host del signer. La modalità ancorata qui sotto toglie questa dipendenza.
-- Le righe `CANCEL_REQUEST` (vedi Cancellazione) consumano il nonce di un'approvazione di cancel e registrano cosa è stato chiesto; non cambiano stato né esposizione di alcun ordine.
+- Le righe `CANCEL_REQUEST` (vedi Cancellazione) consumano id e hash del testo del comando di cancel dell'owner (o, per righe precedenti, il nonce di un'approvazione di cancel) e registrano cosa è stato chiesto; non cambiano stato né esposizione di alcun ordine.
 
 ## Ancoraggio esterno della testa e lease di scrittura (`signer/anchor.py`, H1/H2)
 
@@ -126,7 +173,7 @@ Opzionale: `OrderLedger.create/open(..., anchor=<AnchorStore>)`. Senza `anchor` 
   - lo store non risponde (`LEDGER_ANCHOR_UNREACHABLE`).
 - **Conferma della testa firmata dall'owner (`anchor.LedgerHeadAck`, finding A, modifica non retrocompatibile):** `OrderLedger.open(..., owner_ack=<LedgerHeadAck>, owner_public_key=<chiave pubblica Ed25519 dell'owner>)`.
   - Il parametro `owner_ack_head` (una stringa con l'hash della testa locale) **non esiste più**. Chiunque abbia scrittura sul file del ledger e sugli argomenti di avvio poteva aggiungere righe forgiate con una hash chain valida e "confermarle" da solo.
-  - L'owner firma con la stessa chiave Ed25519 di approvazioni, configurazione di rischio e flag `LIVE_TRADING`, con dominio `sxbet.ledger_head_ack.v1`, il messaggio JSON canonico `{ledger_id ("<signer_id>:<indirizzo>"), anchored {seq, head_hash} oppure null, local {seq, head_hash}, issued_at, expires_at}`. Il TTL è ≤ 300 s, con tolleranza di clock di 5 s. Il signer conserva solo la chiave pubblica, presa dalla propria configurazione e mai dalla conferma.
+  - L'owner firma con la stessa chiave Ed25519 di configurazione di rischio, rilascio del kill switch e flag `LIVE_TRADING`, con dominio `sxbet.ledger_head_ack.v1`, il messaggio JSON canonico `{ledger_id ("<signer_id>:<indirizzo>"), anchored {seq, head_hash} oppure null, local {seq, head_hash}, issued_at, expires_at}`. Il TTL è ≤ 300 s, con tolleranza di clock di 5 s. Il signer conserva solo la chiave pubblica, presa dalla propria configurazione e mai dalla conferma.
   - Rifiuti, con codice fisso e senza toccare l'ancora:
     - `LEDGER_HEAD_ACK_KEY_MISSING`: manca la chiave pubblica;
     - `LEDGER_HEAD_ACK_MALFORMED`: una stringa, un dict o un altro oggetto non valido;
@@ -145,32 +192,37 @@ Opzionale: `OrderLedger.create/open(..., anchor=<AnchorStore>)`. Senza `anchor` 
   - la factory di connessione è iniettata: `signer/` non importa driver; il processo del signer passa per esempio `psycopg.connect` con il proprio DSN, fuori da Render MCP.
 - La migration signer non viene applicata da sola a nessun database e il runner bridge non la applica mai (`app.db.migrate()` applica solo la serie bridge e non è chiamata dal runtime): applicarla al database del signer (`apply_migrations(connect, series=SIGNER)`) è un passo esplicito dell'owner.
 
-## Risk engine (`signer/risk.py`)
+## Risk engine v2 (`signer/risk.py`)
 
-I limiti si leggono **solo** da un file JSON il cui percorso è in `SXBET_SIGNER_RISK_CONFIG`, firmato Ed25519 dalla chiave dell'owner (dominio `sxbet.risk_config.v1`).
-- Un file mancante, non firmato, malformato o con firma non valida produce i limiti tutti a zero, cioè il rifiuto di ogni ordine (`EXPOSURE_LIMIT_ZERO`).
-- `RiskLimits` è immutabile e si carica una volta all'avvio. Nessun campo di intent, approvazione o contesto può cambiarlo.
+I limiti si leggono **solo** da un file JSON il cui percorso è in `SXBET_SIGNER_RISK_CONFIG`, firmato Ed25519 dalla chiave dell'owner (dominio e schema `sxbet.risk_config.v2`, con `config_version`). **Modifica non retrocompatibile, intenzionale:** un file v1 viene rifiutato (`MALFORMED`, limiti a zero). I valori di **testnet e mainnet sono separati** (`networks.mainnet`, `networks.testnet`); il signer usa solo il blocco della propria rete (`RISK_CONFIG_NETWORK_MISMATCH` se gli si passa l'altro) e una rete assente ha i limiti a zero (`NETWORK_NOT_CONFIGURED`).
+- Un file mancante, non firmato, malformato o con firma non valida produce i limiti tutti a zero, cioè il rifiuto di ogni ordine (`EXPOSURE_LIMIT_ZERO`): il default sicuro è zero esposizione live.
+- `RiskLimits` è immutabile e si carica una volta all'avvio. Nessun campo di intent, comando o contesto può cambiarlo.
+- **I contatori non stanno solo in memoria:** importo del giorno UTC, ordini nell'ultima ora e nel giorno, ultimo ordine e perdita realizzata si ricalcolano dal ledger append-only (righe `AUTHORIZE` con il loro `ts`, righe `SETTLED`) a ogni riavvio. Ogni `AUTHORIZE` conta, anche se poi rifiutato o abbandonato (prudente).
 
-| Limite | Codice di rifiuto |
+| Limite (per rete) | Codice di rifiuto |
 |---|---|
 | `max_stake_per_order_base_units` | `STAKE_ABOVE_LIMIT` |
-| `max_exposure_per_market_base_units` | `MARKET_EXPOSURE_ABOVE_LIMIT` |
-| `max_exposure_per_event_base_units` | `EVENT_EXPOSURE_ABOVE_LIMIT` |
-| `max_total_exposure_base_units` | `EXPOSURE_ABOVE_LIMIT` |
-| `session_loss_limit_base_units` (perdita realizzata nella sessione + importo dell'ordine) | `SESSION_LOSS_LIMIT` |
-| `daily_loss_limit_base_units` (giorno UTC, sopravvive al riavvio) | `DAILY_LOSS_LIMIT` |
+| `max_stake_per_utc_day_base_units` | `DAILY_STAKE_ABOVE_LIMIT` |
+| `max_exposure_per_market_base_units` / `_per_event_` / `max_total_exposure_base_units` | `MARKET_` / `EVENT_EXPOSURE_ABOVE_LIMIT`, `EXPOSURE_ABOVE_LIMIT` |
+| `max_daily_loss_base_units` (perdita realizzata del giorno UTC + caso peggiore di tutte le posizioni aperte + questo ordine) | `DAILY_LOSS_LIMIT` |
 | `max_open_orders` | `OPEN_ORDERS_ABOVE_LIMIT` |
-| `slippage_tolerance_bps` (movimento avverso rispetto a `quoted_percentage_odds`; 0 = nessuna tolleranza) | `ODDS_MOVED_BEYOND_SLIPPAGE` |
-| `min_percentage_odds` / `max_percentage_odds` | `ODDS_OUTSIDE_OWNER_BAND` |
-| `max_quote_age_seconds` (mercato, quota, saldo) | `*_STALE`, `*_FROM_FUTURE` |
+| `max_orders_per_hour`, `max_orders_per_utc_day` | `ORDERS_PER_HOUR_ABOVE_LIMIT`, `ORDERS_PER_DAY_ABOVE_LIMIT` |
+| `min_seconds_between_orders` (0 = nessun intervallo) | `ORDER_PACE_TOO_FAST` |
+| `allowed_sport_ids`, `allowed_league_ids`, `allowed_market_types` (`"ANY"` oppure lista; lista vuota = niente) | `SPORT_` / `LEAGUE_` / `MARKET_TYPE_NOT_ALLOWED`, `*_MISSING` |
+| `min_decimal_odds` / `max_decimal_odds` (stringhe decimali, sul prezzo firmato) | `ODDS_OUTSIDE_OWNER_BAND` |
+| `pregame_only` | `PREGAME_ONLY_EVENT_STARTED`, `GAME_TIME_MISSING` |
+| `max_quote_age_seconds` (mercato, quota, saldo, metadati) | `*_STALE`, `*_FROM_FUTURE` |
+| `command_max_age_seconds` (≤ 300) | `COMMAND_EXPIRED` |
+| `market_time_in_force` (`FOK`/`IOC`), `limit_time_in_force` (`GTC`): default firmati dall'owner | `COMMAND_MISMATCH_TIME_IN_FORCE` |
 
-Tutti i limiti tranne lo slippage devono essere > 0, altrimenti `EXPOSURE_LIMIT_ZERO`.
+Tutti i limiti interi tranne `min_seconds_between_orders` devono essere > 0 e la fascia di quote valida (1 < min ≤ max), altrimenti `EXPOSURE_LIMIT_ZERO`. **Rimossi (modifica intenzionale):** `session_loss_limit_base_units` (sostituito dalla perdita giornaliera che conta anche le posizioni aperte) e `slippage_tolerance_bps` (il comando dell'owner fissa il prezzo limite: nessuna tolleranza può peggiorarlo).
 
-Il contesto di rischio è obbligatorio e ogni dato mancante produce un rifiuto (`RISK_CONTEXT_MISSING`, `MARKET_DATA_MISSING`, `QUOTE_MISSING`, `LIQUIDITY_MISSING`, `BALANCE_MISSING`, `FEES_MISSING_OR_MALFORMED`). Contiene:
-- la riga del mercato (`status` deve essere `ACTIVE`, altrimenti `MARKET_NOT_ACTIVE`);
-- la quota taker per il lato dell'ordine, con la liquidità (per IOC/FOK deve coprire l'importo, altrimenti `INSUFFICIENT_LIQUIDITY`);
+Il contesto di rischio è obbligatorio e ogni dato mancante produce un rifiuto (`RISK_CONTEXT_MISSING`, `MARKET_DATA_MISSING`, `QUOTE_MISSING`, `LIQUIDITY_MISSING`, `BALANCE_MISSING`, `FEES_MISSING_OR_MALFORMED`, `EXCHANGE_LIMITS_MISSING`, `EVENT_MARKETS_MISSING`). Contiene:
+- la riga del mercato (`status` deve essere `ACTIVE`, altrimenti `MARKET_NOT_ACTIVE`) e tutti i mercati dell'evento (unicità del comando);
+- la quota taker per il lato dell'ordine, con la liquidità al prezzo limite (per IOC/FOK deve coprire l'importo, altrimenti `INSUFFICIENT_LIQUIDITY`);
 - il saldo disponibile, che deve coprire tutte le riserve non eseguite più l'ordine (`INSUFFICIENT_BALANCE`);
-- le commissioni.
+- le commissioni (null resta null);
+- i metadati runtime `GET /metadata/obv3`: importo minimo (`STAKE_BELOW_EXCHANGE_MINIMUM`), importo minimo a riposo per i GTC (`STAKE_BELOW_MIN_RESTING_SIZE`), simbolo e decimali del token. **Modifica intenzionale:** prima il signer non conosceva il minimo e firmava; l'exchange rispondeva 400 con l'importo riservato fino alla scadenza.
 
 ## Gateway di invio (`signer/gateway.py`): disabilitato
 
@@ -204,32 +256,34 @@ Il contesto di rischio è obbligatorio e ogni dato mancante produce un rifiuto (
 
 Builder di richieste e parser di risposte, nient'altro. `RestSender.send(RestRequest) -> RestResponse` (o `SenderTimeout`) è astratto: autenticazione, TLS, URL di base (mainnet `https://api.sx.bet`, testnet `https://api.toronto.sx.bet`), rate limit e timeout sono compito del sender, che **non** esiste nel repository. L'adapter non legge alcuna API key.
 - `build_create_orders`: 1..`limits.maxCreateOrders` ordini (da `GET /metadata/obv3`, `ExchangeLimits.from_metadata`), un solo `maker`, `clientOrderId` unici e conformi (`^[A-Za-z0-9_-]{1,64}$`), importi stringa decimale, `expiry` intero in secondi, `timeInForce` `GTC`/`IOC`/`FOK`, `orderSignature` di 65 byte.
-- `SubmitOptions` (configurazione del deploy, mai argomento di un tool): `wait_for_outcome`, `max_wait_time_ms` (1..15000, inviato solo con `waitForOutcome`), `post_only` (solo `GTC`; `IOC`/`FOK` → `POST_ONLY_REQUIRES_GTC` in locale), `salt_format`.
+- `SubmitOptions` (configurazione del deploy, mai argomento di un tool): `wait_for_outcome`, `max_wait_time_ms` (1..15000, inviato solo con `waitForOutcome`), `salt_format`. **Modifica intenzionale (PR #196 P2-3):** `post_only` non è più un'opzione globale: `postOnly` è inviato solo per gli ordini la cui riga `AUTHORIZE` registra un post-only comandato dall'owner (solo `GTC`; altrimenti `POST_ONLY_REQUIRES_GTC` in locale).
 - **Maker e taker:** non esiste un endpoint di fill. Un ordine taker è lo stesso ordine firmato con `timeInForce` `IOC` o `FOK`, che esegue contro la liquidità a riposo al prezzo `percentageOdds` o migliore (developers/taking-liquidity); un ordine maker è `GTC` e resta sul book (con `postOnly` non prende mai). Un `GTC` che incrocia all'arrivo esegue subito e lascia a riposo solo il resto.
 - Letture: `GET /orders-v3/{orderId}`, `GET /orders-v3/client/{clientOrderId}` (200 → `FOUND`, 404 → `NOT_FOUND`, altro → `ERROR`; id validati prima di costruire il path) e `GET /fills-v3?orderId=&perPage=100&nextKey=` con paginazione; la lista è `complete` solo all'ultima pagina, oltre il limite di pagine è `complete: false`.
 - Heartbeat (`POST /heartbeat/v3`, `timeoutSeconds` 0..3600, un lapse cancella **tutti** gli ordini con `HEARTBEAT_TIMEOUT`): solo documentato, nessun sender di heartbeat. `HEARTBEAT_TIMEOUT` è già un `inactiveReason` riconosciuto (→ `CANCELLED`).
 
 ## Cancellazione (`signer/cancellation.py`)
 
-Cancellare è un'operazione finanziaria (§2.6): **ogni** cancel richiede un'approvazione dell'owner.
-- `CancelApproval`: firma Ed25519 dell'owner (dominio `sxbet.cancel_approval.v1`) su un binding `{account_id, maker, network, scope, order_ids (ordinati) | market_hash | event_id}`, TTL ≤ 120 s, legata a `signer_id`, monouso. Il signer ricalcola il binding dalla richiesta: ogni differenza è `CANCEL_APPROVAL_BINDING_MISMATCH`.
+Cancellare è un'operazione finanziaria (§2.6): **ogni** cancel richiede un comando esplicito dell'owner.
+- **Modifica intenzionale:** la `CancelApproval` Ed25519 è sostituita dal comando dell'owner (`OwnerCommandAuthorization`, stesse regole degli ordini: id monouso, hash del testo, finestra breve). Il signer analizza il testo e il comando deve nominare esattamente questa operazione: scope, stesso insieme di id, stesso mercato o evento (`COMMAND_MISMATCH_SCOPE`, `_ORDER_IDS`, `_MARKET`, `_EVENT`, `_OPERATION`). `CancellationService(gateway, account_id=…, risk_limits=…)` non riceve più la chiave dell'owner; la finestra è `command_max_age_seconds` della configurazione di rischio firmata. Un cancel o cancel-all ripetuto richiede un nuovo token di riferimento.
+- I cancel restano possibili a kill switch ingaggiato: riducono solo il rischio.
 - Rotte: `DELETE /orders-v3` (id, ≤ `limits.maxCancelOrders`), `DELETE /orders-v3/market?marketHash=`, `DELETE /orders-v3/event?eventId=`, `DELETE /orders-v3/all`.
-- Flusso: flag live riverificato → richiesta costruita → approvazione verificata (senza consumo) → **pre-check** con letture dell'exchange di ogni ordine coinvolto → **flag e scadenza dell'approvazione ricontrollati** → riga `CANCEL_REQUEST` (fsync, consuma il nonce) → flag e scadenza ricontrollati di nuovo → invio → parsing → **nuova lettura** di ogni ordine coinvolto.
-- **Ricontrollo dopo le letture (finding B):** il pre-check può fare fino a 3 letture per ordine. Subito prima del consumo del nonce si riverificano il flag (`LIVE_TRADING_FLAG_EXPIRED`, …) e `now < expires_at` dell'approvazione (`CANCEL_APPROVAL_EXPIRED`, stessa regola del primo controllo, senza tolleranza sulla scadenza). Un rifiuto qui **non consuma** il nonce e non invia nulla. Il controllo si ripete subito prima dell'invio: un rifiuto in quel punto non invia nulla, registra `CANCEL_NOT_SENT` nell'audit e lascia il nonce consumato (fail closed: serve una nuova approvazione).
+- Flusso: flag live riverificato → richiesta costruita → comando verificato (senza consumo) → **pre-check** con letture dell'exchange di ogni ordine coinvolto → **flag e finestra del comando ricontrollati** → riga `CANCEL_REQUEST` (fsync, consuma id e hash del testo) → flag e finestra ricontrollati di nuovo → invio → parsing → **nuova lettura** di ogni ordine coinvolto.
+- **Ricontrollo dopo le letture (finding B):** il pre-check può fare fino a 3 letture per ordine. Subito prima del consumo si riverificano il flag (`LIVE_TRADING_FLAG_EXPIRED`, …) e la finestra (`COMMAND_EXPIRED`). Un rifiuto qui **non consuma** il comando e non invia nulla. Il controllo si ripete subito prima dell'invio: un rifiuto in quel punto non invia nulla, registra `CANCEL_NOT_SENT` nell'audit e lascia il comando consumato (fail closed: serve un nuovo comando).
 - **Un cancel non libera mai esposizione da solo.** Il ledger cambia solo con evidenza dell'exchange: `INACTIVE` + `USER_REQUESTED` → `CANCELLED` (rilascia la parte non eseguita, il matched resta), fill → `PARTIALLY_FILLED`/`FILLED`. Il bucket `cancelled`, un comando accettato (`cancelledSubmitted`), `unconfirmed`, un timeout o una risposta ambigua lasciano l'ordine riservato: si rilegge più tardi con `reconcile`.
-- Per id: ogni id deve stare in esattamente un bucket documentato (`cancelled`, `notCancelled` con `NOT_FOUND`/`CANCEL_PENDING`/`NOT_ACTIVE`, `unconfirmed`), altrimenti `UNKNOWN`. Un ordine che il pre-check trova già terminale (eseguito, cancellato, scaduto) non viene inviato (`ALREADY_TERMINAL`); se non resta nulla, non parte nessuna richiesta e l'approvazione non viene consumata. Si invia al più l'insieme approvato, mai di più.
-- Mercato/evento/tutti: confermano solo che il comando è stato accettato. Gli id in `cancelledSubmitted` che il ledger non conosce (ordini piazzati altrove) sono riportati in `foreign_order_ids`.
-- Un nonce consumato resta consumato anche dopo un timeout e dopo il riavvio: un nuovo tentativo richiede una nuova approvazione.
+- Per id: ogni id deve stare in esattamente un bucket documentato (`cancelled`, `notCancelled` con `NOT_FOUND`/`CANCEL_PENDING`/`NOT_ACTIVE`, `unconfirmed`), altrimenti `UNKNOWN`. Un ordine che il pre-check trova già terminale (eseguito, cancellato, scaduto) non viene inviato (`ALREADY_TERMINAL`); se non resta nulla, non parte nessuna richiesta e il comando non viene consumato. Si invia al più l'insieme comandato, mai di più.
+- Mercato/evento/tutti: confermano solo che il comando è stato accettato. Gli id in `cancelledSubmitted` che il ledger non conosce (ordini piazzati altrove) sono riportati in `foreign_order_ids` (input del kill switch: `RECONCILIATION_MISMATCH`).
+- Un comando consumato resta consumato anche dopo un timeout e dopo il riavvio: un nuovo tentativo richiede un nuovo comando dell'owner.
 
 ## Worker di monitoraggio (`signer/monitor.py`)
 
 Logica pura, senza rete: **non invia, non firma e non cancella mai**. Un `Monitor.tick()`:
-- riconcilia, con tre letture iniettate (`get_order`, `get_order_by_client_id`, `get_fills`, esposte da `_ReadOnly`), gli ordini che possono ancora cambiare. Usa la stessa `evidence_from_exchange` e la stessa `apply_evidence` del gateway. Il lock condiviso del gateway (`lock=gateway._lock`) è **obbligatorio** (`MONITOR_LOCK_REQUIRED`): rilettura dell'ordine, letture dell'exchange e applicazione avvengono tutte sotto di esso, così una fotografia vecchia non può mai essere applicata dopo un reinvio del gateway;
-- emette alert su scadenze, `EXPIRED_UNCONFIRMED`, `AUTHORIZED` mai firmati (`abandon_unsigned` resta un passo dell'operatore), `UNKNOWN` e reinvii possibili (il reinvio resta una decisione del gateway);
+- riconcilia, con tre letture iniettate (`get_order`, `get_order_by_client_id`, `get_fills`, esposte da `_ReadOnly`), gli ordini che possono ancora cambiare. Usa la stessa `evidence_from_exchange` e la stessa `apply_evidence` del gateway. **Modifica intenzionale (review PR #195, P3):** il monitor prende da sé il lock di invio del proprio ledger (`ledger.send_lock`, lo stesso di gateway e cancellazioni; PR #196 P2-4: nessun gateway né flag richiesto); i parametri `lock=` e `gateway=` non esistono. Rilettura dell'ordine, letture dell'exchange e applicazione avvengono tutte sotto quel lock;
+- emette alert su scadenze, `EXPIRED_UNCONFIRMED`, `AUTHORIZED` mai firmati (`abandon_unsigned` resta un passo dell'operatore), `UNKNOWN` e reinvii possibili (il reinvio resta una decisione del gateway); gli alert `EVIDENCE_CONFLICT` alimentano il kill switch (`ReconciliationFindings.from_monitor_report`);
 - valuta la policy di heartbeat (`HeartbeatPolicy`, `evaluate_heartbeat`). Non esiste un sender di heartbeat;
-- valuta le regole con un valutatore e uno snapshot iniettati (per esempio `bridge.sxbet.rules.evaluate`, che `signer/` non importa). Restituisce solo proposte: una proposta "eseguibile" produce `MONITOR_PROPOSAL_CLAIMS_EXECUTABLE`.
+- valuta le regole con un valutatore e uno snapshot iniettati (per esempio `bridge.sxbet.rules.evaluate`, che `signer/` non importa). Restituisce solo proposte: una proposta "eseguibile" produce `MONITOR_PROPOSAL_CLAIMS_EXECUTABLE`. Senza picco salvato e senza mark-to-market intero il picco passa come `None`, mai 0; se il valutatore lo rifiuta l'esito è l'alert `RULES_EVALUATION_REFUSED`.
+- Il report di un tick riporta `orders_submitted`, `orders_cancelled` e `network_writes` sempre a 0 **per costruzione**, etichettati `write_counters: CONSTANT_BY_CONSTRUCTION`; `exchange_reads` è misurato.
 
-`MonitorState` è un file JSON scritto in modo atomico (fsync e rename), con sha256 del corpo e legato al `ledger_id`; si crea solo con `create`. Un file corrotto o di un altro ledger produce un errore (fail closed). Contiene il picco del trailing (monotono, salvato prima di ogni proposta), l'ultimo ack di heartbeat e le proposte già emesse. Lo stato degli ordini si ricostruisce sempre dal ledger.
+`MonitorState` è un file JSON scritto in modo atomico (fsync e rename), legato al `ledger_id`; si crea solo con `create`. Un file corrotto o di un altro ledger produce un errore (fail closed). All'apertura **ogni campo è controllato nel tipo** (chiavi esatte, righe del trailing `{peak: int, updated_at: int}`, ack int o null, proposte stringhe, tick ≥ 0). Con `mac_key` (≥ 32 byte, dalla configurazione dell'host del signer) il corpo è protetto da HMAC-SHA256 invece che da un semplice sha256: chi può scrivere il file ma non ha la chiave non può falsificare un picco, e un file con chiave non può essere declassato a uno senza (`MONITOR_STATE_MAC_*`). **Senza chiave** lo sha256 rileva solo corruzioni accidentali, non una manomissione deliberata di chi ha accesso in scrittura: rischio residuo documentato (il picco alimenta solo proposte, mai un ordine). Contiene il picco del trailing (monotono, salvato prima di ogni proposta), l'ultimo ack di heartbeat e le proposte già emesse. Lo stato degli ordini si ricostruisce sempre dal ledger.
 
 ## Correzioni trovate con il motore simulato (modifiche di comportamento intenzionali)
 
@@ -244,7 +298,7 @@ Il motore end-to-end simulato è in `tests/sxbet_sim_exchange.py` (exchange in m
 
 ## Custodia della chiave
 
-L'audit (`signer/audit.py`) ammette in più i campi `command_id` (id del comando dell'exchange), `scope` e `bucket` (cancellazioni); mai chiave, firma o firma di approvazione.
+L'audit (`signer/audit.py`) ammette in più i campi `command_id` (id del comando dell'exchange), `scope` e `bucket` (cancellazioni, kill switch), `owner_command_id` e `owner_command_sha256` (id monouso e hash del comando dell'owner); mai chiave, firma o testo del comando.
 
 Il signer legge la chiave una sola volta, all'avvio, dalla propria variabile d'ambiente `SXBET_SIGNER_PRIVATE_KEY`. Non la restituisce, non la scrive in log, audit o ledger, e `repr()` la nasconde. L'oggetto non è serializzabile. Una chiave mancante o malformata produce un errore con codice fisso, senza riportarne il valore.
 
@@ -261,11 +315,16 @@ Il signer legge la chiave una sola volta, all'avvio, dalla propria variabile d'a
 - Comportamento dell'exchange al reinvio dello stesso ordine o dello stesso `clientOrderId` dopo un timeout. La documentazione dice solo che `clientOrderId` è unico per indirizzo "across every order you currently have in the system".
 - Se un 404 su id e `clientOrderId`, 60 s dopo l'invio, dimostra che l'ordine non è mai stato accettato. Per questo il verdetto "assente" riapre solo il reinvio dello stesso ordine, senza liberare esposizione.
 - Se per un ordine maker `sum(fillAmount)` dei fill è uguale a `totalBetSize − remainingSize`. Il settlement si registra solo quando i due valori coincidono.
+- Formato delle etichette degli esiti per mercati con linea (`outcomeOneName` = "Over 2.5", "Lakers -4.5"?) e segno di `line` per gli handicap (riferito all'esito uno?). Il signer confronta l'etichetta esatta e solo il valore assoluto della linea; se le etichette non contengono la linea il comando viene rifiutato (fail closed). Da verificare su testnet per ogni sport/tipo di mercato.
+- Presenza di `teamOneName`/`teamTwoName`, `sportId`, `leagueId`, `type`, `line` e `gameTime` nelle righe di `GET /markets/find` e `GET /markets/active?eventId=` per tutti gli sport (una riga senza nomi delle squadre si può comandare solo con `evento <id>`).
+- Se la quota minima del comando vada intesa lorda o netta delle commissioni (decisione D3): oggi è la quota lorda dell'ordine firmato.
 
 ## Limiti noti di questa versione
 
-- Nessun `RestSender` reale (rete, autenticazione, rate limit tramite il coordinatore condiviso, timeout): PR separata, owner.
-- Il `postOnly` e le opzioni di invio non fanno parte del binding firmato dall'owner: sono configurazione del deploy. `postOnly` può solo ridurre l'esecuzione (non prende mai), ma resta una scelta da coprire nel binding se l'owner lo vuole.
+- Nessun `RestSender` reale (rete, autenticazione, rate limit tramite il coordinatore condiviso, timeout): PR separata, owner. Il kill switch registra intenti di cancel ma non li invia.
+- Il provider di letture del signer (`signer/market_data.py`) è solo un'interfaccia: l'implementazione di rete arriva con la PR del sender. Fino ad allora un signer senza provider configurato rifiuta ogni ordine (`SIGNER_MARKET_READS_UNAVAILABLE`); i test usano un provider in memoria che fa la parte dell'exchange.
+- `received_at` del comando è dichiarato dal MCP (fiducia documentata): un MCP compromesso può dichiarare un comando "fresco". Il danno resta limitato da id monouso, impronta, limiti e kill switch; la marcatura dell'istante al confine del signer arriverà con il servizio signer (canale HMAC, passo 6).
+- Guardia "quasi duplicato" (`DUPLICATE_SUSPECTED`, stesso mercato/esito/importo/quota entro N minuti con comandi diversi) del documento di progetto: non implementata; oggi limitano il caso `min_seconds_between_orders`, i limiti per ora/giorno e il rifiuto dello stesso testo.
 - La riconciliazione dopo un cancel è sincrona e singola: un ordine che l'exchange toglie dal book più tardi resta riservato fino alla prossima `reconcile` (nessun polling né canale realtime nel signer).
 - Ancoraggio: lo scrittore stantio può lasciare una riga locale non ancorata prima di essere respinto (rilevata, mai accettata senza una `LedgerHeadAck` firmata dall'owner). Lo store PostgreSQL deve essere un database dell'owner separato da quello del bridge MCP se si vuole che chi controlla il bridge non possa toccare l'ancora.
 
