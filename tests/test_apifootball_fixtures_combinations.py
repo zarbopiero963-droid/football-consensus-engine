@@ -30,7 +30,9 @@ DOCUMENTED = [
 ]
 
 UNVERIFIED = [  # the combinations the old guard blocked, and the ones it allowed without evidence
-    {"team": 33, "season": 2026}, {"venue": 556, "season": 2026},
+    # Declared change (F-A04, real certification 2026-11-11): {"venue": 556, "season": 2026} left
+    # this list; the real provider refused it, so it is PROVIDER_REJECTED_OBSERVED (see REJECTED).
+    {"team": 33, "season": 2026},
     {"league": 39, "next": 10}, {"league": 39, "last": 10}, {"team": 33, "next": 5}, {"team": 33, "last": 5},
     {"venue": 556, "next": 3}, {"next": 15}, {"last": 15}, {"league": 39, "last": 10, "status": "FT"},
     {"team": 33, "last": 10, "timezone": "Europe/London"},
@@ -54,6 +56,7 @@ REJECTED = [
     ({"league": 39, "season": 2026, "from": "2026-12-01", "to": D}, "INVALID_DATE_RANGE"),
     ({"team": 33, "last": 100}, "PAGE_OR_BATCH_TOO_LARGE"), ({"next": 100}, "PAGE_OR_BATCH_TOO_LARGE"),
     ({"last": 101, "team": 9}, "PAGE_OR_BATCH_TOO_LARGE"),
+    ({"venue": 556, "season": 2026}, "FIXTURE_COMBINATION_PROVIDER_REJECTED"),  # observed, not documentary
 ]
 
 

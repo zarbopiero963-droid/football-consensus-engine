@@ -14,7 +14,8 @@ from typing import Any, Mapping, Protocol
 
 from .config import Settings
 from .catalog import ALLOWED_PATHS
-from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, fixtures_combination, validate
+from .contracts import (ENDPOINTS, SOURCE, VERSION, CombinationRejected, ParameterError, fixtures_combination,
+                        validate)
 from .full_contract_audit import audit_contract_coverage
 from .continuation import mcp_arguments
 from .live_odds_state import classify as classify_live_odds
@@ -22,6 +23,18 @@ from .timezones import timezone_context
 
 _MAX_MCP_DATA_BYTES = 262_144
 _OFFLINE_WARNING = "Offline PR-03 tool: never claim real coverage, live odds or PIT data."
+# Accurate only while no provider call is authorized (key/live gate closed, or a test mock).
+_AUTHORIZATION_WARNING = "Provider calls require separate owner authorization and key."
+# F-WARN (real certification 2026-11-11): authorized real calls carry one of these instead.
+_PROVIDER_DATA_WARNING = ("Provider data returned as received; coverage, availability and update timing "
+                          "vary by league and fixture.")
+_PROVIDER_ERROR_WARNING = ("No provider data returned: the request failed or was refused (see error.code); "
+                           "network_calls_made counts the provider requests actually sent.")
+_PARTIAL_MANIFEST_WARNING = ("Partial reply: the provider response exceeded the size limit; this manifest holds "
+                             "identifiers and counts only, no prices and not the complete provider data.")
+_TOO_LARGE_WARNING = "No provider data returned: the provider response exceeded the size limit (see error.code)."
+_SCAN_BOUND_WARNING = ("No provider data returned: the provider response was above the read cap and its bounded "
+                       "scan stopped at a limit (see error.bound); nothing is claimed complete.")
 # Fixed codes of the client/resilience layer that reach the MCP client unchanged.
 _PASS_THROUGH_CODES = frozenset({
     "PROVIDER_TIMEOUT", "PROVIDER_NETWORK_ERROR", "PROVIDER_REDIRECT_REJECTED",
@@ -158,9 +171,19 @@ def _finish_timing(result: dict[str, Any]) -> None:
     }
 
 
-def pagination_state(paging: Any, params: Mapping[str, Any]) -> dict[str, Any]:
+# F-A10 (real certification 2026-11-11, case A10): players/profiles page=2771 when the real
+# total was 2770 answered results 0 with paging {current: 2771, total: 2771}: the provider echoes
+# the requested page as total. An empty page after page 1 is therefore never a normal last page.
+EMPTY_PAGE_NOTE = ("The provider returned no rows for this page. Its paging.total is not evidence that this page "
+                   "exists: the provider was observed to echo total = requested page for a page beyond the data. "
+                   "Use the total reported by an earlier non-empty page.")
+
+
+def pagination_state(paging: Any, params: Mapping[str, Any], *, rows: int | None = None) -> dict[str, Any]:
     """FIX-04, derived from the provider's own paging (never fetched ahead): where this page is
-    and the exact parameters of the next one. Pages are never downloaded automatically."""
+    and the exact parameters of the next one. Pages are never downloaded automatically.
+    `rows` is the number of rows actually in the reply (None: unknown). The provider's paging
+    values are reported as received; only this DERIVED state reads them."""
     if not isinstance(paging, dict) or type(paging.get("current")) is not int or type(paging.get("total")) is not int:
         return {"state": "PAGING_NOT_PUBLISHED", "has_next": None, "next_page": None, "auto_fetch": False}
     current, total = paging["current"], paging["total"]
@@ -169,6 +192,11 @@ def pagination_state(paging: Any, params: Mapping[str, Any]) -> dict[str, Any]:
         return {"state": "PAGE_OUT_OF_RANGE" if total else "NO_PAGES", "current": current, "total": total,
                 "requested_page": requested, "has_next": False, "next_page": None, "next_parameters": None,
                 "auto_fetch": False}
+    if rows == 0 and type(requested) is int and requested > 1:
+        # Possibly beyond the data: whether later pages exist is not known from this reply.
+        return {"state": "EMPTY_PAGE", "current": current, "total": total, "requested_page": requested,
+                "possible_out_of_range": True, "has_next": None, "next_page": None, "next_parameters": None,
+                "auto_fetch": False, "note": EMPTY_PAGE_NOTE}
     has_next = current < total
     return {"state": "MORE_PAGES" if has_next else "LAST_PAGE", "current": current, "total": total,
             "requested_page": requested, "has_next": has_next, "next_page": current + 1 if has_next else None,
@@ -219,11 +247,14 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         try:
             contract, params = validate(tool, args)
         except ParameterError as exc:
-            return {
+            refused = {
                 "provider": "API-FOOTBALL", "tool": tool, "status": "INVALID_INPUT",
                 "error": {"code": str(exc)},
                 "retrieved_at_utc": None, "data": None, "network_calls_made": 0,
             }
+            if isinstance(exc, CombinationRejected):  # fixed evidence fields only, no request values
+                refused["combination"] = dict(exc.combination)
+            return refused
         result: dict[str, Any] = {
             "provider": "API-FOOTBALL",
             "tool": tool,
@@ -246,10 +277,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "pagination": None,
             "data": None,
             "network_calls_made": 0,
-            "warnings": [
-                _OFFLINE_WARNING,
-                "Provider calls require separate owner authorization and key.",
-            ],
+            "warnings": [_OFFLINE_WARNING, _AUTHORIZATION_WARNING],
         }
         if test_mock is None:
             if not settings.api_key:
@@ -291,7 +319,8 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
                 result["cache_status"] = cache_status
                 if status == "REAL_API_RESPONSE":
-                    result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
+                    result["warnings"] = [_PARTIAL_MANIFEST_WARNING if out_status.startswith("PARTIAL_")
+                                          else _TOO_LARGE_WARNING]
                     result["quota_remaining"] = {
                         "day": data.get("quota_remaining_provider_day"),
                         "minute": data.get("quota_remaining_provider_minute"),
@@ -370,7 +399,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["pagination"] = {"current": paging["current"], "total": paging["total"]}
                 if status == "REAL_API_RESPONSE":
                     result["network_calls_made"] = _real_calls(data)
-                    result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
+                    result["warnings"] = [_TOO_LARGE_WARNING]
                 return result
             result["status"] = status
             if "timezone" in params:
@@ -381,9 +410,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["timezone_check"] = check
             if status == "REAL_API_RESPONSE":
                 # The offline-placeholder warnings contradict a real reply.
-                result["warnings"] = [
-                    "Provider data returned as received; coverage, availability and update timing vary by league and fixture.",
-                ]
+                result["warnings"] = [_PROVIDER_DATA_WARNING]
             provider_data = data.get("data", data) if status == "REAL_API_RESPONSE" else data
             # The account endpoint exposes private name/email fields upstream:
             # expose only non-personal subscription and quota counters via MCP.
@@ -410,7 +437,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
             result["pagination"] = provider_paging if isinstance(provider_paging, dict) else data.get("pagination", data.get("paging"))
             if contract.pagination:
-                result["pagination_state"] = pagination_state(result["pagination"], params)
+                rows = provider_data.get("response") if isinstance(provider_data, dict) else None
+                result["pagination_state"] = pagination_state(result["pagination"], params,
+                                                              rows=len(rows) if isinstance(rows, list) else None)
             result["cache_status"] = cache_status
             result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
             if status == "REAL_API_RESPONSE":
@@ -440,7 +469,10 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                     result["http_status"] = result["error"]["http_status"]
                 # Real attempts of the resilience layer (retries included); 0 when none was sent.
                 result["network_calls_made"] = _attempts(exc) if hasattr(exc, "provider_attempts") else received
-                result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
+                code = result["error"].get("code")
+                result["warnings"] = [_SCAN_BOUND_WARNING if code == "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN"
+                                      else _TOO_LARGE_WARNING if code == "PROVIDER_RESPONSE_TOO_LARGE"
+                                      else _PROVIDER_ERROR_WARNING]
                 day = getattr(exc, "quota_remaining_day", None)
                 minute = getattr(exc, "quota_remaining_minute", None)
                 if type(day) is int or type(minute) is int:  # a declared-errors reply carried headers

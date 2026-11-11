@@ -156,7 +156,8 @@ because the docs do not forbid it. `timezone` may join any accepted set.
 | `date` | DOCUMENTED_VALID | single documented parameter |
 | `league` + `season` | DOCUMENTED_VALID | `season`: "The season of the league" |
 | `league` + `season` + `from` + `to` | DOCUMENTED_VALID | same, plus real PASS on 37e74fd |
-| `team` + `season`, `venue` + `season` | DOCS_UNVERIFIED | no combination rule captured |
+| `team` + `season` | DOCS_UNVERIFIED | no combination rule captured (real PASS on 2026-11-11, A03) |
+| exactly `venue` + `season` (nothing else) | PROVIDER_REJECTED_OBSERVED | `FIXTURE_COMBINATION_PROVIDER_REJECTED`, 0 calls: the real provider refused it with declared errors on `season` and `venue` (2026-11-11, A04); evidence fields in the reply's `combination`. Any other set with `venue` stays DOCS_UNVERIFIED |
 | `league`/`team`/`venue` + `last`/`next`; `last` or `next` alone | DOCS_UNVERIFIED | idem |
 | `league`+`season` + `round`/`status`/`team`/`venue` | DOCS_UNVERIFIED | idem |
 | `team`/`venue` (+`season`) + `from` + `to` | DOCS_UNVERIFIED | idem |
