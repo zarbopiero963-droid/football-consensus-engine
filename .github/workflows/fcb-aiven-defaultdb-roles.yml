@@ -73,12 +73,12 @@ jobs:
         sql/aiven/count_bridge_catalog.sql=ab0317404cf0ac9a3722a808f2e9f6c1ac4a75503ccac8c508aa2eb5aa304fae
         sql/aiven/roles_apply_guard.sql=e190992da69803ae840a166ab82c0379e43bb5488af6c808c483994531ebf5e8
         sql/aiven/upsert_bridge_roles.sql=d98180803cf88fc736057955c7d59098b086e2f17baa74b1a8c706db127084f4
-        sql/aiven/grant_bridge_runtime.sql=810350458470c6b3196008be81e9f292ee50b2a2d057adc9347dc33d1ff66674
+        sql/aiven/grant_bridge_runtime.sql=715bc02984353a9312adf96c5ac87d4e7bdfe98e571528dec3c9ab3ca8025946
         sql/aiven/assert_bridge_counts.sql=aee4b5378ce4c0ecfd55b6d3461b02cba87cbb0c119afe2e2fc65f6dd450b0b2
         sql/aiven/assert_bridge_roles.sql=1d945d5c33502d3983d4d7129f6a8343d935328e49f9b77517cf8b35f41c2241
         sql/aiven/enable_bridge_migrator.sql=f72274593da4d640b12a4dff35a6a756f6be0cee9abafa88496766b23c5b421d
         sql/aiven/prepare_bridge_roles.sql=150c7895f9245d5dca4ba1981310ad8bef782c9ec232ce06a2d66792671a6d0f
-        sql/aiven/finalize_bridge_privileges.sql=11ee32d3e2a8c2790f1d8aa0ab048d0cdac829a34ed79172b1a3b6032bdcd10c
+        sql/aiven/finalize_bridge_privileges.sql=33e2f824740a31f097171c99a85dc1c1b76cb3f5adbf679d3fc266fd186e173a
         sql/aiven/verify_bridge_roles.sql=625ac4ffabe22489d141a48d811226c7ba492b88ee0af70e71d6bffedf59023c
         sql/aiven/diagnose_bridge_roles.sql=b6052fb941fd52bd48064a71bbf3a9ffd61cdccac292b45c0cb2383b5cd0f270
         sql/aiven/verify_bridge_schema.sql=fd063c1d7fee80616647f3f98a42693bbf4a7c77691846d89a8df590e14deb24

@@ -107,35 +107,88 @@ Ne seguono tre garanzie:
 - un riavvio o un nuovo dispatch con lo stesso `campaign_id` continua lo stesso budget e non ritenta le chiamate già tentate;
 - ogni richiesta prende anche il lease del coordinatore di quota condiviso (`PostgresQuota`), che resta **intatto**.
 
-**Numero e dipendenza.** Su main l'ultima migration bridge è 0008. La PR #198, non ancora mergiata, introduce la 0009 (`0009_oauth_throttle_buckets.sql`). Questa migration è quindi la **0010** (`sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql`).
+**Numero e dipendenza (AF-11, decisione owner).** Su main l'ultima migration bridge è 0008. La PR #198, non ancora mergiata, introduce la 0009 (`0009_oauth_throttle_buckets.sql`). Questa migration è quindi la **0010** (`sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql`).
 
-`app/migrations.py` esige una numerazione consecutiva. Per questo il branch è impilato su #198 (`c4ddcad`) e va **mergiato dopo #198**. Il workflow 0010 rifiuta un database che non ha già la 0009.
+`app/migrations.py` esige una numerazione consecutiva. Per questo il branch è impilato su #198 (`c4ddcad`) e va **mergiato dopo #198**.
+
+Prima di applicare la 0010 in produzione va **verificato** che la 0009 sia già applicata. Il workflow 0010 lo verifica due volte:
+- nel precheck in sola lettura, che accetta solo le righe 0001-0009 (apply) o 0001-0010 (no-op);
+- dentro la transazione di scrittura, prima dello script bridge, con `sql/aiven/apifootball_cert_ledger_0010_require_0009.sql`. Serve perché lo script 0001-0010 applicherebbe altrimenti anche una 0009 mancante. Il controllo esige la riga 0009 con il checksum del repository e rifiuta con `FCB_CERT_LEDGER_REQUIRES_BRIDGE_0009`.
+
+Se #198 non venisse integrata, la 0010 non si applica. Si rinumera solo dopo aver ricontrollato la baseline reale della produzione, non in questa PR.
 
 **Contenuto della migration:**
 - è additiva e non tocca tabelle esistenti, in particolare `api_football_quota_*`;
-- crea due tabelle dedicate: `api_football_cert_campaigns` (budget 1..78, fisso alla creazione) e `api_football_cert_campaign_attempts` (`seq` 1..78, chiave `(campaign_id, seq)`);
-- trigger append-only: niente UPDATE, DELETE o TRUNCATE;
+- crea tre tabelle dedicate:
+  - `api_football_cert_campaigns`: budget 1..78, fisso alla creazione;
+  - `api_football_cert_campaign_attempts`: `seq` 1..78, chiave `(campaign_id, seq)`;
+  - `api_football_cert_campaign_outcomes`: al massimo un esito per tentativo, con FK sul tentativo;
+- trigger append-only su tutte e tre: UPDATE, DELETE e TRUNCATE sono rifiutati per **ogni** ruolo, owner compreso;
 - trigger di budget: `seq` deve essere il numero successivo ed entro il budget.
+
+**Tentativo PRENOTATO e richiesta INVIATA sono distinti.** La prenotazione è committata prima dell'invio. L'esito si registra dopo lo scambio, in una tabella separata e append-only, senza nessun UPDATE. Ogni tentativo prenotato finisce in uno di tre stati:
+
+| Stato | Significato |
+|---|---|
+| `RESPONSE_RECEIVED` | il provider ha risposto; lo stato HTTP è registrato |
+| `TRANSPORT_ERROR` | l'invio è fallito (timeout, reset); la richiesta **può** essere arrivata al provider |
+| `RESERVED_UNKNOWN` | nessun esito: il processo si è fermato dopo la prenotazione, prima, durante o dopo l'invio |
+
+Un tentativo `RESERVED_UNKNOWN` consuma budget e non viene mai ritentato né recuperato in automatico. L'evidenza lo riporta così com'è:
+- il run riporta `ledger_attempt_states` e `ledger_attempts`;
+- le chiamate non ritentate portano `ledger_state`;
+- lo snapshot riporta `budget.attempt_states`.
+
+Se la scrittura dell'esito fallisce, il tentativo resta `RESERVED_UNKNOWN`: è la scelta conservativa.
 
 **Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Il runtime non applica mai le migration, e un test lo verifica.
 
-**Applicazione** (preparata, NON eseguita): `.github/workflows/fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml`, derivato dal workflow 0009 con gli stessi gate:
+**Privilegi (AF-12, decisione owner).** `fcb_app` ha solo `SELECT` e `INSERT` sulle tre tabelle. Non ha UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ALTER o DROP.
+- `fcb_app` non è owner delle tabelle (lo è `fcb_migrator`) e non è membro di `fcb_migrator`. Quindi non può fare ALTER né disabilitare i trigger, e non può impostare `session_replication_role`.
+- I trigger rifiutano le modifiche anche a chi ha i privilegi, owner compreso.
+- Limite dichiarato: `fcb_app` è **condiviso** con gli altri componenti del runtime. Un ruolo dedicato al ledger resta un obiettivo futuro.
+
+**Compatibilità WP-009 (AF-13, modifica intenzionale).** `grant_bridge_runtime.sql` e `finalize_bridge_privileges.sql` hanno ora un blocco `DO $certledger$` identico.
+- Il blocco concede `SELECT, INSERT` sulle tre tabelle **solo se esistono**; su un database 0001-0009 non cambia nulla, come il blocco della 0009.
+- Gli SHA pinnati in `.github/workflows/fcb-aiven-defaultdb-roles.yml` sono aggiornati.
+- Una riesecuzione dei file del workflow ruoli dopo la 0010 lascia quindi i privilegi del ledger invariati.
+
+**Limite dichiarato del modello WP-009 (non cambiato in questa PR).** Il modello di verifica `verify_bridge_roles.sql` resta quello di 0001-0008 (routine, trigger e allowlist pinnati). Lo stesso vale per i conteggi e le righe `schema_migrations` pinnati nel workflow ruoli.
+- Su un database con 0009 il modello segnala in più `unexpected_relation_grant`; questo viene da #198.
+- La 0010 aggiunge `routine_set`, `trigger_set` ed `expression_functions`: due funzioni, quattro trigger e i default `clock_timestamp()`.
+- Il workflow ruoli, su un database 0009/0010, **rifiuta prima di scrivere** (fail-closed).
+- Aggiornare quel modello è una decisione owner separata.
+
+**Applicazione** (preparata, NON eseguita, AF-14): `.github/workflows/fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml`, derivato dal workflow 0009 con gli stessi gate:
 - Environment `aiven-production` e dispatch dell'owner da main;
 - `mode=apply` con la frase `APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb`;
 - target pinnato, verify-full, identità `fcb_migrator`;
-- precheck 0001-0009 (apply) o 0001-0010 (no-op);
+- precheck 0001-0009 (apply) o 0001-0010 (no-op), più il controllo 0009 nella transazione;
 - backup schema-only prima della scrittura;
-- SQL pinnato SHA-256: `aiven_migrations_bridge_0001_0010.sql` e `apifootball_cert_ledger_0010_grant.sql`;
+- SQL pinnato SHA-256: `aiven_migrations_bridge_0001_0010.sql`, `apifootball_cert_ledger_0010_require_0009.sql` e `apifootball_cert_ledger_0010_grant.sql`;
 - una transazione eseguita due volte;
-- grant a `fcb_app`: solo `SELECT` e `INSERT`.
+- grant a `fcb_app`: solo `SELECT` e `INSERT`, verificato nella stessa transazione.
+
+L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restano azioni dell'owner, **non autorizzate**; nulla li esegue in automatico.
 
 **Test:**
-- unit: `tests/test_apifootball_cert_ledger_workflow.py`;
-- integrazione su PostgreSQL 18 usa e getta: `tests/integration/test_apifootball_cert_ledger_postgres.py`. Copre la 0010 su un database già a 0009 con dati, append-only, budget nel database, riavvio e re-run, **6 processi concorrenti** (mai oltre il tetto), runner senza 0010 (`CAMPAIGN_LEDGER_MIGRATION_REQUIRED`, 0 richieste) e ruolo con soli `SELECT` e `INSERT`.
+- unit: `tests/test_apifootball_cert_ledger_workflow.py` e `tests/test_apifootball_cert_batch1.py` (crash simulati);
+- integrazione su PostgreSQL 18 usa e getta: `tests/integration/test_apifootball_cert_ledger_postgres.py`. Copre:
+  - la 0010 su un database già a 0009 con dati;
+  - append-only e budget nel database;
+  - riavvio e re-run;
+  - **6 processi concorrenti** (mai oltre il tetto);
+  - runner senza 0010 (`CAMPAIGN_LEDGER_MIGRATION_REQUIRED`, 0 richieste);
+  - **processi uccisi** tra prenotazione e invio, e tra invio ed esito: `RESERVED_UNKNOWN`, budget consumato, chiamata non ritentata;
+  - esiti append-only;
+  - **`fcb_app` reale** nella sequenza dei file WP-009: fase 1, sua riesecuzione, fase 2, grant 0010 come `fcb_migrator`, riesecuzione della fase 2. I privilegi restano identici e solo S I; UPDATE, DELETE, TRUNCATE, ALTER, DISABLE TRIGGER, DROP e `session_replication_role` sono rifiutati;
+  - i file WP-009 su un database 0009 senza 0010, senza errori;
+  - il controllo 0009 (rifiuta 0008, accetta 0009 e 0010);
+  - il differenziale del modello di verifica WP-009.
 
 **Decisioni owner aperte:**
-1. Il ruolo del DSN `APIFOOTBALL_COORDINATOR_DATABASE_URL` è **presunto** `fcb_app`; un ruolo dedicato sarebbe più stretto.
-2. Il workflow dei ruoli WP-009 (`finalize_bridge_privileges.sql`) fa `REVOKE ALL` su tutte le tabelle. Se viene rieseguito dopo la 0010, toglie i grant del ledger e il runner si ferma senza richieste (fail-closed). Per evitarlo, i grant della 0010 vanno aggiunti a quei file, i cui SHA sono pinnati.
+1. Ruolo dedicato al ledger al posto di `fcb_app` condiviso (obiettivo futuro).
+2. Aggiornamento del modello di verifica e dei conteggi del workflow ruoli WP-009 per i database 0009/0010.
 3. L'ordine di merge: prima #198, poi questa PR.
 
 ### AF-08 — Guardia `live_harness` (modifica intenzionale di un test esistente)
@@ -148,6 +201,7 @@ Il nome del file non basta. `_runner_guard_failures()` verifica sul comportament
 - non invia nulla senza la variabile dell'owner;
 - non invia nulla se la prenotazione del budget fallisce;
 - traccia ogni richiesta nel ledger entro il tetto.
+- registra l'esito di ogni richiesta che ha avuto risposta.
 
 **Test di mutazione:** una copia del runner senza la prenotazione, oppure senza il controllo di autorizzazione, fa **fallire** la guardia.
 

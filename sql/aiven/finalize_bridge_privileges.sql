@@ -110,5 +110,23 @@ BEGIN
     END IF;
 END $throttle$;
 
+-- AF-13 API-FOOTBALL certification campaign ledger (bridge 0010, applied by its own owner-gated
+-- workflow): SELECT and INSERT only, granted only where 0010 is already applied, so on a 0001-0009
+-- database this block changes nothing. Never UPDATE, DELETE, TRUNCATE, REFERENCES or TRIGGER (the
+-- 0010 triggers also refuse UPDATE, DELETE and TRUNCATE for every role). Same grant as
+-- apifootball_cert_ledger_0010_grant.sql, so a re-run of this workflow keeps the ledger usable.
+--   api_football_cert_campaigns          S I  scripts/apifootball_cert_batch1.py PostgresCampaignLedger.open
+--   api_football_cert_campaign_attempts  S I  PostgresCampaignLedger.reserve (write-ahead)
+--   api_football_cert_campaign_outcomes  S I  PostgresCampaignLedger.record_outcome
+DO $certledger$
+BEGIN
+    IF pg_catalog.to_regclass('public.api_football_cert_campaigns') IS NOT NULL
+       AND pg_catalog.to_regclass('public.api_football_cert_campaign_attempts') IS NOT NULL
+       AND pg_catalog.to_regclass('public.api_football_cert_campaign_outcomes') IS NOT NULL THEN
+        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.api_football_cert_campaigns, '
+                'public.api_football_cert_campaign_attempts, public.api_football_cert_campaign_outcomes TO fcb_app';
+    END IF;
+END $certledger$;
+
 -- The signer remains isolated from bridge objects. No signer migration or signer
 -- privilege is introduced by this script.

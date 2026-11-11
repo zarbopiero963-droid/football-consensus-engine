@@ -1129,7 +1129,7 @@ DO '
     BEGIN
         SELECT * INTO applied FROM schema_migrations WHERE version=10;
         IF FOUND THEN
-            IF applied.name <> ''0010_apifootball_cert_campaign_ledger.sql'' OR applied.sha256 <> ''d46cd776a610269630c41d9235a156e673491157ce30dedca1bdb79652becf81'' THEN
+            IF applied.name <> ''0010_apifootball_cert_campaign_ledger.sql'' OR applied.sha256 <> ''1cd83347bad670cf7ce83b6772c02c1a9653a2c6ac73d04d86e715b79ae15703'' THEN
                 RAISE EXCEPTION ''Migration 10 checksum/name drift'';
             END IF;
         ELSE
@@ -1161,7 +1161,26 @@ CREATE TABLE IF NOT EXISTS api_football_cert_campaign_attempts (
     PRIMARY KEY (campaign_id, seq)
 );
 
--- Rows never change and are never removed (campaign budget and attempts alike).
+-- api_football_cert_campaign_outcomes: append-only, at most one outcome per reserved attempt,
+-- written AFTER the provider exchange. A RESERVED attempt (row in _attempts) is not proof that a
+-- request was SENT: an attempt without an outcome is RESERVED_UNKNOWN (the process may have stopped
+-- before, during or after the send). It consumes budget and is never retried or recovered
+-- automatically. TRANSPORT_ERROR is ambiguous too (the request may have reached the provider).
+CREATE TABLE IF NOT EXISTS api_football_cert_campaign_outcomes (
+    campaign_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN (''''HTTP_RESPONSE'''', ''''TRANSPORT_ERROR'''')),
+    http_status INTEGER CHECK (http_status BETWEEN 100 AND 599),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (campaign_id, seq),
+    FOREIGN KEY (campaign_id, seq) REFERENCES api_football_cert_campaign_attempts (campaign_id, seq),
+    CHECK ((outcome = ''''HTTP_RESPONSE'''') = (http_status IS NOT NULL))
+);
+
+-- Rows never change and are never removed (campaign budget, attempts and outcomes alike). These
+-- statement-level triggers refuse UPDATE, DELETE and TRUNCATE for EVERY role, the table owner
+-- included; the runtime role holds no UPDATE/DELETE/TRUNCATE privilege either and, not being the
+-- owner, cannot ALTER the tables or DISABLE these triggers.
 CREATE FUNCTION api_football_cert_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION ''''API_FOOTBALL_CERT_LEDGER_APPEND_ONLY'''';
@@ -1171,6 +1190,8 @@ CREATE TRIGGER api_football_cert_campaigns_immutable BEFORE UPDATE OR DELETE OR 
     ON api_football_cert_campaigns FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
 CREATE TRIGGER api_football_cert_attempts_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
     ON api_football_cert_campaign_attempts FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_outcomes_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON api_football_cert_campaign_outcomes FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
 
 -- The database enforces the budget too: seq must be the next number and within the campaign''''s
 -- budget. Concurrent reservations of one campaign are serialized by the runner''''s transaction-scoped
@@ -1196,6 +1217,6 @@ CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON api_football_ce
     FOR EACH ROW EXECUTE FUNCTION api_football_cert_attempt_guard();
 '';
             INSERT INTO schema_migrations(version,name,sha256)
-            VALUES (10,''0010_apifootball_cert_campaign_ledger.sql'',''d46cd776a610269630c41d9235a156e673491157ce30dedca1bdb79652becf81'');
+            VALUES (10,''0010_apifootball_cert_campaign_ledger.sql'',''1cd83347bad670cf7ce83b6772c02c1a9653a2c6ac73d04d86e715b79ae15703'');
         END IF;
     END;';

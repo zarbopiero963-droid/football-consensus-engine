@@ -30,6 +30,7 @@ class Store:
     def __init__(self):
         self.campaigns: dict[str, dict] = {}
         self.attempts: list[tuple[str, int, str]] = []
+        self.outcomes: dict[tuple[str, int], tuple[str, int | None]] = {}  # append-only, first wins
 
 
 class FakeLedger:
@@ -57,6 +58,21 @@ class FakeLedger:
 
     async def attempted_calls(self, campaign_id):
         return {k for c, _, k in self.store.attempts if c == campaign_id}
+
+    async def record_outcome(self, campaign_id, seq, outcome, http_status):
+        if outcome not in ("HTTP_RESPONSE", "TRANSPORT_ERROR"):
+            raise RuntimeError("CAMPAIGN_OUTCOME_INVALID")
+        self.store.outcomes.setdefault((campaign_id, seq), (outcome, http_status))
+
+    async def attempt_states(self, campaign_id):
+        names = {"HTTP_RESPONSE": "RESPONSE_RECEIVED", "TRANSPORT_ERROR": "TRANSPORT_ERROR"}
+        out = []
+        for c, seq, call_id in self.store.attempts:
+            if c == campaign_id:
+                outcome, status = self.store.outcomes.get((c, seq), (None, None))
+                out.append({"seq": seq, "call_id": call_id, "state": names.get(outcome, "RESERVED_UNKNOWN"),
+                            "http_status": status})
+        return out
 
 
 class BudgetError(RuntimeError):

@@ -26,7 +26,26 @@ CREATE TABLE IF NOT EXISTS api_football_cert_campaign_attempts (
     PRIMARY KEY (campaign_id, seq)
 );
 
--- Rows never change and are never removed (campaign budget and attempts alike).
+-- api_football_cert_campaign_outcomes: append-only, at most one outcome per reserved attempt,
+-- written AFTER the provider exchange. A RESERVED attempt (row in _attempts) is not proof that a
+-- request was SENT: an attempt without an outcome is RESERVED_UNKNOWN (the process may have stopped
+-- before, during or after the send). It consumes budget and is never retried or recovered
+-- automatically. TRANSPORT_ERROR is ambiguous too (the request may have reached the provider).
+CREATE TABLE IF NOT EXISTS api_football_cert_campaign_outcomes (
+    campaign_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('HTTP_RESPONSE', 'TRANSPORT_ERROR')),
+    http_status INTEGER CHECK (http_status BETWEEN 100 AND 599),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (campaign_id, seq),
+    FOREIGN KEY (campaign_id, seq) REFERENCES api_football_cert_campaign_attempts (campaign_id, seq),
+    CHECK ((outcome = 'HTTP_RESPONSE') = (http_status IS NOT NULL))
+);
+
+-- Rows never change and are never removed (campaign budget, attempts and outcomes alike). These
+-- statement-level triggers refuse UPDATE, DELETE and TRUNCATE for EVERY role, the table owner
+-- included; the runtime role holds no UPDATE/DELETE/TRUNCATE privilege either and, not being the
+-- owner, cannot ALTER the tables or DISABLE these triggers.
 CREATE FUNCTION api_football_cert_reject_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'API_FOOTBALL_CERT_LEDGER_APPEND_ONLY';
@@ -36,6 +55,8 @@ CREATE TRIGGER api_football_cert_campaigns_immutable BEFORE UPDATE OR DELETE OR 
     ON api_football_cert_campaigns FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
 CREATE TRIGGER api_football_cert_attempts_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
     ON api_football_cert_campaign_attempts FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_outcomes_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
+    ON api_football_cert_campaign_outcomes FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
 
 -- The database enforces the budget too: seq must be the next number and within the campaign's
 -- budget. Concurrent reservations of one campaign are serialized by the runner's transaction-scoped

@@ -46,7 +46,16 @@ PLAN_PATH = ROOT / "docs" / "certification" / "apifootball" / "batch1_plan.json"
 HARD_CAP = 78  # owner decision 2026-11-11: initial requests + retries + timeouts + ambiguous replies
 ATTEMPTS_PER_CALL = 1  # RetryPolicy(max_attempts=1)
 CAMPAIGN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
-LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts")  # bridge migration 0010
+LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts",
+                 "api_football_cert_campaign_outcomes")  # bridge migration 0010
+# A RESERVED attempt is not a SENT request. Each reserved attempt ends in exactly one state:
+#   RESPONSE_RECEIVED  the provider answered (HTTP status recorded after the exchange);
+#   TRANSPORT_ERROR    the send failed (timeout, reset...): it MAY have reached the provider;
+#   RESERVED_UNKNOWN   no outcome recorded: the process stopped after the reservation, before,
+#                      during or after the send. It consumes budget, is never retried and never
+#                      recovered automatically; the evidence reports it as is.
+OUTCOMES = {"HTTP_RESPONSE": "RESPONSE_RECEIVED", "TRANSPORT_ERROR": "TRANSPORT_ERROR"}
+RESERVED_UNKNOWN = "RESERVED_UNKNOWN"
 # Owner authorization (repository variable passed by the workflow). Checked by the transport before
 # EVERY request, whatever the entry point: without it nothing is reserved and nothing is sent.
 AUTH_VAR = "APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED"
@@ -278,6 +287,15 @@ class CampaignLedger(Protocol):
     async def reserve(self, campaign_id: str, call_id: str) -> int: ...  # write-ahead; returns seq
     async def used(self, campaign_id: str) -> int: ...
     async def attempted_calls(self, campaign_id: str) -> set[str]: ...
+    async def record_outcome(self, campaign_id: str, seq: int, outcome: str, http_status: int | None) -> None: ...
+    async def attempt_states(self, campaign_id: str) -> list[dict[str, Any]]: ...
+
+
+def state_counts(states: list[Mapping[str, Any]]) -> dict[str, int]:
+    counts = {"RESPONSE_RECEIVED": 0, "TRANSPORT_ERROR": 0, RESERVED_UNKNOWN: 0}
+    for item in states:
+        counts[item["state"]] += 1
+    return counts
 
 
 class PostgresCampaignLedger:
@@ -300,6 +318,7 @@ class PostgresCampaignLedger:
         self._schema = schema  # "public" in production; a throwaway schema in integration tests
         self._campaigns = f"{schema}.api_football_cert_campaigns"
         self._attempts = f"{schema}.api_football_cert_campaign_attempts"
+        self._outcomes = f"{schema}.api_football_cert_campaign_outcomes"
 
     @staticmethod
     def _one(cur, key: str, index: int = 0):
@@ -372,6 +391,36 @@ class PostgresCampaignLedger:
                         (campaign_id,))
             return {r["call_id"] if isinstance(r, dict) else r[0] for r in cur.fetchall()}
 
+    def _record(self, campaign_id: str, seq: int, outcome: str, http_status: int | None) -> None:
+        if outcome not in OUTCOMES or (outcome == "HTTP_RESPONSE") != (type(http_status) is int):
+            raise LedgerUnavailable("CAMPAIGN_OUTCOME_INVALID")
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            # Append-only: the first outcome of an attempt stays; INSERT privilege only.
+            cur.execute(f"INSERT INTO {self._outcomes} (campaign_id, seq, outcome, http_status) "
+                        "VALUES (%s, %s, %s, %s) ON CONFLICT (campaign_id, seq) DO NOTHING",
+                        (campaign_id, seq, outcome, http_status))
+
+    def _states(self, campaign_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            self._require_schema(cur)
+            cur.execute(f"SELECT a.seq, a.call_id, o.outcome, o.http_status FROM {self._attempts} a "
+                        f"LEFT JOIN {self._outcomes} o ON o.campaign_id = a.campaign_id AND o.seq = a.seq "
+                        "WHERE a.campaign_id=%s ORDER BY a.seq", (campaign_id,))
+            out = []
+            for r in cur.fetchall():
+                seq, call_id, outcome, status = ((r["seq"], r["call_id"], r["outcome"], r["http_status"])
+                                                 if isinstance(r, dict) else tuple(r))
+                out.append({"seq": seq, "call_id": call_id, "state": OUTCOMES.get(outcome, RESERVED_UNKNOWN),
+                            "http_status": status})
+            return out
+
+    async def record_outcome(self, campaign_id, seq, outcome, http_status):
+        await asyncio.to_thread(self._guarded, self._record, campaign_id, seq, outcome, http_status)
+
+    async def attempt_states(self, campaign_id):
+        return await asyncio.to_thread(self._guarded, self._states, campaign_id)
+
     async def open(self, campaign_id, budget, plan_sha):
         await asyncio.to_thread(self._guarded, self._open, campaign_id, budget, plan_sha)
 
@@ -391,6 +440,15 @@ _CURRENT_CALL: contextvars.ContextVar[str] = contextvars.ContextVar("af_cert_cal
 CAPTURE_MAX_BYTES = 16 * 1024 * 1024  # == the streamed-scan bound; above it nothing is captured
 
 
+async def _record_outcome(ledger: CampaignLedger, campaign_id: str, seq: int, outcome: str, status: int | None) -> None:
+    """Best effort AFTER the exchange: if the outcome cannot be written the attempt simply stays
+    RESERVED_UNKNOWN (conservative: counted, never retried); the provider reply is not discarded."""
+    try:
+        await ledger.record_outcome(campaign_id, seq, outcome, status)
+    except Exception:  # noqa: BLE001 - fixed state in the ledger, nothing surfaced
+        return None
+
+
 def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: dict[str, str] | None = None):
     """httpx transport that reserves one ledger attempt BEFORE every request it sends (write-ahead).
     With `capture`, the provider body text of each call is kept verbatim (snapshot mode)."""
@@ -401,8 +459,15 @@ def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: d
             call_id = _CURRENT_CALL.get()
             if os.environ.get(AUTH_VAR, "") != "true":
                 raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")  # before any reservation or send
-            await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send
-            response = await inner.handle_async_request(request)
+            seq = await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send
+            # From here the attempt is RESERVED: it stays RESERVED_UNKNOWN in the ledger until an
+            # outcome is recorded (a crash before, during or after the send records nothing).
+            try:
+                response = await inner.handle_async_request(request)
+            except Exception:
+                await _record_outcome(ledger, campaign_id, seq, "TRANSPORT_ERROR", None)
+                raise
+            await _record_outcome(ledger, campaign_id, seq, "HTTP_RESPONSE", response.status_code)
             if capture is None:
                 return response
             body = await response.aread()
@@ -514,6 +579,7 @@ async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger
         raise ValueError("PLAN_ABOVE_HARD_CAP")
     await ledger.open(campaign_id, HARD_CAP, plan_sha256(plan_text))
     already = await ledger.attempted_calls(campaign_id)
+    prior_states = {s["call_id"]: s["state"] for s in await ledger.attempt_states(campaign_id)}
     tools, http = _tools(settings, ledger, campaign_id, inner_transport, quota)
     replies: dict[str, Any] = {}
     results = []
@@ -521,7 +587,8 @@ async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger
         for call in plan["calls"]:
             entry = {"call_id": call["call_id"], "tool": call["tool"], "covers_rows": call["covers_rows"]}
             if call["call_id"] in already:
-                entry.update(verdict="NOT_TESTED", outcome="ALREADY_ATTEMPTED_IN_CAMPAIGN_NOT_RETRIED")
+                entry.update(verdict="NOT_TESTED", outcome="ALREADY_ATTEMPTED_IN_CAMPAIGN_NOT_RETRIED",
+                             ledger_state=prior_states.get(call["call_id"], RESERVED_UNKNOWN))
                 results.append(entry)
                 continue
             if await ledger.used(campaign_id) >= HARD_CAP:
@@ -548,7 +615,9 @@ async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger
     return {
         "schema": "apifootball-cert-batch1-run/v1", "campaign_id": campaign_id, "source_sha": source_sha,
         "plan_sha256": plan_sha256(plan_text), "hard_cap_attempts": HARD_CAP,
-        "ledger_attempts_used": await ledger.used(campaign_id), "calls": results,
+        "ledger_attempts_used": await ledger.used(campaign_id),
+        "ledger_attempt_states": state_counts(states := await ledger.attempt_states(campaign_id)),
+        "ledger_attempts": states, "calls": results,
     }
 
 
@@ -690,12 +759,15 @@ async def execute_snapshot(*, snapshot_id: str, fixture_id: int | None, settings
     finally:
         await http.aclose()
     used = await ledger.used(snapshot_id)
+    states = state_counts(await ledger.attempt_states(snapshot_id))  # RESERVED vs answered, explicit
     if fixture_id is None:
         return {"schema": "apifootball-live-full-match-snapshot/v1", "snapshot_id": snapshot_id,
                 "overall": "SNAPSHOT_INCOMPLETE", "incomplete_reasons": [f"STOPPED:{stopped}"],
-                "budget": {"cap": cap, "attempts_used": used}, "sources": {}}
-    return snap.build_report(snapshot_id, fixture_id, sources, budget_cap=cap, attempts_used=used,
-                             stopped_reason=stopped)
+                "budget": {"cap": cap, "attempts_used": used, "attempt_states": states}, "sources": {}}
+    report = snap.build_report(snapshot_id, fixture_id, sources, budget_cap=cap, attempts_used=used,
+                               stopped_reason=stopped)
+    report["budget"]["attempt_states"] = states
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:

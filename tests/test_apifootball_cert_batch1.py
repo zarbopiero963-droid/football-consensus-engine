@@ -203,3 +203,64 @@ def test_without_owner_authorization_nothing_is_reserved_or_sent(monkeypatch):
     store, provider = Store(), Provider()
     _run(store, provider)
     assert provider.sent == [] and store.attempts == []
+
+
+# ---- AF-07 extra: a RESERVED attempt is not a SENT request (owner decision 2026-11-11) ----------
+
+class _Crash(BaseException):
+    """Stands for the process dying (kill, OOM, runner lost): nothing after it runs."""
+
+
+class _CrashingLedger(FakeLedger):
+    async def record_outcome(self, campaign_id, seq, outcome, http_status):
+        raise _Crash()  # dies AFTER the provider answered, BEFORE the outcome is written
+
+
+def _crash_before_send(request):
+    raise _Crash()  # dies after the reservation, before anything leaves
+
+
+@pytest.mark.parametrize("where", ["between_reservation_and_send", "between_send_and_outcome"])
+def test_a_crash_leaves_reserved_unknown_counted_and_never_retried(where):
+    store, provider = Store(), Provider()
+    if where == "between_reservation_and_send":
+        ledger, inner = FakeLedger(store), httpx.MockTransport(_crash_before_send)
+    else:
+        ledger, inner = _CrashingLedger(store), provider.transport()
+    with pytest.raises(_Crash):
+        asyncio.run(batch.execute(PLAN, campaign_id="cert-crash-test-01", settings=settings(), ledger=ledger,
+                                  inner_transport=inner, quota=Quota(), plan_text=PLAN_TEXT, source_sha="x"))
+    # before the send: nothing left; after the send: the provider DID get it, still no outcome
+    assert len(provider.sent) == (0 if where == "between_reservation_and_send" else 1)
+    first = PLAN["calls"][0]["call_id"]
+    states = asyncio.run(FakeLedger(store).attempt_states("cert-crash-test-01"))
+    assert states == [{"seq": 1, "call_id": first, "state": "RESERVED_UNKNOWN", "http_status": None}]
+    # Re-run with the same campaign_id: the reserved number stays consumed, the call is not retried
+    # and the evidence carries the explicit state.
+    again = Provider()
+    run = asyncio.run(batch.execute(PLAN, campaign_id="cert-crash-test-01", settings=settings(),
+                                    ledger=FakeLedger(store), inner_transport=again.transport(), quota=Quota(),
+                                    plan_text=PLAN_TEXT, source_sha="x"))
+    entry = next(c for c in run["calls"] if c["call_id"] == first)
+    assert entry["outcome"] == "ALREADY_ATTEMPTED_IN_CAMPAIGN_NOT_RETRIED" and entry["ledger_state"] == "RESERVED_UNKNOWN"
+    assert run["ledger_attempts_used"] == 1 + len(again.sent) <= 78
+    assert run["ledger_attempt_states"]["RESERVED_UNKNOWN"] == 1
+    assert run["ledger_attempts"][0] == {"seq": 1, "call_id": first, "state": "RESERVED_UNKNOWN", "http_status": None}
+
+
+def test_each_answered_attempt_records_its_outcome_and_transport_errors_are_explicit():
+    calls = iter(range(10_000))
+
+    def flaky(request):
+        if next(calls) == 0:
+            raise httpx.ConnectTimeout("boom", request=request)  # the first send fails ambiguously
+        return Provider().default(request)
+    store = Store()
+    run = asyncio.run(batch.execute(PLAN, campaign_id="cert-outcomes-001", settings=settings(),
+                                    ledger=FakeLedger(store), inner_transport=httpx.MockTransport(flaky),
+                                    quota=Quota(), plan_text=PLAN_TEXT, source_sha="x"))
+    counts = run["ledger_attempt_states"]
+    assert counts["RESERVED_UNKNOWN"] == 0 and counts["TRANSPORT_ERROR"] == 1
+    assert sum(counts.values()) == run["ledger_attempts_used"]
+    assert run["ledger_attempts"][0]["state"] == "TRANSPORT_ERROR" and run["ledger_attempts"][0]["http_status"] is None
+    assert all(s["http_status"] == 200 for s in run["ledger_attempts"][1:])

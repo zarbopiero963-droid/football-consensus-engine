@@ -125,6 +125,9 @@ def _runner_guard_failures(runner) -> list[str]:
         calls = [c for _, _, c in store.attempts]
         if len(provider.sent) != len(store.attempts) or len(store.attempts) > 5 or "UNKNOWN" in calls:
             failures.append("UNTRACKED_OR_OVER_BUDGET")
+        # Every request that got an answer has its outcome recorded after the exchange (AF-07 extra).
+        if any((c, seq) not in store.outcomes for c, seq, _ in store.attempts):
+            failures.append("OUTCOME_NOT_RECORDED")
     finally:
         _os.environ.pop(runner.AUTH_VAR, None)
         if saved is not None:
@@ -132,12 +135,12 @@ def _runner_guard_failures(runner) -> list[str]:
     return failures
 
 
-_RESERVE = "await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send"
+_RESERVE = "seq = await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send"
 _AUTH = 'if os.environ.get(AUTH_VAR, "") != "true":\n                raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")'
 
 
 @pytest.mark.parametrize("original,mutant,expected", [
-    (_RESERVE, "pass  # MUTATION: budget reservation removed", "SENDS_WITHOUT_BUDGET_RESERVATION"),
+    (_RESERVE, "seq = 0  # MUTATION: budget reservation removed", "SENDS_WITHOUT_BUDGET_RESERVATION"),
     (_AUTH, "pass  # MUTATION: owner authorization removed", "SENDS_WITHOUT_OWNER_AUTHORIZATION"),
 ])
 def test_guard_fails_on_a_mutated_runner(tmp_path, original, mutant, expected):
