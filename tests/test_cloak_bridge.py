@@ -162,14 +162,34 @@ def test_cloak_stop_survives_close_failure(monkeypatch):
 
 
 
-def test_prepare_cloak_runtime_downloads_binary(monkeypatch):
+def test_prepare_cloak_runtime_downloads_binary(monkeypatch, tmp_path):
+    # Intentional change (#189): prepare now downloads the PINNED version only (keyless 146 profile)
+    # and accepts it only when its SHA-256 matches the pin; it still downloads when nothing is cached.
+    from bridge import browser_use
     bridge = BrowserUseBridge()
     monkeypatch.setenv("CLOAKBROWSER_ENABLED", "true")
+    monkeypatch.delenv("CLOAKBROWSER_BINARY_PATH", raising=False)
+    monkeypatch.delenv("CLOAKBROWSER_LAUNCHER", raising=False)
+    monkeypatch.delenv("CLOAKBROWSER_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(browser_use, "_set_bridge_non_dumpable", lambda: None)
+    monkeypatch.setattr(browser_use, "_scrub_playwright_driver_env", lambda: None)
+    binary = tmp_path / "chrome"
+    binary.write_bytes(b"pinned-test-binary")
+    pin = browser_use._sha256_file(str(binary))
+    monkeypatch.setitem(browser_use.CLOAK_PROFILES, "pinned-146", browser_use.CloakProfile(
+        "pinned-146", "146.0.7680.177.5", pin, False))
     module = ModuleType("cloakbrowser")
+    module.__version__ = "0.5.11"
+    config = ModuleType("cloakbrowser.config")
+    config.get_binary_path = lambda version: tmp_path / "not-cached" / "chrome"
     calls = []
-    module.ensure_binary = lambda: calls.append("ok") or "/tmp/cloak"
+    module.ensure_binary = lambda **kw: calls.append(kw) or str(binary)
     monkeypatch.setitem(sys.modules, "cloakbrowser", module)
+    monkeypatch.setitem(sys.modules, "cloakbrowser.config", config)
+    monkeypatch.setenv("CLOAKBROWSER_BINARY_PATH", "")
+    monkeypatch.setenv("CLOAKBROWSER_AUTO_UPDATE", "true")  # forced to false, restored after the test
 
     run(bridge.prepare_cloak_runtime())
 
-    assert calls == ["ok"]
+    assert calls == [{"browser_version": "146.0.7680.177.5"}]
+    assert bridge._cloak_ready is True and bridge._cloak_failure is None
