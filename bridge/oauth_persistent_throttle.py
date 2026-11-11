@@ -29,9 +29,12 @@ A denied request writes nothing, so denied keys leave no row (bounded cardinalit
 rows are removed by a bounded cleanup (LIMIT, FOR UPDATE SKIP LOCKED). Every transaction runs
 under lock_timeout and statement_timeout so a saturated database fails fast.
 
-Connections (anti-DoS): the checks run on the OAuth store pool (bridge/oauth.py _store) and at
-most DB_CONCURRENCY of them at once per process; any excess is "unavailable" at once without
-opening a connection. Layer 1 runs first, so the database sees at most the layer-1 budget
+Connections (anti-DoS): the checks run on the OAuth store thread pool (bridge/oauth.py _store,
+STORE_CONCURRENCY workers) and at most DB_CONCURRENCY of them at once per process; any excess is
+"unavailable" at once without opening a connection. Like the other OAuth store calls, each check
+(and each refund) opens one short-lived connection (_conn, no connection pool), bounded by
+CONNECT_TIMEOUT_SECONDS plus the statement timeout, so the throttle adds at most DB_CONCURRENCY
+database connections per process and always leaves STORE_CONCURRENCY - DB_CONCURRENCY workers. Layer 1 runs first, so the database sees at most the layer-1 budget
 (<= 50 consent + 100 registration events per hour and process) no matter how many keys flood.
 """
 from __future__ import annotations
