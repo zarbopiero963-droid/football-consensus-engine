@@ -1,0 +1,195 @@
+name: FCB Aiven defaultdb OAuth throttle emergency unlock (owner-gated)
+
+# Owner decision D05: the ONLY emergency lever on the persistent OAuth throttle. Manual only;
+# prepared, NOT run. Removes, for ONE scope, either the global bucket (target=global) or ONE
+# exact key hash (target=key; the owner computes it locally with
+# scripts/oauth_throttle_key_hash.py, the secret never leaves the owner's machine). Every removed
+# bucket is first copied, with this run's id and actor, to oauth_throttle_unlock_audit (D11:
+# evidence is never deleted). There is deliberately NO environment variable that disables the
+# protection. Gates, all required: protected Environment `aiven-production` (required reviewer,
+# main only), owner dispatch from main, exact confirmation phrase, strict input formats, pinned
+# target, PostgreSQL 18, TLS verify-full with the authenticated Aiven CA, identity fcb_migrator,
+# pinned SHA-256 of the SQL, one transaction.
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Bucket scope"
+        type: choice
+        options: [consent, registration]
+        default: consent
+      target:
+        description: "global = the scope's global bucket; key = one exact key hash"
+        type: choice
+        options: [global, key]
+        default: global
+      key_hash:
+        description: "target=key only: <key id>:<64 hex> from scripts/oauth_throttle_key_hash.py"
+        type: string
+        default: ''
+      confirm:
+        description: "Type exactly UNLOCK OAUTH THROTTLE ON defaultdb"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  unlock:
+    # G-02: second layer; the environment (required reviewer + branch main) is the control.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_MIGRATOR_DB_URL
+      CONFIRM_PHRASE: UNLOCK OAUTH THROTTLE ON defaultdb
+      # SHA-256 of the SQL this workflow runs (tests/test_oauth_throttle_workflows.py).
+      EXPECTED_SQL_SHA256: |
+        sql/aiven/oauth_throttle_unlock.sql=260b53f272ec9253e3b9d484fd55e7fc7b40248ea83c6861d8f83cecae18df84
+      PGCONNECT_TIMEOUT: '15'
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Owner dispatch and confirmation gate
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+            echo "::error::the unlock requires the exact confirmation phrase"; exit 1
+          fi
+
+      - name: Validate the unlock inputs (strict formats)
+        env:
+          UNLOCK_SCOPE: ${{ inputs.scope }}
+          UNLOCK_TARGET: ${{ inputs.target }}
+          UNLOCK_KEY_HASH: ${{ inputs.key_hash }}
+        run: |
+          set -euo pipefail
+          case "$UNLOCK_SCOPE" in consent|registration) ;; *) echo "::error::invalid scope"; exit 1 ;; esac
+          case "$UNLOCK_TARGET" in
+            global)
+              [ -z "$UNLOCK_KEY_HASH" ] || { echo "::error::target=global takes no key_hash"; exit 1; }
+              key='*' ;;
+            key)
+              [[ "$UNLOCK_KEY_HASH" =~ ^[a-z0-9]{1,8}:[0-9a-f]{64}$ ]] || { echo "::error::key_hash must be <key id>:<64 hex>"; exit 1; }
+              key="$UNLOCK_KEY_HASH" ;;
+            *) echo "::error::invalid target"; exit 1 ;;
+          esac
+          {
+            echo "UNLOCK_SCOPE_OK=$UNLOCK_SCOPE"
+            echo "UNLOCK_TARGET_OK=$UNLOCK_TARGET"
+            echo "UNLOCK_KEY_OK=$key"
+          } >> "$GITHUB_ENV"
+          echo "## Unlock request: scope=$UNLOCK_SCOPE target=$UNLOCK_TARGET" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the pinned SHA-256 of the unlock SQL
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS='=' read -r path sha; do
+            [ -n "$path" ] || continue
+            test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_SQL_SHA256"
+          test "$n" -eq 1
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_MIGRATOR_DB_URL:-}" ]; then
+            echo "::error::environment secret FCB_MIGRATOR_DB_URL is not set (owner action)"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || { echo "::error::Aiven CA checksum mismatch"; exit 1; }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+
+      - name: Install postgresql-client-18 from PGDG (pinned key fingerprint)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 60 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq postgresql-client-18
+
+      - name: Mask connection details and enforce the pinned target
+        env:
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          python3 -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Unlock (one transaction, audited) and report counts only
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+          RUN_ID: ${{ github.run_id }}
+          RUN_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          err="$(mktemp)"
+          "$PSQL" "$FCB_MIGRATOR_DB_URL" -X -q -1 -v ON_ERROR_STOP=1 \
+            -v unlock_scope="$UNLOCK_SCOPE_OK" -v unlock_target="$UNLOCK_TARGET_OK" \
+            -v unlock_key_hash="$UNLOCK_KEY_OK" -v github_run_id="$RUN_ID" -v github_actor="$RUN_ACTOR" \
+            -f sql/aiven/oauth_throttle_unlock.sql >/dev/null 2>"$err" || {
+              echo "::error::unlock failed; nothing was committed" >&2
+              echo "psql (sanitized): $(python3 -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; exit 1; }
+          rm -f "$err"
+          # psql interpolates :'run_id' only in script input (-f), never in -c.
+          removed="$(printf '%s\n' "select pg_catalog.count(a.removed_key_hash) from public.oauth_throttle_unlock_audit a where a.github_run_id OPERATOR(pg_catalog.=) :'run_id';" \
+            | "$PSQL" "$FCB_MIGRATOR_DB_URL" -X -A -t -v ON_ERROR_STOP=1 -v run_id="$RUN_ID" -f -)"
+          echo "## Unlock: PASS (scope=$UNLOCK_SCOPE_OK target=$UNLOCK_TARGET_OK removed_buckets=$removed; audit rows kept)" >> "$GITHUB_STEP_SUMMARY"

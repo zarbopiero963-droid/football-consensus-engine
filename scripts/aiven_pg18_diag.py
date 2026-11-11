@@ -25,7 +25,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 ENV = "FCB_PG18_TEST_URL"
 # FCB-WP-005: the defaultdb restore workflow reuses this module with its own secret name.
 # Only these variable names may carry the URI; anything else is a configuration error.
-URL_VARS = ("FCB_PG18_TEST_URL", "FCB_DEFAULTDB_URL")
+# The OAuth-throttle 0009 and unlock workflows connect as fcb_migrator (owner-provisioned secret).
+URL_VARS = ("FCB_PG18_TEST_URL", "FCB_DEFAULTDB_URL", "FCB_MIGRATOR_DB_URL")
 
 
 def url_var(env=None) -> str | None:

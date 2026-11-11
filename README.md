@@ -53,6 +53,7 @@ Lo schema `tools/list` espone tutti i 140 parametri di query della documentazion
 | Variabile | Uso |
 |---|---|
 | `MCP_PUBLIC_HOST`, `MCP_OAUTH_PASSWORD`, `DATABASE_URL` | host pubblico, OAuth, PostgreSQL |
+| `MCP_OAUTH_THROTTLE_MODE`, `MCP_OAUTH_THROTTLE_KEY` (`_PREVIOUS` solo in rotazione) | limiter OAuth persistente: default `off`; attivazione, segreto e rotazione solo dall'owner (`docs/certification/areas/oauth_persistent_throttle.md`) |
 | `FCB_DATABASE_TLS_VERIFY_FULL`, `PGSSLROOTCERT` | gate runtime D02: rifiuta DSN senza `sslmode=verify-full` o CA assente quando attivo |
 | `BROWSER_USE_API_KEY`, `BROWSER_STOP_LOCK_TIMEOUT_SECONDS`, `BROWSER_USE_EXPOSE_LIVE_URL` (default spento) | Browser Use |
 | `CLOAKBROWSER_ENABLED`, `CLOAKBROWSER_HEADLESS`, `CLOAKBROWSER_HUMANIZE`, `CLOAKBROWSER_PROXY_URL`, `CLOAKBROWSER_RUNTIME_PROFILE`, `CLOAKBROWSER_BINARY_SHA256`, `CLOAKBROWSER_LAUNCHER`, `CLOAKBROWSER_MEMORY_KILL_MB`, `CLOAKBROWSER_LICENSE_KEY` (segreto) | CloakBrowser (#189: sandbox verificata, uid separato, una sola sessione; vedi `docs/certification/areas/cloak_hardening.md`) |
