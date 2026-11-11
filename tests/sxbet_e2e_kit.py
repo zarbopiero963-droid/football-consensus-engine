@@ -98,6 +98,27 @@ class Stack:
                                        odds_ladder_step_size=125, network="mainnet", clock=self.clock)
         self.cx = cx.CancellationService(self.gw, owner_public_key=self.owner.public_key(), account_id=ACCOUNT_ID)
 
+    # ------------------------------------------------------------ cross-process handoff (tests only)
+    _PROCESS_LOCAL = ("signer", "ledger", "adapter", "gw", "cx")
+
+    def handoff(self) -> dict:
+        """Picklable copy of this stack for a "spawn" child process, WITHOUT the process-local objects
+        (signer, ledger handle, gateway, adapter, cancellation service: the child rebuilds them with `_build()`,
+        like a real separate signer process). The throwaway owner key travels as raw bytes. The ledger must be
+        closed first; the Signer itself is deliberately not serialisable and is never sent."""
+        state = {k: v for k, v in vars(self).items() if k not in self._PROCESS_LOCAL and k != "owner"}
+        state["owner_raw"] = self.owner.private_bytes_raw()
+        return state
+
+    @classmethod
+    def from_handoff(cls, state: dict) -> "Stack":
+        """Rebuild a stack from `handoff()` in another process. Call `_build()` to start its signer."""
+        s = cls.__new__(cls)
+        state = dict(state)
+        s.owner = Ed25519PrivateKey.from_private_bytes(state.pop("owner_raw"))
+        vars(s).update(state)
+        return s
+
     def flag(self):
         """TEST-ONLY owner-signed LIVE_TRADING flag (throwaway owner key, 1 h). Never a production path."""
         body = {"live_trading": "ENABLED", "signer_id": SIGNER_ID, "network": "mainnet",

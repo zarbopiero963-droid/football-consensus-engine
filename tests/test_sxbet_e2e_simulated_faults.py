@@ -256,16 +256,18 @@ def test_simulated_concurrent_distinct_orders_respect_open_order_limit(tmp_path)
     assert s.exposure().total == 10 * USDC and s.sim.accepted_count() == 5
 
 
-def _child(stack, signed_order, intent, barrier, out_path):
+def _child(handoff, signed_order, intent, barrier, out_path):
+    # Module-level and fed only picklable data: runs in a "spawn" child (fresh interpreter, no inherited threads).
     try:
-        barrier.wait(10)
+        stack = Stack.from_handoff(handoff)      # same throwaway keys, clock, simulated world and ledger path
+        barrier.wait(30)
         try:
             stack._build()                       # this process starts a signer on the shared ledger file
         except LedgerError as exc:
-            barrier.wait(10)
+            barrier.wait(30)
             out_path.write_text(exc.code)
             return
-        barrier.wait(10)                         # the other process has tried (and failed) to open it
+        barrier.wait(30)                         # the other process has tried (and failed) to open it
         r = stack.gw.submit(signed_order, intent)
         out_path.write_text(f"{r['state']}:{stack.sim.accepted_count()}")
     except BaseException as exc:  # pragma: no cover - diagnostic only
@@ -276,12 +278,16 @@ def test_simulated_concurrent_duplicate_submissions_processes_one_send(tmp_path)
     s = Stack(tmp_path)
     i, sg = signed(s)
     s.ledger.close()                             # the parent signer stops; two processes race for the ledger
-    ctx = multiprocessing.get_context("fork")
+    # "spawn", not "fork": forking a multi-threaded pytest process can deadlock the child (DeprecationWarning
+    # since Python 3.12) and is Linux-only. Each child is a fresh interpreter, like a real second signer process.
+    ctx = multiprocessing.get_context("spawn")
     barrier = ctx.Barrier(2)
     outs = [tmp_path / f"child-{n}.txt" for n in range(2)]
-    procs = [ctx.Process(target=_child, args=(s, sg, i, barrier, outs[n])) for n in range(2)]
+    handoff = s.handoff()
+    procs = [ctx.Process(target=_child, args=(handoff, sg, i, barrier, outs[n])) for n in range(2)]
     [p.start() for p in procs]
-    [p.join(30) for p in procs]
+    [p.join(120) for p in procs]
+    assert [p.exitcode for p in procs] == [0, 0]
     results = sorted(o.read_text() for o in outs)
     assert results == ["LEDGER_LOCKED", "SUBMITTED:1"], results
     s._build()                                   # replay what the winning process wrote

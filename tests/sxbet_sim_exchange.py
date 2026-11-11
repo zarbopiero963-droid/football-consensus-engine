@@ -172,6 +172,17 @@ class SimExchange:
         self.lock = threading.RLock()
         self._n = 0
 
+    # Cross-process handoff (tests only, e.g. a "spawn" child): the in-memory world is copied, the lock is not.
+    def __getstate__(self):
+        with self.lock:
+            state = dict(self.__dict__)
+        del state["lock"]
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.lock = threading.RLock()
+
     # ------------------------------------------------------------ setup helpers (the "world", not the API)
     def add_market(self, market_hash: str, event_id: str, one: str, two: str, game_time: int = 0) -> SimMarket:
         m = SimMarket(market_hash.lower(), event_id, one, two, game_time=game_time or int(self.clock()) + 86_400)
