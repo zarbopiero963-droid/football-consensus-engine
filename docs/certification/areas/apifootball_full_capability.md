@@ -28,7 +28,7 @@
 
 | Fix | Code | Tests |
 |---|---|---|
-| FIX-01 | `continuation.py`, `stream_scan.py` (new), `transport.py` (`ScannedReply`, scan above the cap), `resilience.py` (`scan` in the outcome), `tools.py` (`PARTIAL_ID_MANIFEST`, `navigation`), `scripts/mcp_e2e_render.py` (`check_id_manifest`) | `test_apifootball_continuation.py` (32), `test_apifootball_stream_scan.py` (35) |
+| FIX-01 | `continuation.py`, `stream_scan.py` (new), `transport.py` (`ScannedReply`, scan above the cap, 64 KiB steps, scan deadline), `resilience.py` (`scan` in the outcome, scan budget under the request timeout), `tools.py` (`PARTIAL_ID_MANIFEST`, `navigation`), `scripts/mcp_e2e_render.py` (`check_id_manifest`) | `test_apifootball_continuation.py` (32), `test_apifootball_stream_scan.py` (75) |
 | FIX-02 | `contracts.py` (`_live_filter`) | `test_apifootball_fixtures_live_filter.py` (24) |
 | FIX-03 | `contracts.py` (`fixtures_combination`), `tools.py` (`combination`) | `test_apifootball_fixtures_combinations.py` (54) |
 | FIX-04 | `contracts.py` (`MAX_PAGE`), `transport.py`, `tools.py` (`pagination_state`) | `test_apifootball_paging_beyond_100.py` (58) |
@@ -50,6 +50,11 @@ Spot mutations, each applied alone and reverted:
   combination labels, from/to mapping, open zero odd. The one survivor removes a redundant "data after the
   top-level value" check: the grammar already refuses any token after the document (tested by
   `test_malformed_payloads_are_refused`), so it is an equivalent mutant.
+- re-review round 17/17 killed: duplicate / non-scalar / unsafe fields kept, invalid flags ignored in a split,
+  the manifest safe-text check, raw ids copied, invalid-id flag ignored, number tail not awaited, top-level
+  key cap, errors rule, in-loop time check, 64 KiB step slicing, scan deadline (set and checked), scanned
+  live-odds state, invalid string waited on, whitespace counted as a token. Each P2 layer (scanner flag,
+  manifest flag check, manifest safe-text check) is killed on its own.
 
 ## 3. Continuation design (FIX-01)
 
@@ -68,15 +73,35 @@ Two modes, one manifest (`PARTIAL_ID_MANIFEST`, never data, never prices):
   (statistics, events, …) is still refused at the read cap.
 
 **Scan bounds** (`stream_scan.ScanLimits`): 16 MiB of body, 20 s of scanning, 20 000 rows, depth 32,
-64 KiB per token. Hitting any of them gives `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` with the bound's name,
-`navigation.complete_retrieval_available: false`, a narrowing hint, and no partial result. The resilience
-request timeout (default 8 s) applies first. Measured scan speed is about 3 MB/s of CPU, in 64 KiB steps
-between network reads, so 16 MiB is about 6 s.
+64 KiB per valid token (leading whitespace not counted), and 64 distinct top-level keys
+(`MAX_TOP_LEVEL_KEYS`; more is `PROVIDER_REPLY_CONTRACT_INVALID`, and no other key set is kept). Hitting a
+bound gives `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` with the bound's name,
+`navigation.complete_retrieval_available: false`, a narrowing hint, and no partial result. An invalid
+string, literal or number is `PROVIDER_INVALID_JSON` on the step that carries it, never a bound;
+`MAX_TOKEN` applies only to a valid token still unfinished past 64 KiB.
+
+**Timing** (re-review P3-d): the transport feeds at most 64 KiB per step and yields to the event loop
+between steps. The resilience client gives the transport a scan deadline 1 s under its request timeout
+(7 s for the default 8 s). A long scan therefore ends as `PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN` with
+bound `MAX_SECONDS`: a data error, never retried, costing one quota unit. Without that deadline it would
+have become a retryable `PROVIDER_TIMEOUT` costing up to 3 units. The timeout and retry policy of normal
+requests are unchanged, and the scan's own 20 s bound stays. Measured scan speed is about 3 MB/s of CPU.
 
 **Validation:** strict UTF-8; a single top-level object; `response` must be a list; no duplicate top-level
 keys; no data after the document; a strict JSON grammar (an iterative regex tokenizer with an explicit
 stack, no recursion, no eval). A malformed or truncated stream gives `PROVIDER_INVALID_JSON`, and a
-contract violation gives its own fixed code.
+contract violation gives its own fixed code. A number split anywhere across chunks is read exactly
+(tested at chunk sizes 1..7). `errors` emptiness follows the in-memory rule (only `null`, `[]` and `{}`
+are empty), and its keys go through the same `declared_error_keys`.
+
+**Row fields** (re-review P2): a field is never copied if it is duplicated, not a scalar, a non-integer
+number, or a string that is not printable, surrogate-free and at most 128 characters. Instead the row gets
+an `invalid` flag for it, never a marker value.
+- A flagged grouping field blocks that split and completeness.
+- A flagged or non-integer id is a row without id; `row_ids` shows `null` for it, never a raw provider
+  string.
+- In-memory manifests apply the same rule.
+- A scanned `/odds/live` reply carries `live_odds_state: NOT_EVALUATED` (ids only, no selections read).
 
 **Splitting and completeness** (review P2):
 
@@ -114,6 +139,7 @@ and next-page arguments use the MCP names `from_date`/`to_date` (review P3-6).
 | `test_mcp_e2e_apifootball_error_codes.py` | live facts gain `open_priced`, `live_state` | FIX-09 |
 | `test_apifootball_continuation.py` | rewritten: provable completeness, sets not order, MCP names | FIX-01 review |
 | `test_apifootball_timezones.py` | `validated_against` = `IANA_TZDATA_PYPI_PACKAGE` | FIX-06 review |
+| `test_apifootball_stream_scan.py` | scanned rows carry an `invalid` list; former marker ids are `null` | FIX-01 re-review P2 |
 
 ## 4. /fixtures combination table (FIX-03)
 
@@ -186,6 +212,6 @@ because the docs do not forbid it. `timezone` may join any accepted set.
 | R7 | No real `/odds/live` payload; selection fields from repo fixtures | C08 NOT proven; conservative DERIVED states |
 | R8 | Page past the end DOCS_UNVERIFIED (D06) | Accepted only without rows |
 | R9 | Official docs returned 403 on 2026-11-10 | Re-capture when reachable |
-| R10 | A scan of up to 16 MiB costs about 6 s of CPU on the event loop, in steps of about 20 ms | Bounded by the scan time limit and the request timeout |
+| R10 | A scan costs about 3 MB/s of CPU on the event loop | 64 KiB steps with a yield between them; a scan deadline under the request timeout (non-retryable `MAX_SECONDS`) |
 
 Real certification: proposal (not executed) in `apifootball_full_capability_budget.md`.
