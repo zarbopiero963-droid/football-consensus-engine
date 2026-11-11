@@ -1797,8 +1797,26 @@ class BrowserUseBridge:
         session_id = str(row["session_id"])
         async with self._lock:
             local = self._sessions.get(session_id)
+        state = row["state"]
+        # The browser capability lives only in this worker's memory: after a restart
+        # (Render deploy or Free-plan spin-down) an ACTIVE lease row is NOT a usable
+        # session and must never read as recovered.
+        if state == "ACTIVE" and local is not None and not local.closing:
+            usability = "USABLE"
+        elif state == "ACTIVE" and local is None:
+            usability = "NOT_USABLE_NOT_IN_THIS_WORKER"
+        elif state == "ACTIVE":
+            # ACTIVE row but the local session is already closing (stop in flight).
+            usability = "NOT_USABLE_STOPPING"
+        elif state in ("STOPPING", "STOPPED", "STOP_FAILED"):
+            usability = "NOT_USABLE_" + state
+        else:
+            # Fail closed on any lease state this code does not know.
+            usability = "NOT_USABLE_UNKNOWN_STATE"
         return {
             "session_id": session_id,
+            "usable": usability == "USABLE",
+            "usability": usability,
             "provider": self._provider_from_session_id(session_id),
             "state": row["state"],
             "created_at": self._iso(row.get("created_at")),
