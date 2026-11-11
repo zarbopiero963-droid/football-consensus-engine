@@ -1,0 +1,85 @@
+{
+ "_provenance": "Real certification 2026-11-11, case A09, apifootball_player_profiles(page=101). Provider envelope verbatim from the MCP reply, TRIMMED to the first 2 of 250 rows (results set to 2); paging untouched (current 101, total 2770).",
+ "envelope": {
+  "get": "players/profiles",
+  "parameters": {
+   "page": "101"
+  },
+  "errors": [],
+  "results": 2,
+  "paging": {
+   "current": 101,
+   "total": 2770
+  },
+  "response": [
+   {
+    "player": {
+     "id": 25064,
+     "name": "T. Hoogland",
+     "firstname": "Tim",
+     "lastname": "Hoogland",
+     "age": 41,
+     "birth": {
+      "date": "1985-06-11",
+      "place": "Marl",
+      "country": "Germany"
+     },
+     "nationality": "Germany",
+     "height": "183 cm",
+     "weight": "80 kg",
+     "number": null,
+     "position": "Defender",
+     "photo": "https://media.api-sports.io/football/players/25064.png"
+    }
+   },
+   {
+    "player": {
+     "id": 25065,
+     "name": "S. Kokovas",
+     "firstname": "Stylianos",
+     "lastname": "Kokovas",
+     "age": 25,
+     "birth": {
+      "date": "2001-07-06",
+      "place": "Larisa",
+      "country": "Greece"
+     },
+     "nationality": "Greece",
+     "height": "186",
+     "weight": "78",
+     "number": 29,
+     "position": "Defender",
+     "photo": "https://media.api-sports.io/football/players/25065.png"
+    }
+   }
+  ]
+ },
+ "observed_mcp_reply": {
+  "tool": "apifootball_player_profiles",
+  "parameters": {
+   "page": 101
+  },
+  "status": "REAL_API_RESPONSE",
+  "pagination": {
+   "current": 101,
+   "total": 2770
+  },
+  "pagination_state": {
+   "state": "MORE_PAGES",
+   "current": 101,
+   "total": 2770,
+   "requested_page": 101,
+   "has_next": true,
+   "next_page": 102,
+   "next_parameters": {
+    "page": 102
+   },
+   "auto_fetch": false
+  },
+  "warnings": [
+   "Provider data returned as received; coverage, availability and update timing vary by league and fixture."
+  ],
+  "network_calls_made": 1,
+  "retrieved_at_utc": "2026-11-11T07:46:19.717736+00:00"
+ }
+}

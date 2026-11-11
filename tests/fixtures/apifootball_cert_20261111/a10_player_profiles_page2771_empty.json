@@ -1,0 +1,26 @@
+{
+ "_provenance": "Real certification 2026-11-11, case A10, apifootball_player_profiles(page=2771) after A09 reported total 2770. Reconstructed from the ledger (body not saved): results 0, paging {current 2771, total 2771} (the provider echoes the requested page as total), no rows, no errors.",
+ "envelope": {
+  "get": "players/profiles",
+  "parameters": {
+   "page": "2771"
+  },
+  "errors": [],
+  "results": 0,
+  "paging": {
+   "current": 2771,
+   "total": 2771
+  },
+  "response": []
+ },
+ "observed_mcp_reply": {
+  "tool": "apifootball_player_profiles",
+  "parameters": {
+   "page": 2771
+  },
+  "status": "REAL_API_RESPONSE",
+  "pagination_state": {
+   "state": "LAST_PAGE"
+  }
+ }
+}

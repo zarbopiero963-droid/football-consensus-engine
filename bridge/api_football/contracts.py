@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from .catalog import documented_path
@@ -215,7 +216,7 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
     if name == "apifootball_standings" and not ("league" in provided or "team" in provided):
         raise ParameterError("STANDINGS_FILTER_REQUIRED")
     if name == "apifootball_fixtures":
-        fixtures_combination(provided)  # raises on an MCP_REJECTED combination
+        fixtures_combination(provided)  # raises on an MCP_REJECTED / PROVIDER_REJECTED_OBSERVED set
     if name == "apifootball_teams" and not provided:
         raise ParameterError("TEAM_FILTER_REQUIRED")
     if name == "apifootball_venues" and not provided:
@@ -272,10 +273,44 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
 #                       provider is the final authority (its declared errors come back with keys);
 #   MCP_REJECTED      - refused locally with a fixed code: no scoping filter (an unbounded
 #                       listing), last together with next, from after to, last/next > 99.
+#   PROVIDER_REJECTED_OBSERVED - empirical evidence, not documentation: the exact parameter set
+#                       the REAL provider was observed to refuse with declared errors on its own
+#                       keys. Refused locally (INVALID_INPUT, fixed code, 0 provider calls) so no
+#                       quota is spent on a known refusal. Only the observed key set is listed; it
+#                       is never extended to similar sets (they stay DOCS_UNVERIFIED and forwarded).
 # A combination never becomes DOCUMENTED_VALID because the docs do not forbid it.
 DOCUMENTED_VALID = "DOCUMENTED_VALID"
 DOCS_UNVERIFIED = "DOCS_UNVERIFIED"
 MCP_REJECTED = "MCP_REJECTED"
+PROVIDER_REJECTED_OBSERVED = "PROVIDER_REJECTED_OBSERVED"
+FIXTURE_COMBINATION_REJECTED_CODE = "FIXTURE_COMBINATION_PROVIDER_REJECTED"
+
+
+class CombinationRejected(ParameterError):
+    """A /fixtures parameter set the real provider was observed to refuse. Carries only fixed
+    evidence fields (rule, date, provider error keys/category), never request values."""
+
+    def __init__(self, evidence: Mapping[str, Any]):
+        super().__init__(FIXTURE_COMBINATION_REJECTED_CODE)
+        self.combination = {k: (list(v) if isinstance(v, tuple) else v) for k, v in evidence.items()}
+
+
+# Real certification of 2026-11-11 (MCP -> Render), two independent observations of the same
+# key set with different values, both -> PROVIDER_DECLARED_ERRORS, keys ["season", "venue"],
+# category INVALID_PARAMETER (1 provider call each):
+#   case A04   apifootball_fixtures(venue=556, season=2026)  07:45:56Z (current season)
+#   case A04b  apifootball_fixtures(venue=555, season=2025)  08:21:39Z (other venue, past season)
+# The provider's error messages are not exposed by the bridge (fixed codes), so the cause is not
+# recorded; the refusal applies to exactly this key set (no timezone, no other filter).
+_FIXTURE_PROVIDER_REJECTED = (
+    (frozenset({"season", "venue"}), MappingProxyType({
+        "status": PROVIDER_REJECTED_OBSERVED, "rule": "F-REJECTED-season+venue",
+        "observed_on_utc": "2026-11-11",
+        "evidence": ("REAL_CERTIFICATION_2026-11-11_A04", "REAL_CERTIFICATION_2026-11-11_A04b"),
+        "observations": 2, "values_varied": ("venue", "season"),
+        "provider_error_keys": ("season", "venue"), "provider_error_category": "INVALID_PARAMETER",
+    })),
+)
 
 _FIXTURE_DOCUMENTED = (
     ("F-ID", frozenset({"id"})),
@@ -292,7 +327,7 @@ FIXTURE_LAST_NEXT_MAX = 99  # documented "<= 2 characters"
 
 def fixtures_combination(provided: Mapping[str, Any]) -> dict[str, str]:
     """{status, rule} for a validated /fixtures parameter set; raises ParameterError when the
-    combination is MCP_REJECTED."""
+    combination is MCP_REJECTED, CombinationRejected when it is PROVIDER_REJECTED_OBSERVED."""
     keys = frozenset(provided)
     for field in ("last", "next"):
         if field in provided and provided[field] > FIXTURE_LAST_NEXT_MAX:
@@ -305,6 +340,9 @@ def fixtures_combination(provided: Mapping[str, Any]) -> dict[str, str]:
         any(k in keys for k in _SUBJECTS) and ("season" in keys or {"from", "to"} <= keys))
     if not scoped:
         raise ParameterError("FIXTURE_FILTER_REQUIRED")
+    for rejected, evidence in _FIXTURE_PROVIDER_REJECTED:
+        if keys == rejected:  # the exact observed set only
+            raise CombinationRejected(evidence)
     core = keys - {"timezone"}
     for rule, documented in _FIXTURE_DOCUMENTED:
         if core == documented:

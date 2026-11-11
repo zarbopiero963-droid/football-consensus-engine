@@ -1,0 +1,249 @@
+{
+ "_provenance": "Real certification 2026-11-11, case A03, apifootball_fixtures(team=33, season=2026). Provider envelope verbatim from the MCP reply, TRIMMED to the first 3 of 53 rows (results set to 3 accordingly).",
+ "envelope": {
+  "get": "fixtures",
+  "parameters": {
+   "season": "2026",
+   "team": "33"
+  },
+  "errors": [],
+  "results": 3,
+  "paging": {
+   "current": 1,
+   "total": 1
+  },
+  "response": [
+   {
+    "fixture": {
+     "id": 1542337,
+     "referee": "P. Tierney",
+     "timezone": "UTC",
+     "date": "2026-07-18T15:00:00+00:00",
+     "timestamp": 1784386800,
+     "periods": {
+      "first": 1784386800,
+      "second": 1784390400
+     },
+     "venue": {
+      "id": null,
+      "name": "Helsinki Olympic Stadium",
+      "city": "Helsinki"
+     },
+     "status": {
+      "long": "Match Finished",
+      "short": "FT",
+      "elapsed": 90,
+      "extra": 1
+     }
+    },
+    "league": {
+     "id": 667,
+     "name": "Friendlies Clubs",
+     "country": "World",
+     "logo": "https://media.api-sports.io/football/leagues/667.png",
+     "flag": null,
+     "season": 2026,
+     "round": "Club Friendlies",
+     "standings": false
+    },
+    "teams": {
+     "home": {
+      "id": 33,
+      "name": "Manchester United",
+      "logo": "https://media.api-sports.io/football/teams/33.png",
+      "winner": false
+     },
+     "away": {
+      "id": 1837,
+      "name": "Wrexham",
+      "logo": "https://media.api-sports.io/football/teams/1837.png",
+      "winner": true
+     }
+    },
+    "goals": {
+     "home": 0,
+     "away": 1
+    },
+    "score": {
+     "halftime": {
+      "home": 0,
+      "away": 1
+     },
+     "fulltime": {
+      "home": 0,
+      "away": 1
+     },
+     "extratime": {
+      "home": null,
+      "away": null
+     },
+     "penalty": {
+      "home": null,
+      "away": null
+     }
+    }
+   },
+   {
+    "fixture": {
+     "id": 1542339,
+     "referee": "M. Stofringshaug",
+     "timezone": "UTC",
+     "date": "2026-07-24T16:00:00+00:00",
+     "timestamp": 1784908800,
+     "periods": {
+      "first": 1784908800,
+      "second": 1784912400
+     },
+     "venue": {
+      "id": null,
+      "name": "Lerkendal Stadion",
+      "city": "Trondheim"
+     },
+     "status": {
+      "long": "Match Finished",
+      "short": "FT",
+      "elapsed": 90,
+      "extra": 4
+     }
+    },
+    "league": {
+     "id": 667,
+     "name": "Friendlies Clubs",
+     "country": "World",
+     "logo": "https://media.api-sports.io/football/leagues/667.png",
+     "flag": null,
+     "season": 2026,
+     "round": "Club Friendlies",
+     "standings": false
+    },
+    "teams": {
+     "home": {
+      "id": 331,
+      "name": "Rosenborg",
+      "logo": "https://media.api-sports.io/football/teams/331.png",
+      "winner": false
+     },
+     "away": {
+      "id": 33,
+      "name": "Manchester United",
+      "logo": "https://media.api-sports.io/football/teams/33.png",
+      "winner": true
+     }
+    },
+    "goals": {
+     "home": 0,
+     "away": 5
+    },
+    "score": {
+     "halftime": {
+      "home": 0,
+      "away": 1
+     },
+     "fulltime": {
+      "home": 0,
+      "away": 5
+     },
+     "extratime": {
+      "home": null,
+      "away": null
+     },
+     "penalty": {
+      "home": null,
+      "away": null
+     }
+    }
+   },
+   {
+    "fixture": {
+     "id": 1542343,
+     "referee": "A. Ladeback",
+     "timezone": "UTC",
+     "date": "2026-08-01T13:00:00+00:00",
+     "timestamp": 1785589200,
+     "periods": {
+      "first": 1785589200,
+      "second": 1785592800
+     },
+     "venue": {
+      "id": null,
+      "name": "Strawberry Arena",
+      "city": "Solna"
+     },
+     "status": {
+      "long": "Match Finished",
+      "short": "FT",
+      "elapsed": 90,
+      "extra": 2
+     }
+    },
+    "league": {
+     "id": 667,
+     "name": "Friendlies Clubs",
+     "country": "World",
+     "logo": "https://media.api-sports.io/football/leagues/667.png",
+     "flag": null,
+     "season": 2026,
+     "round": "Club Friendlies",
+     "standings": false
+    },
+    "teams": {
+     "home": {
+      "id": 33,
+      "name": "Manchester United",
+      "logo": "https://media.api-sports.io/football/teams/33.png",
+      "winner": true
+     },
+     "away": {
+      "id": 530,
+      "name": "Atletico Madrid",
+      "logo": "https://media.api-sports.io/football/teams/530.png",
+      "winner": false
+     }
+    },
+    "goals": {
+     "home": 2,
+     "away": 1
+    },
+    "score": {
+     "halftime": {
+      "home": 0,
+      "away": 1
+     },
+     "fulltime": {
+      "home": 2,
+      "away": 1
+     },
+     "extratime": {
+      "home": null,
+      "away": null
+     },
+     "penalty": {
+      "home": null,
+      "away": null
+     }
+    }
+   }
+  ]
+ },
+ "observed_mcp_reply": {
+  "tool": "apifootball_fixtures",
+  "parameters": {
+   "season": 2026,
+   "team": 33
+  },
+  "status": "REAL_API_RESPONSE",
+  "combination": {
+   "status": "DOCS_UNVERIFIED",
+   "rule": "F-COMBINATION-season+team"
+  },
+  "pagination": {
+   "current": 1,
+   "total": 1
+  },
+  "warnings": [
+   "Provider data returned as received; coverage, availability and update timing vary by league and fixture."
+  ],
+  "network_calls_made": 1,
+  "retrieved_at_utc": "2026-11-11T07:45:45.869390+00:00"
+ }
+}

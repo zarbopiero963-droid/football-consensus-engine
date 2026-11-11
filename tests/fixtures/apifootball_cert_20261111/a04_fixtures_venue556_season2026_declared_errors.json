@@ -1,0 +1,44 @@
+{
+ "_provenance": "Real certification 2026-11-11, case A04, apifootball_fixtures(venue=556, season=2026). Reconstructed from the ledger: the provider answered with declared errors on the keys season and venue (bridge category INVALID_PARAMETER), 1 provider call spent. The error MESSAGES were not recorded: the values are placeholders; only the keys are evidence.",
+ "envelope": {
+  "get": "fixtures",
+  "parameters": {
+   "venue": "556",
+   "season": "2026"
+  },
+  "errors": {
+   "season": "PLACEHOLDER_NOT_PROVIDER_TEXT",
+   "venue": "PLACEHOLDER_NOT_PROVIDER_TEXT"
+  },
+  "results": 0,
+  "paging": {
+   "current": 1,
+   "total": 1
+  },
+  "response": []
+ },
+ "observed_mcp_reply": {
+  "tool": "apifootball_fixtures",
+  "parameters": {
+   "venue": 556,
+   "season": 2026
+  },
+  "status": "PROVIDER_ERROR",
+  "error": {
+   "code": "PROVIDER_DECLARED_ERRORS",
+   "keys": [
+    "season",
+    "venue"
+   ],
+   "category": "INVALID_PARAMETER"
+  },
+  "combination": {
+   "status": "DOCS_UNVERIFIED",
+   "rule": "F-COMBINATION-season+venue"
+  },
+  "warnings": [
+   "Provider calls require separate owner authorization and key."
+  ],
+  "network_calls_made": 1
+ }
+}
