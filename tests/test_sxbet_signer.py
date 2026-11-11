@@ -14,12 +14,12 @@ from eth_account.messages import encode_typed_data  # noqa: E402
 import signer  # noqa: E402
 from bridge.sxbet import simulation as sim  # noqa: E402  (test-only cross-check; signer never imports bridge)
 from signer import eip712  # noqa: E402
-from signer.approval import Approval  # noqa: E402
+from signer.command import OwnerCommandAuthorization  # noqa: E402
 from signer.audit import AuditLog  # noqa: E402
 from signer.core import KEY_ENV, Signer, SignerConfig, SignerConfigError, SignerRefused  # noqa: E402
 from signer.intent import intent_hash  # noqa: E402
 from signer.orders import OrderLedger  # noqa: E402
-from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, H, META_RAW, NOW, SIGNER_ID, TOKEN, Clock, approve, context,  # noqa: E402
+from sxbet_signer_kit import (ACCOUNT_ID, ESCROW, H, META_RAW, NOW, SIGNER_ID, TOKEN, Clock, context, owner_command,  # noqa: E402
                               make_intent, pub)
 from sxbet_signer_kit import make_signer as _make_signer  # noqa: E402
 
@@ -32,7 +32,7 @@ def throwaway():
 
 @pytest.fixture
 def owner():
-    return Ed25519PrivateKey.generate()  # throwaway owner approval key
+    return Ed25519PrivateKey.generate()  # throwaway owner key (risk config, flags)
 
 
 def make_signer(tmp_path, throwaway, owner, *, max_stake=10_000_000, max_exposure=20_000_000, clock=None,
@@ -63,7 +63,7 @@ def test_eip712_digest_deterministic_and_recovers_throwaway_address(tmp_path, th
     acct, _ = throwaway
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(acct.address)
-    out = sign(s, i, approve(owner, i))
+    out = sign(s, i, owner_command(i))
     # Independently rebuild the documented typed data (docs.sx.bet posting-orders python sample).
     domain = {"name": "OBv3 Escrow", "version": "1", "chainId": 4162,
               "verifyingContract": eip712.to_checksum_address(ESCROW)}
@@ -86,7 +86,7 @@ def test_key_never_exposed(tmp_path, throwaway, owner):
     acct, key = throwaway
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(acct.address)
-    out = sign(s, i, approve(owner, i))
+    out = sign(s, i, owner_command(i))
     bare = key[2:] if key.startswith("0x") else key
     for text in (repr(s), str(s), json.dumps(out), (tmp_path / "audit.jsonl").read_text(),
                  (tmp_path / "ledger.jsonl").read_text()):
@@ -108,7 +108,8 @@ def test_missing_or_malformed_key_fails_closed_without_echo(tmp_path, owner, env
     assert "zz" not in str(e.value) and "not-a-key" not in str(e.value)
 
 
-# ---------------------------------------------------------------- approval
+# ---------------------------------------------------------------- owner command (intentional change: the per-order
+# Ed25519 Approval is replaced by the owner's explicit command verified by the signer, §2.6 as rewritten)
 def test_zero_exposure_default_refuses(tmp_path, throwaway, owner):
     acct, key = throwaway
     # No owner-signed risk config in the env => all-zero limits => refuse everything.
@@ -118,94 +119,131 @@ def test_zero_exposure_default_refuses(tmp_path, throwaway, owner):
                env={KEY_ENV: key}, clock=Clock())
     assert s.risk_config_source == "MISSING" and s.committed_exposure_base_units == 0
     i = make_intent(acct.address)
-    assert refused(lambda: sign(s, i, approve(owner, i))) == "EXPOSURE_LIMIT_ZERO"
+    assert refused(lambda: sign(s, i, owner_command(i))) == "EXPOSURE_LIMIT_ZERO"
 
 
-def test_invalid_approval_signature(tmp_path, throwaway, owner):
+def test_command_text_hash_must_match_the_text(tmp_path, throwaway, owner):
+    """Was test_invalid_approval_signature: the signer recomputes the text hash of the literal command."""
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    a = approve(owner, i)
-    forged = Approval(a.binding, a.approval_nonce, a.issued_at, a.expires_at, a.signer_id, bytes(64))
-    assert refused(lambda: sign(s, i, forged)) == "APPROVAL_SIGNATURE_INVALID"
-    # Tampering any signed field (e.g. extending the expiry) breaks the signature.
-    stretched = Approval(a.binding, a.approval_nonce, a.issued_at, a.expires_at + 30, a.signer_id, a.signature)
-    assert refused(lambda: sign(s, i, stretched)) == "APPROVAL_SIGNATURE_INVALID"
+    a = owner_command(i)
+    forged = OwnerCommandAuthorization(a.command_id, a.command_text, "sha256:" + "0" * 64, a.received_at,
+                                       a.client_ref_sha256)
+    assert refused(lambda: sign(s, i, forged)) == "COMMAND_TEXT_HASH_MISMATCH"
+    # Editing the text after the hash was taken (e.g. a bigger stake) is detected too.
+    edited = OwnerCommandAuthorization(a.command_id, a.command_text.replace("per 5 USDC", "per 9 USDC"),
+                                       a.command_text_sha256, a.received_at, a.client_ref_sha256)
+    assert refused(lambda: sign(s, i, edited)) == "COMMAND_TEXT_HASH_MISMATCH"
+    assert not s._ledger.command_consumed(a.command_id)
 
 
-def test_wrong_owner_key(tmp_path, throwaway, owner):
+def test_malformed_command_record(tmp_path, throwaway, owner):
+    """Was test_wrong_owner_key: there is no per-order owner key any more; a malformed record is refused."""
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    assert refused(lambda: sign(s, i, approve(Ed25519PrivateKey.generate(), i))) == "APPROVAL_SIGNATURE_INVALID"
+    a = owner_command(i)
+    for bad in (OwnerCommandAuthorization("short", a.command_text, a.command_text_sha256, NOW, a.client_ref_sha256),
+                OwnerCommandAuthorization(a.command_id, a.command_text, a.command_text_sha256, NOW, "ref"),
+                OwnerCommandAuthorization(a.command_id, a.command_text, a.command_text_sha256, str(NOW),
+                                          a.client_ref_sha256)):
+        assert refused(lambda: sign(s, i, bad)) == "COMMAND_MALFORMED"
 
 
-def test_chat_text_is_not_an_approval(tmp_path, throwaway, owner):
+def test_chat_text_alone_is_not_an_authorization(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    assert refused(lambda: sign(s, i, "I, the owner, confirm this order")) == "APPROVAL_MISSING"
-    assert refused(lambda: sign(s, i, None)) == "APPROVAL_MISSING"
+    assert refused(lambda: sign(s, i, "I, the owner, confirm this order")) == "COMMAND_MISSING"
+    assert refused(lambda: sign(s, i, None)) == "COMMAND_MISSING"
+    assert refused(lambda: sign(s, i, {"command_text": "Metti un Limit ..."})) == "COMMAND_MISSING"
 
 
-def test_expired_and_overlong_and_future_approvals(tmp_path, throwaway, owner):
+def test_expired_and_future_commands(tmp_path, throwaway, owner):
     clock = Clock()
-    s = make_signer(tmp_path, throwaway, owner, clock=clock)
+    s = make_signer(tmp_path, throwaway, owner, clock=clock)  # owner-signed window: 120 s
     i = make_intent(throwaway[0].address)
-    clock.t = NOW + 61
-    assert refused(lambda: sign(s, i, approve(owner, i, ttl=60))) == "APPROVAL_EXPIRED"
+    clock.t = NOW + 121
+    assert refused(lambda: sign(s, i, owner_command(i, received_at=NOW), context(i, now=clock.t))) \
+        == "COMMAND_EXPIRED"
+    clock.t = NOW + 120
+    assert sign(s, i, owner_command(i, received_at=NOW), context(i, now=clock.t))["cached"] is False
     clock.t = NOW
-    assert refused(lambda: sign(s, i, approve(owner, i, ttl=121))) == "APPROVAL_TTL_TOO_LONG"
-    assert refused(lambda: sign(s, i, approve(owner, i, issued=NOW + 60))) == "APPROVAL_NOT_YET_VALID"
-    assert refused(lambda: sign(s, i, approve(owner, i, signer_id="other-signer"))) == "APPROVAL_WRONG_SIGNER"
+    j = make_intent(throwaway[0].address, idempotency_key="order-key-F001")
+    assert refused(lambda: sign(s, j, owner_command(j, received_at=NOW + 60))) == "COMMAND_NOT_YET_VALID"
 
 
-def test_replayed_nonce_refused_even_after_restart(tmp_path, throwaway, owner):
+def test_command_window_comes_from_the_owner_signed_config(tmp_path, throwaway, owner):
+    clock = Clock(NOW + 31)
+    s = _make_signer(tmp_path, throwaway, owner, clock=clock, limits={"command_max_age_seconds": 30})
+    i = make_intent(throwaway[0].address)
+    assert refused(lambda: sign(s, i, owner_command(i, received_at=NOW), context(i, now=clock.t))) \
+        == "COMMAND_EXPIRED"
+
+
+def test_replayed_command_id_refused_even_after_restart(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i1 = make_intent(throwaway[0].address, idempotency_key="order-key-A001")
-    sign(s, i1, approve(owner, i1, nonce="nonce-replay-000001"))
+    sign(s, i1, owner_command(i1, command_id="cmd-replay-0000000001"))
     i2 = make_intent(throwaway[0].address, idempotency_key="order-key-A002")
-    a2 = approve(owner, i2, nonce="nonce-replay-000001")
-    assert refused(lambda: sign(s, i2, a2)) == "APPROVAL_NONCE_REPLAYED"
+    a2 = owner_command(i2, command_id="cmd-replay-0000000001")  # same id, different (valid) command text
+    assert refused(lambda: sign(s, i2, a2)) == "COMMAND_ID_ALREADY_CONSUMED"
     restarted = make_signer(tmp_path, throwaway, owner)
-    assert refused(lambda: sign(restarted, i2, a2)) == "APPROVAL_NONCE_REPLAYED"
+    assert refused(lambda: sign(restarted, i2, a2)) == "COMMAND_ID_ALREADY_CONSUMED"
 
 
-@pytest.mark.parametrize("change", [
-    {"requested_percentage_odds": 41 * 10 ** 18},  # price moved
-    {"stake_base_units": 6_000_000},               # stake changed
-    {"market_hash": "0x" + "cd" * 32},             # market changed
-    {"betting_outcome_one": False},                # side changed
+@pytest.mark.parametrize("change,code", [
+    ({"requested_percentage_odds": 41 * 10 ** 18}, "COMMAND_MISMATCH_ODDS"),   # price moved
+    ({"stake_base_units": 6_000_000}, "COMMAND_MISMATCH_STAKE"),               # stake changed
+    ({"betting_outcome_one": False}, "COMMAND_MISMATCH_SELECTION"),            # side changed
+    ({"time_in_force": "FOK"}, "COMMAND_MISMATCH_ORDER_TYPE"),                 # limit -> taker
 ])
-def test_any_parameter_change_breaks_the_approval(tmp_path, throwaway, owner, change):
+def test_any_parameter_change_breaks_the_command(tmp_path, throwaway, owner, change, code):
     s = make_signer(tmp_path, throwaway, owner)
-    approved = make_intent(throwaway[0].address)
-    a = approve(owner, approved)
+    commanded = make_intent(throwaway[0].address)
+    a = owner_command(commanded)
     changed = make_intent(throwaway[0].address, **change)
-    assert refused(lambda: sign(s, changed, a)) == "APPROVAL_INTENT_MISMATCH"
+    assert refused(lambda: sign(s, changed, a)) == code
+    assert not s._ledger.command_consumed(a.command_id)
+
+
+def test_market_change_is_caught_by_the_signers_market_row(tmp_path, throwaway, owner):
+    """Was the market_hash case above: the command names the market by event + selection + line, so a
+    different market of the same event with the same labels makes the command ambiguous (§2.3bis)."""
+    s = make_signer(tmp_path, throwaway, owner)
+    i = make_intent(throwaway[0].address)
+    ctx = context(i)
+    twin = {**ctx["market"], "marketHash": "0x" + "cd" * 32, "type": 226}
+    ctx["event_markets"] = [ctx["market"], twin]
+    assert refused(lambda: sign(s, i, owner_command(i), ctx)) == "COMMAND_AMBIGUOUS_MARKET"
+    other = make_intent(throwaway[0].address, market_hash="0x" + "cd" * 32)
+    assert refused(lambda: sign(s, other, owner_command(i), context(i))) == "MARKET_MISMATCH"
+
+
 
 
 def test_tampered_intent_dict_is_revalidated(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
     bad = {**i, "percentage_odds": str(40 * 10 ** 18 + 1)}
-    assert refused(lambda: sign(s, bad, approve(owner, bad))) == "INTENT_ODDS_NOT_ON_LADDER"
+    assert refused(lambda: sign(s, bad, owner_command(bad))) == "INTENT_ODDS_NOT_ON_LADDER"
     lie = {**i, "percentage_odds": str(39 * 10 ** 18)}  # on ladder but not the round-down of requested
-    assert refused(lambda: sign(s, lie, approve(owner, lie))) == "INTENT_ODDS_NOT_ROUND_DOWN_OF_REQUESTED"
+    assert refused(lambda: sign(s, lie, owner_command(lie))) == "INTENT_ODDS_NOT_ROUND_DOWN_OF_REQUESTED"
     extra = {**i, "note": "x"}
-    assert refused(lambda: sign(s, extra, approve(owner, i))) == "INTENT_KEYS_MISMATCH"
+    assert refused(lambda: sign(s, extra, owner_command(i))) == "INTENT_KEYS_MISMATCH"
     no_maker = make_intent(None)
-    assert refused(lambda: sign(s, no_maker, approve(owner, no_maker))) == "INTENT_ADDRESS_INVALID"
+    assert refused(lambda: sign(s, no_maker, owner_command(no_maker))) == "INTENT_ADDRESS_INVALID"
 
 
 def test_maker_and_domain_must_be_the_signers(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     other = make_intent(Account.create().address)
-    assert refused(lambda: sign(s, other, approve(owner, other))) == "INTENT_MAKER_IS_NOT_SIGNER"
+    assert refused(lambda: sign(s, other, owner_command(other))) == "INTENT_MAKER_IS_NOT_SIGNER"
     meta = json.loads(json.dumps(META_RAW))
     meta["domain"]["verifyingContract"] = meta["activeAsset"]["escrowAddress"] = "0x" + "ee" * 20
     i = sim.build_intent(network="mainnet", metadata=sim.parse_metadata(meta, "mainnet"), market_hash=H,
                          betting_outcome_one=True, stake_base_units=5_000_000, requested_percentage_odds=40 * 10 ** 18,
                          time_in_force="GTC", expiry=NOW + 3600, idempotency_key="order-key-0009", now=NOW,
                          maker=throwaway[0].address, salt=1)
-    assert refused(lambda: sign(s, i, approve(owner, i))) == "INTENT_DOMAIN_NOT_CONFIGURED"
+    assert refused(lambda: sign(s, i, owner_command(i))) == "INTENT_DOMAIN_NOT_CONFIGURED"
 
 
 def test_stale_order_expiry_refused(tmp_path, throwaway, owner):
@@ -213,18 +251,18 @@ def test_stale_order_expiry_refused(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, clock=clock)
     i = make_intent(throwaway[0].address)
     clock.t = NOW + 3600 - 5
-    assert refused(lambda: sign(s, i, approve(owner, i, issued=clock.t))) == "INTENT_EXPIRED_OR_TOO_SOON"
+    assert refused(lambda: sign(s, i, owner_command(i, received_at=clock.t))) == "INTENT_EXPIRED_OR_TOO_SOON"
 
 
 # ---------------------------------------------------------------- limits
 def test_stake_and_cumulative_exposure_limits(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner, max_stake=5_000_000, max_exposure=8_000_000)
     big = make_intent(throwaway[0].address, stake_base_units=6_000_000, idempotency_key="order-key-B001")
-    assert refused(lambda: sign(s, big, approve(owner, big))) == "STAKE_ABOVE_LIMIT"
+    assert refused(lambda: sign(s, big, owner_command(big))) == "STAKE_ABOVE_LIMIT"
     ok = make_intent(throwaway[0].address, idempotency_key="order-key-B002")
-    sign(s, ok, approve(owner, ok))
+    sign(s, ok, owner_command(ok))
     more = make_intent(throwaway[0].address, idempotency_key="order-key-B003")
-    assert refused(lambda: sign(s, more, approve(owner, more))) == "EXPOSURE_ABOVE_LIMIT"
+    assert refused(lambda: sign(s, more, owner_command(more))) == "EXPOSURE_ABOVE_LIMIT"
     # Exposure survives a restart (rebuilt from the append-only order ledger).
     assert make_signer(tmp_path, throwaway, owner).committed_exposure_base_units == 5_000_000
 
@@ -233,29 +271,29 @@ def test_stake_and_cumulative_exposure_limits(tmp_path, throwaway, owner):
 def test_double_click_same_key_returns_cached_single_signature(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    first = sign(s, i, approve(owner, i))
-    second = sign(s, i, approve(owner, i))
+    first = sign(s, i, owner_command(i))
+    second = sign(s, i, owner_command(i))
     assert first["cached"] is False and second["cached"] is True
     assert first["order"]["orderSignature"] == second["order"]["orderSignature"]
     assert s.committed_exposure_base_units == 5_000_000
     changed = make_intent(throwaway[0].address, stake_base_units=6_000_000)
-    assert refused(lambda: sign(s, changed, approve(owner, changed))) == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
+    assert refused(lambda: sign(s, changed, owner_command(changed))) == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
 
 
 def test_same_key_after_restart_requires_reconcile(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    sign(s, i, approve(owner, i))
+    sign(s, i, owner_command(i))
     r = make_signer(tmp_path, throwaway, owner)
-    assert refused(lambda: sign(r, i, approve(owner, i))) == "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST"
+    assert refused(lambda: sign(r, i, owner_command(i))) == "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST"
     changed = make_intent(throwaway[0].address, stake_base_units=6_000_000)
-    assert refused(lambda: sign(r, changed, approve(owner, changed))) == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
+    assert refused(lambda: sign(r, changed, owner_command(changed))) == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
 
 
 def test_concurrent_retries_produce_exactly_one_signature(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    approvals = [approve(owner, i) for _ in range(16)]
+    approvals = [owner_command(i) for _ in range(16)]
     results, errors = [], []
     barrier = threading.Barrier(len(approvals))
 
@@ -283,7 +321,7 @@ def test_concurrent_retries_produce_exactly_one_signature(tmp_path, throwaway, o
 def test_audit_is_append_only_hash_chained_and_allowlisted(tmp_path, throwaway, owner):
     s = make_signer(tmp_path, throwaway, owner)
     i = make_intent(throwaway[0].address)
-    sign(s, i, approve(owner, i))
+    sign(s, i, owner_command(i))
     with pytest.raises(SignerRefused):
         sign(s, make_intent(throwaway[0].address, idempotency_key="order-key-C001"), "chat ok")
     path = tmp_path / "audit.jsonl"
@@ -291,10 +329,11 @@ def test_audit_is_append_only_hash_chained_and_allowlisted(tmp_path, throwaway, 
     # Intentional change: the atomic authorization is audited before the signature.
     assert [r["decision"] for r in rows] == ["AUTHORIZED", "SIGNED", "REFUSED"]
     assert rows[1]["order_id"].startswith("0x") and rows[1]["intent_hash"] == intent_hash(i)
-    assert rows[2]["reason"] == "APPROVAL_MISSING"
+    assert rows[2]["reason"] == "COMMAND_MISSING"  # intentional: owner command, not an Ed25519 approval
     for r in rows:
         assert set(r) <= {"ts_utc", "prev_sha256", "event", "decision", "reason", "signer_id", "idempotency_key",
-                          "intent_hash", "order_id", "total_bet_size", "approval_nonce_prefix", "network"}
+                          "intent_hash", "order_id", "total_bet_size", "approval_nonce_prefix", "network",
+                          "owner_command_id", "owner_command_sha256"}
     with pytest.raises(ValueError):
         AuditLog(str(path)).append(signature="0xdead")
     # Rewriting a past entry breaks the chain and the signer refuses to start on it.

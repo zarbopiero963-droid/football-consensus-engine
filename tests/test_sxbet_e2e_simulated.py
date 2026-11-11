@@ -1,4 +1,4 @@
-"""SIMULATED end-to-end trading engine (governance §2.6): intent -> risk -> owner approval -> sign -> gateway ->
+"""SIMULATED end-to-end trading engine (governance §2.6): intent -> owner command -> risk -> sign -> gateway ->
 SimExchange -> reconciliation -> positions / P&L -> settlement.
 
 Everything here is SIMULATED: the exchange is tests/sxbet_sim_exchange.py (in memory, RestSender protocol), keys
@@ -10,11 +10,10 @@ import pytest
 pytest.importorskip("eth_account")
 pytest.importorskip("cryptography")
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
 from bridge.sxbet import simulation as bsim  # noqa: E402
 from signer import orders as od  # noqa: E402
-from signer.approval import Approval, approval_message  # noqa: E402
+from signer.command import OwnerCommandAuthorization, text_sha256  # noqa: E402
 from signer.core import SignerRefused  # noqa: E402
 from signer.intent import intent_hash  # noqa: E402
 from sxbet_e2e_kit import H, P, USDC, Stack  # noqa: E402
@@ -88,7 +87,9 @@ def test_simulated_taker_order_loss_has_no_fee(tmp_path):
 
 
 def test_simulated_realized_loss_feeds_the_session_loss_limit(tmp_path):
-    s = Stack(tmp_path, limits={"session_loss_limit_base_units": 8 * USDC, "daily_loss_limit_base_units": 8 * USDC})
+    # Intentional change (risk v2): no session limit any more; the daily loss limit counts the realised loss of
+    # the UTC day plus the worst case of every open order plus the new order.
+    s = Stack(tmp_path, limits={"max_daily_loss_base_units": 8 * USDC})
     maker_filled(s)
     s.sim.settle(H, 2)                                  # lost 5 USDC
     s.gw.reconcile("order-key-M001")
@@ -96,9 +97,9 @@ def test_simulated_realized_loss_feeds_the_session_loss_limit(tmp_path):
     s.sim.add_market("0x" + "cd" * 32, "L999", "A", "B")
     s.sim.add_liquidity("0x" + "cd" * 32, outcome_one=False, maker_odds=59 * P, size=59 * USDC)
     i = s.intent("order-key-M002", stake=4 * USDC, market="0x" + "cd" * 32)
-    assert refused(lambda: s.sign(i)) == "SESSION_LOSS_LIMIT"         # 5 lost + 4 at risk > 8
+    assert refused(lambda: s.sign(i)) == "DAILY_LOSS_LIMIT"           # 5 lost + 4 at risk > 8
     s.sim.advance(60)
-    s.restart()                                                        # new session: the UTC day still counts
+    s.restart()                                                        # restart: the UTC day still counts
     assert refused(lambda: s.sign(i)) == "DAILY_LOSS_LIMIT"
     ok = s.intent("order-key-M003", stake=3 * USDC, market="0x" + "cd" * 32)
     assert s.sign(ok)["cached"] is False                               # 5 + 3 <= 8
@@ -129,18 +130,20 @@ def test_simulated_partial_fill_residual_exposure_then_expiry_and_settlement(tmp
 
 # ---------------------------------------------------------------- refusals before anything reaches the exchange
 def test_simulated_odds_moved_beyond_slippage_refused_and_approval_not_burnt(tmp_path):
+    """Intentional change (v2): no slippage tolerance; the owner's minimum odds ARE the signed limit price. A
+    taker (FOK) order whose limit the book no longer reaches is refused without burning the command."""
     s = Stack(tmp_path)
-    i = s.intent("order-key-R001")
-    seen = s.context(i)                                                 # the owner sees 41%
-    approval = s.approve(i, seen)
+    i = s.intent("order-key-R001", odds=41 * P, tif="FOK")                # owner: "a quota minima 2,439..."
+    command = s.command(i, s.context(i))
     s.sim.clear_liquidity(H)
-    s.sim.add_liquidity(H, outcome_one=False, maker_odds=57 * P, size=57 * USDC)  # taker price now 43%
-    assert refused(lambda: s.signer.sign_order(i, approval, s.context(i))) == "ODDS_MOVED_BEYOND_SLIPPAGE"
-    assert not s.ledger.nonce_consumed(approval.approval_nonce) and s.sim.writes() == []
-    # 41% -> 41.375% is 0.9% adverse: inside the 100 bps tolerance, the same approval still signs.
+    s.sim.add_liquidity(H, outcome_one=False, maker_odds=57 * P, size=57 * USDC)  # taker price now 43% > 41%
+    assert refused(lambda: s.signer.sign_order(i, command, s.context(i))) == "INSUFFICIENT_LIQUIDITY"
+    assert not s.ledger.command_consumed(command.command_id) and s.sim.writes() == []
+    worse = s.intent("order-key-R001", odds=43 * P, tif="FOK")         # the model "helpfully" lowers the odds
+    assert refused(lambda: s.signer.sign_order(worse, command, s.context(worse))) == "COMMAND_MISMATCH_ODDS"
     s.sim.clear_liquidity(H)
-    s.sim.add_liquidity(H, outcome_one=False, maker_odds=58_625 * P // 1000, size=58 * USDC)
-    assert s.signer.sign_order(i, approval, s.context(i))["cached"] is False
+    s.sim.add_liquidity(H, outcome_one=False, maker_odds=59 * P, size=59 * USDC)  # back within the limit
+    assert s.signer.sign_order(i, command, s.context(i))["cached"] is False
 
 
 @pytest.mark.parametrize("tif", ["IOC", "FOK"])
@@ -193,19 +196,19 @@ def test_simulated_stake_above_max_refused(tmp_path):
 
 
 def test_simulated_stake_below_exchange_minimum(tmp_path):
-    """The bridge preparation refuses it; a hand-made intent that skips the bridge is refused by the exchange.
+    """The bridge preparation refuses it; a hand-made intent that skips the bridge is now refused by the SIGNER.
 
-    GAP (documented, not fixed: an owner limit decision): the signer does not know orderSizeMinimumBaseUnits, so
-    it signs; the exchange answers 400 TOTAL_BET_SIZE_TOO_LOW -> REJECTED, stake reserved until expiry + grace.
+    Intentional change (risk v2): the previous GAP is closed. The signer reads orderSizeMinimumBaseUnits from the
+    runtime metadata in its risk context (never hardcoded) and refuses before anything is signed or reserved;
+    before, it signed and the exchange answered 400 -> REJECTED with the stake reserved until expiry + grace.
     """
     s = Stack(tmp_path)
     with pytest.raises(bsim.IntentError) as e:
         s.intent("order-key-R008", stake=500_000)
     assert str(e.value) == "STAKE_BELOW_MINIMUM"
     i = dict(s.intent("order-key-R009"), total_bet_size="500000")
-    sg = s.sign(i)
-    assert s.gw.submit(sg, i)["state"] == od.REJECTED and s.sim.accepted_count() == 0
-    assert s.exposure().total == 500_000
+    assert refused(lambda: s.sign(i)) == "STAKE_BELOW_EXCHANGE_MINIMUM"
+    assert s.sim.writes() == [] and s.exposure().total == 0 and s.ledger.orders() == []
 
 
 @pytest.mark.parametrize("odds", [5 * P, 95 * P])
@@ -220,8 +223,8 @@ def test_simulated_same_client_order_id_twice_is_one_exchange_order(tmp_path):
     s = Stack(tmp_path)
     i = s.intent("order-key-I001")
     ctx = s.context(i)
-    first = s.signer.sign_order(i, s.approve(i, ctx), ctx)
-    again = s.signer.sign_order(i, s.approve(i, ctx), ctx)              # second request: cached, no new signature
+    first = s.signer.sign_order(i, s.command(i, ctx), ctx)
+    again = s.signer.sign_order(i, s.command(i, ctx), ctx)              # second request: cached, no new signature
     assert again["cached"] is True and again["order"] == first["order"]
     assert s.gw.submit(first, i)["sent"] is True
     assert s.gw.submit(again, i)["sent"] is False
@@ -234,31 +237,37 @@ def test_simulated_approval_replay_refused(tmp_path):
     s = Stack(tmp_path)
     i1, i2 = s.intent("order-key-A001"), s.intent("order-key-A002")
     ctx = s.context(i1)
-    a1 = s.approve(i1, ctx)
+    a1 = s.command(i1, ctx)
     sg = s.signer.sign_order(i1, a1, ctx)
     s.gw.submit(sg, i1)
-    assert refused(lambda: s.signer.sign_order(i2, a1, s.context(i2))) == "APPROVAL_INTENT_MISMATCH"
-    reused_nonce = s.approve(i2, s.context(i2), nonce=a1.approval_nonce)   # owner device re-issued a nonce
-    assert refused(lambda: s.signer.sign_order(i2, reused_nonce, s.context(i2))) == "APPROVAL_NONCE_REPLAYED"
+    # The same command (id AND text) for a second order: the id is consumed (one command = one operation).
+    assert refused(lambda: s.signer.sign_order(i2, a1, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
+    reused_id = s.command(i2, s.context(i2), command_id=a1.command_id)   # MCP re-sent a consumed id
+    assert refused(lambda: s.signer.sign_order(i2, reused_id, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
+    same_text = s.command(i2, s.context(i2), text=a1.command_text)       # new id, the very same command text
+    assert refused(lambda: s.signer.sign_order(i2, same_text, s.context(i2))) == "COMMAND_TEXT_REPLAYED"
     s.restart()
     assert refused(lambda: s.signer.sign_order(i1, a1, s.context(i1))) in (
-        "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST", "APPROVAL_NONCE_REPLAYED")
+        "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST", "COMMAND_ID_ALREADY_CONSUMED")
+    assert refused(lambda: s.signer.sign_order(i2, reused_id, s.context(i2))) == "COMMAND_ID_ALREADY_CONSUMED"
     assert s.sim.accepted_count() == 1
 
 
 def test_simulated_nothing_executes_without_owner_approval(tmp_path):
+    """Intentional change: the authorization is the owner's literal command (no Ed25519 per order). A bare chat
+    string, a record whose text does not hash to the declared hash, or a text that is not a complete command
+    never signs."""
     s = Stack(tmp_path)
     i = s.intent("order-key-N001")
     ctx = s.context(i)
-    assert refused(lambda: s.signer.sign_order(i, None, ctx)) == "APPROVAL_MISSING"
-    assert refused(lambda: s.signer.sign_order(i, "approved by the owner in chat: yes", ctx)) == "APPROVAL_MISSING"
-    forged = s.approve(i, ctx)
-    msg = approval_message(binding=forged.binding, approval_nonce=forged.approval_nonce, issued_at=forged.issued_at,
-                           expires_at=forged.expires_at, signer_id=forged.signer_id)
-    model_key = Ed25519PrivateKey.generate()           # anyone but the owner (the model, an injected page...)
-    bad = Approval(forged.binding, forged.approval_nonce, forged.issued_at, forged.expires_at, forged.signer_id,
-                   model_key.sign(msg))
-    assert refused(lambda: s.signer.sign_order(i, bad, ctx)) == "APPROVAL_SIGNATURE_INVALID"
+    assert refused(lambda: s.signer.sign_order(i, None, ctx)) == "COMMAND_MISSING"
+    assert refused(lambda: s.signer.sign_order(i, "approved by the owner in chat: yes", ctx)) == "COMMAND_MISSING"
+    good = s.command(i, ctx)
+    bad = OwnerCommandAuthorization(good.command_id, good.command_text, text_sha256("something else"),
+                                    good.received_at, good.client_ref_sha256)
+    assert refused(lambda: s.signer.sign_order(i, bad, ctx)) == "COMMAND_TEXT_HASH_MISMATCH"
+    vague = s.command(i, ctx, text="Sì, vai pure con la scommessa che mi hai proposto")
+    assert refused(lambda: s.signer.sign_order(i, vague, ctx)) == "COMMAND_UNPARSEABLE"
     # An unsigned order cannot be submitted either: the gateway only forwards ledger-authorized signed orders.
     fake = {"order_id": "0x" + "00" * 32, "intent_hash": intent_hash(i), "order": {}}
     with pytest.raises(Exception):

@@ -17,7 +17,7 @@ from eth_account import Account  # noqa: E402
 from signer import gateway as gw  # noqa: E402
 from signer import orders as od  # noqa: E402
 from signer.audit import AuditLog  # noqa: E402
-from sxbet_signer_kit import NOW, SIGNER_ID, Clock, approve, context, make_intent, make_signer  # noqa: E402
+from sxbet_signer_kit import NOW, SIGNER_ID, Clock, owner_command, context, make_intent, make_signer  # noqa: E402
 
 
 class FakeTransport:
@@ -86,7 +86,7 @@ def setup(tmp_path, throwaway, owner, clock=None, key="order-key-G001", flag_kw=
     clock = clock or Clock()
     s = make_signer(tmp_path, throwaway, owner, clock=clock)
     i = make_intent(throwaway[0].address, idempotency_key=key)
-    signed = s.sign_order(i, approve(owner, i), context(i))
+    signed = s.sign_order(i, owner_command(i), context(i))
     t = FakeTransport()
     t.expected_id = signed["order_id"]
     g = gw.SubmissionGateway(enabled_flag(tmp_path, owner, **(flag_kw or {})), owner_public_key=owner.public_key(),

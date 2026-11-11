@@ -267,6 +267,12 @@ class SubmissionGateway:
                            idempotency_key=o.client_order_id, intent_hash=o.intent_hash, order_id=o.order_id,
                            total_bet_size=str(o.stake), network=self._network, **extra)
 
+    def _check_kill_switch(self) -> None:
+        # Kill switch (signer/killswitch.py, ledger-backed, survives restarts): no new order leaves while engaged.
+        # Reconciliation reads and owner-commanded cancels stay allowed (they only reduce risk).
+        if self._ledger.kill_switch_engaged:
+            raise GatewayRefused("KILL_SWITCH_ENGAGED")
+
     def _check_flag(self) -> None:
         # Re-verified on every financial operation: owner signature over the flag bytes, binding, expiry.
         code = _verified_flag_body(self._flag, self._owner_key, signer_id=self._ledger.signer_id,
@@ -310,6 +316,7 @@ class SubmissionGateway:
     def submit(self, signed: Mapping[str, Any], intent: Mapping[str, Any]) -> dict[str, Any]:
         with self._lock:
             self._check_flag()
+            self._check_kill_switch()
             payload, o = self._verify(signed, intent)
             if o.state == UNKNOWN:
                 raise GatewayRefused("STATE_UNKNOWN_RECONCILE_FIRST")
@@ -329,6 +336,7 @@ class SubmissionGateway:
         Items not in SIGNED (already out, UNKNOWN) or too close to expiry are reported, not sent."""
         with self._lock:
             self._check_flag()
+            self._check_kill_switch()
             if not isinstance(items, (list, tuple)) or not 1 <= len(items) <= self._max_batch:
                 raise GatewayRefused("BATCH_SIZE_INVALID")
             verified = []

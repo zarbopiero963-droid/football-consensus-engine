@@ -20,7 +20,7 @@ from signer import orders as od  # noqa: E402
 from signer import rest_adapter as ra  # noqa: E402
 from signer.audit import AuditLog  # noqa: E402
 from sxbet_exchange_kit import FakeSender, ok, order_row, submitted_row  # noqa: E402
-from sxbet_signer_kit import NOW, SIGNER_ID, Clock, approve, context, make_intent, make_signer  # noqa: E402
+from sxbet_signer_kit import NOW, SIGNER_ID, Clock, owner_command, context, make_intent, make_signer  # noqa: E402
 
 LIMITS = ra.ExchangeLimits(max_create_orders=10, max_cancel_orders=100)
 MAKER = "0x" + "aa" * 20
@@ -325,7 +325,7 @@ def setup(tmp_path, throwaway, owner, *, options=None, keys=("order-key-R001",),
     for n, k in enumerate(keys):
         i = make_intent(throwaway[0].address, idempotency_key=k, stake_base_units=2_000_000,
                         time_in_force=(tifs or {}).get(k, "GTC"))
-        signed.append((s.sign_order(i, approve(owner, i), context(i)), i))
+        signed.append((s.sign_order(i, owner_command(i), context(i)), i))
     sender = FakeSender()
     adapter = ra.OfficialRestAdapter(sender, limits=limits, options=options or ra.SubmitOptions())
     flag = gw.load_live_trading_flag(write_flag(tmp_path / "flag.json", owner), owner.public_key(),

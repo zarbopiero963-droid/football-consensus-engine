@@ -3,23 +3,28 @@
 Every key here is a freshly generated THROWAWAY key (eth_account.Account.create(),
 Ed25519PrivateKey.generate()): never funded, never persisted, discarded after the
 test. No network. Import only after pytest.importorskip("eth_account").
+
+Intentional change (owner-command authorization, §2.6 rewrite): orders and cancels are authorised by an
+`OwnerCommandAuthorization` (the owner's literal chat command + a single-use id), built here by
+`owner_command(intent)`, instead of a per-order Ed25519 `Approval`. Risk limits are the v2 schema.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+from decimal import Decimal
+from fractions import Fraction
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from eth_account import Account
 
 from bridge.sxbet import simulation as sim  # test-only cross-check; signer never imports bridge
+from signer import command as cmd
 from signer import risk
-from signer.approval import Approval, approval_message, build_binding
 from signer.audit import AuditLog
 from signer.core import KEY_ENV, Signer, SignerConfig
-from signer.intent import intent_hash
 from signer.orders import OrderLedger
 
 ESCROW = "0x" + "0d" * 20
@@ -30,6 +35,10 @@ SIGNER_ID = "signer-test-1"
 ACCOUNT_ID = "sx-api-identity-test"
 EVENT_ID = "L12003787"
 LABELS = {"outcomeOneName": "Home FC", "outcomeTwoName": "Away FC"}
+TEAMS = {"teamOneName": "Home FC", "teamTwoName": "Away FC"}
+# Market-row fields the risk engine v2 / the command verification read (GET /markets/find). Moneyline-style
+# row (type 52, no line); other sports / market types / lines are parametrised in the owner-command tests.
+MARKET_EXTRA = {**TEAMS, "type": 52, "sportId": 5, "leagueId": 1236, "gameTime": NOW + 86_400}
 FEES = {"refundFee": "0.01", "makerPayoutFee": "0", "takerPayoutFee": "0.03",
         "makerParlayPayoutFee": None, "takerParlayPayoutFee": "0.05"}
 META_RAW = {
@@ -41,11 +50,19 @@ META_RAW = {
                "maxCreateOrders": 10, "maxCancelOrders": 100},
     "bettingDelay": {"liveMsDefault": 8000, "pregameMsDefault": 0},
 }
-GENEROUS = dict(max_stake_per_order_base_units=10_000_000, max_exposure_per_market_base_units=20_000_000,
-                max_exposure_per_event_base_units=20_000_000, max_total_exposure_base_units=20_000_000,
-                session_loss_limit_base_units=50_000_000, daily_loss_limit_base_units=50_000_000,
-                max_open_orders=10, slippage_tolerance_bps=100, min_percentage_odds=10 ** 17,
-                max_percentage_odds=99 * 10 ** 18, max_quote_age_seconds=30)
+# Risk config v2 (one network block). Intentional change: v1 fields (session loss, slippage, percentage band)
+# are gone; the v2 fields are owner decisions D1 (#187).
+GENEROUS = dict(max_stake_per_order_base_units=10_000_000, max_stake_per_utc_day_base_units=1_000_000_000,
+                max_exposure_per_market_base_units=20_000_000, max_exposure_per_event_base_units=20_000_000,
+                max_total_exposure_base_units=20_000_000, max_daily_loss_base_units=50_000_000,
+                max_open_orders=10, max_orders_per_hour=100, max_orders_per_utc_day=1000,
+                min_seconds_between_orders=0, max_quote_age_seconds=30, command_max_age_seconds=120,
+                min_decimal_odds="1.01", max_decimal_odds="1000", allowed_sport_ids="ANY",
+                allowed_league_ids="ANY", allowed_market_types="ANY", pregame_only=True,
+                market_time_in_force="FOK", limit_time_in_force="GTC")
+# GET /metadata/obv3 `limits` + `activeAsset` as the risk context carries them (runtime metadata).
+EXCHANGE_LIMITS = {"order_size_minimum_base_units": "1000000", "min_resting_order_size_base_units": "100000",
+                   "base_token_symbol": "USDC", "base_token_decimals": 6}
 
 
 class Clock:
@@ -60,19 +77,23 @@ def pub(k: Ed25519PrivateKey) -> bytes:
     return k.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
-def write_risk_config(path, owner, *, signed=True, signer_key=None, **overrides) -> str:
+def write_risk_config(path, owner, *, signed=True, signer_key=None, networks=None, config_version=1,
+                      **overrides) -> str:
+    """Owner-signed (throwaway key) risk config v2. Default: the same limits on mainnet and testnet."""
     limits = {**GENEROUS, **overrides}
-    doc = {"limits": limits}
+    nets = networks if networks is not None else {"mainnet": limits, "testnet": dict(limits)}
+    body = {"schema": risk.RISK_CONFIG_SCHEMA, "config_version": config_version, "networks": nets}
+    doc = dict(body)
     if signed:
-        doc["signature"] = (signer_key or owner).sign(risk.risk_config_message(limits)).hex()
+        doc["signature"] = (signer_key or owner).sign(risk.risk_config_message(body)).hex()
     with open(path, "w", encoding="ascii") as fh:
         json.dump(doc, fh)
     return str(path)
 
 
-def load_limits(tmp_path, owner, **overrides) -> risk.LoadedRiskConfig:
+def load_limits(tmp_path, owner, network="mainnet", **overrides) -> risk.LoadedRiskConfig:
     p = write_risk_config(tmp_path / f"risk-{len(os.listdir(tmp_path))}.json", owner, **overrides)
-    return risk.load_risk_config(p, owner.public_key())
+    return risk.load_risk_config(p, owner.public_key(), network=network)
 
 
 _OPEN_LEDGERS: dict = {}
@@ -124,33 +145,66 @@ def make_intent(maker, **kw):
 _n = [0]
 
 
-def approve(owner_key, intent, *, nonce=None, issued=NOW, ttl=60, signer_id=SIGNER_ID, ihash=None,
-            binding=None, **binding_overrides):
+def decimal_odds_for(p: int) -> str:
+    """The shortest decimal odds text d with floor(1e20 / d) == p (what an owner command must say)."""
+    for k in range(0, 41):
+        d = Fraction(10 ** 20 * 10 ** k // p, 10 ** k)
+        if d > 1 and (10 ** 20 * d.denominator) // d.numerator == p:
+            return format(Decimal(d.numerator) / Decimal(d.denominator), "f").replace(".", ",")
+    raise AssertionError("no finite decimal odds")
+
+
+def stake_text(base_units: int, decimals: int = 6) -> str:
+    t = format((Decimal(base_units) / Decimal(10 ** decimals)).normalize(), "f")
+    if "." in t and len(t.split(".")[1]) == 3:
+        t += "0"  # "1.125" would be ambiguous (thousands separator): "1.1250" is not
+    return t
+
+
+def command_text(intent, *, label=None, teams=("Home FC", "Away FC"), odds_text=None, tif=None, ref=True):
+    """The owner's literal command for exactly this intent (IT grammar). A unique "(rif. N)" suffix keeps
+    two otherwise identical commands distinct (the same text never authorises two operations)."""
+    one = intent["is_maker_betting_outcome_one"]
+    label = label or LABELS["outcomeOneName" if one else "outcomeTwoName"]
+    odds = odds_text or decimal_odds_for(int(intent["requested_percentage_odds"]))
+    stake = stake_text(int(intent["total_bet_size"]))
+    event = f"{teams[0]}–{teams[1]}"
     _n[0] += 1
-    nonce = nonce or f"nonce-{_n[0]:016d}"
-    if binding is None:
-        label = LABELS["outcomeOneName" if intent["is_maker_betting_outcome_one"] else "outcomeTwoName"]
-        binding = build_binding(intent, account_id=ACCOUNT_ID, event_id=EVENT_ID, selection_label=label,
-                                expected_fees=FEES, max_exposure_base_units=int(intent["total_bet_size"]),
-                                quoted_percentage_odds=40 * 10 ** 18, intent_hash=ihash or intent_hash(intent))
-        binding.update(binding_overrides)
-    msg = approval_message(binding=binding, approval_nonce=nonce, issued_at=issued, expires_at=issued + ttl,
-                           signer_id=signer_id)
-    return Approval(binding, nonce, issued, issued + ttl, signer_id, owner_key.sign(msg))
+    suffix = f" (rif. {_n[0]})" if ref else ""
+    if intent["time_in_force"] == "GTC":
+        return f"Metti un Limit a quota {odds} per {stake} USDC su {label} in {event}{suffix}"
+    return (f"Piazza {stake} USDC su {label} in {event} a quota minima {odds} "
+            f"{tif or intent['time_in_force']}{suffix}")
+
+
+def owner_command(intent=None, *, text=None, command_id=None, received_at=None, text_hash=None,
+                  client_ref="conversation-test", **text_kw):
+    """An OwnerCommandAuthorization as the MCP would forward it: a NEW single-use id, the literal text."""
+    _n[0] += 1
+    text = text if text is not None else command_text(intent, **text_kw)
+    return cmd.OwnerCommandAuthorization(
+        command_id=command_id or f"cmd-{_n[0]:016d}", command_text=text,
+        command_text_sha256=text_hash or cmd.text_sha256(text),
+        received_at=NOW if received_at is None else received_at,
+        client_ref_sha256=cmd.text_sha256(client_ref))
 
 
 def context(intent=None, *, now=NOW, **overrides):
     side = 1 if intent is None or intent["is_maker_betting_outcome_one"] else 2
     ctx = {
         "market": {"marketHash": (intent or {}).get("market_hash", H), "status": "ACTIVE",
-                   "sportXeventId": EVENT_ID, **LABELS},
+                   "sportXeventId": EVENT_ID, **LABELS, **MARKET_EXTRA, "gameTime": now + 86_400},
         "market_observed_at": now,
         "quote": {"outcome": side, "best_percentage_odds": str(40 * 10 ** 18),
                   "available_liquidity_base_units": "100000000", "observed_at": now},
         "balance": {"available_base_units": "100000000", "observed_at": now},
         "fees": dict(FEES),
+        "exchange_limits": {**EXCHANGE_LIMITS, "observed_at": now},
     }
     ctx.update(overrides)
+    if "event_markets" not in overrides:
+        # GET /markets/active?eventId=: here the event lists only this market (uniqueness, §2.3bis).
+        ctx["event_markets"] = [ctx["market"]] if isinstance(ctx.get("market"), dict) else []
     return ctx
 
 

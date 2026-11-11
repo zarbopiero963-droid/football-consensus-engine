@@ -90,8 +90,24 @@ evidence that the order rested or executed after all (a fill, a live row) moves
 it to SUBMITTED / OPEN / PARTIALLY_FILLED / FILLED (or CANCELLED / EXPIRED with
 a fill), so no financial event is lost. A never-signed REJECTED stays final.
 
-CANCEL_REQUEST lines (signer/cancellation.py) consume a cancel-approval nonce and
-record what was requested; they never change any order state or exposure.
+CANCEL_REQUEST lines (signer/cancellation.py) consume the single-use id of the owner command (or, for
+lines written before owner-command authorization, a cancel-approval nonce) and record what was requested;
+they never change any order state or exposure.
+
+Owner-command authorization (§2.6, owner decision 2): an AUTHORIZE or CANCEL_REQUEST line written for an
+owner command carries `command_id` (single use: consumed for ever, in the same namespace as the legacy
+approval nonces, also after a restart), `command_canonical_sha256` (the same command text can never
+authorise a second operation: COMMAND_TEXT_REPLAYED), `command_text_sha256`, `client_ref_sha256` and
+`command_received_at`. The command text itself is never written.
+
+KILL_SWITCH lines (signer/killswitch.py): ENGAGE (trigger, source), CANCEL_INTENT (order ids the kill
+switch wants cancelled; nothing is sent from here), CANCEL_VERIFIED (per-order state read back from the
+ledger after reconciliation) and RELEASE (the id of an owner-signed release, single use, bound to the seq of
+the ENGAGE line it releases). While engaged, `kill_switch_engaged` is True and the signer and the gateway
+refuse every new order. The state survives restarts (replay).
+
+Counters for the risk engine v2 (stake per UTC day, orders per hour / per day, last authorization time) are
+derived from the AUTHORIZE lines (`authorized_at` = the line's ts) on every replay: nothing in memory only.
 """
 from __future__ import annotations
 
@@ -145,6 +161,9 @@ MATCHED_HOLDING = frozenset({SIGNED, SUBMITTED, OPEN, UNKNOWN, PARTIALLY_FILLED,
 OPEN_ORDER_STATES = RESERVING
 TERMINAL = frozenset({SETTLED, REJECTED})
 CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
+KILL_SWITCH_ACTIONS = frozenset({"ENGAGE", "CANCEL_INTENT", "CANCEL_VERIFIED", "RELEASE"})
+COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_canonical_sha256", "client_ref_sha256",
+                            "command_received_at"})
 
 # A 404 from GET /orders-v3/{orderId} proves nothing about an order in flight. A
 # "reconciled absent" verdict (the only path to a re-send) needs: 404 by id AND by
@@ -199,6 +218,7 @@ class Order:
     evidence: tuple[str, ...] = field(default_factory=tuple)
     signature_released: bool = False       # SIGNED was reached: the signed order may exist outside the signer
     unconfirmed_since: int | None = None   # ts of the first EXPIRED_UNCONFIRMED observation
+    authorized_at: int = 0                 # ts of the AUTHORIZE line (risk v2 counters, rebuilt on replay)
 
     def rejected_hold_active(self, now: int) -> bool:
         """REJECTED after a released signature: still postable until expiry (+ grace) has passed."""
@@ -230,6 +250,9 @@ class ExposureView:
     by_event: Mapping[str, int]
     open_orders: int
     realized_pnl_since: Callable[[int], int]
+    orders_since: Callable[[int], int]       # AUTHORIZE lines with ts >= the argument
+    stake_since: Callable[[int], int]        # their summed stake
+    last_authorized_at: int | None
 
 
 @dataclass(frozen=True)
@@ -446,7 +469,9 @@ class OrderLedger:
         self._lock = threading.RLock()
         self._orders: dict[str, Order] = {}
         self._by_order_id: dict[str, str] = {}
-        self._nonces: set[str] = set()
+        self._nonces: set[str] = set()          # consumed single-use ids: approval nonces and owner command ids
+        self._command_texts: set[str] = set()   # consumed canonical owner-command text hashes
+        self._kill: dict[str, Any] = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
         self._fd: int | None = None
@@ -672,7 +697,7 @@ class OrderLedger:
         """Append + apply; if applying a written line fails, the instance is poisoned."""
         written = self._append(rec)
         try:
-            self._apply(written)
+            self._apply(written, seq=self._seq)
         except Exception:
             self._poisoned = True
             raise LedgerError("LEDGER_APPLY_FAILED") from None
@@ -720,7 +745,7 @@ class OrderLedger:
                     if rec.get("signer_id") != self.signer_id or rec.get("signer_address") != self.signer_address:
                         raise LedgerError("LEDGER_FOREIGN")
                     continue
-                self._apply(rec)
+                self._apply(rec, seq=len(hashes))
         except (KeyError, TypeError, ValueError, OrderStateError):
             raise LedgerError("LEDGER_CORRUPT") from None
         if first:
@@ -728,17 +753,31 @@ class OrderLedger:
         self._prev, self._size, self._last_line, self._seq = prev, len(data), last, len(hashes)
         return hashes
 
-    def _apply(self, rec: Mapping[str, Any]) -> None:
+    def _consume(self, rec: Mapping[str, Any], code: str) -> None:
+        """One single-use id per line: a legacy approval nonce, or an owner command id + its text hash."""
+        if "command_id" in rec:
+            if "approval_nonce" in rec or rec["command_id"] in self._nonces \
+                    or rec["command_canonical_sha256"] in self._command_texts:
+                raise OrderStateError(code)
+            self._nonces.add(rec["command_id"])
+            self._command_texts.add(rec["command_canonical_sha256"])
+        else:
+            if rec["approval_nonce"] in self._nonces:
+                raise OrderStateError(code)
+            self._nonces.add(rec["approval_nonce"])
+
+    def _apply(self, rec: Mapping[str, Any], seq: int | None = None) -> None:
         kind = rec["kind"]
         if kind == "AUTHORIZE":
             o = Order(client_order_id=rec["client_order_id"], intent_hash=rec["intent_hash"],
                       order_id=rec["order_id"], market_hash=rec["market_hash"], event_id=rec["event_id"],
-                      stake=int(rec["stake"]), expiry=int(rec["expiry"]), state=AUTHORIZED)
-            if o.client_order_id in self._orders or rec["approval_nonce"] in self._nonces:
+                      stake=int(rec["stake"]), expiry=int(rec["expiry"]), state=AUTHORIZED,
+                      authorized_at=int(rec["ts"]))
+            if o.client_order_id in self._orders:
                 raise OrderStateError("LEDGER_DUPLICATE_AUTHORIZE")
+            self._consume(rec, "LEDGER_DUPLICATE_AUTHORIZE")
             self._orders[o.client_order_id] = o
             self._by_order_id[o.order_id] = o.client_order_id
-            self._nonces.add(rec["approval_nonce"])
         elif kind == "TRANSITION":
             o = self._orders[rec["client_order_id"]]
             new = self._next(o, rec["to"], filled=rec.get("filled"), pnl=rec.get("realized_pnl"))
@@ -753,13 +792,36 @@ class OrderLedger:
             if new.state == SETTLED:
                 self._settlements.append((int(rec["ts"]), int(new.realized_pnl)))
         elif kind == "CANCEL_REQUEST":
-            # Consumes a cancel-approval nonce; changes no order state and no exposure.
-            if rec["scope"] not in CANCEL_SCOPES or not isinstance(rec["order_ids"], list) \
-                    or rec["approval_nonce"] in self._nonces:
+            # Consumes a single-use id (owner command or legacy cancel approval); no state, no exposure change.
+            if rec["scope"] not in CANCEL_SCOPES or not isinstance(rec["order_ids"], list):
                 raise OrderStateError("LEDGER_CANCEL_REQUEST_INVALID")
-            self._nonces.add(rec["approval_nonce"])
+            self._consume(rec, "LEDGER_CANCEL_REQUEST_INVALID")
+        elif kind == "KILL_SWITCH":
+            self._apply_kill(rec, seq)
         else:
             raise OrderStateError("LEDGER_UNKNOWN_RECORD")
+
+    def _apply_kill(self, rec: Mapping[str, Any], seq: int | None) -> None:
+        action = rec["action"]
+        if action not in KILL_SWITCH_ACTIONS:
+            raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
+        if action == "ENGAGE":
+            if not isinstance(rec["trigger"], str) or type(seq) is not int:
+                raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
+            self._kill = {"engaged": True, "engage_seq": seq, "trigger": rec["trigger"], "intent_ids": ()}
+        elif action == "CANCEL_INTENT":
+            if not self._kill["engaged"] or not isinstance(rec["order_ids"], list):
+                raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
+            self._kill = {**self._kill, "intent_ids": tuple(rec["order_ids"])}
+        elif action == "CANCEL_VERIFIED":
+            if not isinstance(rec["results"], dict):
+                raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
+        else:  # RELEASE: owner-signed, bound to the ENGAGE line it releases, release id single use
+            if not self._kill["engaged"] or rec["engage_seq"] != self._kill["engage_seq"] \
+                    or rec["release_id"] in self._nonces:
+                raise OrderStateError("LEDGER_KILL_SWITCH_RELEASE_INVALID")
+            self._nonces.add(rec["release_id"])
+            self._kill = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
 
     @staticmethod
     def _next(o: Order, to: str, *, filled: Any, pnl: Any) -> Order:
@@ -803,6 +865,36 @@ class OrderLedger:
         with self._lock:
             return nonce in self._nonces
 
+    def command_consumed(self, command_id: str) -> bool:
+        """An owner command id (or any single-use id) already consumed: refused for ever."""
+        with self._lock:
+            return command_id in self._nonces
+
+    def command_text_consumed(self, canonical_sha256: str) -> bool:
+        with self._lock:
+            return canonical_sha256 in self._command_texts
+
+    @property
+    def kill_switch_engaged(self) -> bool:
+        with self._lock:
+            return bool(self._kill["engaged"])
+
+    def kill_switch_state(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._kill)
+
+    def orders_since(self, ts: int) -> int:
+        with self._lock:
+            return sum(1 for o in self._orders.values() if o.authorized_at >= ts)
+
+    def stake_since(self, ts: int) -> int:
+        with self._lock:
+            return sum(o.stake for o in self._orders.values() if o.authorized_at >= ts)
+
+    def last_authorized_at(self) -> int | None:
+        with self._lock:
+            return max((o.authorized_at for o in self._orders.values()), default=None)
+
     def orders(self) -> list[Order]:
         with self._lock:
             return list(self._orders.values())
@@ -828,23 +920,49 @@ class OrderLedger:
                 open_orders += 1 if o.is_open_at(now) else 0
             return ExposureView(total=total, reserved_unmatched=reserved, matched=matched, by_market=by_market,
                                 by_event=by_event, open_orders=open_orders,
-                                realized_pnl_since=self.realized_pnl_since)
+                                realized_pnl_since=self.realized_pnl_since, orders_since=self.orders_since,
+                                stake_since=self.stake_since, last_authorized_at=self.last_authorized_at())
 
     # ---- writes ----
+    @staticmethod
+    def _command_ok(command: Any) -> bool:
+        return (isinstance(command, Mapping) and set(command) == COMMAND_FIELDS
+                and isinstance(command["command_id"], str) and _NONCE.fullmatch(command["command_id"]) is not None
+                and all(isinstance(command[k], str) and _SHA.fullmatch(command[k]) for k in
+                        ("command_text_sha256", "command_canonical_sha256", "client_ref_sha256"))
+                and type(command["command_received_at"]) is int)
+
+    def _check_single_use(self, approval_nonce: Any, command: Any, replay_code: str) -> dict[str, Any]:
+        """Exactly one of `approval_nonce` (legacy) or `command` (owner command). Returns the line fields."""
+        if command is not None:
+            if approval_nonce is not None or not self._command_ok(command):
+                raise OrderStateError("AUTHORIZE_FIELDS_INVALID")
+            if command["command_id"] in self._nonces:
+                raise OrderStateError("COMMAND_ID_ALREADY_CONSUMED")
+            if command["command_canonical_sha256"] in self._command_texts:
+                raise OrderStateError("COMMAND_TEXT_REPLAYED")
+            return dict(command)
+        if not _NONCE.fullmatch(approval_nonce or ""):
+            raise OrderStateError("AUTHORIZE_FIELDS_INVALID")
+        if approval_nonce in self._nonces:
+            raise OrderStateError(replay_code)
+        return {"approval_nonce": approval_nonce}
+
     def authorize(self, *, client_order_id: str, intent_hash: str, order_id: str, market_hash: str, event_id: str,
-                  stake: int, expiry: int, approval_nonce: str,
+                  stake: int, expiry: int, approval_nonce: str | None = None,
+                  command: Mapping[str, Any] | None = None, post_only: bool | None = None,
                   precheck: Callable[[ExposureView], None] | None = None) -> Order:
-        """Atomically: re-check nonce + key unused, run `precheck` on the live exposure, then persist
-        ONE fsync'd AUTHORIZE line that consumes the nonce and reserves the full stake."""
-        if not (_KEY.fullmatch(client_order_id or "") and _NONCE.fullmatch(approval_nonce or "")
+        """Atomically: re-check the single-use id (and command text) + key unused, run `precheck` on the live
+        exposure, then persist ONE fsync'd AUTHORIZE line that consumes the id and reserves the full stake."""
+        if not (_KEY.fullmatch(client_order_id or "")
                 and _HEX32.fullmatch(order_id or "") and _HEX32.fullmatch(market_hash or "")
                 and isinstance(event_id, str) and event_id and type(stake) is int and stake > 0
-                and type(expiry) is int):
+                and type(expiry) is int and (post_only is None or type(post_only) is bool)
+                and (command is not None or _NONCE.fullmatch(approval_nonce or ""))):
             raise OrderStateError("AUTHORIZE_FIELDS_INVALID")
         with self._lock:
             self._writable()
-            if approval_nonce in self._nonces:
-                raise OrderStateError("APPROVAL_NONCE_REPLAYED")
+            single_use = self._check_single_use(approval_nonce, command, "APPROVAL_NONCE_REPLAYED")
             if client_order_id in self._orders:
                 raise OrderStateError("IDEMPOTENCY_KEY_ALREADY_AUTHORIZED")
             if order_id in self._by_order_id:
@@ -853,7 +971,9 @@ class OrderLedger:
                 precheck(self.exposure())
             rec = {"kind": "AUTHORIZE", "client_order_id": client_order_id, "intent_hash": intent_hash,
                    "order_id": order_id, "market_hash": market_hash, "event_id": event_id, "stake": str(stake),
-                   "expiry": expiry, "approval_nonce": approval_nonce}
+                   "expiry": expiry, **single_use}
+            if post_only is not None:
+                rec["post_only"] = post_only
             self._commit(rec)
             return self._orders[client_order_id]
 
@@ -876,14 +996,14 @@ class OrderLedger:
             self._commit(rec)
             return self._orders[client_order_id]
 
-    def record_cancel_request(self, *, approval_nonce: str, scope: str, binding_sha256: str,
-                              order_ids: list[str], market_hash: str | None = None,
-                              event_id: str | None = None) -> None:
-        """One fsync'd CANCEL_REQUEST line, written BEFORE the cancel is sent: consumes the cancel approval's
-        nonce (single use, survives restarts). It records the request only; no order state or exposure
-        changes here -- only exchange evidence (apply_evidence) does that."""
+    def record_cancel_request(self, *, scope: str, binding_sha256: str, order_ids: list[str],
+                              approval_nonce: str | None = None, command: Mapping[str, Any] | None = None,
+                              market_hash: str | None = None, event_id: str | None = None) -> None:
+        """One fsync'd CANCEL_REQUEST line, written BEFORE the cancel is sent: consumes the owner command's
+        single-use id and text hash (or a legacy cancel approval nonce); survives restarts. It records the
+        request only; no order state or exposure changes here -- only exchange evidence does that."""
         ids = list(order_ids) if isinstance(order_ids, (list, tuple)) else None
-        if not (_NONCE.fullmatch(approval_nonce or "") and scope in CANCEL_SCOPES
+        if not ((command is not None or _NONCE.fullmatch(approval_nonce or "")) and scope in CANCEL_SCOPES
                 and isinstance(binding_sha256, str) and _SHA.fullmatch(binding_sha256)
                 and ids is not None and len(ids) <= 1000 and len(set(ids)) == len(ids)
                 and all(isinstance(i, str) and _HEX32.fullmatch(i) for i in ids)
@@ -892,15 +1012,32 @@ class OrderLedger:
             raise OrderStateError("CANCEL_REQUEST_FIELDS_INVALID")
         with self._lock:
             self._writable()
-            if approval_nonce in self._nonces:
-                raise OrderStateError("APPROVAL_NONCE_REPLAYED")
-            rec = {"kind": "CANCEL_REQUEST", "approval_nonce": approval_nonce, "scope": scope,
+            single_use = self._check_single_use(approval_nonce, command, "APPROVAL_NONCE_REPLAYED")
+            rec = {"kind": "CANCEL_REQUEST", **single_use, "scope": scope,
                    "binding_sha256": binding_sha256, "order_ids": ids}
             if market_hash is not None:
                 rec["market_hash"] = market_hash
             if event_id is not None:
                 rec["event_id"] = event_id
             self._commit(rec)
+
+    def record_kill_switch(self, action: str, **fields: Any) -> int:
+        """One fsync'd KILL_SWITCH line (signer/killswitch.py builds the fields). Returns its seq."""
+        allowed = {"ENGAGE": {"trigger", "source", "triggers"}, "CANCEL_INTENT": {"order_ids"},
+                   "CANCEL_VERIFIED": {"results"}, "RELEASE": {"release_id", "release_sha256", "engage_seq"}}
+        if action not in KILL_SWITCH_ACTIONS or set(fields) != allowed[action]:
+            raise OrderStateError("KILL_SWITCH_FIELDS_INVALID")
+        with self._lock:
+            self._writable()
+            if action in ("CANCEL_INTENT", "RELEASE") and not self._kill["engaged"]:
+                raise OrderStateError("KILL_SWITCH_NOT_ENGAGED")
+            if action == "RELEASE":
+                if fields["engage_seq"] != self._kill["engage_seq"]:
+                    raise OrderStateError("KILL_SWITCH_RELEASE_MISMATCH")
+                if fields["release_id"] in self._nonces:
+                    raise OrderStateError("KILL_SWITCH_RELEASE_REPLAYED")
+            self._commit({"kind": "KILL_SWITCH", "action": action, **fields})
+            return self._seq
 
     def apply_evidence(self, client_order_id: str, evidence: Evidence) -> Order:
         """Idempotent: the same evidence twice, or evidence that changes nothing, writes nothing."""

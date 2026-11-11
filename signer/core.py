@@ -1,32 +1,32 @@
-"""The isolated signer. Signs an SX Bet EIP-712 Order only for an owner-approved intent.
+"""The isolated signer. Signs an SX Bet EIP-712 Order only for an order the OWNER explicitly commanded.
 
-Guarantees (governance §2.6):
-- the private key is read once, by this process, from its own env var
-  SXBET_SIGNER_PRIVATE_KEY; it is never returned, logged, audited or repr'd;
-- a signature is produced only when (a) the intent re-validates and its
-  recomputed hash equals the approval binding's intent_hash, every binding
-  field agrees with the intent / config / risk context, and (b) the approval is
-  a valid Ed25519 signature by the owner's approval key, unused (nonce), fresh
-  (TTL <= 120 s) and addressed to this signer_id;
-- risk limits come only from the owner-signed config (signer/risk.py); the
-  all-zero default refuses every request;
-- transactional authorization: the approval is verified WITHOUT consuming it,
-  every risk check runs, and only then one fsync'd ledger line atomically
-  consumes the nonce, records AUTHORIZED and reserves the stake (single lock).
-  A refused request never burns the approval; a used one can never sign a
-  second order (threads, restarts). The SIGNED line is persisted before the
-  signature is released;
-- one idempotency key = one intent: same key + same hash returns the cached
-  result (no second signature), same key + different hash is refused;
-- snapshot: the approval binding and the risk context are copied into plain
-  JSON-like values (dict / list / str / int / bool / None) BEFORE anything is
-  verified, and only that snapshot is used afterwards, so a caller-owned
-  object mutated during signing cannot change what was checked or recorded;
-- a released signature keeps its stake reserved even if the order is later
-  REJECTED, until its expiry has passed (signer/orders.py);
-- every decision is appended to the audit log;
-- there is no network or submission code here: the caller gets the signature
-  back and nothing is sent. LIVE_TRADING remains UNAVAILABLE.
+Guarantees (governance §2.6, owner decisions #187):
+- the private key is read once, by this process, from its own env var SXBET_SIGNER_PRIVATE_KEY; it is
+  never returned, logged, audited or repr'd;
+- a signature is produced only when (a) the intent re-validates; (b) an `OwnerCommandAuthorization`
+  carries the literal command text the owner wrote in the trading chat, a NEW single-use command id, a
+  matching text hash and a received_at inside the short owner-signed window (signer/command.py);
+  (c) the command parses with the signer's own deterministic grammar and EVERY field (event, market,
+  line, selection, stake + currency, odds / limit price, order type, time in force, post-only) equals the
+  order (COMMAND_MISMATCH_<FIELD>, COMMAND_INCOMPLETE_<FIELD>); (d) every limit of the owner-signed risk
+  config v2 passes (signer/risk.py); (e) the kill switch is not engaged (signer/killswitch.py);
+- the per-order Ed25519 `Approval` of the previous version is gone (intentional change, §2.6 as rewritten):
+  owner-signed acts remain for the risk config, the LIVE_TRADING flag, the ledger-head acknowledgement and
+  the kill-switch release, never for a single order;
+- residual risk accepted by the owner (§2.6): without an out-of-band factor the signer cannot tell an
+  owner's command from one injected into the chat or produced by the model. The limits bound the damage;
+- transactional authorization: the command is verified WITHOUT consuming it, every risk check runs inside
+  the ledger lock, and only then one fsync'd AUTHORIZE line atomically consumes the command id AND its
+  canonical text hash, records AUTHORIZED and reserves the stake. A refused request never burns the
+  command; a consumed one can never authorise a second order (threads, restarts: the ledger is replayed);
+- one idempotency key = one intent: same key + same hash returns the cached result (no second signature),
+  same key + different hash is refused;
+- snapshot: the command record and the risk context are copied into plain values BEFORE anything is
+  verified, and only the copies are used afterwards;
+- a released signature keeps its stake reserved even if the order is later REJECTED, until its expiry
+  has passed (signer/orders.py);
+- every decision is appended to the audit log (command id and text HASH only, never the text);
+- there is no network or submission code here. LIVE_TRADING remains UNAVAILABLE.
 """
 from __future__ import annotations
 
@@ -37,9 +37,10 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from eth_account import Account
 
-from . import approval as appr
+from . import command as cmd
 from . import eip712
 from . import risk as rk
 from .audit import AuditLog
@@ -87,18 +88,10 @@ def _plain(obj: Any, depth: int = 0) -> Any:
     raise _NotPlain()
 
 
-def _snapshot_approval(approval: Any) -> Any:
-    """A private copy of the approval; a non-Approval is returned as is (verify refuses it)."""
-    if not isinstance(approval, appr.Approval):
-        return approval
-    try:
-        binding = _plain(approval.binding)
-        sig = approval.signature
-        sig = bytes(sig) if isinstance(sig, (bytes, bytearray)) else sig
-        return appr.Approval(binding, approval.approval_nonce, approval.issued_at, approval.expires_at,
-                             approval.signer_id, sig)
-    except Exception:
-        raise SignerRefused("APPROVAL_MALFORMED") from None
+def load_owner_public_key(raw: bytes) -> Ed25519PublicKey:
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) != 32:
+        raise SignerConfigError("OWNER_PUBLIC_KEY_INVALID")
+    return Ed25519PublicKey.from_public_bytes(bytes(raw))
 
 
 @dataclass(frozen=True)
@@ -110,7 +103,7 @@ class SignerConfig:
     verifying_contract: str  # lowercase hex
     base_token: str          # lowercase hex
     odds_ladder_step_size: int
-    account_id: str = ""     # SX Bet API identity the approvals must name; empty => every request refused
+    account_id: str = ""     # SX Bet API identity of this signer; empty => every request refused
 
 
 class Signer:
@@ -130,7 +123,7 @@ class Signer:
             raise SignerConfigError("SIGNER_KEY_INVALID") from None
         del raw
         try:
-            self._owner_key = appr.load_public_key(owner_public_key)
+            self._owner_key = load_owner_public_key(owner_public_key)
         except Exception:
             raise SignerConfigError("OWNER_PUBLIC_KEY_INVALID") from None
         self.config = config
@@ -141,10 +134,12 @@ class Signer:
         self._ledger = ledger
         self._audit = audit
         self._clock = clock
-        self._risk = risk_config if risk_config is not None else rk.load_from_env(env, self._owner_key)
+        self._risk = risk_config if risk_config is not None else rk.load_from_env(env, self._owner_key,
+                                                                                    network=config.network)
         if not isinstance(self._risk, rk.LoadedRiskConfig):
             raise SignerConfigError("RISK_CONFIG_INVALID")
-        self._session_started_at = int(clock())
+        if self._risk.network != config.network:
+            raise SignerConfigError("RISK_CONFIG_NETWORK_MISMATCH")  # testnet limits never feed mainnet
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[str, dict[str, Any]]] = {}
 
@@ -175,14 +170,18 @@ class Signer:
         return self.__account.sign_message(msg).signature.to_0x_hex()
 
     # ---- the only signing entry point ----
-    def sign_order(self, intent: Mapping[str, Any], approval: appr.Approval,
-                   context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def sign_order(self, intent: Mapping[str, Any], authorization: cmd.OwnerCommandAuthorization,
+                   context: Mapping[str, Any] | None = None, *, post_only: bool = False) -> dict[str, Any]:
         with self._lock:
             key = intent.get("idempotency_key") if isinstance(intent, Mapping) else None
             ihash = None
+            auth = None
             try:
                 # Snapshot FIRST (before anything else reads caller-owned objects); only the copies are used.
-                approval = _snapshot_approval(approval)
+                try:
+                    auth = cmd.snapshot(authorization)
+                except cmd.CommandRefused as exc:
+                    raise SignerRefused(exc.code) from None
                 if context is not None:
                     try:
                         context = _plain(context)
@@ -205,42 +204,50 @@ class Signer:
                     raise SignerRefused("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
                                         if known.intent_hash != ihash
                                         else "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST")
+                if self._ledger.kill_switch_engaged:
+                    raise SignerRefused("KILL_SWITCH_ENGAGED")
                 self._check_config(clean)
+                if type(post_only) is not bool:
+                    raise SignerRefused("POST_ONLY_INVALID")
                 now = int(self._clock())
                 if clean["expiry"] < now + MIN_EXPIRY_MARGIN_SECONDS:
                     raise SignerRefused("INTENT_EXPIRED_OR_TOO_SOON")
-                # 1. verify the approval WITHOUT consuming it
+                limits = self._risk.limits
+                if not limits.configured():
+                    raise SignerRefused("EXPOSURE_LIMIT_ZERO")  # safe default: zero live exposure
+                if not self.config.account_id:
+                    raise SignerRefused("ACCOUNT_ID_NOT_CONFIGURED")
+
+                # 1. the owner command: record, single use, grammar, field-by-field -- nothing consumed yet
                 try:
-                    appr.verify(approval, self._owner_key, expected_intent_hash=ihash,
-                                signer_id=self.config.signer_id, now=now)
-                except appr.ApprovalError as exc:
-                    raise SignerRefused(str(exc)) from None
-                field = appr.binding_mismatch(approval.binding, clean)
-                if field is not None:
-                    raise SignerRefused("APPROVAL_BINDING_MISMATCH_" + field.upper())
-                if not self.config.account_id or approval.binding["account_id"] != self.config.account_id:
-                    raise SignerRefused("APPROVAL_BINDING_MISMATCH_ACCOUNT_ID")
-                if self._ledger.nonce_consumed(approval.approval_nonce):
-                    raise SignerRefused("APPROVAL_NONCE_REPLAYED")
+                    cmd.verify_record(auth, now=now, max_age_seconds=limits.command_max_age_seconds)
+                except cmd.CommandRefused as exc:
+                    raise SignerRefused(exc.code) from None
+                fields = cmd.ledger_fields(auth)
+                if self._ledger.command_consumed(auth.command_id):
+                    raise SignerRefused("COMMAND_ID_ALREADY_CONSUMED")
+                if self._ledger.command_text_consumed(fields["command_canonical_sha256"]):
+                    raise SignerRefused("COMMAND_TEXT_REPLAYED")
+                verified = self._verify_command(auth, clean, context, post_only, limits)
                 msg = eip712.signable(clean)
                 oid = eip712.order_id(msg)
 
                 # 2. risk checks + 3. atomic consume/AUTHORIZED/reserve, all inside the ledger lock
                 def precheck(view: ExposureView) -> None:
                     try:
-                        rk.evaluate(self._risk.limits, intent=clean, binding=approval.binding, context=context,
-                                    exposure=view, now=now, session_started_at=self._session_started_at)
+                        rk.evaluate(limits, intent=clean, event_id=verified["event_id"], context=context,
+                                    exposure=view, now=now)
                     except rk.RiskRefused as exc:
                         raise SignerRefused(exc.code) from None
 
                 try:
                     self._ledger.authorize(client_order_id=key, intent_hash=ihash, order_id=oid,
-                                           market_hash=clean["market_hash"], event_id=approval.binding["event_id"],
+                                           market_hash=clean["market_hash"], event_id=verified["event_id"],
                                            stake=int(clean["total_bet_size"]), expiry=clean["expiry"],
-                                           approval_nonce=approval.approval_nonce, precheck=precheck)
+                                           command=fields, post_only=verified["post_only"], precheck=precheck)
                 except (OrderStateError, LedgerError) as exc:
                     raise SignerRefused(exc.code) from None
-                self._log("AUTHORIZED", None, key, ihash, oid, clean, nonce=approval.approval_nonce)
+                self._log("AUTHORIZED", None, key, ihash, oid, clean, auth=auth)
 
                 # 4. sign; persist SIGNED before the signature leaves this function
                 try:
@@ -260,21 +267,51 @@ class Signer:
                     raise SignerRefused(exc.code) from None
                 result = {"order_id": oid, "intent_hash": ihash, "signer_address": self.address,
                           "order": eip712.order_payload(clean, signature), "submitted": False,
-                          "live_trading": "UNAVAILABLE"}
+                          "live_trading": "UNAVAILABLE", "order_type": verified["order_type"],
+                          "post_only": verified["post_only"], "owner_command_id": auth.command_id,
+                          "owner_command_sha256": auth.command_text_sha256}
                 self._cache[key] = (ihash, result)
-                self._log("SIGNED", None, key, ihash, oid, clean, nonce=approval.approval_nonce)
+                self._log("SIGNED", None, key, ihash, oid, clean, auth=auth)
                 return {**result, "cached": False}
             except SignerRefused as exc:
                 self._log("REFUSED", exc.code, key[:64] if isinstance(key, str) else None, ihash, None, None,
-                          nonce=getattr(approval, "approval_nonce", None))
+                          auth=auth)
                 raise
 
+    def _verify_command(self, auth: cmd.OwnerCommandAuthorization, clean: Mapping[str, Any], context: Any,
+                        post_only: bool, limits: rk.RiskLimits) -> dict[str, Any]:
+        """Parse the literal command and compare every field with the order and the signer's market row."""
+        try:
+            parsed = cmd.parse(auth.command_text)
+        except cmd.CommandRefused as exc:
+            raise SignerRefused(exc.code) from None
+        if not isinstance(context, Mapping):
+            raise SignerRefused("RISK_CONTEXT_MISSING")
+        market = context.get("market")
+        if not isinstance(market, Mapping):
+            raise SignerRefused("MARKET_DATA_MISSING")
+        if not isinstance(market.get("marketHash"), str) or market["marketHash"].lower() != clean["market_hash"]:
+            raise SignerRefused("MARKET_MISMATCH")
+        xl = context.get("exchange_limits")
+        if not isinstance(xl, Mapping) or not isinstance(xl.get("base_token_symbol"), str) \
+                or type(xl.get("base_token_decimals")) is not int:
+            raise SignerRefused("EXCHANGE_LIMITS_MISSING")
+        try:
+            return cmd.verify_place(parsed, intent=clean, market=market,
+                                    event_markets=context.get("event_markets"), post_only=post_only,
+                                    currency=xl["base_token_symbol"], token_decimals=xl["base_token_decimals"],
+                                    odds_ladder_step_size=self.config.odds_ladder_step_size,
+                                    market_time_in_force=limits.market_time_in_force,
+                                    limit_time_in_force=limits.limit_time_in_force)
+        except cmd.CommandRefused as exc:
+            raise SignerRefused(exc.code) from None
+
     def abandon_unsigned(self, client_order_id: str) -> str:
-        """Release an order left AUTHORIZED by a crash between nonce consumption and signing.
+        """Release an order left AUTHORIZED by a crash between command consumption and signing.
 
         Safe because the SIGNED line is always persisted before a signature is released: an
         AUTHORIZED order whose signature is not in this process's cache was never handed out.
-        The nonce stays consumed for ever (it is part of the AUTHORIZE line).
+        The command id stays consumed for ever (it is part of the AUTHORIZE line).
         """
         with self._lock:
             o = self._ledger.get(client_order_id)
@@ -293,9 +330,13 @@ class Signer:
         if i["maker"] != self.address.lower():
             raise SignerRefused("INTENT_MAKER_IS_NOT_SIGNER")
 
-    def _log(self, decision, reason, key, ihash, oid, clean, *, nonce=None) -> None:
+    def _log(self, decision, reason, key, ihash, oid, clean, *, auth=None) -> None:
+        cid = auth.command_id if isinstance(auth, cmd.OwnerCommandAuthorization) and \
+            isinstance(auth.command_id, str) else None
+        csha = auth.command_text_sha256 if cid is not None and isinstance(auth.command_text_sha256, str) else None
         self._audit.append(event="SIGN", decision=decision, reason=reason, signer_id=self.config.signer_id,
                            idempotency_key=key, intent_hash=ihash, order_id=oid,
                            total_bet_size=None if clean is None else clean["total_bet_size"],
                            network=self.config.network,
-                           approval_nonce_prefix=nonce[:6] if isinstance(nonce, str) else None)
+                           owner_command_id=cid[:128] if cid else None,
+                           owner_command_sha256=csha[:71] if csha else None)

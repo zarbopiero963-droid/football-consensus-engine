@@ -308,7 +308,7 @@ def test_signer_refuses_to_sign_when_the_anchor_write_fails(tmp_path, store, clo
 
     from signer.audit import AuditLog
     from signer.core import KEY_ENV, Signer, SignerConfig, SignerRefused
-    from sxbet_signer_kit import ACCOUNT_ID, ESCROW, TOKEN, approve, context, load_limits, make_intent, pub
+    from sxbet_signer_kit import ACCOUNT_ID, ESCROW, TOKEN, owner_command, context, load_limits, make_intent, pub
 
     acct = Account.create()
     owner = Ed25519PrivateKey.generate()
@@ -319,12 +319,12 @@ def test_signer_refuses_to_sign_when_the_anchor_write_fails(tmp_path, store, clo
     s = Signer(cfg, owner_public_key=pub(owner), ledger=led, audit=AuditLog(str(tmp_path / "a.jsonl")),
                risk_config=load_limits(tmp_path, owner), env={KEY_ENV: acct.key.hex()}, clock=clock)
     i = make_intent(acct.address, idempotency_key="order-key-A001")
-    out = s.sign_order(i, approve(owner, i), context(i))
+    out = s.sign_order(i, owner_command(i), context(i))
     assert out["order_id"] and store.head(led.ledger_id).seq == 3
     i2 = make_intent(acct.address, idempotency_key="order-key-A002")
     store.unreachable = True
     with pytest.raises(SignerRefused) as e:
-        s.sign_order(i2, approve(owner, i2), context(i2))
+        s.sign_order(i2, owner_command(i2), context(i2))
     assert e.value.code == "LEDGER_ANCHOR_WRITE_FAILED"
 
 
