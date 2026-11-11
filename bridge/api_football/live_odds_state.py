@@ -11,13 +11,16 @@ tests/_apifootball_fake_provider.py, docs/api_football/live_five_point_sample_20
   NO_OPEN_PRICED_SELECTION  selections exist but none is explicitly open and priced (e.g. no
                       `suspended` field at all): never assumed open
   EMPTY               no fixture, or fixtures without any market/selection
-  MALFORMED           not the evidenced shape (`response` list, `odds` list, `values` list)
+  MALFORMED           not the evidenced shape (`response` list, `odds` list, `values` list), or a
+                      selection without `value`/`odd`, or a non-null odd that is not a decimal
+                      string >= 1.0 ("0" only on a suspended selection), as in the E2E runner
   UNAVAILABLE         no provider reply (set by the tool on an error, with its fixed code)
 
 A selection without `suspended` is UNKNOWN, never open; an odd is never read as a number.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 BASIS_FIELDS = ("odd", "suspended", "main", "handicap")
@@ -25,6 +28,23 @@ EVIDENCE = {
     "odds[] per fixture, market id/name/values": "REAL_SAMPLE docs/api_football/live_five_point_sample_2026-10-25.md",
     "selection odd/suspended/main/handicap": "REPO_FIXTURES (no captured real /odds/live payload in the repo)",
 }
+
+
+# A provider decimal price as published: digits with an optional fraction (no sign, exponent, nan).
+_DECIMAL = re.compile(r"^[0-9]{1,6}(?:\.[0-9]{1,6})?$")
+
+
+def _selection_ok(v: dict[str, Any]) -> bool:
+    """`value` and `odd` published; a non-null odd is a decimal string >= 1.0, or "0" on a
+    selection flagged suspended (repo fixture). Anything else is malformed, never a price."""
+    if "value" not in v or "odd" not in v:
+        return False
+    odd = v["odd"]
+    if odd is None:
+        return True
+    if not isinstance(odd, str) or not _DECIMAL.fullmatch(odd):
+        return False
+    return float(odd) >= 1.0 or (float(odd) == 0 and v.get("suspended") is True)
 
 
 def classify(envelope: Any) -> dict[str, Any]:
@@ -45,6 +65,9 @@ def classify(envelope: Any) -> dict[str, Any]:
                 return {**out, "state": "MALFORMED", **counts}
             counts["markets"] += 1
             for v in values:
+                if not _selection_ok(v):
+                    # Same rule as the E2E runner (_live_odd): never ACTIVE on a bad price.
+                    return {**out, "state": "MALFORMED", **counts}
                 counts["selections"] += 1
                 suspended = v.get("suspended")
                 if suspended is True:

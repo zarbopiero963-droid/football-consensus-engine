@@ -126,3 +126,30 @@ def test_e2e_runner_grades_live_states(name, verdict):
 def test_c08_is_not_proven_by_these_fixtures():
     # Guard against reading this file as certification: no shape is a real capture.
     assert not any(s["evidence"].startswith("REAL") for s in SHAPES)
+
+
+@pytest.mark.parametrize("bad", [
+    {"value": "Over", "odd": "0", "suspended": False},   # zero on an open selection
+    {"value": "Over", "odd": "", "suspended": False},
+    {"value": "Over", "odd": "0.5", "suspended": False},
+    {"value": "Over", "odd": "0.5", "suspended": True},
+    {"value": "Over", "odd": 1.9, "suspended": False},   # a number, not the provider's string
+    {"value": "Over", "odd": "nan", "suspended": False},
+    {"value": "Over", "odd": "1e3", "suspended": False},
+    {"value": "Over", "suspended": False},               # odd missing
+    {"odd": "1.90", "suspended": False},                 # value missing
+])
+def test_a_bad_price_is_malformed_never_active(bad):
+    payload = copy.deepcopy(BY_NAME["active_open_priced"]["payload"])
+    payload["response"][0]["odds"][0]["values"].append(bad)
+    assert classify(payload)["state"] == "MALFORMED"
+    # The E2E runner agrees: the same selection is a defect there.
+    page = {"status": "REAL_API_RESPONSE", "data": payload}
+    assert e2e._check_odds(page, {"fixture_live": 1000001}, {}, live=True, fixture_key="fixture_live")
+
+
+def test_suspended_zero_and_null_stay_valid():
+    for good in ({"value": "Over", "odd": "0", "suspended": True}, {"value": "Over", "odd": None, "suspended": False}):
+        payload = copy.deepcopy(BY_NAME["active_open_priced"]["payload"])
+        payload["response"][0]["odds"][0]["values"].append(good)
+        assert classify(payload)["state"] == "ACTIVE"
