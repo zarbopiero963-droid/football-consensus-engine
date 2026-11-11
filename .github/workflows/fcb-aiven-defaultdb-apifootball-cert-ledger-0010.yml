@@ -1,0 +1,262 @@
+name: FCB Aiven defaultdb API-FOOTBALL cert ledger 0010 (owner-gated)
+
+# AF-07 API-FOOTBALL certification campaign ledger. Manual only. Applies bridge migration 0010
+# (api_football_cert_campaigns + api_football_cert_campaign_attempts, additive, dedicated: the quota
+# coordinator tables are untouched) to the PRODUCTION database `defaultdb` as fcb_migrator, grants
+# fcb_app SELECT, INSERT on the two tables only, and asserts the end state. Prepared, NOT run.
+# Requires bridge 0009 (PR #198) to be applied first: a database at 0001-0008 is refused.
+# The runtime never applies migrations; nothing applies 0010 at deploy. Gates, all required:
+#   1. protected GitHub Environment `aiven-production` (required reviewer, main only), checked;
+#   2. owner dispatch from main (scripts/require_owner_main_dispatch.sh);
+#   3. mode=apply AND the exact confirmation phrase; default mode=diagnose never writes;
+#   4. pinned target (host/port hashes, database), PostgreSQL 18, TLS verify-full with the
+#      authenticated Aiven CA, connection identity exactly fcb_migrator;
+#   5. precheck: schema_migrations equals the repository's 0001-0009 (apply) or 0001-0010
+#      (already applied: second run is a no-op); anything else refuses;
+#   6. backup step before any write: schema-only dump (no row data) + migration rows, uploaded
+#      as an artifact; the owner also confirms the latest Aiven automatic backup;
+#   7. ONE transaction (target guard, bridge 0001-0010 script, grant + assertions), run twice:
+#      the second run must change nothing.
+# Rollback: no DROP. Not dispatching the campaign workflow stops every use of the tables; the
+# append-only ledger stays as evidence. See docs/certification/apifootball/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "diagnose = read-only prechecks (default); apply = bridge 0010 + fcb_app grant"
+        type: choice
+        options: [diagnose, apply]
+        default: diagnose
+      confirm:
+        description: "For mode=apply only: type exactly APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with the restore and roles workflows: never two writers against defaultdb.
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  certledger0010:
+    # G-02: second layer; the environment (required reviewer + branch main) is the control.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_MIGRATOR_DB_URL
+      CONFIRM_PHRASE: APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb
+      SCRIPT: sql/aiven/aiven_migrations_bridge_0001_0010.sql
+      # SHA-256 of every SQL file this workflow runs (tests/test_apifootball_cert_ledger_workflow.py).
+      EXPECTED_SQL_SHA256: |
+        sql/aiven/aiven_migrations_bridge_0001_0010.sql=61485e5ce8553d966d5057655ba2c462b1e01dc47f545356a79e7fa8803377a0
+        sql/aiven/apifootball_cert_ledger_0010_grant.sql=dad645c0b7ee45bd40f0cb44018f37ee6c155133bafbedd028b6e549ccd2fdbf
+      PGCONNECT_TIMEOUT: '15'
+      # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+      # A URI sslmode overrides PGSSLMODE in libpq: the target check rejects anything but verify-full.
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            apply)
+              if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+                echo "::error::mode=apply requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: apply (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - name: Verify the pinned SHA-256 of every SQL file and regenerate the bridge script
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS='=' read -r path sha; do
+            [ -n "$path" ] || continue
+            test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_SQL_SHA256"
+          test "$n" -eq 2
+          python3 -m pip install --quiet 'psycopg[binary]==3.3.6'
+          python3 scripts/generate_aiven_migrations.py --target bridge-0001-0010 --check >/dev/null
+          if grep -Eq 'signer_ledger_anchors|signer_ledger_writer_leases|signer_schema_migrations' "$SCRIPT"; then
+            echo "::error::signer content found"; exit 1
+          fi
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_MIGRATOR_DB_URL:-}" ]; then
+            echo "::error::environment secret FCB_MIGRATOR_DB_URL is not set (owner action)"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || { echo "::error::Aiven CA checksum mismatch"; exit 1; }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+
+      - name: Install postgresql-client-18 from PGDG (pinned key fingerprint)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 60 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/psql --version
+
+      - name: Mask connection details and enforce the pinned target
+        env:
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          python3 -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prechecks (identity fcb_migrator, PostgreSQL 18, TLS, migration rows)
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          q() {
+            local err out
+            err="$(mktemp)"
+            if out="$("$PSQL" "$FCB_MIGRATOR_DB_URL" -X -A -t -v ON_ERROR_STOP=1 -c "$1" 2>"$err")"; then
+              rm -f "$err"; printf '%s\n' "$out"
+            else
+              echo "::error::precheck query failed" >&2
+              echo "libpq (sanitized): $(python3 -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+              rm -f "$err"; return 1
+            fi
+          }
+          test "$(q 'select pg_catalog.current_database()')" = "$EXPECTED_DB" || { echo "::error::wrong database"; exit 1; }
+          test "$(q 'select current_user')" = "fcb_migrator" || { echo "::error::identity is not fcb_migrator"; exit 1; }
+          ver="$(q "select pg_catalog.current_setting('server_version_num')::pg_catalog.int4")"
+          [ "$ver" -ge 180000 ] && [ "$ver" -lt 190000 ] || { echo "::error::server is not PostgreSQL 18"; exit 1; }
+          test "$(q 'select s.ssl from pg_catalog.pg_stat_ssl s where s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()')" = "t" || { echo "::error::not TLS"; exit 1; }
+          rows="$(q "select pg_catalog.string_agg(m.version::pg_catalog.text OPERATOR(pg_catalog.||) '=' OPERATOR(pg_catalog.||) m.name OPERATOR(pg_catalog.||) '=' OPERATOR(pg_catalog.||) m.sha256, ' ' order by m.version) from public.schema_migrations m")"
+          files9="$(for f in sql/migrations/bridge/000[1-9]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
+          files10="$(for f in sql/migrations/bridge/00[01][0-9]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
+          if [ "$rows" = "$files9" ]; then state=BRIDGE_0001_0009
+          elif [ "$rows" = "$files10" ]; then state=BRIDGE_0001_0010
+          else state=REFUSE_MIGRATION_ROWS_DIFFER; fi
+          echo "## Precheck state: $state" >> "$GITHUB_STEP_SUMMARY"
+          case "$state" in BRIDGE_0001_0009|BRIDGE_0001_0010) ;; *) echo "::error::refused by precheck state $state"; exit 1 ;; esac
+          echo "PRECHECK_STATE=$state" >> "$GITHUB_ENV"
+
+      - name: Backup before any write (schema only, no row data) and migration rows
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb' }}
+        env:
+          PGOPTIONS: '-c search_path=public'
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/certledger0010-backup"
+          mkdir -p "$out"
+          /usr/lib/postgresql/18/bin/pg_dump "$FCB_MIGRATOR_DB_URL" --schema-only --schema=public --no-password > "$out/schema_before.sql" 2>/dev/null \
+            || { echo "::error::schema-only backup failed; refusing to write"; exit 1; }
+          /usr/lib/postgresql/18/bin/psql "$FCB_MIGRATOR_DB_URL" -X -A -t -F '=' -v ON_ERROR_STOP=1 \
+            -c 'select m.version, m.name, m.sha256, m.applied_at from public.schema_migrations m order by m.version' > "$out/schema_migrations_before.txt"
+          sha256sum "$out"/* | sed "s#$out/##" >> "$GITHUB_STEP_SUMMARY"
+          echo "BACKUP_DIR=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb' }}
+        with:
+          name: certledger0010-backup-${{ github.run_id }}
+          path: ${{ runner.temp }}/certledger0010-backup
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode != 'apply' }}
+        run: |
+          echo "## Diagnose mode - prechecks only, nothing was written" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply bridge 0010 and the fcb_app grant (single transaction, run twice) and verify
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb' }}
+        env:
+          PGOPTIONS: '-c search_path=public -c quote_all_identifiers=off'
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          PSQL=/usr/lib/postgresql/18/bin/psql
+          GUARD="DO \$guard\$ BEGIN IF pg_catalog.current_database() OPERATOR(pg_catalog.<>) '$EXPECTED_DB'::pg_catalog.name OR pg_catalog.current_schema() IS NULL OR pg_catalog.current_schema() OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name OR (pg_catalog.current_schemas(true))[1] OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.name OR CURRENT_USER OPERATOR(pg_catalog.<>) SESSION_USER OR CURRENT_USER OPERATOR(pg_catalog.<>) 'fcb_migrator'::pg_catalog.name OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000 OR pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>) 189999 OR NOT COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) THEN RAISE EXCEPTION 'FCB_TARGET_GUARD_FAILED'; END IF; END \$guard\$"
+          sp() {
+            local err rc=0
+            err="$(mktemp)"
+            "$PSQL" "$FCB_MIGRATOR_DB_URL" "$@" 2>"$err" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::psql failed (exit $rc)" >&2
+              echo "psql (sanitized): $(python3 -I -S scripts/aiven_pg18_diag.py sanitize "$err")" >&2
+            fi
+            rm -f "$err"; return "$rc"
+          }
+          run() { sp -X -q -v ON_ERROR_STOP=1 -1 -c "$GUARD" -f "$SCRIPT" -f sql/aiven/apifootball_cert_ledger_0010_grant.sql >/dev/null; }
+          rows() { sp -X -A -t -F '=' -c 'select m.version, m.name, m.sha256, m.applied_at from public.schema_migrations m order by m.version'; }
+          run;    first="$(rows)"
+          run;    second="$(rows)"
+          test "$first" = "$second" || { echo "::error::second run changed schema_migrations"; exit 1; }
+          files10="$(for f in sql/migrations/bridge/00[01][0-9]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done)"
+          test "$(printf '%s\n' "$second" | cut -d'=' -f1-3)" = "$files10" || { echo "::error::recorded rows differ from repo files"; exit 1; }
+          # History before 0010 is untouched (names, checksums and applied_at).
+          test "$(printf '%s\n' "$second" | head -n 9)" = "$(head -n 9 "$BACKUP_DIR/schema_migrations_before.txt")" \
+            || [ "$PRECHECK_STATE" = "BRIDGE_0001_0010" ] || { echo "::error::0001-0009 history changed"; exit 1; }
+          echo "## 0010: PASS (state before: $PRECHECK_STATE; run 2 no-op; fcb_app S I on the two cert ledger tables only)" >> "$GITHUB_STEP_SUMMARY"

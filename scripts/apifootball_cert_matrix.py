@@ -110,9 +110,11 @@ REUSE_SOURCE_SHA = "848c007"
 REUSE_EVIDENCE_DATE = "2026-11-11"
 CODE_PATH = ("bridge/api_football", "bridge/server.py", "bridge/db_identity.py", "requirements.txt")
 CODE_PATH_CHANGES = ("bridge/api_football/contracts.py", "bridge/api_football/stream_scan.py",
-                     "bridge/api_football/tools.py")
-CHANGES_SINCE = ("e155193 (#193): " + ", ".join(CODE_PATH_CHANGES)
-                 + "; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path")
+                     "bridge/api_football/tools.py", "bridge/server.py")
+CHANGES_SINCE = ("e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; "
+                 "#198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup "
+                 "logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file "
+                 "of the API-FOOTBALL code path")
 _PROOF = "tests/test_apifootball_cert_reuse_equivalence.py"
 _SAME_REPLY = (" Proof: the recorded envelope replayed through current main gives the recorded MCP reply "
                "(status, parameters, pagination, pagination_state, warnings, network_calls_made).")

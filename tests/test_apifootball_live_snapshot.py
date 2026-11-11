@@ -16,6 +16,12 @@ from apifootball_campaign_kit import FakeLedger, Provider, Quota, Store, envelop
 
 batch = load("apifootball_cert_batch1_snap", "apifootball_cert_batch1.py")
 snap = load("apifootball_live_snapshot_t", "apifootball_live_snapshot.py")
+
+
+@pytest.fixture(autouse=True)
+def _owner_authorized(monkeypatch):
+    """The runner sends nothing without the owner authorization variable (tested separately)."""
+    monkeypatch.setenv(batch.AUTH_VAR, "true")
 FID = 900001
 NULL_SCORE = {"home": None, "away": None}
 FIXTURE = {"fixture": {"id": FID, "timezone": "UTC", "status": {"long": "Second Half", "short": "2H", "elapsed": 67, "extra": None}},

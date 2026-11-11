@@ -55,27 +55,106 @@ def _provider_scripts():
             yield path, text
 
 
-# AF-05 (2026-11-11, declared intentional change): the certification campaign runner drives the real
-# MCP tool code (tools.register_tools) on the RUNTIME client, ResilientFootballClient, whose default
-# quota is the shared PostgresQuota coordinator (+ circuit breaker), like the deployed server. It is
-# known here by name and checked statically below; it is not a live_harness script.
+# AF-05/AF-08 (2026-11-11, DECLARED INTENTIONAL CHANGE to this guard): two authorized doors to the
+# provider. (1) live_harness.coordinated_client for the three legacy live scripts, unchanged.
+# (2) the official certification campaign runner, which drives the real MCP tool code on the RUNTIME
+# client (ResilientFootballClient, default quota = the shared PostgresQuota coordinator). Being named
+# here is NOT enough: _runner_guard_failures() proves BEHAVIOURALLY that the runner sends nothing
+# without the owner authorization variable, nothing without an atomic budget reservation made before
+# the send, and that every request it sends is tracked in the campaign ledger within the cap. The
+# mutation tests below show this guard fails when either control is removed from the runner.
 RUNTIME_CLIENT_SCRIPTS = ("apifootball_cert_batch1.py",)
 
 
-def test_every_provider_script_is_known_and_uses_the_harness():
+def test_every_provider_script_is_known_and_uses_an_authorized_door():
     found = {p.name for p, _ in _provider_scripts()}
     assert found == set(LIVE_SCRIPTS) | set(RUNTIME_CLIENT_SCRIPTS), \
         "a new script reaches API-FOOTBALL: route it through live_harness"
     for path, text in _provider_scripts():
         if path.name in RUNTIME_CLIENT_SCRIPTS:
+            assert _runner_guard_failures(_load_runner(ROOT / "scripts" / path.name)) == [], path.name
             continue
         assert "coordinated_client" in text, path.name
+
+
+def _load_runner(path, name="af_cert_runner_guard"):
+    import importlib.util
+    import sys as _sys
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _runner_guard_failures(runner) -> list[str]:
+    """Behavioural guard of the campaign runner (offline: MockTransport, in-memory ledger)."""
+    import json as _json
+    import os as _os
+
+    from apifootball_campaign_kit import FakeLedger, Provider, Quota, Store, settings
+
+    plan_text = runner.render_plan(runner.build_plan())
+    plan = _json.loads(plan_text)
+
+    def run(ledger, provider, campaign):
+        asyncio.run(runner.execute(plan, campaign_id=campaign, settings=settings(), ledger=ledger,
+                                   inner_transport=provider.transport(), quota=Quota(), plan_text=plan_text,
+                                   source_sha="guard"))
+
+    class RefusingLedger(FakeLedger):
+        async def reserve(self, campaign_id, call_id):
+            raise runner.BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")
+
+    failures = []
+    saved = _os.environ.pop(runner.AUTH_VAR, None)
+    try:
+        provider = Provider()
+        store = Store()
+        run(FakeLedger(store), provider, "guard-no-auth-001")
+        if provider.sent or store.attempts:
+            failures.append("SENDS_WITHOUT_OWNER_AUTHORIZATION")
+        _os.environ[runner.AUTH_VAR] = "true"
+        provider = Provider()
+        run(RefusingLedger(Store()), provider, "guard-refused-01")
+        if provider.sent:
+            failures.append("SENDS_WITHOUT_BUDGET_RESERVATION")
+        provider, store = Provider(), Store()
+        store.campaigns["guard-tracked-01"] = {"budget": 5, "plan_sha": runner.plan_sha256(plan_text)}
+        run(FakeLedger(store), provider, "guard-tracked-01")
+        calls = [c for _, _, c in store.attempts]
+        if len(provider.sent) != len(store.attempts) or len(store.attempts) > 5 or "UNKNOWN" in calls:
+            failures.append("UNTRACKED_OR_OVER_BUDGET")
+    finally:
+        _os.environ.pop(runner.AUTH_VAR, None)
+        if saved is not None:
+            _os.environ[runner.AUTH_VAR] = saved
+    return failures
+
+
+_RESERVE = "await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send"
+_AUTH = 'if os.environ.get(AUTH_VAR, "") != "true":\n                raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")'
+
+
+@pytest.mark.parametrize("original,mutant,expected", [
+    (_RESERVE, "pass  # MUTATION: budget reservation removed", "SENDS_WITHOUT_BUDGET_RESERVATION"),
+    (_AUTH, "pass  # MUTATION: owner authorization removed", "SENDS_WITHOUT_OWNER_AUTHORIZATION"),
+])
+def test_guard_fails_on_a_mutated_runner(tmp_path, original, mutant, expected):
+    """Mutation test: a copy of the runner without one control must make the guard FAIL."""
+    text = (ROOT / "scripts" / "apifootball_cert_batch1.py").read_text(encoding="utf-8")
+    assert text.count(original) == 1, "the control to mutate moved: update the mutation"
+    mutated = tmp_path / "apifootball_cert_batch1_mutant.py"
+    text = text.replace("ROOT = Path(__file__).resolve().parents[1]", f"ROOT = Path({str(ROOT)!r})")
+    mutated.write_text(text.replace(original, mutant), encoding="utf-8")
+    failures = _runner_guard_failures(_load_runner(mutated, "af_cert_runner_mutant_" + expected.lower()))
+    assert expected in failures
 
 
 @pytest.mark.parametrize("name", RUNTIME_CLIENT_SCRIPTS)
 def test_runtime_client_scripts_keep_the_shared_coordinator(name):
     """The campaign runner never replaces the coordinator: its live entry point passes no quota, so
-    ResilientFootballClient builds PostgresQuota; every request is budgeted write-ahead."""
+    ResilientFootballClient builds PostgresQuota; one attempt per call, hard cap 78."""
     tree = ast.parse((ROOT / "scripts" / name).read_text(encoding="utf-8"))
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
     for node in ast.walk(main):

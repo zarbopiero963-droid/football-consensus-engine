@@ -7,8 +7,10 @@ name: api-football-cert-campaign
 #   live_full_match_snapshot - one live match, ceiling 8 attempts per snapshot (run only during a match)
 # Every attempt (first send, retry, timeout, ambiguous reply) is reserved write-ahead in a persistent
 # campaign ledger in PostgreSQL keyed by campaign_id: a restart or re-run with the same id never gets
-# a new budget. The ledger tables need an owner-approved migration first; until it lands the runner
-# refuses with CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any request. Every request also holds a
+# a new budget. The ledger is bridge migration 0010, applied only by the owner-gated workflow
+# fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml; where it is missing the runner refuses with
+# CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any request. The runner itself re-checks the owner
+# variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED before every request. Every request also holds a
 # lease of the shared quota coordinator (CLAUDE.md §2.4). No secret is printed or stored in artefacts.
 on:
   workflow_dispatch:
@@ -89,6 +91,7 @@ jobs:
         env:
           APIFOOTBALL_API_KEY: ${{ secrets.APIFOOTBALL_API_KEY }}
           DATABASE_URL: ${{ secrets.APIFOOTBALL_COORDINATOR_DATABASE_URL }}
+          APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED: ${{ vars.APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED }}
           CAMPAIGN: ${{ inputs.campaign }}
           CAMPAIGN_ID: ${{ inputs.campaign_id }}
           FIXTURE_ID: ${{ inputs.fixture_id }}

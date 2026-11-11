@@ -21,6 +21,12 @@ PLAN_TEXT = batch.render_plan(batch.build_plan())
 PLAN = json.loads(PLAN_TEXT)
 
 
+@pytest.fixture(autouse=True)
+def _owner_authorized(monkeypatch):
+    """The runner sends nothing without the owner authorization variable (tested separately)."""
+    monkeypatch.setenv(batch.AUTH_VAR, "true")
+
+
 def _run(store, provider, campaign="cert-batch1-test-0001"):
     return asyncio.run(batch.execute(PLAN, campaign_id=campaign, settings=settings(), ledger=FakeLedger(store),
                                      inner_transport=provider.transport(), quota=Quota(), plan_text=PLAN_TEXT,
@@ -190,3 +196,10 @@ def test_workflow_is_manual_owner_gated_and_masks_secrets():
     assert "require_owner_main_dispatch.sh" in text and "require_protected_environment.sh" in text
     assert "::add-mask::" in text
     assert "--authorize-live-campaign" in text
+
+
+def test_without_owner_authorization_nothing_is_reserved_or_sent(monkeypatch):
+    monkeypatch.delenv(batch.AUTH_VAR, raising=False)
+    store, provider = Store(), Provider()
+    _run(store, provider)
+    assert provider.sent == [] and store.attempts == []

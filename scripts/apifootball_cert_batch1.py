@@ -13,9 +13,11 @@ Budget model (owner conditions A and C, 2026-11-11):
   * a restart or re-run with the same campaign_id continues the SAME budget, never a new one;
   * RetryPolicy(max_attempts=1): one attempt per planned call, no automatic retry;
   * every request also takes a lease of the shared quota coordinator (PostgresQuota, CLAUDE.md §2.4).
-The campaign ledger tables do NOT exist yet (no migration). PostgresCampaignLedger refuses with
-CAMPAIGN_LEDGER_MIGRATION_REQUIRED and the run stops before any request: the migration is an
-owner decision (see docs/certification/apifootball/README.md, "Ledger di campagna").
+  * every request needs the owner authorization variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true,
+    checked by the transport itself before the reservation.
+The campaign ledger is bridge migration 0010 (dedicated tables), applied ONLY by the owner-gated
+workflow fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml. Where it is not applied,
+PostgresCampaignLedger refuses with CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any request.
 
 Usage:
   python scripts/apifootball_cert_batch1.py --write-plan
@@ -44,7 +46,10 @@ PLAN_PATH = ROOT / "docs" / "certification" / "apifootball" / "batch1_plan.json"
 HARD_CAP = 78  # owner decision 2026-11-11: initial requests + retries + timeouts + ambiguous replies
 ATTEMPTS_PER_CALL = 1  # RetryPolicy(max_attempts=1)
 CAMPAIGN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
-LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts")
+LEDGER_TABLES = ("api_football_cert_campaigns", "api_football_cert_campaign_attempts")  # bridge migration 0010
+# Owner authorization (repository variable passed by the workflow). Checked by the transport before
+# EVERY request, whatever the entry point: without it nothing is reserved and nothing is sent.
+AUTH_VAR = "APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED"
 
 L, S, T = 39, 2025, 33  # Premier League, season 2025 (2025/26, completed), Manchester United
 
@@ -260,6 +265,10 @@ class BudgetExhausted(RuntimeError):
     """Fixed code only."""
 
 
+class NotAuthorized(RuntimeError):
+    """Fixed code only."""
+
+
 class LedgerUnavailable(RuntimeError):
     """Fixed code only."""
 
@@ -272,79 +281,108 @@ class CampaignLedger(Protocol):
 
 
 class PostgresCampaignLedger:
-    """Proposed design. The tables do not exist: every method fails closed until the owner-approved
-    migration lands. It never creates a table."""
+    """Campaign ledger on bridge migration 0010 (api_football_cert_campaigns / _attempts).
 
-    def __init__(self, connect=None):
+    Fails closed: if the tables are missing it raises CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any
+    provider request; it never creates or alters a table. A reservation is one short transaction,
+    committed BEFORE the HTTP request leaves: transaction-scoped advisory lock on the campaign,
+    count, INSERT of seq = used + 1 (the 0010 trigger re-checks seq and budget; the primary key is
+    the backstop). Database errors become fixed codes; no message, DSN or value is surfaced."""
+
+    LOCK_NAMESPACE = 460244130  # bridge 460244120 / signer 460244121 are the migration locks
+
+    def __init__(self, connect=None, schema: str = "public"):
         if connect is None:
             from app.db import connect as connect  # noqa: PLW0127 - DATABASE_URL from env, never logged
+        if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
+            raise ValueError("INVALID_SCHEMA")
         self._connect = connect
+        self._schema = schema  # "public" in production; a throwaway schema in integration tests
+        self._campaigns = f"{schema}.api_football_cert_campaigns"
+        self._attempts = f"{schema}.api_football_cert_campaign_attempts"
+
+    @staticmethod
+    def _one(cur, key: str, index: int = 0):
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return row[key] if isinstance(row, dict) else row[index]
 
     def _require_schema(self, cur) -> None:
         for table in LEDGER_TABLES:
-            cur.execute("SELECT to_regclass(%s) AS t", (table,))
-            row = cur.fetchone()
-            if (row["t"] if isinstance(row, dict) else row[0]) is None:
+            cur.execute("SELECT pg_catalog.to_regclass(%s) AS t", (f"{self._schema}.{table}",))
+            if self._one(cur, "t") is None:
                 raise LedgerUnavailable("CAMPAIGN_LEDGER_MIGRATION_REQUIRED")
 
+    def _guarded(self, fn, *args):
+        try:
+            return fn(*args)
+        except (LedgerUnavailable, BudgetExhausted):
+            raise
+        except Exception as exc:  # psycopg errors: fixed code only, never the message
+            text = type(exc).__name__ + ":" + (getattr(getattr(exc, "diag", None), "message_primary", "") or "")
+            if "API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED" in text or "UniqueViolation" in text:
+                raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED") from None
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_UNAVAILABLE") from None
+
     def _open(self, campaign_id: str, budget: int, plan_sha: str) -> None:
+        if not 1 <= budget <= HARD_CAP:
+            raise LedgerUnavailable("CAMPAIGN_BUDGET_OUT_OF_RANGE")
         with self._connect() as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute("INSERT INTO api_football_cert_campaigns (campaign_id, budget, plan_sha256) "
+            cur.execute(f"INSERT INTO {self._campaigns} (campaign_id, budget, plan_sha256) "
                         "VALUES (%s, %s, %s) ON CONFLICT (campaign_id) DO NOTHING", (campaign_id, budget, plan_sha))
-            cur.execute("SELECT budget, plan_sha256 FROM api_football_cert_campaigns WHERE campaign_id=%s",
+            cur.execute(f"SELECT budget, plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s",
                         (campaign_id,))
             row = cur.fetchone()
             stored_budget = row["budget"] if isinstance(row, dict) else row[0]
             stored_sha = row["plan_sha256"] if isinstance(row, dict) else row[1]
-            if stored_sha != plan_sha or stored_budget > HARD_CAP:
+            if stored_sha != plan_sha or stored_budget != budget:
                 raise LedgerUnavailable("CAMPAIGN_PLAN_MISMATCH")
 
     def _reserve(self, campaign_id: str, call_id: str) -> int:
         with self._connect() as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute("SELECT budget FROM api_football_cert_campaigns WHERE campaign_id=%s FOR UPDATE",
-                        (campaign_id,))
-            row = cur.fetchone()
-            if row is None:
+            cur.execute("SELECT pg_catalog.pg_advisory_xact_lock(%s::pg_catalog.int4, pg_catalog.hashtext(%s))",
+                        (self.LOCK_NAMESPACE, campaign_id))
+            cur.execute(f"SELECT budget FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
+            budget = self._one(cur, "budget")
+            if budget is None:
                 raise LedgerUnavailable("CAMPAIGN_NOT_OPEN")
-            budget = min(int(row["budget"] if isinstance(row, dict) else row[0]), HARD_CAP)
-            cur.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts WHERE campaign_id=%s",
+            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} WHERE campaign_id=%s",
                         (campaign_id,))
-            n = cur.fetchone()
-            used = int(n["n"] if isinstance(n, dict) else n[0])
-            if used >= budget:
+            used = int(self._one(cur, "n"))
+            if used >= min(int(budget), HARD_CAP):
                 raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")
-            cur.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+            cur.execute(f"INSERT INTO {self._attempts} (campaign_id, seq, call_id) "
                         "VALUES (%s, %s, %s)", (campaign_id, used + 1, call_id))
             return used + 1  # committed on leaving the block, BEFORE the request is sent
 
     def _used(self, campaign_id: str) -> int:
         with self._connect() as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts WHERE campaign_id=%s",
+            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} WHERE campaign_id=%s",
                         (campaign_id,))
-            n = cur.fetchone()
-            return int(n["n"] if isinstance(n, dict) else n[0])
+            return int(self._one(cur, "n"))
 
     def _attempted(self, campaign_id: str) -> set[str]:
         with self._connect() as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute("SELECT DISTINCT call_id FROM api_football_cert_campaign_attempts WHERE campaign_id=%s",
+            cur.execute(f"SELECT DISTINCT call_id FROM {self._attempts} WHERE campaign_id=%s",
                         (campaign_id,))
             return {r["call_id"] if isinstance(r, dict) else r[0] for r in cur.fetchall()}
 
     async def open(self, campaign_id, budget, plan_sha):
-        await asyncio.to_thread(self._open, campaign_id, budget, plan_sha)
+        await asyncio.to_thread(self._guarded, self._open, campaign_id, budget, plan_sha)
 
     async def reserve(self, campaign_id, call_id):
-        return await asyncio.to_thread(self._reserve, campaign_id, call_id)
+        return await asyncio.to_thread(self._guarded, self._reserve, campaign_id, call_id)
 
     async def used(self, campaign_id):
-        return await asyncio.to_thread(self._used, campaign_id)
+        return await asyncio.to_thread(self._guarded, self._used, campaign_id)
 
     async def attempted_calls(self, campaign_id):
-        return await asyncio.to_thread(self._attempted, campaign_id)
+        return await asyncio.to_thread(self._guarded, self._attempted, campaign_id)
 
 
 _CURRENT_CALL: contextvars.ContextVar[str] = contextvars.ContextVar("af_cert_call", default="UNKNOWN")
@@ -361,7 +399,9 @@ def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: d
     class _BudgetTransport(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request):
             call_id = _CURRENT_CALL.get()
-            await ledger.reserve(campaign_id, call_id)  # raises before any send
+            if os.environ.get(AUTH_VAR, "") != "true":
+                raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")  # before any reservation or send
+            await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send
             response = await inner.handle_async_request(request)
             if capture is None:
                 return response
@@ -680,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
         print("PLAN_UP_TO_DATE" if ok else "PLAN_OUT_OF_DATE")
         return 0 if ok else 1
     # --execute: owner-dispatched workflow only. Fails closed on every missing precondition.
-    if not args.authorize_live_campaign or not args.out:
+    if not args.authorize_live_campaign or not args.out or os.environ.get(AUTH_VAR, "") != "true":
         print("LIVE_CAMPAIGN_NOT_AUTHORIZED")
         return 2
     import httpx

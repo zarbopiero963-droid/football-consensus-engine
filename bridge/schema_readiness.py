@@ -47,9 +47,15 @@ REQUIRED_TABLES = (
 DEFERRED_WHILE_THROTTLE_OFF = {9: ("oauth_throttle_buckets", "oauth_throttle_unlock_audit")}
 
 
+# AF-07: the API-FOOTBALL certification campaign ledger (0010) is used only by the owner-gated
+# campaign runner in GitHub Actions, never by the runtime: it is always deferred (a database
+# without it stays READY), and its tables are required only once 0010 is recorded.
+ALWAYS_DEFERRED = {10: ("api_football_cert_campaigns", "api_football_cert_campaign_attempts")}
+
+
 def _deferrable() -> dict[int, tuple[str, ...]]:
     from bridge.oauth_persistent_throttle import mode
-    return DEFERRED_WHILE_THROTTLE_OFF if mode() == "off" else {}
+    return {**(DEFERRED_WHILE_THROTTLE_OFF if mode() == "off" else {}), **ALWAYS_DEFERRED}
 
 
 def _default_connect():
@@ -64,7 +70,8 @@ def evaluate(connect: Callable = _default_connect) -> dict[str, Any]:
     """Synchronous, read-only check. Returns {"state", "missing_tables", "bridge_versions"}."""
     expected = {m.version: (m.name, m.checksum) for m in load_migrations(BRIDGE.directory)}
     deferrable = _deferrable()
-    checked = tuple(REQUIRED_TABLES) + tuple(t for _v, ts in sorted(DEFERRED_WHILE_THROTTLE_OFF.items())
+    checked = tuple(REQUIRED_TABLES) + tuple(t for _v, ts in sorted({**DEFERRED_WHILE_THROTTLE_OFF,
+                                                                      **ALWAYS_DEFERRED}.items())
                                              for t in ts)
     result: dict[str, Any] = {"state": "DB_UNAVAILABLE", "missing_tables": None,
                               "bridge_versions": len(expected), "deferred_versions": []}

@@ -122,8 +122,8 @@ LEGACY_SHA256={
 
 def test_bridge_series_keeps_0001_0007_bytes_and_adds_runtime_tables():
     items=migrations.load_migrations()
-    # Intentional change (OAuth persistent throttle): the series now ends at 0009 (was 1..8).
-    assert [m.version for m in items]==list(range(1,10))
+    # Intentional change (OAuth persistent throttle, then AF-07 cert ledger): the series ends at 0010.
+    assert [m.version for m in items]==list(range(1,11))
     assert {m.version:m.checksum for m in items[:7]}==LEGACY_SHA256
     m8=items[7]
     assert m8.name=='0008_runtime_tables.sql'

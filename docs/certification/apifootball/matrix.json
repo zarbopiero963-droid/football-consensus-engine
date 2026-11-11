@@ -232,7 +232,7 @@
    "mcp_schema_type": "",
    "notes": "must not be provoked live (invalid key, quota burn, or not reproducible on demand); covered through httpx.MockTransport",
    "offline_status": "COVERED",
-   "offline_tests": "tests/test_api_football_live_harness.py::test_breaker_opens_after_provider_failures_and_refuses_without_sending;tests/test_api_football_live_smoke.py::test_stops_on_error_or_zero_quota;tests/test_apifootball_breaker_limits.py::test_a_half_open_probe_answered_by_a_limitation_does_not_close_the_circuit;tests/test_apifootball_breaker_limits.py::test_a_limitation_does_not_reset_the_count_of_real_faults;tests/test_apifootball_breaker_limits.py::test_two_consecutive_faults_still_open_the_circuit;tests/test_apifootball_cert_20261111_findings.py::test_warn_http_errors_carry_the_error_warning;tests/test_apifootball_cert_batch1.py::test_retries_are_counted_one_by_one_by_the_transport;tests/test_apifootball_error_codes.py::test_provider_http_errors_get_distinct_fixed_codes;tests/test_apifootball_error_codes.py::test_retries_that_end_in_success_are_all_counted;tests/test_apifootball_error_codes.py::test_retry_after_is_ignored_outside_429;tests/test_apifootball_live_odds_states.py::test_no_reply_is_unavailable_with_the_fixed_code;tests/test_apifootball_live_snapshot.py::test_retry_errors_never_exceed_the_ceiling;tests/test_apifootball_pr07_certification.py::test_provider_http_failures_are_bounded_and_sanitized;tests/test_apifootball_resilience.py::test_client_circuit_blocks_after_repeated_provider_failures;tests/test_apifootball_resilience.py::test_retry_503_twice_then_success_has_three_distinct_quota_debits;tests/test_apifootball_resilience.py::test_transport_status_handling_never_follows_redirect;tests/test_apifootball_review_p3.py::test_shared_flight_failure_is_counted_once_and_keeps_its_code;tests/test_apifootball_stream_scan_fast_path.py::test_fast_path_is_off_when_the_token_bound_is_below_its_longest_token;tests/test_mcp_e2e_apifootball_suite.py::test_settlement_rules",
+   "offline_tests": "tests/test_api_football_live_harness.py::test_breaker_opens_after_provider_failures_and_refuses_without_sending;tests/test_api_football_live_smoke.py::test_stops_on_error_or_zero_quota;tests/test_apifootball_breaker_limits.py::test_a_half_open_probe_answered_by_a_limitation_does_not_close_the_circuit;tests/test_apifootball_breaker_limits.py::test_a_limitation_does_not_reset_the_count_of_real_faults;tests/test_apifootball_breaker_limits.py::test_two_consecutive_faults_still_open_the_circuit;tests/test_apifootball_cert_20261111_findings.py::test_warn_http_errors_carry_the_error_warning;tests/test_apifootball_cert_batch1.py::test_retries_are_counted_one_by_one_by_the_transport;tests/test_apifootball_cert_ledger_workflow.py::test_generated_0001_0010_script_is_current;tests/test_apifootball_error_codes.py::test_provider_http_errors_get_distinct_fixed_codes;tests/test_apifootball_error_codes.py::test_retries_that_end_in_success_are_all_counted;tests/test_apifootball_error_codes.py::test_retry_after_is_ignored_outside_429;tests/test_apifootball_live_odds_states.py::test_no_reply_is_unavailable_with_the_fixed_code;tests/test_apifootball_live_snapshot.py::test_retry_errors_never_exceed_the_ceiling;tests/test_apifootball_pr07_certification.py::test_provider_http_failures_are_bounded_and_sanitized;tests/test_apifootball_resilience.py::test_client_circuit_blocks_after_repeated_provider_failures;tests/test_apifootball_resilience.py::test_retry_503_twice_then_success_has_three_distinct_quota_debits;tests/test_apifootball_resilience.py::test_transport_status_handling_never_follows_redirect;tests/test_apifootball_review_p3.py::test_shared_flight_failure_is_counted_once_and_keeps_its_code;tests/test_apifootball_stream_scan_fast_path.py::test_fast_path_is_off_when_the_token_bound_is_below_its_longest_token;tests/test_mcp_e2e_apifootball_suite.py::test_settlement_rules",
    "reuse_proof": "",
    "reuse_reason": "",
    "reuse_status": "",
@@ -3980,7 +3980,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -4350,7 +4350,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000; 1990..2100",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -4424,7 +4424,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -4831,7 +4831,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "PROVIDER_REJECTED_OBSERVED",
@@ -7125,7 +7125,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7273,7 +7273,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7532,7 +7532,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7606,7 +7606,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7680,7 +7680,7 @@
    "verdict": "NOT_TESTED"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "",
    "contract_required": "",
    "contract_status": "DOCUMENTED_OFFICIAL",
@@ -7717,7 +7717,7 @@
    "verdict": "DATA_PRESENT"
   },
   {
-   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, bridge/api_football/stream_scan.py, bridge/api_football/tools.py; 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
+   "changes_since": "e155193 (#193): bridge/api_football/contracts.py, stream_scan.py, tools.py; #198 (1d57ceb, stacked base): bridge/server.py healthz fields and OAuth-throttle startup logs only (no API-FOOTBALL tool path); 6615acb, 6c69521, d09571f, f666cc1 touch no file of the API-FOOTBALL code path",
    "constraints": "integer 1..2000000000; <= MAX_PAGE (100000, transport paging bound)",
    "contract_required": "false",
    "contract_status": "DOCUMENTED_OFFICIAL",

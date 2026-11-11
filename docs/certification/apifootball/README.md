@@ -60,10 +60,10 @@ Non sono difetti del MCP. Se sono documentati, `gate_status` è `PROVIDER_LIMITA
 
 Colonne della matrice: `source_sha`, `evidence_date`, `evidence_ref`, `changes_since`, `reuse_status`, `reuse_reason`, `reuse_proof`.
 
-**Modifiche tra 848c007 e f666cc1 sul percorso di codice API-FOOTBALL** (`bridge/api_football/**`, `bridge/server.py`, `bridge/db_identity.py`, `requirements.txt`): solo `e155193` (#193), che ha toccato `contracts.py`, `stream_scan.py` e `tools.py`. Gli altri commit del periodo (`6615acb`, `6c69521`, `d09571f`, `f666cc1`) non toccano quel percorso.
+**Modifiche tra 848c007 e la base del branch sul percorso di codice API-FOOTBALL** (`bridge/api_football/**`, `bridge/server.py`, `bridge/db_identity.py`, `requirements.txt`): `e155193` (#193), che ha toccato `contracts.py`, `stream_scan.py` e `tools.py`; e #198 (base impilata), che in `bridge/server.py` aggiunge solo campi di `/healthz` e log di avvio del throttle OAuth, fuori dal percorso dei tool API-FOOTBALL. Gli altri commit del periodo (`6615acb`, `6c69521`, `d09571f`, `f666cc1`) non toccano quel percorso.
 
 **Come è provata l'equivalenza** (`tests/test_apifootball_cert_reuse_equivalence.py`), in due passi:
-1. `git diff --name-only 848c007 HEAD` sul percorso di codice deve coincidere con i tre file registrati. Qualunque nuova modifica invalida i riusi.
+1. `git diff --name-only 848c007 HEAD` sul percorso di codice deve coincidere con i file registrati. Qualunque nuova modifica invalida i riusi.
 2. La busta del provider registrata, riprodotta attraverso il bridge corrente (client resiliente e transport reali su `httpx.MockTransport`), deve dare la risposta MCP registrata. Il confronto riguarda status, parametri, paginazione, `pagination_state`, warning e `network_calls_made`; anche i dati restano identici.
 
 | Righe | Stato | Motivo |
@@ -95,30 +95,61 @@ Colonne della matrice: `source_sha`, `evidence_date`, `evidence_ref`, `changes_s
 - `C08 countries(search="En")` è una sola chiamata. La risposta del provider decide se il contratto deve imporre il minimo documentato, con una PR separata.
 - Per il tipo di `odds/bets.id` non è prevista nessuna chiamata. Sul filo un intero e una stringa producono lo stesso testo di query, quindi una chiamata reale non li distingue. Resta `DOCS_UNVERIFIED`; l'accettazione di `bets.id` è coperta da `C73`.
 
-### Budget persistente (condizione A) — serve una decisione dell'owner
+### AF-07 — Contatore persistente di campagna (migration bridge 0010)
 
-`scripts/apifootball_cert_batch1.py` conta i tentativi in modo write-ahead:
-- un wrapper del transport httpx, posto sotto il client resiliente reale, riserva e committa ogni tentativo nel ledger di campagna **prima** dell'invio;
-- retry, timeout e risposte ambigue sono quindi sempre contati;
-- un riavvio o un re-run con lo stesso `campaign_id` continua lo stesso budget e non ritenta le chiamate già tentate.
+`scripts/apifootball_cert_batch1.py` conta i tentativi in modo write-ahead. Un wrapper del transport httpx, posto sotto il client resiliente reale, fa tre cose **prima** di ogni invio:
+1. verifica la variabile dell'owner `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true`;
+2. prende un lock advisory per la campagna, valido per la sola transazione;
+3. inserisce `seq = usati + 1` e committa.
 
-Ogni richiesta prende anche il lease del coordinatore di quota condiviso (`PostgresQuota`).
+Ne seguono tre garanzie:
+- retry, timeout e risposte ambigue sono sempre contati;
+- un riavvio o un nuovo dispatch con lo stesso `campaign_id` continua lo stesso budget e non ritenta le chiamate già tentate;
+- ogni richiesta prende anche il lease del coordinatore di quota condiviso (`PostgresQuota`), che resta **intatto**.
 
-**Lo schema adatto non esiste.** Le tabelle del coordinatore (`api_football_quota_*`) hanno un altro significato (finestre per chiave): riusarle cambierebbe la loro ownership (CLAUDE.md §5). Per questo il ledger PostgreSQL rifiuta con `CAMPAIGN_LEDGER_MIGRATION_REQUIRED` prima di qualunque richiesta.
+**Numero e dipendenza.** Su main l'ultima migration bridge è 0008. La PR #198, non ancora mergiata, introduce la 0009 (`0009_oauth_throttle_buckets.sql`). Questa migration è quindi la **0010** (`sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql`).
 
-Migration proposta, **non scritta in `sql/migrations/`, decisione owner**:
+`app/migrations.py` esige una numerazione consecutiva. Per questo il branch è impilato su #198 (`c4ddcad`) e va **mergiato dopo #198**. Il workflow 0010 rifiuta un database che non ha già la 0009.
 
-```sql
-CREATE TABLE api_football_cert_campaigns (
-  campaign_id TEXT PRIMARY KEY, budget INTEGER NOT NULL CHECK (budget BETWEEN 1 AND 78),
-  plan_sha256 TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp());
-CREATE TABLE api_football_cert_campaign_attempts (          -- append-only (trigger anti UPDATE/DELETE)
-  campaign_id TEXT NOT NULL REFERENCES api_football_cert_campaigns,
-  seq INTEGER NOT NULL CHECK (seq BETWEEN 1 AND 78), call_id TEXT NOT NULL,
-  reserved_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY (campaign_id, seq));
-```
+**Contenuto della migration:**
+- è additiva e non tocca tabelle esistenti, in particolare `api_football_quota_*`;
+- crea due tabelle dedicate: `api_football_cert_campaigns` (budget 1..78, fisso alla creazione) e `api_football_cert_campaign_attempts` (`seq` 1..78, chiave `(campaign_id, seq)`);
+- trigger append-only: niente UPDATE, DELETE o TRUNCATE;
+- trigger di budget: `seq` deve essere il numero successivo ed entro il budget.
 
-Il `CHECK (seq <= 78)` rende il tetto vincolante anche nel database. Servono anche i grant `INSERT` e `SELECT` per il ruolo del coordinatore (WP-009).
+**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Il runtime non applica mai le migration, e un test lo verifica.
+
+**Applicazione** (preparata, NON eseguita): `.github/workflows/fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml`, derivato dal workflow 0009 con gli stessi gate:
+- Environment `aiven-production` e dispatch dell'owner da main;
+- `mode=apply` con la frase `APPLY BRIDGE 0010 API-FOOTBALL CERT LEDGER TO defaultdb`;
+- target pinnato, verify-full, identità `fcb_migrator`;
+- precheck 0001-0009 (apply) o 0001-0010 (no-op);
+- backup schema-only prima della scrittura;
+- SQL pinnato SHA-256: `aiven_migrations_bridge_0001_0010.sql` e `apifootball_cert_ledger_0010_grant.sql`;
+- una transazione eseguita due volte;
+- grant a `fcb_app`: solo `SELECT` e `INSERT`.
+
+**Test:**
+- unit: `tests/test_apifootball_cert_ledger_workflow.py`;
+- integrazione su PostgreSQL 18 usa e getta: `tests/integration/test_apifootball_cert_ledger_postgres.py`. Copre la 0010 su un database già a 0009 con dati, append-only, budget nel database, riavvio e re-run, **6 processi concorrenti** (mai oltre il tetto), runner senza 0010 (`CAMPAIGN_LEDGER_MIGRATION_REQUIRED`, 0 richieste) e ruolo con soli `SELECT` e `INSERT`.
+
+**Decisioni owner aperte:**
+1. Il ruolo del DSN `APIFOOTBALL_COORDINATOR_DATABASE_URL` è **presunto** `fcb_app`; un ruolo dedicato sarebbe più stretto.
+2. Il workflow dei ruoli WP-009 (`finalize_bridge_privileges.sql`) fa `REVOKE ALL` su tutte le tabelle. Se viene rieseguito dopo la 0010, toglie i grant del ledger e il runner si ferma senza richieste (fail-closed). Per evitarlo, i grant della 0010 vanno aggiunti a quei file, i cui SHA sono pinnati.
+3. L'ordine di merge: prima #198, poi questa PR.
+
+### AF-08 — Guardia `live_harness` (modifica intenzionale di un test esistente)
+
+`tests/test_api_football_live_harness.py` ammette due percorsi verso il provider:
+- `live_harness.coordinated_client`, per i tre script storici;
+- il runner ufficiale della campagna.
+
+Il nome del file non basta. `_runner_guard_failures()` verifica sul comportamento che il runner:
+- non invia nulla senza la variabile dell'owner;
+- non invia nulla se la prenotazione del budget fallisce;
+- traccia ogni richiesta nel ledger entro il tetto.
+
+**Test di mutazione:** una copia del runner senza la prenotazione, oppure senza il controllo di autorizzazione, fa **fallire** la guardia.
 
 ### Workflow proposto
 
@@ -133,7 +164,7 @@ Il runner in-process esegue gli stessi tool di `tools.py` (contratti, client res
 - solo `workflow_dispatch` e solo da `main`;
 - dispatch dell'owner (`require_owner_main_dispatch.sh`);
 - Environment protetto `api-football-live` con revisori (`require_protected_environment.sh`);
-- variabile `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true` richiesta, che l'owner non ha impostato;
+- variabile `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true` richiesta (verificata anche dal runner prima di ogni richiesta), che l'owner non ha impostato;
 - limite giornaliero dalla variabile dell'owner `APIFOOTBALL_CERT_MAX_DAILY_REQUESTS`; RPM 4, concorrenza 1;
 - `::add-mask::` su chiave, DSN e componenti del DSN;
 - scansione anti-segreti degli artefatti, che vengono cancellati se trova qualcosa;
@@ -146,7 +177,7 @@ Il runner in-process esegue gli stessi tool di `tools.py` (contratti, client res
 Da creare a cura dell'owner:
 - la variabile `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED`;
 - la variabile `APIFOOTBALL_CERT_MAX_DAILY_REQUESTS`;
-- la migration sopra.
+- l'applicazione della migration 0010 tramite il suo workflow (dopo la 0009).
 
 ## LIVE FULL MATCH SNAPSHOT (campagna `live_full_match_snapshot`, NON eseguita)
 
