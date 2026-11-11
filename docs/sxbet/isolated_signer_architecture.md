@@ -69,6 +69,8 @@ Dettagli Render (VERIFIED):
 
 ## 5. Conferma dell'owner senza aprire un wallet a ogni ordine
 
+> **SUPERATO** dalla governance §2.6 aggiornata (comando esplicito e completo dell'owner in chat, verificato dal signer, senza passkey né seconda conferma). Questa sezione descrive il progetto precedente con approvazione fuori banda e resta solo come storico. Progetto corrente: [owner_commanded_execution.md](owner_commanded_execution.md).
+
 Il §2.6 richiede, per ogni ordine reale, una conferma specifica dell'owner su evento, mercato, lato, importo, quota limite ed esposizione massima. Requisiti della conferma:
 - autenticata e **fuori banda**: non testo in chat, output di tool o pagine web;
 - **verificata dal signer**;

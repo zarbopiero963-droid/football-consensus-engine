@@ -1,7 +1,7 @@
 # SX Bet — esecuzione reale su comando esplicito dell'owner (progetto)
 
 Stato: **PROGETTO, NON IMPLEMENTATO.** `LIVE_TRADING` resta OFF/UNAVAILABLE. Nessun ordine reale.
-Base: `main` = `848c007`. Governance di riferimento: CLAUDE.md/AGENTS.md §2.6 come modificato dalla PR che introduce questo documento.
+Base: `main` = `e155193`. Governance di riferimento: CLAUDE.md/AGENTS.md §2.6 come modificato dalla PR che introduce questo documento.
 
 Flusso richiesto dall'owner: *«Piazza 10 USDC su Over 2,5 in Cape Verde–Liberia a quota minima 1,90»* → MCP verifica → signer firma → SX Bet esegue → MCP restituisce l'esito. Nessuna strategia genera scommesse; nessuna passkey; nessuna seconda conferma per un comando esplicito e completo.
 
@@ -40,11 +40,11 @@ ChatGPT / Claude.ai
   → SX Bet (prima testnet Toronto; mainnet solo dopo certificazione e GO)
 ```
 
-Hosting del signer (decisione owner): servizio privato Render (circa 7,25 $/mese con disco: **nuovo costo**), oppure signer "pull" su hardware dell'owner (0 $, disponibilità legata alla macchina). Un web service Free non è adatto (ingresso pubblico, spin-down, filesystem effimero).
+Hosting del signer (decisione owner): servizio privato Render (circa 7,25 $/mese con disco: **nuovo costo**; richiede anche di adattare la guardia in `signer/__init__.py`, che oggi rifiuta l'import quando `RENDER` è impostata), oppure signer "pull" su hardware dell'owner (0 $, disponibilità legata alla macchina). Un web service Free non è adatto (ingresso pubblico, spin-down, filesystem effimero).
 
 ## 4. Tool MCP previsti
 
-Tutti con `destructiveHint=true`, scope `sxbet:trade`, modalità `LIVE_TRADING`, esposti solo sul connettore di trading.
+Tutti con `destructiveHint=true`, scope `sxbet:trade`, esposti solo sul connettore di trading; attivi in `SIMULATION` (senza firma né chiave) e in `LIVE_TRADING`.
 
 - `sxbet_resolve_market` (lettura): evento + mercato + linea + esito → `market_hash` solo con abbinamento `EXACT`; altrimenti `NO_MATCH`/`AMBIGUOUS`.
 - `sxbet_place_order`: `owner_command`, `market_hash`, `outcome_name`, `order_type` `MARKET` (FOK o IOC, decisione D3) o `LIMIT` (GTC), `stake_usdc`, `min_decimal_odds`, `idempotency_key` → `FILLED`/`PARTIALLY_FILLED`/`OPEN`/`NOT_FILLED`/`REJECTED`/`UNKNOWN_RECONCILING`, fill, quota media (DERIVED), commissioni, esposizione e limiti residui.
@@ -73,7 +73,7 @@ Certificazione prima del GO: suite verdi, checklist testnet con evidenze, almeno
 7. Letture di mercato dal signer e sender REST reale, solo Toronto.
 8. Bridge: client HMAC, `SXBET_MODE`, scope `sxbet:trade`, connettore `/mcp-trade`, tool di esecuzione, `sxbet_resolve_market`.
 9. Monitor, riconciliazione all'avvio, heartbeat, cashout/hedge eseguibili.
-10. Deploy del signer (nuovo costo, segreti: decisione owner).
+10. Deploy del signer (nuovo costo, segreti, adattamento della guardia `RENDER` in `signer/__init__.py`: decisione owner).
 11. Evidenze di certificazione testnet.
 12. (Opzionale) KMS.
 13. Abilitazione mainnet dopo certificazione, verifica legale e GO.

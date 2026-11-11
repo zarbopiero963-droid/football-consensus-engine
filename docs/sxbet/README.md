@@ -7,7 +7,7 @@ Fonte tecnica: OpenAPI ufficiale **https://docs.sx.bet/openapi.json** (SX Bet AP
 |---|---|
 | `READ_ONLY` | **implementata**: 36 tool `sxbet_*` (tutte le 36 operazioni GET ufficiali) |
 | `SIMULATION` + `DERIVED` | **implementata**: `sxbet_simulate_order` e 9 tool DERIVED (position manager, esposizione e P&L, anteprime di cancel e di chiusura, hedge, regole, stato del rischio, riconciliazione). Totale **46** tool `sxbet_*`. Nessuno firma, invia o cancella |
-| `LIVE_TRADING` | **non disponibile**. Per la governance §2.6 non può essere attivata finché non esiste ed è testato un signer isolato con conferma fuori banda, verificata dal signer, per ogni singolo ordine |
+| `LIVE_TRADING` | **non disponibile**. Per la governance §2.6 non può essere attivata finché il signer isolato (comando esplicito e completo dell'owner verificato dal signer, limiti obbligatori, kill switch) non esiste, non è certificato su testnet e l'owner non dà un GO scritto. Progetto: [owner_commanded_execution.md](owner_commanded_execution.md) |
 
 Garanzia strutturale: il client (`bridge/sxbet/client.py`) implementa solo GET. In `bridge/` non esistono percorsi di codice per creare, eseguire o cancellare ordini, né per approval, transfer o firma. Lo verificano `tests/test_sxbet_read_only.py::test_no_write_capability_exists` e `tests/test_sxbet_simulation.py::test_no_submission_code_in_signer_or_sxbet_module`. La firma esiste solo nel package separato [`signer/`](../../signer/README.md), che `bridge/` non importa mai.
 
