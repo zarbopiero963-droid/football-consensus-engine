@@ -47,12 +47,14 @@ SNAPSHOT_PLAN_PATH = ROOT / "docs" / "certification" / "apifootball" / "live_sna
 # AF-15: the budget is the owner-APPROVED PLAN's (api_football_cert_plans, bridge 0010), shared by
 # every campaign_id of the plan. The plan is identified by the SHA-256 of the file committed on main;
 # a plan that is not approved stops the runner before any request (PLAN_NOT_APPROVED).
-PLAN_LOCK_NAMESPACE = 460244131  # advisory lock per plan, also taken by the 0010 budget trigger
+# The plan budget is enforced by PostgreSQL itself (bridge 0010): a per-plan counter incremented in
+# the same transaction as each reservation by a SECURITY DEFINER trigger, whatever the isolation.
+SERIALIZATION_RETRIES = 3  # a 40001/40P01 conflict is retried in a NEW transaction, same budget
 HARD_CAP = 78  # owner decision 2026-11-11: initial requests + retries + timeouts + ambiguous replies
 ATTEMPTS_PER_CALL = 1  # RetryPolicy(max_attempts=1)
 CAMPAIGN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
-LEDGER_TABLES = ("api_football_cert_plans", "api_football_cert_campaigns", "api_football_cert_campaign_attempts",
-                 "api_football_cert_campaign_outcomes")  # bridge migration 0010
+LEDGER_TABLES = ("api_football_cert_plans", "api_football_cert_plan_usage", "api_football_cert_campaigns",
+                 "api_football_cert_campaign_attempts", "api_football_cert_campaign_outcomes")  # bridge migration 0010
 # A RESERVED attempt is not a SENT request. Each reserved attempt ends in exactly one state:
 #   RESPONSE_RECEIVED  the provider answered (HTTP status recorded after the exchange);
 #   TRANSPORT_ERROR    the send failed (timeout, reset...): it MAY have reached the provider;
@@ -283,6 +285,11 @@ class NotAuthorized(RuntimeError):
     """Fixed code only."""
 
 
+class SerializationRefused(RuntimeError):
+    """PostgreSQL cancelled the reservation for a concurrency conflict (SQLSTATE 40001 / 40P01):
+    nothing was reserved, nothing is sent. Distinct from CAMPAIGN_BUDGET_EXHAUSTED."""
+
+
 class LedgerUnavailable(RuntimeError):
     """Fixed code only."""
 
@@ -309,11 +316,12 @@ class PostgresCampaignLedger:
 
     Fails closed: if the tables are missing it raises CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any
     provider request; it never creates or alters a table. A reservation is one short transaction,
-    committed BEFORE the HTTP request leaves: transaction-scoped advisory lock on the campaign,
-    count, INSERT of seq = used + 1 (the 0010 trigger re-checks seq and budget; the primary key is
-    the backstop). Database errors become fixed codes; no message, DSN or value is surfaced."""
+    committed BEFORE the HTTP request leaves, explicitly READ COMMITTED: INSERT of the attempt; the
+    0010 SECURITY DEFINER trigger increments the plan counter in the same transaction (used < budget,
+    whatever the isolation level) and assigns seq from it. A serialization conflict is
+    SERIALIZATION_FAILURE, never CAMPAIGN_BUDGET_EXHAUSTED. Database errors become fixed codes; no
+    message, DSN or value is surfaced."""
 
-    LOCK_NAMESPACE = PLAN_LOCK_NAMESPACE  # bridge 460244120 / signer 460244121 are the migration locks
 
     def __init__(self, connect=None, schema: str = "public"):
         if connect is None:
@@ -334,6 +342,15 @@ class PostgresCampaignLedger:
             return None
         return row[key] if isinstance(row, dict) else row[index]
 
+    @staticmethod
+    def _read_committed(conn):
+        """Review #199 P1: every ledger transaction is BEGIN ISOLATION LEVEL READ COMMITTED, explicitly,
+        whatever the role or session default (the 0010 budget trigger refuses any other level)."""
+        if getattr(conn, "info", None) is not None:  # a psycopg connection (offline fakes have none)
+            import psycopg
+            conn.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
+        return conn
+
     def _require_schema(self, cur) -> None:
         for table in LEDGER_TABLES:
             cur.execute("SELECT pg_catalog.to_regclass(%s) AS t", (f"{self._schema}.{table}",))
@@ -343,11 +360,13 @@ class PostgresCampaignLedger:
     def _guarded(self, fn, *args):
         try:
             return fn(*args)
-        except (LedgerUnavailable, BudgetExhausted):
+        except (LedgerUnavailable, BudgetExhausted, SerializationRefused, NotAuthorized):
             raise
         except Exception as exc:  # psycopg errors: fixed code only, never the message
             text = type(exc).__name__ + ":" + (getattr(getattr(exc, "diag", None), "message_primary", "") or "")
-            if "API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED" in text or "UniqueViolation" in text:
+            if getattr(exc, "sqlstate", None) in ("40001", "40P01"):  # a conflict, NOT an exhausted budget
+                raise SerializationRefused("SERIALIZATION_FAILURE") from None
+            if "API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED" in text:  # only the counter at the budget
                 raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED") from None
             if "API_FOOTBALL_CERT_PLAN_NOT_APPROVED" in text:
                 raise LedgerUnavailable("PLAN_NOT_APPROVED") from None
@@ -358,7 +377,7 @@ class PostgresCampaignLedger:
         the budget that counts is the plan's, in the database, shared by all its campaigns."""
         if not 1 <= budget <= HARD_CAP or not re.fullmatch(r"[0-9a-f]{64}", plan_sha or ""):
             raise LedgerUnavailable("CAMPAIGN_BUDGET_OUT_OF_RANGE")
-        with self._connect() as conn, conn.cursor() as cur:
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
             cur.execute(f"SELECT budget FROM {self._plans} WHERE plan_sha256=%s", (plan_sha,))
             if self._one(cur, "budget") is None:
@@ -370,31 +389,34 @@ class PostgresCampaignLedger:
                 raise LedgerUnavailable("CAMPAIGN_PLAN_MISMATCH")
 
     def _reserve(self, campaign_id: str, call_id: str) -> int:
-        with self._connect() as conn, conn.cursor() as cur:
+        """One short READ COMMITTED transaction, committed BEFORE the request is sent. The 0010
+        trigger increments the plan counter in this same transaction and assigns seq from it; a
+        rollback (or a killed process) undoes both."""
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute(f"SELECT plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
-            plan = self._one(cur, "plan_sha256")
-            if plan is None:
-                raise LedgerUnavailable("CAMPAIGN_NOT_OPEN")
-            # One plan at a time (all its campaigns): the same lock the 0010 trigger takes.
-            cur.execute("SELECT pg_catalog.pg_advisory_xact_lock(%s::pg_catalog.int4, pg_catalog.hashtext(%s))",
-                        (self.LOCK_NAMESPACE, plan))
-            cur.execute(f"SELECT budget FROM {self._plans} WHERE plan_sha256=%s", (plan,))
-            budget = self._one(cur, "budget")
-            if budget is None:
+            cur.execute(f"SELECT p.budget FROM {self._campaigns} c JOIN {self._plans} p "
+                        "ON p.plan_sha256 = c.plan_sha256 WHERE c.campaign_id=%s", (campaign_id,))
+            if self._one(cur, "budget") is None:
                 raise LedgerUnavailable("PLAN_NOT_APPROVED")
-            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} a JOIN {self._campaigns} c "
-                        "ON c.campaign_id = a.campaign_id WHERE c.plan_sha256=%s", (plan,))
-            if int(self._one(cur, "n")) >= min(int(budget), HARD_CAP):
-                raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")
-            cur.execute(f"SELECT count(*) AS n FROM {self._attempts} WHERE campaign_id=%s", (campaign_id,))
-            used = int(self._one(cur, "n"))
-            cur.execute(f"INSERT INTO {self._attempts} (campaign_id, seq, call_id) "
-                        "VALUES (%s, %s, %s)", (campaign_id, used + 1, call_id))
-            return used + 1  # committed on leaving the block, BEFORE the request is sent
+            cur.execute(f"INSERT INTO {self._attempts} (campaign_id, call_id) VALUES (%s, %s) RETURNING seq",
+                        (campaign_id, call_id))
+            return int(self._one(cur, "seq"))  # committed on leaving the block
+
+    def _reserve_with_retry(self, campaign_id: str, call_id: str) -> int:
+        """A serialization conflict (40001/40P01) is retried in a NEW transaction: the owner
+        authorization and the approved plan are checked again and the same plan budget applies (the
+        cancelled transaction reserved nothing). Still conflicting -> SERIALIZATION_FAILURE."""
+        for attempt in range(SERIALIZATION_RETRIES):
+            if attempt and os.environ.get(AUTH_VAR, "") != "true":
+                raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")
+            try:
+                return self._guarded(self._reserve, campaign_id, call_id)
+            except SerializationRefused:
+                continue
+        raise SerializationRefused("SERIALIZATION_FAILURE")
 
     def _plan_usage(self, campaign_id: str) -> dict[str, Any]:
-        with self._connect() as conn, conn.cursor() as cur:
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
             cur.execute(f"SELECT p.plan_sha256, p.budget, (SELECT count(*) FROM {self._attempts} a JOIN "
                         f"{self._campaigns} k ON k.campaign_id = a.campaign_id WHERE k.plan_sha256 = p.plan_sha256) AS used "
@@ -407,14 +429,14 @@ class PostgresCampaignLedger:
             return {"plan_sha256": sha, "budget": int(budget), "used": int(used)}
 
     def _used(self, campaign_id: str) -> int:
-        with self._connect() as conn, conn.cursor() as cur:
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
             cur.execute(f"SELECT count(*) AS n FROM {self._attempts} WHERE campaign_id=%s",
                         (campaign_id,))
             return int(self._one(cur, "n"))
 
     def _attempted(self, campaign_id: str) -> set[str]:
-        with self._connect() as conn, conn.cursor() as cur:
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
             cur.execute(f"SELECT DISTINCT call_id FROM {self._attempts} WHERE campaign_id=%s",
                         (campaign_id,))
@@ -423,7 +445,7 @@ class PostgresCampaignLedger:
     def _record(self, campaign_id: str, seq: int, outcome: str, http_status: int | None) -> None:
         if outcome not in OUTCOMES or (outcome == "HTTP_RESPONSE") != (type(http_status) is int):
             raise LedgerUnavailable("CAMPAIGN_OUTCOME_INVALID")
-        with self._connect() as conn, conn.cursor() as cur:
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
             # Append-only: the first outcome of an attempt stays; INSERT privilege only.
             cur.execute(f"INSERT INTO {self._outcomes} (campaign_id, seq, outcome, http_status) "
@@ -431,7 +453,7 @@ class PostgresCampaignLedger:
                         (campaign_id, seq, outcome, http_status))
 
     def _states(self, campaign_id: str) -> list[dict[str, Any]]:
-        with self._connect() as conn, conn.cursor() as cur:
+        with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
             cur.execute(f"SELECT a.seq, a.call_id, o.outcome, o.http_status FROM {self._attempts} a "
                         f"LEFT JOIN {self._outcomes} o ON o.campaign_id = a.campaign_id AND o.seq = a.seq "
@@ -457,7 +479,7 @@ class PostgresCampaignLedger:
         await asyncio.to_thread(self._guarded, self._open, campaign_id, budget, plan_sha)
 
     async def reserve(self, campaign_id, call_id):
-        return await asyncio.to_thread(self._guarded, self._reserve, campaign_id, call_id)
+        return await asyncio.to_thread(self._reserve_with_retry, campaign_id, call_id)
 
     async def used(self, campaign_id):
         return await asyncio.to_thread(self._guarded, self._used, campaign_id)
@@ -470,7 +492,7 @@ _CURRENT_CALL: contextvars.ContextVar[str] = contextvars.ContextVar("af_cert_cal
 # Per planned call: how many attempts the transport reserved and the fixed code of a refusal. A call
 # refused BEFORE any reservation (owner authorization, ledger, budget) sent nothing: NOT_TESTED.
 _CALL_LOG: contextvars.ContextVar[dict | None] = contextvars.ContextVar("af_cert_call_log", default=None)
-PRE_SEND_REFUSALS = (NotAuthorized, BudgetExhausted, LedgerUnavailable)
+PRE_SEND_REFUSALS = (NotAuthorized, BudgetExhausted, LedgerUnavailable, SerializationRefused)
 
 
 def _new_call_log() -> dict[str, Any]:

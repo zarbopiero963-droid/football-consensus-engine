@@ -64,9 +64,9 @@ jobs:
       SCRIPT: sql/aiven/aiven_migrations_bridge_0001_0010.sql
       # SHA-256 of every SQL file this workflow runs (tests/test_apifootball_cert_ledger_workflow.py).
       EXPECTED_SQL_SHA256: |
-        sql/aiven/aiven_migrations_bridge_0001_0010.sql=46d8e0c0c55c29f3aad60c3eb38d561c73db25e7d2e419ec5f8e77e7acbbc1c8
+        sql/aiven/aiven_migrations_bridge_0001_0010.sql=809182b46814ba0e0cda4310912df6789263bfcf946bdf2c450c4c4f8ea19867
         sql/aiven/apifootball_cert_ledger_0010_require_0009.sql=6ce04bb491458a0e94b96cdb587b43563014b2bdcecdf6992fa78724a1092a20
-        sql/aiven/apifootball_cert_ledger_0010_grant.sql=a64d86be4ddf56c8b219af85c666343be2fab8f9ed67734c8f147a1a93fcc9cc
+        sql/aiven/apifootball_cert_ledger_0010_grant.sql=574ce4a9ba2170d9e39b61ea3a170b9319b3bf77e6162b4bfcef8b69a15361bd
       PGCONNECT_TIMEOUT: '15'
       # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
       EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b

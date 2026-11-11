@@ -53,18 +53,20 @@ END $throttle$;
 -- is updated (dedicated PR, owner decision); it keeps a manual or future re-run consistent.
 --   api_football_cert_plans              S                                              scripts/apifootball_cert_batch1.py PostgresCampaignLedger.open / reserve
 --   api_football_cert_campaigns          S, I(campaign_id, plan_sha256)                 PostgresCampaignLedger.open
---   api_football_cert_campaign_attempts  S, I(campaign_id, seq, call_id)               PostgresCampaignLedger.reserve (write-ahead)
+--   api_football_cert_plan_usage         none (counter written only by the SECURITY DEFINER budget trigger)
+--   api_football_cert_campaign_attempts  S, I(campaign_id, call_id)                    PostgresCampaignLedger.reserve (write-ahead; seq from the server)
 --   api_football_cert_campaign_outcomes  S, I(campaign_id, seq, outcome, http_status)  PostgresCampaignLedger.record_outcome
 DO $certledger$
 BEGIN
     IF pg_catalog.to_regclass('public.api_football_cert_plans') IS NOT NULL
+       AND pg_catalog.to_regclass('public.api_football_cert_plan_usage') IS NOT NULL
        AND pg_catalog.to_regclass('public.api_football_cert_campaigns') IS NOT NULL
        AND pg_catalog.to_regclass('public.api_football_cert_campaign_attempts') IS NOT NULL
        AND pg_catalog.to_regclass('public.api_football_cert_campaign_outcomes') IS NOT NULL THEN
         EXECUTE 'GRANT SELECT ON TABLE public.api_football_cert_plans, public.api_football_cert_campaigns, '
                 'public.api_football_cert_campaign_attempts, public.api_football_cert_campaign_outcomes TO fcb_app';
         EXECUTE 'GRANT INSERT (campaign_id, plan_sha256) ON TABLE public.api_football_cert_campaigns TO fcb_app';
-        EXECUTE 'GRANT INSERT (campaign_id, seq, call_id) ON TABLE public.api_football_cert_campaign_attempts TO fcb_app';
+        EXECUTE 'GRANT INSERT (campaign_id, call_id) ON TABLE public.api_football_cert_campaign_attempts TO fcb_app';
         EXECUTE 'GRANT INSERT (campaign_id, seq, outcome, http_status) ON TABLE public.api_football_cert_campaign_outcomes TO fcb_app';
     END IF;
 END $certledger$;

@@ -106,9 +106,13 @@ def test_ledger_is_append_only_and_the_database_enforces_the_budget(schema):
     sha2 = _approve(connect, 2)
     with connect() as conn:
         conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES ('camp-db-00001', %s)", (sha2,))
-        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-db-00001', 1, 'C01')")
-    for statement in ("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-db-00001', 3, 'C03')",
-                      "UPDATE api_football_cert_plans SET budget = 78",
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-db-00001', 'C01')")
+    for statement in ("UPDATE api_football_cert_plans SET budget = 78",
+                      "UPDATE api_football_cert_plan_usage SET used = 0",
+                      "UPDATE api_football_cert_plan_usage SET used = used + 5",
+                      "DELETE FROM api_football_cert_plan_usage",
+                      "TRUNCATE api_football_cert_plan_usage CASCADE",
+                      "INSERT INTO api_football_cert_plan_usage (plan_sha256, used) VALUES ('" + SHA + "', 0)",
                       "UPDATE api_football_cert_campaigns SET plan_sha256 = plan_sha256",
                       "DELETE FROM api_football_cert_campaign_attempts",
                       "DELETE FROM api_football_cert_plans",
@@ -123,10 +127,11 @@ def test_ledger_is_append_only_and_the_database_enforces_the_budget(schema):
             with connect() as conn:
                 conn.execute(statement)
     with connect() as conn:
-        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-db-00001', 2, 'C02')")
-    with pytest.raises(psycopg.Error):  # budget 2 reached
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-db-00001', 'C02')")
+    with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):  # budget 2 reached
         with connect() as conn:
-            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-db-00001', 3, 'C03')")
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-db-00001', 'C03')")
+    _assert_counter_matches_ledger(connect, sha2, 2)
 
 
 def test_reservations_survive_restart_and_rerun(schema):
@@ -245,6 +250,7 @@ def test_least_privilege_role_can_only_append(schema):
         def as_role():
             conn = psycopg.connect(dsn, row_factory=dict_row, options=f"-c search_path={name}")
             conn.execute(SQL("SET ROLE {}").format(Identifier(role)))
+            conn.commit()  # SET ROLE stays; the ledger begins its own READ COMMITTED transactions
             return conn
         ledger = batch.PostgresCampaignLedger(as_role, schema=name)
         asyncio.run(ledger.open("camp-privilege-1", 2, _approve(connect, 2)))
@@ -412,13 +418,20 @@ def _acl(connect):
             "ORDER BY 1, 2, 3").fetchall()
 
 
-def _as_app(db):
-    """A REAL login as fcb_app with its own test credentials: no superuser session, no SET ROLE."""
+def _app_dsn(db, password=None):
+    """fcb_app's own credentials over the test server's TCP; libpq must authenticate with
+    SCRAM-SHA-256 (require_auth): a trust or password-less server makes these tests fail."""
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
     params = conninfo_to_dict(os.environ["TEST_DATABASE_URL"])
-    params.update(dbname=db, user="fcb_app", password=APP_TEST_PASSWORD)
-    conn = psycopg.connect(make_conninfo(**params), row_factory=dict_row, options="-c lock_timeout=2000")
+    params.update(dbname=db, user="fcb_app", password=password or APP_TEST_PASSWORD, require_auth="scram-sha-256")
+    return make_conninfo(**params)
+
+
+def _as_app(db):
+    """A REAL, SCRAM-authenticated login as fcb_app: no superuser session, no SET ROLE."""
+    conn = psycopg.connect(_app_dsn(db), row_factory=dict_row, options="-c lock_timeout=2000")
     assert conn.execute("SELECT session_user = 'fcb_app' AND current_user = 'fcb_app' AS ok").fetchone()["ok"]
+    conn.commit()  # idle again: the ledger sets its own isolation level per transaction
     return conn
 
 
@@ -439,7 +452,7 @@ def _app_ledger_privileges(db):
 
 WRITABLE = {"api_football_cert_plans": (),  # AF-15/AF-16: SELECT only
             "api_football_cert_campaigns": ("campaign_id", "plan_sha256"),
-            "api_football_cert_campaign_attempts": ("campaign_id", "seq", "call_id"),
+            "api_football_cert_campaign_attempts": ("campaign_id", "call_id"),  # seq: the server's (counter)
             "api_football_cert_campaign_outcomes": ("campaign_id", "seq", "outcome", "http_status")}
 # Review #199 P3-2: SELECT on the table, INSERT only on the writer's columns (never the audit stamps).
 EXPECTED_APP = {t: {"SELECT": True, "INSERT": False, "UPDATE": False, "DELETE": False, "TRUNCATE": False,
@@ -482,22 +495,24 @@ def _app_cannot_forge_timestamps_or_shadow_the_budget(db, admin_connect):
     with _as_app(db) as conn:
         conn.execute("INSERT INTO public.api_football_cert_campaigns (campaign_id, plan_sha256) "
                      "VALUES (%s, %s)", (campaign, plan1))
-        conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                     "VALUES (%s, 1, 'C01')", (campaign,))
+        conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, call_id) "
+                     "VALUES (%s, 'C01')", (campaign,))
     with pytest.raises(psycopg.errors.RaiseException, match="API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED"):
         with _as_app(db) as conn:
             # every table the trigger reads, shadowed in pg_temp with a larger budget / no attempts
             conn.execute("CREATE TEMP TABLE api_football_cert_plans (plan_sha256 text, budget int)")
             conn.execute("CREATE TEMP TABLE api_football_cert_campaigns (campaign_id text, plan_sha256 text)")
             conn.execute("CREATE TEMP TABLE api_football_cert_campaign_attempts (campaign_id text, seq int)")
+            conn.execute("CREATE TEMP TABLE api_football_cert_plan_usage (plan_sha256 text, used int)")
             conn.execute("INSERT INTO pg_temp.api_football_cert_plans VALUES (%s, 78)", (plan1,))
+            conn.execute("INSERT INTO pg_temp.api_football_cert_plan_usage VALUES (%s, 0)", (plan1,))
             conn.execute("INSERT INTO pg_temp.api_football_cert_campaigns VALUES (%s, %s)", (campaign, plan1))
             conn.execute("SET search_path = pg_temp, public")
-            conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                         "VALUES (%s, 2, 'C02')", (campaign,))
+            conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, call_id) "
+                         "VALUES (%s, 'C02')", (campaign,))
     for statement in (
-            "INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id, reserved_at) "
-            f"VALUES ('{campaign}', 2, 'C02', '2000-01-01')",
+            "INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id, reserved_at) "
+            f"VALUES ('{campaign}', 'C02', '2000-01-01')",
             "INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256, created_at) "
             f"VALUES ('camp-forged-0001', '{plan1}', '2000-01-01')",
             "INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status, recorded_at) "
@@ -643,14 +658,14 @@ def test_stamp_and_guard_hold_with_a_hostile_search_path_in_any_schema(schema):
     with connect() as conn:
         conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES ('camp-temp-0001', %s)",
                      (_approve(connect, 1),))
-        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('camp-temp-0001', 1, 'C01')")
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-temp-0001', 'C01')")
     with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):
         with connect() as conn:
             conn.execute("CREATE TEMP TABLE api_football_cert_plans (plan_sha256 text, budget int)")
             conn.execute("INSERT INTO pg_temp.api_football_cert_plans SELECT plan_sha256, 78 FROM api_football_cert_campaigns")
             conn.execute(SQL("SET search_path = pg_temp, {}").format(Identifier(name)))
-            conn.execute(SQL("INSERT INTO {}.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                             "VALUES ('camp-temp-0001', 2, 'C02')").format(Identifier(name)))
+            conn.execute(SQL("INSERT INTO {}.api_football_cert_campaign_attempts (campaign_id, call_id) "
+                             "VALUES ('camp-temp-0001', 'C02')").format(Identifier(name)))
 
 
 # ------------------------------------------------ AF-15: one budget per APPROVED PLAN, shared by its campaigns
@@ -676,8 +691,8 @@ def _plan_worker(dsn, name, campaign, plan, mode, out):
         if mode == "abort":
             conn = connect()
             try:
-                conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                             "VALUES (%s, %s, 'ABORTED')", (campaign, got + 1))
+                conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) "
+                             "VALUES (%s, 'ABORTED')", (campaign,))
             except psycopg.Error:
                 pass
             conn.rollback()  # never committed: never sent, never counted
@@ -691,8 +706,8 @@ def _plan_worker(dsn, name, campaign, plan, mode, out):
             os._exit(9)
         if mode == "kill_uncommitted" and got == 2:
             conn = connect()
-            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                         "VALUES (%s, 3, 'UNCOMMITTED')", (campaign,))
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) "
+                         "VALUES (%s, 'UNCOMMITTED')", (campaign,))
             os._exit(9)  # no commit: the server rolls the transaction back
     out.put(got)
 
@@ -730,13 +745,15 @@ def test_af15_concurrent_campaigns_of_one_plan_never_exceed_the_plan_budget_with
         return [p.exitcode for p in procs]
     assert spawn(["kill", "kill", "kill_uncommitted"], 0) == [9, 9, 9]
     rows = {r["campaign_id"]: r for r in _plan_counts(connect, plan)}
-    assert {c: r["seqs"] for c, r in rows.items()} == {"camp-plan-0000": [1, 2, 3], "camp-plan-0001": [1, 2, 3],
-                                                       "camp-plan-0002": [1, 2]}  # committed stay, uncommitted gone
+    assert {c: len(r["seqs"]) for c, r in rows.items()} == {"camp-plan-0000": 3, "camp-plan-0001": 3,
+                                                            "camp-plan-0002": 2}  # committed stay, uncommitted gone
+    _assert_counter_matches_ledger(connect, plan, 8)  # the uncommitted increment was rolled back too
     assert spawn(["normal", "abort", "normal", "abort", "normal", "normal"], 10) == [0] * 6
     granted = sum(out.get(timeout=5) for _ in range(6))
     rows = _plan_counts(connect, plan)
     assert sum(len(r["seqs"]) for r in rows) == 25 and granted == 25 - 8  # never above the plan budget
-    assert all(r["seqs"] == list(range(1, len(r["seqs"]) + 1)) and not r["aborted"] for r in rows)
+    assert not any(r["aborted"] for r in rows)
+    _assert_counter_matches_ledger(connect, plan, 25)
     with connect() as conn:
         assert conn.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts "
                             "WHERE call_id IN ('UNCOMMITTED', 'ABORTED')").fetchone()["n"] == 0
@@ -749,8 +766,8 @@ def test_af15_concurrent_campaigns_of_one_plan_never_exceed_the_plan_budget_with
     assert asyncio.run(ledger.plan_usage("camp-plan-new-01")) == {"plan_sha256": plan, "budget": 25, "used": 25}
     with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):  # the database alone refuses too
         with connect() as conn:
-            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                         "VALUES ('camp-plan-new-01', 1, 'DIRECT')")
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) "
+                         "VALUES ('camp-plan-new-01', 'DIRECT')")
 
 
 def test_af15_a_new_campaign_id_of_an_approved_plan_gets_no_new_budget_and_unapproved_plans_send_nothing(schema):
@@ -875,15 +892,15 @@ def test_invariant1_fcb_app_cannot_create_change_delete_or_replace_an_approved_p
     with _as_app(db) as conn:
         conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)", (campaign, sha))
         for seq in (1, 2):
-            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES (%s, %s, 'C')",
-                         (campaign, seq))
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES (%s, 'C')",
+                         (campaign,))
     with pytest.raises(psycopg.errors.RaiseException, match="BUDGET_EXHAUSTED"):
         with _as_app(db) as conn:
             conn.execute("CREATE TEMP TABLE api_football_cert_plans (plan_sha256 text, budget int)")
             conn.execute("INSERT INTO pg_temp.api_football_cert_plans VALUES (%s, 78)", (sha,))
             conn.execute("SET search_path = pg_temp, public")
-            conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
-                         "VALUES (%s, 3, 'C')", (campaign,))
+            conn.execute("INSERT INTO public.api_football_cert_campaign_attempts (campaign_id, call_id) "
+                         "VALUES (%s, 'C')", (campaign,))
     with connect() as conn:
         assert conn.execute("SELECT budget FROM api_football_cert_plans WHERE plan_sha256 = %s", (sha,)).fetchone()["budget"] == 2
 
@@ -896,15 +913,15 @@ def test_invariant3_a_reserved_attempt_cannot_vanish_be_reused_or_be_rewritten_a
     campaign = "camp-evidence-01"
     with _as_app(db) as conn:
         conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)", (campaign, sha))
-        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES (%s, 1, 'C01')", (campaign,))
-        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES (%s, 2, 'C02')", (campaign,))
+        assert conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES (%s, 'C01') "
+                            "RETURNING seq", (campaign,)).fetchone()["seq"] == 1
+        assert conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES (%s, 'C02') "
+                            "RETURNING seq", (campaign,)).fetchone()["seq"] == 2
         conn.execute("INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) "
                      "VALUES (%s, 1, 'HTTP_RESPONSE', 200)", (campaign,))
-    refused = {  # statement -> expected error class
+    refused = {  # statement -> expected error class, as the real fcb_app
         f"INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('{campaign}', 1, 'OTHER')":
-            psycopg.errors.RaiseException,    # same seq for another call: refused (guard; PK backstop)
-        f"INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) VALUES ('{campaign}', 2, 'C02')":
-            psycopg.errors.RaiseException,
+            psycopg.errors.InsufficientPrivilege,  # seq is the server's: no column privilege, never reused
         f"INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) VALUES ('{campaign}', 1, 'TRANSPORT_ERROR', NULL)":
             psycopg.errors.UniqueViolation,   # one outcome per attempt
         f"INSERT INTO api_football_cert_campaign_outcomes (campaign_id, seq, outcome, http_status) VALUES ('{campaign}', 1, 'TRANSPORT_ERROR', NULL) "
@@ -928,12 +945,210 @@ def test_invariant3_a_reserved_attempt_cannot_vanish_be_reused_or_be_rewritten_a
             with connect() as conn:
                 conn.execute("SET ROLE fcb_migrator")
                 conn.execute(statement)
+    with connect() as conn:  # even a writer allowed to name seq cannot reuse one: the server renumbers
+        assert conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, seq, call_id) "
+                            "VALUES (%s, 1, 'OWNER') RETURNING seq", (campaign,)).fetchone()["seq"] == 3
 
     def as_app():
         return _as_app(db)
     ledger = batch.PostgresCampaignLedger(as_app, schema="public")
     states = asyncio.run(ledger.attempt_states(campaign))
     assert states == [{"seq": 1, "call_id": "C01", "state": "RESPONSE_RECEIVED", "http_status": 200},
-                      {"seq": 2, "call_id": "C02", "state": "RESERVED_UNKNOWN", "http_status": None}]
+                      {"seq": 2, "call_id": "C02", "state": "RESERVED_UNKNOWN", "http_status": None},
+                      {"seq": 3, "call_id": "OWNER", "state": "RESERVED_UNKNOWN", "http_status": None}]
     asyncio.run(ledger.record_outcome(campaign, 1, "TRANSPORT_ERROR", None))  # runner path: first outcome stays
     assert asyncio.run(ledger.attempt_states(campaign))[0]["state"] == "RESPONSE_RECEIVED"
+    _assert_counter_matches_ledger(connect, sha, 3)
+
+
+# ------------------------------------------------ review #199 P1: the plan budget under every isolation level
+
+def _assert_counter_matches_ledger(connect, plan, expected=None):
+    """CRITERION: counter == number of COMMITTED attempts of the plan (all its campaigns), seqs are
+    exactly 1..used (no duplicate, no gap), never above the budget."""
+    with connect() as conn:
+        used = conn.execute("SELECT used FROM api_football_cert_plan_usage WHERE plan_sha256 = %s", (plan,)).fetchone()["used"]
+        budget = conn.execute("SELECT budget FROM api_football_cert_plans WHERE plan_sha256 = %s", (plan,)).fetchone()["budget"]
+        seqs = [r["seq"] for r in conn.execute(
+            "SELECT a.seq FROM api_football_cert_campaign_attempts a JOIN api_football_cert_campaigns c USING (campaign_id) "
+            "WHERE c.plan_sha256 = %s ORDER BY a.seq", (plan,))]
+    assert used == len(seqs) and seqs == list(range(1, used + 1)) and used <= budget, (used, seqs, budget)
+    if expected is not None:
+        assert used == expected
+    return used
+
+
+def test_fcb_app_login_is_scram_authenticated(wp009):
+    db, _connect = wp009(10)
+    with _as_app(db) as conn:  # require_auth=scram-sha-256: libpq refuses any other method
+        assert conn.info.user == "fcb_app" and conn.pgconn.used_password
+    with pytest.raises(psycopg.OperationalError):
+        psycopg.connect(_app_dsn(db, password="wrong-" + uuid.uuid4().hex)).close()
+
+
+def _isolation_worker(dsn, campaign, plan, level, out):
+    """A runner-like reserver as the real fcb_app, its default isolation forced to `level`; it
+    retries serialization failures (new transaction) and reports (granted, serialization_failures)."""
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "tests"))
+    from apifootball_campaign_kit import load as _load
+    mod = _load("apifootball_cert_batch1_iso_worker", "apifootball_cert_batch1.py")
+    os.environ[mod.AUTH_VAR] = "true"
+    granted = conflicts = 0
+    if level == "RUNNER":  # the real runner path (it sets READ COMMITTED itself)
+        ledger = mod.PostgresCampaignLedger(lambda: psycopg.connect(dsn, row_factory=dict_row), schema="public")
+        asyncio.run(ledger.open(campaign, 78, plan))
+        for i in range(20):
+            try:
+                asyncio.run(ledger.reserve(campaign, f"R{i}"))
+                granted += 1
+            except mod.SerializationRefused:
+                conflicts += 1
+            except mod.BudgetExhausted:
+                break
+        out.put((granted, conflicts))
+        return
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s) "
+                     "ON CONFLICT DO NOTHING", (campaign, plan))
+    for i in range(60):
+        conn = psycopg.connect(dsn)
+        conn.isolation_level = getattr(psycopg.IsolationLevel, level.replace(" ", "_"))  # BEGIN ISOLATION LEVEL ...
+        try:
+            conn.execute("SELECT count(*) FROM api_football_cert_campaign_attempts")  # snapshot first
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES (%s, %s)",
+                         (campaign, f"I{i}"))
+            conn.commit()
+            granted += 1
+        except psycopg.Error as exc:
+            conn.rollback()
+            if exc.sqlstate in ("40001", "40P01"):
+                conflicts += 1
+                continue  # retry in a NEW transaction
+            if "BUDGET_EXHAUSTED" in str(exc):
+                break
+            raise
+        finally:
+            conn.close()
+    out.put((granted, conflicts))
+
+
+@pytest.mark.parametrize("level", ["READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE", "RUNNER"])
+def test_p1_nine_processes_as_fcb_app_never_exceed_the_plan_budget_at_any_isolation(wp009, level):
+    """9 real processes, SCRAM-authenticated as fcb_app, 9 campaign_ids of ONE plan (budget 7), each
+    transaction taking its snapshot BEFORE inserting; serialization failures retried in a new
+    transaction. RUNNER: the real ledger with fcb_app's ROLE default set to REPEATABLE READ."""
+    db, connect = _setup_phase2(wp009)
+    plan = _approve(connect, 7, "iso-" + level)
+    if level == "RUNNER":
+        with _as_app(db) as conn:
+            conn.autocommit = True
+            conn.execute("ALTER ROLE fcb_app SET default_transaction_isolation = 'repeatable read'")  # accepted
+        with _as_app(db) as conn:
+            assert conn.execute("SHOW transaction_isolation").fetchone()["transaction_isolation"] == "repeatable read"
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    procs = [ctx.Process(target=_isolation_worker, args=(_app_dsn(db), f"camp-iso-{i:04d}", plan, level, out))
+             for i in range(9)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(240)
+    assert [p.exitcode for p in procs] == [0] * 9
+    results = [out.get(timeout=5) for _ in procs]
+    assert sum(g for g, _ in results) == 7
+    _assert_counter_matches_ledger(connect, plan, 7)
+
+
+@pytest.mark.parametrize("level", ["REPEATABLE READ", "SERIALIZABLE"])
+def test_p1_original_defect_snapshot_before_another_commits_is_a_serialization_failure_not_an_overrun(wp009, level):
+    """The ORIGINAL defect, reproduced exactly: T1 takes its snapshot; T2 then reserves and COMMITS
+    (taking and releasing every lock); T1 then reserves. Before: T1's count missed T2 and the budget
+    was exceeded. Now: T1 gets SERIALIZATION_FAILURE (40001), distinct from BUDGET_EXHAUSTED; a
+    retry in a NEW transaction sees the real counter and obeys the same budget."""
+    db, connect = _setup_phase2(wp009)
+    plan = _approve(connect, 2, "defect-" + level)
+    with _as_app(db) as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES ('camp-t1-000001', %s), "
+                     "('camp-t2-000001', %s)", (plan, plan))
+        conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-t2-000001', 'A')")
+        conn.commit()
+    t1 = _as_app(db)
+    t1.execute(f"BEGIN ISOLATION LEVEL {level}")
+    t1.execute("SELECT count(*) FROM api_football_cert_campaign_attempts")  # snapshot: used = 1
+    with _as_app(db) as t2:  # another transaction reserves the last unit and commits
+        t2.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-t2-000001', 'B')")
+    with pytest.raises(psycopg.errors.SerializationFailure):
+        t1.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-t1-000001', 'X')")
+    t1.rollback()
+    with pytest.raises(psycopg.errors.RaiseException, match="API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED"):
+        t1.execute(f"BEGIN ISOLATION LEVEL {level}")  # retry: new transaction, real counter
+        t1.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) VALUES ('camp-t1-000001', 'X')")
+    t1.rollback()
+    t1.close()
+    _assert_counter_matches_ledger(connect, plan, 2)
+
+
+def test_p1_runner_reports_serialization_failure_and_budget_exhausted_with_distinct_codes(wp009, monkeypatch):
+    """The ledger maps 40001/40P01 to SERIALIZATION_FAILURE (retried in a new transaction, re-checking
+    the owner authorization and the approved plan) and only a counter at the budget to
+    CAMPAIGN_BUDGET_EXHAUSTED; neither reaches the provider."""
+    db, connect = _setup_phase2(wp009)
+    plan = _approve(connect, 2, "codes")
+
+    def as_app():
+        return _as_app(db)
+    ledger = batch.PostgresCampaignLedger(as_app, schema="public")
+    asyncio.run(ledger.open("camp-codes-0001", 78, plan))
+    calls = {"n": 0}
+    real = batch.PostgresCampaignLedger._reserve
+
+    def conflicting(self, campaign_id, call_id):  # PostgreSQL cancels the first try (40001)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise psycopg.errors.SerializationFailure("could not serialize access")
+        return real(self, campaign_id, call_id)
+    monkeypatch.setattr(batch.PostgresCampaignLedger, "_reserve", conflicting)
+    assert asyncio.run(ledger.reserve("camp-codes-0001", "C1")) == 1 and calls["n"] == 2  # retried once, new tx
+    monkeypatch.setattr(batch.PostgresCampaignLedger, "_reserve",
+                        lambda self, c, k: (_ for _ in ()).throw(psycopg.errors.SerializationFailure("x")))
+    with pytest.raises(batch.SerializationRefused, match="SERIALIZATION_FAILURE"):
+        asyncio.run(ledger.reserve("camp-codes-0001", "C2"))
+    calls["n"] = 0
+    monkeypatch.setattr(batch.PostgresCampaignLedger, "_reserve", conflicting)
+    monkeypatch.delenv(batch.AUTH_VAR, raising=False)  # authorization withdrawn before the retry
+    with pytest.raises(batch.NotAuthorized):
+        asyncio.run(ledger.reserve("camp-codes-0001", "C3"))
+    monkeypatch.setenv(batch.AUTH_VAR, "true")
+    monkeypatch.setattr(batch.PostgresCampaignLedger, "_reserve", real)
+    assert asyncio.run(ledger.reserve("camp-codes-0001", "C4")) == 2
+    with pytest.raises(batch.BudgetExhausted, match="CAMPAIGN_BUDGET_EXHAUSTED"):
+        asyncio.run(ledger.reserve("camp-codes-0001", "C5"))
+    _assert_counter_matches_ledger(connect, plan, 2)
+
+
+def test_p1_fcb_app_cannot_touch_the_counter_or_call_the_functions(wp009):
+    db, connect = _setup_phase2(wp009)
+    plan = _approve(connect, 3, "counter")
+    for statement in ("SELECT * FROM api_football_cert_plan_usage",
+                      "UPDATE api_football_cert_plan_usage SET used = 0",
+                      f"INSERT INTO api_football_cert_plan_usage (plan_sha256, used) VALUES ('{'e' * 64}', 0)",
+                      "DELETE FROM api_football_cert_plan_usage",
+                      "TRUNCATE api_football_cert_plan_usage CASCADE",
+                      "ALTER TABLE api_football_cert_plan_usage DISABLE TRIGGER ALL",
+                      "SELECT public.api_football_cert_attempt_guard()",
+                      "SELECT public.api_football_cert_plan_usage_rule()",
+                      "CREATE TEMP TABLE api_football_cert_campaign_attempts (campaign_id text, seq int, call_id text); "
+                      "CREATE TRIGGER t BEFORE INSERT ON pg_temp.api_football_cert_campaign_attempts "
+                      "FOR EACH ROW EXECUTE FUNCTION public.api_football_cert_attempt_guard()"):
+        with pytest.raises(psycopg.Error):
+            with _as_app(db) as conn:
+                conn.execute(statement)
+    for statement in ("UPDATE api_football_cert_plan_usage SET used = 0",   # even the owner: only ever +1
+                      "UPDATE api_football_cert_plan_usage SET used = used + 2",
+                      "DELETE FROM api_football_cert_plan_usage"):
+        with pytest.raises(psycopg.errors.RaiseException):
+            with connect() as conn:
+                conn.execute("SET ROLE fcb_migrator")
+                conn.execute(statement)
+    _assert_counter_matches_ledger(connect, plan, 0)

@@ -99,8 +99,8 @@ Colonne della matrice: `source_sha`, `evidence_date`, `evidence_ref`, `changes_s
 
 `scripts/apifootball_cert_batch1.py` conta i tentativi in modo write-ahead. Un wrapper del transport httpx, posto sotto il client resiliente reale, fa tre cose **prima** di ogni invio:
 1. verifica la variabile dell'owner `APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true`;
-2. prende un lock advisory per la campagna, valido per la sola transazione;
-3. inserisce `seq = usati + 1` e committa.
+2. apre una transazione READ COMMITTED esplicita e inserisce il tentativo; il trigger della 0010 incrementa, nella stessa transazione, il contatore del piano e assegna `seq`;
+3. committa.
 
 Ne seguono tre garanzie:
 - retry, timeout e risposte ambigue sono sempre contati;
@@ -121,14 +121,19 @@ Se la 0009 non risultasse applicata in produzione, la 0010 non si applica. Una e
 
 **Contenuto della migration:**
 - è additiva e non tocca tabelle esistenti, in particolare `api_football_quota_*`;
-- crea quattro tabelle dedicate:
+- crea cinque tabelle dedicate:
+  - `api_football_cert_plan_usage` (review #199 P1): il **contatore persistente per piano** (`used`, 0..budget). Viene creato a 0 con il piano, cresce solo di 1 e non si può cancellare. `fcb_app` non ha alcun privilegio su questa tabella;
   - `api_football_cert_plans` (AF-15): registro append-only dei piani **approvati dall'owner**. Contiene `plan_sha256` (chiave), il tipo (`BATCH1` o `LIVE_FULL_MATCH_SNAPSHOT`), il budget 1..78 (al massimo 8 per lo snapshot), `approved_by`, `github_run_id`, e infine `approved_role` e `approved_at` impostati dal server;
   - `api_football_cert_campaigns`: ogni `campaign_id` è legato a un piano approvato (FK) e non cambia più;
   - `api_football_cert_campaign_attempts`: `seq` 1..78, chiave `(campaign_id, seq)`;
   - `api_football_cert_campaign_outcomes`: al massimo un esito per tentativo, con FK sul tentativo;
-- trigger append-only su tutte e quattro: UPDATE, DELETE e TRUNCATE sono rifiutati per **ogni** ruolo, owner compreso;
+- trigger append-only sulle quattro tabelle del registro: UPDATE, DELETE e TRUNCATE sono rifiutati per **ogni** ruolo, owner compreso;
 - timestamp di audit (`approved_at`, `created_at`, `reserved_at`, `recorded_at`) e `approved_role` imposti dal server: un trigger `BEFORE INSERT` li sovrascrive con `clock_timestamp()`, anche via COPY;
-- **budget per piano (AF-15)**: il trigger di prenotazione prende un lock advisory deterministico sul piano (`460244131`, `hashtext(plan_sha256)`, lo stesso del runner). Poi conta i tentativi di **tutte** le campagne del piano, `RESERVED_UNKNOWN` compresi, e rifiuta oltre il budget del piano. Un nuovo `campaign_id`, un riavvio o un nuovo dispatch non azzerano nulla. Una prenotazione in una transazione annullata non viene mai committata: non è stata inviata e non conta;
+- **budget per piano (AF-15, P1 della re-review #199)**: la garanzia vale **con qualunque livello di isolamento**. Il trigger di prenotazione è `SECURITY DEFINER` (proprietario `fcb_migrator`, `search_path = pg_catalog, pg_temp`, nomi qualificati con lo schema della tabella). Nella **stessa transazione** del tentativo esegue `UPDATE ... SET used = used + 1 WHERE plan = $1 AND used < budget RETURNING used`, e il `seq` del tentativo è quel valore. Se nessuna riga viene aggiornata, la prenotazione è rifiutata: `BUDGET_EXHAUSTED`, oppure `PLAN_NOT_APPROVED` se il piano non ha contatore.
+  - In READ COMMITTED l'aggiornamento concorrente attende il lock della riga e ricontrolla il valore committato. In REPEATABLE READ o SERIALIZABLE fallisce con un errore di serializzazione (40001) e non prenota nulla.
+  - Rollback e processi uccisi annullano tentativo e contatore insieme, quindi `used` è sempre uguale ai tentativi committati del piano. I `seq` del piano sono esattamente 1..`used`, senza duplicati né riusi.
+  - Il trigger rifiuta di funzionare fuori dal suo uso (`GUARD_MISUSE`). Nessun lock advisory e nessun controllo sull'isolamento: il contatore li rende superflui, e un controllo sull'isolamento impedirebbe di dimostrare la garanzia sotto RR e SERIALIZABLE.
+  - Il runner apre comunque ogni transazione del ledger in READ COMMITTED esplicito. Riporta `SERIALIZATION_FAILURE` (40001/40P01), distinto da `CAMPAIGN_BUDGET_EXHAUSTED`. Riprova al massimo 3 volte, ogni volta in una **nuova** transazione, ricontrollando autorizzazione owner e piano approvato, entro lo stesso budget;
 - le tre funzioni hanno `SET search_path = pg_catalog, pg_temp` e raggiungono le tabelle solo tramite lo schema della tabella che le ha attivate (`TG_TABLE_SCHEMA`, cioè `public` in produzione). Tabelle omonime in `pg_temp` (piani, campagne, tentativi) con budget più alto non possono quindi aggirare il budget reale;
 - trigger di budget: `seq` deve essere il numero successivo ed entro il budget.
 
@@ -164,7 +169,7 @@ Una chiamata che non ha prenotato nulla (rifiutata prima dell'invio per autorizz
 
 **Rifiuti prima dell'invio (AF-18).** Una chiamata che non ha prenotato nulla è `NOT_TESTED` con `refusal_code`, mai `ERROR`. Può essere stata rifiutata dal transport (autorizzazione, ledger, budget, piano) oppure fermata prima dal client, per esempio `CIRCUIT_OPEN`.
 
-**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Una volta registrata la 0010, sono richieste tutte e quattro le tabelle (AF-19). Il runtime non applica mai le migration, e un test lo verifica.
+**Readiness.** La 0010 è sempre "deferred" in `bridge/schema_readiness.py`, perché il runtime non usa queste tabelle: un database senza la 0010 resta READY. Una volta registrata la 0010, sono richieste tutte e cinque le tabelle (AF-19), contatore compreso. Il runtime non applica mai le migration, e un test lo verifica.
 
 **Privilegi (AF-12, decisione owner).** `fcb_app` ha `SELECT` sulle quattro tabelle e `INSERT` **a livello di colonna** solo sulle colonne che scrive, mai sui timestamp di audit e mai sui piani. Non ha UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, ALTER o DROP.
 - `fcb_app` non è owner delle tabelle (lo è `fcb_migrator`) e non è membro di `fcb_migrator`. Quindi non può fare ALTER né disabilitare i trigger, e non può impostare `session_replication_role`.
@@ -212,6 +217,12 @@ L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restan
   - il controllo 0009 (rifiuta 0008, accetta 0009 e 0010);
   - il differenziale del modello di verifica WP-009.
 
+**Coerenza contatore-ledger** (`_assert_counter_matches_ledger`: `used` è uguale ai tentativi committati del piano, `seq` = 1..`used`, mai oltre il budget). La verifica viene fatta dopo:
+- crash e rollback: `test_af15_concurrent_..._kills_and_aborts`, sia dopo la fase dei processi uccisi sia alla fine;
+- retry dopo 40001: `test_p1_original_defect_...`, `test_p1_runner_reports_...`;
+- concorrenza tra campagne in RC, RR e SERIALIZABLE: `test_p1_nine_processes_...`;
+- `test_ledger_is_append_only_...`, `test_invariant3_...`, `test_p1_fcb_app_cannot_touch_...`.
+
 **Test delle tre invarianti owner** (`tests/integration/test_apifootball_cert_ledger_postgres.py`, salvo dove indicato):
 
 1. **Piani immutabili e legati al file committato:**
@@ -220,7 +231,12 @@ L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restan
    - `test_af15_a_new_campaign_id_of_an_approved_plan_gets_no_new_budget_and_unapproved_plans_send_nothing`, con il piano modificato e quindi non approvato;
    - unit (`tests/test_apifootball_cert_batch1.py`): `test_execute_refuses_when_the_committed_plan_file_differs_from_the_code`, `test_plan_approval_request_prints_the_committed_plan_sha_budget_and_kind`;
    - unit (`tests/test_apifootball_cert_ledger_workflow.py`): `test_af15_plan_approval_workflow_is_owner_gated_pinned_and_binds_the_committed_plan`, `test_af15_approval_sql_is_append_only_and_never_renews_a_plan`.
-2. **Budget atomico:**
+2. **Budget atomico (indipendente dall'isolamento, P1):**
+   - `test_p1_nine_processes_as_fcb_app_never_exceed_the_plan_budget_at_any_isolation[READ COMMITTED|REPEATABLE READ|SERIALIZABLE|RUNNER]`: 9 processi reali, autenticati come `fcb_app` con SCRAM (`require_auth=scram-sha-256`), su 9 `campaign_id` dello stesso piano. Lo snapshot è preso prima dell'insert, e i 40001 vengono ritentati in nuove transazioni. `RUNNER` usa il default di ruolo `repeatable read` impostato da `fcb_app` stesso. Esito: esattamente il budget, e il contatore coincide con il ledger;
+   - `test_p1_original_defect_snapshot_before_another_commits_is_a_serialization_failure_not_an_overrun[REPEATABLE READ|SERIALIZABLE]`: riproduce **esattamente** il difetto originale. T1 prende lo snapshot, T2 prenota e committa, poi T1 prenota e riceve un errore 40001, non un superamento. Il retry in una nuova transazione dà `BUDGET_EXHAUSTED`;
+   - `test_p1_runner_reports_serialization_failure_and_budget_exhausted_with_distinct_codes`: i due codici sono distinti; il retry avviene in una nuova transazione e ricontrolla l'autorizzazione;
+   - `test_p1_fcb_app_cannot_touch_the_counter_or_call_the_functions`: SELECT, UPDATE, INSERT, DELETE, TRUNCATE e ALTER sul contatore sono rifiutati, così come le chiamate dirette alle funzioni e un trigger che prova a riusare la funzione su una tabella temporanea. Nemmeno l'owner può decrementare il contatore;
+   - `test_fcb_app_login_is_scram_authenticated`: login SCRAM reale; una password errata viene rifiutata.
    - `test_af15_concurrent_campaigns_of_one_plan_never_exceed_the_plan_budget_with_kills_and_aborts`, con processi reali. Distingue le prenotazioni committate, che restano e contano, da quelle in transazioni mai committate o annullate, che non lasciano righe né consumano budget;
    - `test_concurrent_processes_never_exceed_the_cap`;
    - `test_a_killed_process_leaves_reserved_unknown_counted_and_never_retried`;

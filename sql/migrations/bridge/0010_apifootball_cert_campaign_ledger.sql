@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS api_football_cert_plans (
     CHECK (plan_kind <> 'LIVE_FULL_MATCH_SNAPSHOT' OR budget <= 8)
 );
 
+-- api_football_cert_plan_usage (review #199 P1, owner decision): the persistent per-plan counter
+-- of committed reservations. One row per approved plan (created with used = 0 when the plan is
+-- approved); used only grows, by exactly 1, and only through the SECURITY DEFINER budget trigger
+-- below, in the SAME transaction as the attempt it numbers: a rollback or a killed process undoes
+-- both. The runtime role has NO privilege on it. The guarantee does not depend on the isolation
+-- level: in READ COMMITTED a concurrent increment waits for the row lock and re-checks
+-- `used < budget` on the committed value; in REPEATABLE READ / SERIALIZABLE it fails with a
+-- serialization error (40001) and nothing is reserved.
+CREATE TABLE IF NOT EXISTS api_football_cert_plan_usage (
+    plan_sha256 TEXT PRIMARY KEY REFERENCES api_football_cert_plans (plan_sha256),
+    used INTEGER NOT NULL DEFAULT 0 CHECK (used BETWEEN 0 AND 78)
+);
+
 -- api_football_cert_campaigns: one row per campaign_id, bound to an approved plan at creation and
 -- immutable afterwards.
 CREATE TABLE IF NOT EXISTS api_football_cert_campaigns (
@@ -37,8 +50,9 @@ CREATE TABLE IF NOT EXISTS api_football_cert_campaigns (
 );
 
 -- api_football_cert_campaign_attempts: append-only, one row per provider HTTP attempt, written
--- (committed) BEFORE the request leaves (write-ahead). seq is dense 1.. per campaign; the number of
--- attempts of ALL the campaigns of a plan never exceeds the plan's budget.
+-- (committed) BEFORE the request leaves (write-ahead). seq is assigned by the server: it is the
+-- plan counter's value after the increment, so the seqs of all the campaigns of a plan are exactly
+-- 1..used, never reused, never above the plan's budget.
 CREATE TABLE IF NOT EXISTS api_football_cert_campaign_attempts (
     campaign_id TEXT NOT NULL REFERENCES api_football_cert_campaigns (campaign_id),
     seq INTEGER NOT NULL CHECK (seq BETWEEN 1 AND 78),
@@ -72,7 +86,8 @@ CREATE TABLE IF NOT EXISTS api_football_cert_campaign_outcomes (
 -- Rows never change and are never removed (plans, campaigns, attempts and outcomes alike). These
 -- statement-level triggers refuse UPDATE, DELETE and TRUNCATE for EVERY role, the table owner
 -- included; the runtime role holds no UPDATE/DELETE/TRUNCATE privilege either and, not being the
--- owner, cannot ALTER the tables or DISABLE these triggers.
+-- owner, cannot ALTER the tables or DISABLE these triggers. The plan counter refuses DELETE and
+-- TRUNCATE the same way, and any UPDATE other than "+1 below the budget" (row trigger below).
 CREATE FUNCTION api_football_cert_reject_mutation() RETURNS trigger LANGUAGE plpgsql
     SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
@@ -87,6 +102,39 @@ CREATE TRIGGER api_football_cert_attempts_immutable BEFORE UPDATE OR DELETE OR T
     ON api_football_cert_campaign_attempts FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
 CREATE TRIGGER api_football_cert_outcomes_immutable BEFORE UPDATE OR DELETE OR TRUNCATE
     ON api_football_cert_campaign_outcomes FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+CREATE TRIGGER api_football_cert_plan_usage_kept BEFORE DELETE OR TRUNCATE
+    ON api_football_cert_plan_usage FOR EACH STATEMENT EXECUTE FUNCTION api_football_cert_reject_mutation();
+
+-- The counter: created at 0 with its plan; afterwards only ever +1, never above the plan's budget.
+CREATE FUNCTION api_football_cert_plan_usage_rule() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    cap INTEGER;
+BEGIN
+    IF TG_TABLE_NAME OPERATOR(pg_catalog.=) 'api_football_cert_plans' THEN
+        EXECUTE pg_catalog.format('INSERT INTO %I.api_football_cert_plan_usage (plan_sha256, used) VALUES ($1, 0)',
+                                  TG_TABLE_SCHEMA) USING NEW.plan_sha256;
+        RETURN NULL;
+    END IF;
+    EXECUTE pg_catalog.format('SELECT p.budget FROM %I.api_football_cert_plans p '
+                              'WHERE p.plan_sha256 OPERATOR(pg_catalog.=) $1', TG_TABLE_SCHEMA)
+        INTO cap USING NEW.plan_sha256;
+    IF TG_OP OPERATOR(pg_catalog.=) 'INSERT' THEN
+        IF cap IS NULL OR NEW.used OPERATOR(pg_catalog.<>) 0 THEN
+            RAISE EXCEPTION 'API_FOOTBALL_CERT_PLAN_USAGE_RULE';
+        END IF;
+    ELSIF NEW.plan_sha256 OPERATOR(pg_catalog.<>) OLD.plan_sha256
+          OR NEW.used OPERATOR(pg_catalog.<>) (OLD.used OPERATOR(pg_catalog.+) 1)
+          OR NEW.used OPERATOR(pg_catalog.>) cap THEN
+        RAISE EXCEPTION 'API_FOOTBALL_CERT_PLAN_USAGE_RULE';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER api_football_cert_plans_usage_init AFTER INSERT ON api_football_cert_plans
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_plan_usage_rule();
+CREATE TRIGGER api_football_cert_plan_usage_monotonic BEFORE INSERT OR UPDATE ON api_football_cert_plan_usage
+    FOR EACH ROW EXECUTE FUNCTION api_football_cert_plan_usage_rule();
 
 -- Audit values are the server's, never the writer's: whatever an INSERT or COPY supplies,
 -- approved_at / approved_role / created_at / reserved_at / recorded_at are overwritten here. (The
@@ -118,44 +166,52 @@ CREATE TRIGGER api_football_cert_attempts_stamp BEFORE INSERT ON api_football_ce
 CREATE TRIGGER api_football_cert_outcomes_stamp BEFORE INSERT ON api_football_cert_campaign_outcomes
     FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp();
 
--- The database enforces the PLAN budget: under a transaction-scoped advisory lock on the plan
--- (deterministic key: namespace 460244131, hashtext(plan_sha256); the runner takes the same lock),
--- the attempts of EVERY campaign of the plan are counted, RESERVED_UNKNOWN included, and an attempt
--- beyond the plan's budget is refused. seq must also be the campaign's next number; the primary key
--- (campaign_id, seq) is the backstop. A rolled-back reservation was never committed, hence never
--- sent, and does not count.
-CREATE FUNCTION api_football_cert_attempt_guard() RETURNS trigger LANGUAGE plpgsql
+-- The database enforces the PLAN budget, independently of the isolation level (review #199 P1,
+-- owner decision): in the SAME transaction as the attempt, the plan counter is incremented with
+--   UPDATE ... SET used = used + 1 WHERE plan_sha256 = $1 AND used < budget RETURNING used
+-- and the attempt's seq is that value; no row updated -> refused (BUDGET_EXHAUSTED when the counter
+-- has reached the budget, PLAN_NOT_APPROVED when the plan has no counter). The function is
+-- SECURITY DEFINER (owner: the ledger owner, fcb_migrator in production) because the runtime role
+-- has no privilege on the counter; search_path is pinned (pg_catalog, then pg_temp LAST, as the
+-- PostgreSQL documentation prescribes for SECURITY DEFINER) and every table is qualified with the
+-- schema of the firing table. It refuses to run for anything but a BEFORE INSERT row trigger on an
+-- api_football_cert_campaign_attempts table owned by its own owner (GUARD_MISUSE), so it cannot be
+-- borrowed by another trigger (EXECUTE is also revoked from PUBLIC by the grant files). Whatever
+-- seq a writer supplies is overwritten. RESERVED_UNKNOWN attempts are committed rows: they count.
+CREATE FUNCTION api_football_cert_attempt_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
     SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
     plan TEXT;
-    cap INTEGER;
-    used INTEGER;
-    campaign_used INTEGER;
+    numbered INTEGER;
 BEGIN
+    IF TG_OP OPERATOR(pg_catalog.<>) 'INSERT' OR TG_LEVEL OPERATOR(pg_catalog.<>) 'ROW'
+       OR TG_WHEN OPERATOR(pg_catalog.<>) 'BEFORE'
+       OR TG_TABLE_NAME OPERATOR(pg_catalog.<>) 'api_football_cert_campaign_attempts'
+       OR (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) TG_RELID)
+          OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER) THEN
+        RAISE EXCEPTION 'API_FOOTBALL_CERT_GUARD_MISUSE';
+    END IF;
     EXECUTE pg_catalog.format('SELECT c.plan_sha256 FROM %I.api_football_cert_campaigns c '
                               'WHERE c.campaign_id OPERATOR(pg_catalog.=) $1', TG_TABLE_SCHEMA)
         INTO plan USING NEW.campaign_id;
     IF plan IS NULL THEN
         RAISE EXCEPTION 'API_FOOTBALL_CERT_CAMPAIGN_NOT_OPEN';
     END IF;
-    PERFORM pg_catalog.pg_advisory_xact_lock(460244131, pg_catalog.hashtext(plan));
-    EXECUTE pg_catalog.format('SELECT p.budget FROM %I.api_football_cert_plans p '
-                              'WHERE p.plan_sha256 OPERATOR(pg_catalog.=) $1', TG_TABLE_SCHEMA)
-        INTO cap USING plan;
-    IF cap IS NULL THEN
-        RAISE EXCEPTION 'API_FOOTBALL_CERT_PLAN_NOT_APPROVED';
-    END IF;
-    EXECUTE pg_catalog.format('SELECT pg_catalog.count(*) FROM %I.api_football_cert_campaign_attempts a '
-                              'JOIN %I.api_football_cert_campaigns c ON c.campaign_id OPERATOR(pg_catalog.=) a.campaign_id '
-                              'WHERE c.plan_sha256 OPERATOR(pg_catalog.=) $1', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA)
-        INTO used USING plan;
-    EXECUTE pg_catalog.format('SELECT pg_catalog.count(*) FROM %I.api_football_cert_campaign_attempts a '
-                              'WHERE a.campaign_id OPERATOR(pg_catalog.=) $1', TG_TABLE_SCHEMA)
-        INTO campaign_used USING NEW.campaign_id;
-    IF (used OPERATOR(pg_catalog.>=) cap)
-       OR (NEW.seq OPERATOR(pg_catalog.<>) (campaign_used OPERATOR(pg_catalog.+) 1)) THEN
+    EXECUTE pg_catalog.format('UPDATE %I.api_football_cert_plan_usage u SET used = u.used OPERATOR(pg_catalog.+) 1 '
+                              'FROM %I.api_football_cert_plans p '
+                              'WHERE u.plan_sha256 OPERATOR(pg_catalog.=) $1 AND p.plan_sha256 OPERATOR(pg_catalog.=) u.plan_sha256 '
+                              'AND u.used OPERATOR(pg_catalog.<) p.budget RETURNING u.used', TG_TABLE_SCHEMA, TG_TABLE_SCHEMA)
+        INTO numbered USING plan;
+    IF numbered IS NULL THEN
+        EXECUTE pg_catalog.format('SELECT u.used FROM %I.api_football_cert_plan_usage u '
+                                  'WHERE u.plan_sha256 OPERATOR(pg_catalog.=) $1', TG_TABLE_SCHEMA)
+            INTO numbered USING plan;
+        IF numbered IS NULL THEN
+            RAISE EXCEPTION 'API_FOOTBALL_CERT_PLAN_NOT_APPROVED';
+        END IF;
         RAISE EXCEPTION 'API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED';
     END IF;
+    NEW.seq := numbered;
     RETURN NEW;
 END;
 $$;

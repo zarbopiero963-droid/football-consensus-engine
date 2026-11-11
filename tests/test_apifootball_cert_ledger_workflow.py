@@ -43,11 +43,14 @@ def test_0010_is_additive_dedicated_and_append_only():
     upper = sql.upper()
     # Dedicated tables: the shared quota coordinator is neither reused nor altered.
     assert "API_FOOTBALL_QUOTA" not in upper
-    for word in ("DROP ", "ALTER ", "GRANT ", "REVOKE ", "CREATE ROLE", "SIGNER", "INSERT INTO", "UPDATE ", "DELETE FROM"):
-        if word == "UPDATE ":
-            assert all("BEFORE UPDATE OR DELETE OR TRUNCATE" in line.upper() for line in sql.splitlines()
-                       if "UPDATE " in line.upper()), word
-            continue
+    # Declared (review #199 P1): the only data writes are the plan counter's own, inside trigger
+    # functions (counter row created with its plan; +1 per reservation). Nothing else is written.
+    writes = [line.strip() for line in sql.splitlines()
+              if re.search(r"\b(INSERT INTO|UPDATE|DELETE FROM)\b", line.upper())
+              and not re.search(r"BEFORE (UPDATE|DELETE|INSERT)|AFTER INSERT|INSERT OR UPDATE", line.upper())]
+    assert writes == ["EXECUTE pg_catalog.format('INSERT INTO %I.api_football_cert_plan_usage (plan_sha256, used) VALUES ($1, 0)',",
+                      "EXECUTE pg_catalog.format('UPDATE %I.api_football_cert_plan_usage u SET used = u.used OPERATOR(pg_catalog.+) 1 '"], writes
+    for word in ("DROP ", "ALTER ", "GRANT ", "REVOKE ", "CREATE ROLE", "SIGNER"):
         assert word not in upper, word
     statements = [s.strip() for s in re.split(r";\s*\n(?=CREATE|$)", sql) if s.strip()]
     assert all(s.upper().startswith(("CREATE TABLE IF NOT EXISTS", "CREATE FUNCTION", "CREATE TRIGGER"))
@@ -113,7 +116,7 @@ def test_workflow_is_manual_owner_gated_pinned_and_backs_up_first():
 
 WRITABLE = {  # review #199 P3-2: INSERT is column-level, never on an audit timestamp
     "api_football_cert_campaigns": ("campaign_id", "plan_sha256"),
-    "api_football_cert_campaign_attempts": ("campaign_id", "seq", "call_id"),
+    "api_football_cert_campaign_attempts": ("campaign_id", "call_id"),  # seq: assigned by the server
     "api_football_cert_campaign_outcomes": ("campaign_id", "seq", "outcome", "http_status"),
 }
 AUDIT_COLUMNS = ("created_at", "reserved_at", "recorded_at")
@@ -151,12 +154,14 @@ def test_0010_functions_pin_search_path_and_never_resolve_tables_through_the_cal
     sql = _code(migrations.load_migrations()[9].sql)
     functions = re.findall(r"CREATE FUNCTION (\w+)\(\) RETURNS trigger LANGUAGE plpgsql\s+"
                            r"SET search_path = pg_catalog, pg_temp AS \$\$(.*?)\$\$;", sql, re.S)
-    assert sorted(n for n, _ in functions) == ["api_football_cert_attempt_guard", "api_football_cert_reject_mutation",
-                                               "api_football_cert_stamp"]
-    assert sql.count("CREATE FUNCTION") == 3
+    functions = re.findall(r"CREATE FUNCTION (\w+)\(\) RETURNS trigger LANGUAGE plpgsql(?: SECURITY DEFINER)?\s+"
+                           r"SET search_path = pg_catalog, pg_temp AS \$\$(.*?)\$\$;", sql, re.S)
+    assert sorted(n for n, _ in functions) == ["api_football_cert_attempt_guard", "api_football_cert_plan_usage_rule",
+                                               "api_football_cert_reject_mutation", "api_football_cert_stamp"]
+    assert sql.count("CREATE FUNCTION") == 4 and sql.count("SECURITY DEFINER") == 1
     for _name, body in functions:
         for table in LEDGER:
-            for m in re.finditer(r"FROM\s+\S*" + table, body):
+            for m in re.finditer(r"(?:FROM|INTO|UPDATE)\s+\S*" + table, body):
                 assert "%I." + table in m.group(0), m.group(0)
     assert sql.count("FOR EACH ROW EXECUTE FUNCTION api_football_cert_stamp()") == 4
 
@@ -193,20 +198,30 @@ def test_wp009_grant_files_carry_the_same_conditional_select_insert_ledger_grant
 
 
 def test_readiness_defers_exactly_the_tables_0010_creates():
-    """Review #199 P3-3: every 0010 table (3/3) is always deferred and required once 0010 is recorded."""
+    """Review #199 P3-3 (and AF-15, P1): every 0010 table (5/5, the plan counter included) is always
+    deferred and required once 0010 is recorded."""
     from bridge import schema_readiness
     created = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", migrations.load_migrations()[9].sql)
     assert set(schema_readiness.ALWAYS_DEFERRED) == {10}
-    assert sorted(schema_readiness.ALWAYS_DEFERRED[10]) == sorted(created) == sorted(LEDGER)
+    assert sorted(schema_readiness.ALWAYS_DEFERRED[10]) == sorted(created) == sorted(LEDGER + ("api_football_cert_plan_usage",))
 
 
-def test_af15_budget_trigger_counts_the_whole_plan_under_a_plan_lock():
+def test_p1_budget_is_a_per_plan_counter_incremented_by_a_security_definer_trigger():
+    """Review #199 P1 (owner decision): isolation-independent budget, one path, seq = counter."""
     sql = _code(migrations.load_migrations()[9].sql)
     guard = sql[sql.index("CREATE FUNCTION api_football_cert_attempt_guard"):]
-    assert "pg_catalog.pg_advisory_xact_lock(460244131, pg_catalog.hashtext(plan))" in guard
-    assert "JOIN %I.api_football_cert_campaigns c" in guard and "c.plan_sha256 OPERATOR(pg_catalog.=) $1" in guard
-    assert "API_FOOTBALL_CERT_PLAN_NOT_APPROVED" in guard
+    assert guard.startswith("CREATE FUNCTION api_football_cert_attempt_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER")
+    assert "u.used OPERATOR(pg_catalog.<) p.budget RETURNING u.used" in guard and "NEW.seq := numbered;" in guard
+    assert "API_FOOTBALL_CERT_GUARD_MISUSE" in guard and "TG_RELID" in guard and "CURRENT_USER" in guard
+    assert "advisory" not in sql.lower() and "transaction_isolation" not in sql
+    assert "API_FOOTBALL_CERT_PLAN_NOT_APPROVED" in guard and "API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED" in guard
+    rule = sql[sql.index("CREATE FUNCTION api_football_cert_plan_usage_rule"):sql.index("CREATE TRIGGER api_football_cert_plans_usage_init")]
+    assert "NEW.used OPERATOR(pg_catalog.<>) (OLD.used OPERATOR(pg_catalog.+) 1)" in rule  # only ever +1
+    assert "BEFORE DELETE OR TRUNCATE\n    ON api_football_cert_plan_usage" in sql
     assert "CHECK (PLAN_KIND <> 'LIVE_FULL_MATCH_SNAPSHOT' OR BUDGET <= 8)" in sql.upper()
+    grant = _code(GRANT.read_text(encoding="utf-8"))
+    assert "api_football_cert_plan_usage" in grant and all("plan_usage" not in g for g in _grants(grant))
+    assert "'search_path=pg_catalog, pg_temp'" in grant and "FCB_CERT_LEDGER_FUNCTIONS_UNEXPECTED" in grant
 
 
 def test_af15_plan_approval_workflow_is_owner_gated_pinned_and_binds_the_committed_plan():

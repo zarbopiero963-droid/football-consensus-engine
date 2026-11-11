@@ -17,7 +17,9 @@
 --   api_football_cert_plans              S                                              read the approved plan budget (AF-15: rows
 --                                                                                      written ONLY by the plan approval workflow as fcb_migrator)
 --   api_football_cert_campaigns          S, I(campaign_id, plan_sha256)                 open (ON CONFLICT DO NOTHING)
---   api_football_cert_campaign_attempts  S, I(campaign_id, seq, call_id)               write-ahead reservation, count, attempted calls
+--   api_football_cert_plan_usage         none                                           the per-plan counter: written ONLY by the SECURITY DEFINER
+--                                                                                      budget trigger (review #199 P1)
+--   api_football_cert_campaign_attempts  S, I(campaign_id, call_id)                    write-ahead reservation (seq assigned by the server)
 --   api_football_cert_campaign_outcomes  S, I(campaign_id, seq, outcome, http_status)  outcome of each reserved attempt
 DO $who$
 BEGIN
@@ -30,13 +32,13 @@ BEGIN
     END IF;
 END $who$;
 
-REVOKE ALL ON TABLE public.api_football_cert_plans, public.api_football_cert_campaigns,
+REVOKE ALL ON TABLE public.api_football_cert_plans, public.api_football_cert_plan_usage, public.api_football_cert_campaigns,
     public.api_football_cert_campaign_attempts, public.api_football_cert_campaign_outcomes FROM PUBLIC, fcb_app;
 REVOKE ALL ON FUNCTION public.api_football_cert_reject_mutation(), public.api_football_cert_attempt_guard(),
-    public.api_football_cert_stamp() FROM PUBLIC;
+    public.api_football_cert_stamp(), public.api_football_cert_plan_usage_rule() FROM PUBLIC, fcb_app;
 GRANT SELECT ON TABLE public.api_football_cert_plans, public.api_football_cert_campaigns, public.api_football_cert_campaign_attempts, public.api_football_cert_campaign_outcomes TO fcb_app;
 GRANT INSERT (campaign_id, plan_sha256) ON TABLE public.api_football_cert_campaigns TO fcb_app;
-GRANT INSERT (campaign_id, seq, call_id) ON TABLE public.api_football_cert_campaign_attempts TO fcb_app;
+GRANT INSERT (campaign_id, call_id) ON TABLE public.api_football_cert_campaign_attempts TO fcb_app;
 GRANT INSERT (campaign_id, seq, outcome, http_status) ON TABLE public.api_football_cert_campaign_outcomes TO fcb_app;
 
 DO $assert$
@@ -44,13 +46,35 @@ DECLARE
     tables pg_catalog.text[] := ARRAY['public.api_football_cert_plans', 'public.api_football_cert_campaigns',
                                       'public.api_football_cert_campaign_attempts',
                                       'public.api_football_cert_campaign_outcomes']::pg_catalog.text[];
-    writable pg_catalog.text[] := ARRAY['', 'campaign_id,plan_sha256', 'campaign_id,seq,call_id',
+    writable pg_catalog.text[] := ARRAY['', 'campaign_id,plan_sha256', 'campaign_id,call_id',
                                         'campaign_id,seq,outcome,http_status']::pg_catalog.text[];
+    f pg_catalog.text;
     i pg_catalog.int4;
 BEGIN
     IF pg_catalog.pg_has_role('fcb_app', 'fcb_migrator', 'MEMBER') THEN
         RAISE EXCEPTION 'FCB_CERT_LEDGER_OWNER_UNEXPECTED';
     END IF;
+    -- the plan counter: no privilege at all for fcb_app (review #199 P1)
+    IF pg_catalog.has_table_privilege('fcb_app', 'public.api_football_cert_plan_usage', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+       OR pg_catalog.has_any_column_privilege('fcb_app', 'public.api_football_cert_plan_usage', 'SELECT,INSERT,UPDATE,REFERENCES')
+       OR (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) 'public.api_football_cert_plan_usage'::pg_catalog.regclass)
+          OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_migrator'::pg_catalog.name) THEN
+        RAISE EXCEPTION 'FCB_CERT_LEDGER_GRANTS_UNEXPECTED';
+    END IF;
+    -- every 0010 function: owned by fcb_migrator, pinned search_path, no EXECUTE for fcb_app or PUBLIC;
+    -- only the budget trigger is SECURITY DEFINER
+    FOREACH f IN ARRAY ARRAY['public.api_football_cert_reject_mutation()', 'public.api_football_cert_stamp()',
+                             'public.api_football_cert_plan_usage_rule()', 'public.api_football_cert_attempt_guard()']::pg_catalog.text[] LOOP
+        IF (SELECT p.proowner FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.=) f::pg_catalog.regprocedure)
+             OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_migrator'::pg_catalog.name)
+           OR (SELECT p.proconfig FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.=) f::pg_catalog.regprocedure)
+             IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']::pg_catalog.text[]
+           OR (SELECT p.prosecdef FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.=) f::pg_catalog.regprocedure)
+             IS DISTINCT FROM (f OPERATOR(pg_catalog.=) 'public.api_football_cert_attempt_guard()')
+           OR pg_catalog.has_function_privilege('fcb_app', f, 'EXECUTE') THEN
+            RAISE EXCEPTION 'FCB_CERT_LEDGER_FUNCTIONS_UNEXPECTED';
+        END IF;
+    END LOOP;
     FOR i IN 1..4 LOOP
         IF (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) tables[i]::pg_catalog.regclass)
              OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_migrator'::pg_catalog.name) THEN
