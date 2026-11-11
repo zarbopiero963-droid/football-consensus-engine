@@ -74,7 +74,11 @@ def declared_error_keys(errors: object, is_key: Callable[[str], bool]) -> tuple[
     else:
         items = []
     keys = {k if isinstance(k, str) and is_key(k) else "OTHER" for d in items for k in d}
-    return tuple(sorted(keys)[:_MAX_DECLARED_KEYS])
+    # The reserved keys (quota, rate limit, plan, auth) drive quota reconciliation and the
+    # stop rules: they survive the bound whatever else the provider declared.
+    reserved = sorted(keys & DECLARED_ERROR_CATEGORIES.keys())
+    rest = sorted(keys - DECLARED_ERROR_CATEGORIES.keys())
+    return tuple(sorted(reserved + rest[:_MAX_DECLARED_KEYS - len(reserved)]))
 
 
 def classify_declared_errors(keys: tuple[str, ...], parameters: tuple[str, ...]) -> tuple[list[str], str]:

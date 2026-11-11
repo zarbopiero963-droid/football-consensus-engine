@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import asyncio
 import json
 import re
+import time
 from typing import Any, Mapping
 
 import httpx
@@ -17,6 +19,7 @@ import httpx
 from .catalog import documented_path
 from .config import OFFICIAL_BASE_URL
 from .client import UnsupportedEndpoint
+from .continuation import ROW_FIELDS
 from .errors import (
     ProviderUnavailable, ProviderHTTPError, ProviderDataError, ProviderDeclaredErrors, declared_error_keys,
 )
@@ -59,6 +62,34 @@ class ProviderReply:
     bytes_received: int
     quota_remaining_day: int | None = None
     quota_remaining_minute: int | None = None
+    # The provider's own HTTP `Date` header (RFC 9110 IMF-fixdate, GMT), normalised to UTC ISO
+    # 8601; None when absent or not in that exact form. Never the bridge clock.
+    provider_date_utc: str | None = None
+
+
+@dataclass(frozen=True)
+class ScannedReply(ProviderReply):
+    """A reply above the read cap, scanned in a stream: ids, counts, paging and a body hash
+    only (stream_scan.IdScanner). `data` is empty: provider data is never kept or returned."""
+    scan: dict[str, Any] | None = None
+
+
+_IMF_FIXDATE = re.compile(
+    r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
+    r"[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$")
+
+
+def provider_http_date(headers: Mapping[str, str]) -> str | None:
+    """The provider's `Date` header as UTC ISO 8601, or None. Only the strict IMF-fixdate form
+    is accepted: an obsolete or malformed date is not guessed."""
+    raw = headers.get("date", "")
+    if not isinstance(raw, str) or not _IMF_FIXDATE.fullmatch(raw.strip()):
+        return None
+    try:
+        parsed = datetime.strptime(raw.strip(), "%a, %d %b %Y %H:%M:%S GMT")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc).isoformat()
 
 
 def _quota_header(headers: httpx.Headers, key: str) -> int | None:
@@ -90,9 +121,56 @@ class InjectedHTTPXTransport:
             raise ValueError("Provider client must use pinned base origin")
         self._client = client
         self.__api_key = api_key
+        from .stream_scan import DEFAULT_LIMITS
+        self.scan_limits = DEFAULT_LIMITS
+        self.scan_clock = time.monotonic
+        # Set by the resilience client below its request timeout: a scan that would outlive
+        # the timeout ends as PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN (MAX_SECONDS, not retried)
+        # instead of a retryable PROVIDER_TIMEOUT. None: only the scan's own 20 s bound.
+        self.request_time_budget: float | None = None
+
+    # At most this much body is scanned per step; the event loop runs between steps.
+    SCAN_STEP_BYTES = 65_536
+
+    def _scanner(self, fields, started: float):
+        from .stream_scan import IdScanner
+        budget = self.request_time_budget
+        return IdScanner(fields, limits=self.scan_limits, clock=self.scan_clock,
+                         deadline=None if budget is None else started + budget)
+
+    async def _feed(self, scanner, chunk: bytes) -> None:
+        for i in range(0, len(chunk), self.SCAN_STEP_BYTES):
+            scanner.feed(chunk[i:i + self.SCAN_STEP_BYTES])
+            await asyncio.sleep(0)
+
+    @staticmethod
+    def _scanned_reply(code: int, headers: httpx.Headers, scan: dict[str, Any], count: int) -> "ScannedReply":
+        if scan["errors_nonempty"]:
+            raise ProviderDeclaredErrors(
+                # Same key handling as the in-memory path (declared_error_keys).
+                declared_error_keys({k: None for k in scan["error_keys"]}, _PARAM.fullmatch),
+                quota_remaining_day=_quota_header(headers, "x-ratelimit-requests-remaining"),
+                quota_remaining_minute=_quota_header(headers, "x-ratelimit-remaining"),
+            )
+        paging = scan["paging"]
+        if scan["paging_present"]:
+            current = paging.get("current") if isinstance(paging, dict) else None
+            total = paging.get("total") if isinstance(paging, dict) else None
+            in_range = type(current) is int and type(total) is int and 1 <= current <= total <= 100000
+            past_end = (type(current) is int and type(total) is int and 0 <= total < current <= 100000
+                        and not scan["rows"])
+            if not (in_range or past_end):
+                raise ProviderDataError("PROVIDER_INVALID_PAGINATION")
+        return ScannedReply(
+            status_code=code, data={}, received_at_utc=datetime.now(timezone.utc).isoformat(),
+            bytes_received=count,
+            quota_remaining_day=_quota_header(headers, "x-ratelimit-requests-remaining"),
+            quota_remaining_minute=_quota_header(headers, "x-ratelimit-remaining"),
+            provider_date_utc=provider_http_date(headers), scan=scan)
 
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
         path, checked = validated_request(path, params)
+        started = self.scan_clock()
         try:
             # Redirects must never be followed, even if caller set a client default.
             async with self._client.stream(
@@ -106,13 +184,29 @@ class InjectedHTTPXTransport:
                         raise ProviderUnavailable("PROVIDER_REDIRECT_REJECTED", retryable=False)
                     raise ProviderHTTPError(
                         code, retry_after_seconds=_retry_after(response.headers) if code == 429 else None)
-                chunks: list[bytes] = []
+                chunks: list[bytes] | None = []
                 count = 0
+                scanner = None
+                cap = _MAX_ODDS_BODY if path in _LARGE_BODY_PATHS else _MAX_BODY
                 async for chunk in response.aiter_bytes():
                     count += len(chunk)
-                    if count > (_MAX_ODDS_BODY if path in _LARGE_BODY_PATHS else _MAX_BODY):
-                        raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
-                    chunks.append(chunk)
+                    if scanner is not None:
+                        await self._feed(scanner, chunk)
+                    elif count > cap:
+                        # FIX-01 option B: the read cap stays the in-memory limit. Past it, the
+                        # body is streamed through a bounded id scan and never buffered whole.
+                        fields = ROW_FIELDS.get(path)
+                        if not fields:
+                            raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
+                        scanner = self._scanner(fields, started)
+                        for buffered in chunks:
+                            await self._feed(scanner, buffered)
+                        chunks = None
+                        await self._feed(scanner, chunk)
+                    else:
+                        chunks.append(chunk)
+                if scanner is not None:
+                    return self._scanned_reply(code, response.headers, scanner.finish(), count)
                 try:
                     data = json.loads(b"".join(chunks))
                 except (UnicodeDecodeError, ValueError):
@@ -133,8 +227,12 @@ class InjectedHTTPXTransport:
                     if not isinstance(paging, dict):
                         raise ProviderDataError("PROVIDER_INVALID_PAGINATION")
                     current, total = paging.get("current"), paging.get("total")
-                    if not (type(current) is int and type(total) is int and
-                            1 <= current <= total <= 100000):
+                    in_range = type(current) is int and type(total) is int and 1 <= current <= total <= 100000
+                    # FIX-04 (D06): a page past the end, or a listing with no page at all, is a
+                    # valid answer only when it carries no rows; rows on such a page stay invalid.
+                    past_end = (type(current) is int and type(total) is int and 0 <= total < current <= 100000
+                                and data.get("response") == [])
+                    if not (in_range or past_end):
                         raise ProviderDataError("PROVIDER_INVALID_PAGINATION")
                 return ProviderReply(
                     status_code=code,
@@ -143,6 +241,7 @@ class InjectedHTTPXTransport:
                     bytes_received=count,
                     quota_remaining_day=_quota_header(response.headers, "x-ratelimit-requests-remaining"),
                     quota_remaining_minute=_quota_header(response.headers, "x-ratelimit-remaining"),
+                    provider_date_utc=provider_http_date(response.headers),
                 )
         except httpx.TimeoutException:
             raise ProviderUnavailable("PROVIDER_TIMEOUT") from None

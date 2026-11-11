@@ -58,7 +58,9 @@ def _assert_no_prices(result, price="1.95"):
             for value in node:
                 walk(value)
     walk(result)
-    scrubbed = {k: v for k, v in result.items() if k != "retrieved_at_utc"}
+    # FIX-07 added bridge-clock times with the same digit risk (declared): excluded likewise.
+    scrubbed = {k: v for k, v in result.items()
+                if k not in ("retrieved_at_utc", "responded_at_utc", "age_seconds", "time_sources")}
     assert price not in json.dumps(scrubbed)
 
 import httpx
@@ -184,10 +186,12 @@ def _transport_get(path, size):
 def test_transport_cap_is_2mib_only_for_odds_and_live_odds():
     assert _transport_get("/odds", 1_000_000).bytes_received > 524_288
     assert _transport_get("/odds/live", 1_000_000).bytes_received > 524_288
+    # FIX-01 option B (declared change): past the cap the body is scanned in a stream; a single
+    # 0.6-2.2 MB string is refused by the scan's token bound, never buffered or accepted.
     for path, size in (("/odds", 2_200_000), ("/odds/live", 2_200_000), ("/fixtures", 600_000)):
         with pytest.raises(ProviderDataError) as info:
             _transport_get(path, size)
-        assert info.value.code == "PROVIDER_RESPONSE_TOO_LARGE"
+        assert info.value.code == "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN" and info.value.bound == "MAX_TOKEN"
 
 
 def _live_page(fixtures=1, markets=100, values=40, drop=None):

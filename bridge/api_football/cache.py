@@ -28,6 +28,7 @@ class _Record:
     expires_at: float
     size: int
     value: Any
+    stored_at: float = 0.0
 
 
 class BoundedCache:
@@ -43,14 +44,20 @@ class BoundedCache:
         self._size = 0
 
     def get(self, key: tuple):
+        entry = self.get_with_age(key)
+        return None if entry is None else entry[0]
+
+    def get_with_age(self, key: tuple):
+        """(value, seconds since it was stored) or None; the age is from the cache's own clock."""
         item = self._data.get(key)
         if item is None:
             return None
-        if item.expires_at <= self.clock():
+        now = self.clock()
+        if item.expires_at <= now:
             self._evict(key)
             return None
         self._data.move_to_end(key)
-        return deepcopy(item.value)
+        return deepcopy(item.value), max(0.0, now - item.stored_at)
 
     def put(self, key: tuple, value: Any, ttl: float) -> bool:
         if ttl <= 0:
@@ -64,7 +71,8 @@ class BoundedCache:
         self._evict(key)
         while self._data and (len(self._data) >= self.max_entries or self._size + size > self.max_bytes):
             self._evict(next(iter(self._data)))
-        self._data[key] = _Record(self.clock() + ttl, size, deepcopy(value))
+        now = self.clock()
+        self._data[key] = _Record(now + ttl, size, deepcopy(value), now)
         self._size += size
         return True
 

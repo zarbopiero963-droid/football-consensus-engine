@@ -40,6 +40,16 @@ def _request_limitation(exc: BaseException) -> bool:
     return isinstance(exc, ProviderHTTPError) and 400 <= exc.status <= 499 and exc.status not in _COUNTED_4XX
 
 
+def _follower_copy(exc: BaseException) -> BaseException:
+    """The shared flight's exception for a caller that joined it: same class, code and fields,
+    with zero attempts of its own (the leader reports the real ones)."""
+    clone = type(exc).__new__(type(exc))
+    clone.__dict__.update(exc.__dict__)
+    clone.args = exc.args
+    clone.provider_attempts = 0
+    return clone
+
+
 class ProviderTransport(Protocol):
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
         ...
@@ -92,6 +102,9 @@ class ResilientFootballClient:
         self.cache = cache or BoundedCache()
         self.breaker = breaker or CircuitBreaker(threshold=2, cooldown=30)
         self.retry = retry or RetryPolicy()
+        if hasattr(transport, "request_time_budget"):
+            # A streamed scan must end before the request timeout (see transport).
+            transport.request_time_budget = max(0.25, settings.timeout_seconds - self.SCAN_TIMEOUT_MARGIN_SECONDS)
         self._slots = asyncio.Semaphore(settings.max_concurrency)
         # No unbounded queue; maintain <= 4x concurrency active+queued.
         self._queue = asyncio.Semaphore(settings.max_concurrency * 4)
@@ -104,18 +117,17 @@ class ResilientFootballClient:
         # Type-safe cache keys: string "12" is different from integer 12.
         key = (path, tuple(sorted((k, type(v).__name__, v) for k, v in checked.items())))
         if self.settings.cache_enabled:
-            hit = self.cache.get(key)
+            hit = self._cache_hit(key)
             if hit is not None:
-                hit["cache_status"] = "HIT"
                 return hit
 
         async with self._flights_lock:
             # Recheck under lock to avoid races between dispatches.
-            hit = self.cache.get(key) if self.settings.cache_enabled else None
+            hit = self._cache_hit(key) if self.settings.cache_enabled else None
             if hit is not None:
-                hit["cache_status"] = "HIT"
                 return hit
             task = self._flights.get(key)
+            leader = task is None
             if task is None:
                 # Bound new per-key tasks BEFORE create_task(). The downstream
                 # semaphore alone only bounds active jobs; without this guard
@@ -128,7 +140,29 @@ class ResilientFootballClient:
                 task.add_done_callback(lambda t, k=key: self._flight_completed(k, t))
         # A cancelled caller does not cancel shared in-flight work;
         # it always terminates within policy bounds.
-        return deepcopy(await asyncio.shield(task))
+        try:
+            outcome = deepcopy(await asyncio.shield(task))
+        except Exception as exc:
+            if leader:
+                raise
+            raise _follower_copy(exc) from None
+        if not leader:
+            # The leader's attempts are reported once: a caller that joined the same flight
+            # sent nothing, so summing network_calls_made across callers stays exact.
+            outcome["provider_attempts"] = 0
+            outcome["shared_flight"] = True
+        return outcome
+
+    def _cache_hit(self, key: tuple) -> dict[str, Any] | None:
+        """A cached outcome keeps its original acquisition time and provider timestamp; only
+        the cache status and its age (cache clock, seconds) are added."""
+        entry = self.cache.get_with_age(key)
+        if entry is None:
+            return None
+        hit, age = entry
+        hit["cache_status"] = "HIT"
+        hit["cache_age_seconds"] = round(age, 3)
+        return hit
 
     def _flight_completed(self, key: tuple, task: asyncio.Task) -> None:
         if self._flights.get(key) is task:
@@ -156,6 +190,7 @@ class ResilientFootballClient:
             self._queue.release()
 
     _LEASE_TIMEOUT_SECONDS = 3.0
+    SCAN_TIMEOUT_MARGIN_SECONDS = 1.0
 
     def _release_orphan(self, reservation: asyncio.Future) -> None:
         """Compensate a reservation that completed after its caller gave up.
@@ -300,12 +335,17 @@ class ResilientFootballClient:
                             "params": deepcopy(checked),
                             "status": "PROVIDER_RESPONSE_RECEIVED",
                             "http_status": reply.status_code,
+                            # Bridge clock when the reply was received (acquisition time).
                             "retrieved_at_utc": reply.received_at_utc,
-                            "provider_timestamp_utc": None,
+                            # Provider clock only: its HTTP Date header, or None.
+                            "provider_timestamp_utc": getattr(reply, "provider_date_utc", None),
+                            "provider_timestamp_source": (
+                                "PROVIDER_HTTP_DATE_HEADER" if getattr(reply, "provider_date_utc", None) else None),
                             "cache_status": "MISS",
                             "quota_remaining_provider_day": reply.quota_remaining_day,
                             "quota_remaining_provider_minute": reply.quota_remaining_minute,
                             "data": deepcopy(reply.data),
+                            **({"scan": deepcopy(reply.scan)} if isinstance(getattr(reply, "scan", None), dict) else {}),
                             "warnings": [],
                             "provider_attempts": sent[0],
                         }

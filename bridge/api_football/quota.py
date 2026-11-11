@@ -12,11 +12,26 @@ import hashlib
 import secrets
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 
 class QuotaExceeded(RuntimeError):
-    """Conservative request budget exhausted: do not send an HTTP request."""
+    """Conservative request budget exhausted: do not send an HTTP request.
+
+    `window` names the binding local limit: "minute" (rolling 60 s window, provider-zero
+    marker or UTC minute bucket) with `retry_after_seconds` computed from the coordinator's
+    own attempt times, or "day" (UTC calendar-day bucket) with `reset_at_utc`, the next UTC
+    midnight. None when a caller raised it without that knowledge (fake coordinators)."""
+
+    def __init__(self, message: str = "", *, window: str | None = None,
+                 retry_after_seconds: int | None = None, reset_at_utc: str | None = None):
+        if window not in (None, "minute", "day"):
+            raise ValueError("unsupported quota window")
+        self.window = window
+        self.retry_after_seconds = retry_after_seconds
+        self.reset_at_utc = reset_at_utc
+        super().__init__(message)
 
 
 class QuotaConcurrencyBusy(RuntimeError):
@@ -109,6 +124,39 @@ _PROVIDER_ZERO_RECENT = (
 )
 
 
+# Seconds until the rolling window frees one slot: the (n - limit + 1)-th oldest attempt in
+# the window leaves it 60 s after its creation. Read from the same table that enforces it.
+_ROLLING_RETRY_AFTER = (
+    "SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM (created_at + INTERVAL '60 seconds' - clock_timestamp()))))::INT AS s "
+    "FROM api_football_quota_attempts WHERE api_key_hash=%s "
+    "AND created_at > clock_timestamp()-INTERVAL '60 seconds' "
+    "ORDER BY created_at ASC OFFSET %s LIMIT 1"
+)
+_PROVIDER_ZERO_RETRY_AFTER = (
+    "SELECT GREATEST(1, CEIL(EXTRACT(EPOCH FROM (max(created_at) + INTERVAL '60 seconds' - clock_timestamp()))))::INT AS s "
+    "FROM api_football_quota_attempts WHERE api_key_hash=%s "
+    "AND attempt_id LIKE 'provider-zero-%%' "
+    "AND created_at > clock_timestamp()-INTERVAL '60 seconds'"
+)
+
+
+def _value(row, key: str):
+    return row[key] if isinstance(row, dict) else row[0]
+
+
+def _day_exceeded(epoch: int) -> QuotaExceeded:
+    """The day bucket is epoch // 86400 of the database clock: the UTC calendar day."""
+    reset = (epoch // 86400 + 1) * 86400
+    return QuotaExceeded("shared provider budget exhausted", window="day",
+                         retry_after_seconds=max(1, reset - epoch),
+                         reset_at_utc=datetime.fromtimestamp(reset, timezone.utc).isoformat())
+
+
+def _minute_exceeded(message: str, seconds) -> QuotaExceeded:
+    retry = int(seconds) if seconds is not None else 60
+    return QuotaExceeded(message, window="minute", retry_after_seconds=min(60, max(1, retry)))
+
+
 class PostgresQuota:
     """Multi-process per-key UTC rolling-bucket accounting on an existing DB.
 
@@ -169,6 +217,18 @@ class PostgresQuota:
                 if active >= self.limits.max_concurrency:
                     raise QuotaConcurrencyBusy("shared concurrency budget exhausted")
 
+                # The UTC day is the binding limit when it is spent: say so before the minute
+                # checks, or a client would retry every minute until midnight. Read-only: the
+                # atomic conditional increment below still enforces it.
+                cur.execute(
+                    "SELECT used FROM api_football_quota_counters "
+                    "WHERE api_key_hash=%s AND window_kind='day' AND bucket=%s",
+                    (key, epoch // 86400),
+                )
+                day_row = cur.fetchone()
+                if day_row is not None and int(_value(day_row, "used")) >= self.limits.per_day:
+                    raise _day_exceeded(epoch)
+
                 # Protect the provider against double bursts at UTC minute
                 # boundaries with an exact rolling 60-second history.
                 # The same per-key lock serializes ALL worker reservations.
@@ -187,10 +247,16 @@ class PostgresQuota:
                 rolling = cur.fetchone()
                 recent_count = int(rolling["n"] if isinstance(rolling, dict) else rolling[0])
                 if recent_count >= self.limits.per_minute:
-                    raise QuotaExceeded("rolling provider request budget exhausted")
+                    cur.execute(_ROLLING_RETRY_AFTER, (key, recent_count - self.limits.per_minute))
+                    row = cur.fetchone()
+                    raise _minute_exceeded("rolling provider request budget exhausted",
+                                           _value(row, "s") if row is not None else None)
                 cur.execute(_PROVIDER_ZERO_RECENT, (key,))
                 if cur.fetchone() is not None:
-                    raise QuotaExceeded("provider reported a zero per-minute budget")
+                    cur.execute(_PROVIDER_ZERO_RETRY_AFTER, (key,))
+                    row = cur.fetchone()
+                    raise _minute_exceeded("provider reported a zero per-minute budget",
+                                           _value(row, "s") if row is not None else None)
 
                 for kind, bucket, maximum in (
                     ("minute", epoch // 60, self.limits.per_minute),
@@ -208,7 +274,11 @@ class PostgresQuota:
                     )
                     if cur.fetchone() is None:
                         # Context manager rolls back BOTH buckets and lease.
-                        raise QuotaExceeded("shared provider budget exhausted")
+                        if kind == "day":
+                            raise _day_exceeded(epoch)
+                        # UTC minute bucket (e.g. raised by a provider-reported zero): it
+                        # turns over at the next minute boundary.
+                        raise _minute_exceeded("shared provider budget exhausted", 60 - epoch % 60)
                 cur.execute(
                     """INSERT INTO api_football_quota_attempts (attempt_id, api_key_hash)
                        VALUES (%s, %s)""",

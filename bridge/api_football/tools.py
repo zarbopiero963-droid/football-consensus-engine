@@ -14,8 +14,11 @@ from typing import Any, Mapping, Protocol
 
 from .config import Settings
 from .catalog import ALLOWED_PATHS
-from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, validate
+from .contracts import ENDPOINTS, SOURCE, VERSION, ParameterError, fixtures_combination, validate
 from .full_contract_audit import audit_contract_coverage
+from .continuation import mcp_arguments
+from .live_odds_state import classify as classify_live_odds
+from .timezones import timezone_context
 
 _MAX_MCP_DATA_BYTES = 262_144
 _OFFLINE_WARNING = "Offline PR-03 tool: never claim real coverage, live odds or PIT data."
@@ -28,7 +31,7 @@ _PASS_THROUGH_CODES = frozenset({
     "QUOTA_COORDINATOR_UNAVAILABLE", "QUOTA_RELEASE_FAILED",
     "QUOTA_RECONCILIATION_FAILED", "PROVIDER_INTERNAL_ERROR",
     "PROVIDER_REPLY_CONTRACT_INVALID", "PROVIDER_NO_REPLY", "PROVIDER_NOT_CONFIGURED",
-    "INVALID_STATUS_RESPONSE",
+    "INVALID_STATUS_RESPONSE", "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN",
 })
 
 
@@ -40,7 +43,7 @@ def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any
                          classify_declared_errors)
     from .quota import QuotaExceeded, QuotaConcurrencyBusy
     if isinstance(exc, QuotaExceeded):
-        return {"code": "LOCAL_QUOTA_EXHAUSTED"}
+        return _local_quota_error(exc)
     if isinstance(exc, QuotaConcurrencyBusy):
         return {"code": "LOCAL_CONCURRENCY_BUSY"}
     if isinstance(exc, CircuitOpen):
@@ -67,6 +70,10 @@ def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any
     if isinstance(exc, UnsupportedEndpoint):
         return {"code": "UNSUPPORTED_ENDPOINT"}
     safe_code = getattr(exc, "code", None)
+    if safe_code == "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN":
+        from .stream_scan import BOUND_NAMES
+        bound = getattr(exc, "bound", None)
+        return {"code": safe_code, "bound": bound if bound in BOUND_NAMES else None}
     if isinstance(safe_code, str) and safe_code in _PASS_THROUGH_CODES:
         return {"code": safe_code}
     if isinstance(exc, ValueError):
@@ -74,9 +81,115 @@ def _error_for(exc: BaseException, parameters: tuple[str, ...]) -> dict[str, Any
     return {"code": "PROVIDER_REQUEST_FAILED"}
 
 
+def _local_quota_error(exc: Any) -> dict[str, Any]:
+    """The binding LOCAL limit of the shared coordinator (never the provider's own limit).
+
+    LOCAL_RATE_LIMITED: the rolling 60 s window (or the provider-zero marker) is full;
+    retry_after_seconds comes from the coordinator's attempt times. LOCAL_DAILY_QUOTA_EXHAUSTED:
+    the UTC calendar-day bucket is spent; reset_at_utc is the next UTC midnight. A refusal
+    without a known window is reported as daily, with no reset time: the conservative reading
+    (never invite a retry the coordinator did not compute)."""
+    window = getattr(exc, "window", None)
+    retry = getattr(exc, "retry_after_seconds", None)
+    reset = getattr(exc, "reset_at_utc", None)
+    if window == "minute":
+        out: dict[str, Any] = {"code": "LOCAL_RATE_LIMITED", "window": "ROLLING_60_SECONDS"}
+        if type(retry) is int and 1 <= retry <= 60:
+            out["retry_after_seconds"] = retry
+        return out
+    out = {"code": "LOCAL_DAILY_QUOTA_EXHAUSTED", "window": "UTC_CALENDAR_DAY",
+           "reset_at_utc": reset if window == "day" and isinstance(reset, str) else None}
+    if window == "day" and type(retry) is int and 1 <= retry <= 86_400:
+        out["retry_after_seconds"] = retry
+    return out
+
+
 def _attempts(source: Any) -> int:
     n = source.get("provider_attempts") if isinstance(source, dict) else getattr(source, "provider_attempts", None)
     return n if type(n) is int and 0 <= n <= 3 else 0
+
+
+_SUBJECT_KEYS = ("fixture", "id", "ids", "bet", "bookmaker")
+
+
+def _subject(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The fixture or market identifiers of the request, exactly as validated."""
+    return {k: params[k] for k in _SUBJECT_KEYS if k in params}
+
+
+def _iso_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0 else None
+
+
+def _reply_timing(data: dict[str, Any]) -> dict[str, Any]:
+    """Times of a real reply as the resilience layer recorded them: the bridge's acquisition
+    time (kept on a cache HIT), the provider's own timestamp only if it published one."""
+    out: dict[str, Any] = {}
+    if _iso_utc(data.get("retrieved_at_utc")) is not None:
+        out["retrieved_at_utc"] = data["retrieved_at_utc"]
+    if _iso_utc(data.get("provider_timestamp_utc")) is not None \
+            and data.get("provider_timestamp_source") == "PROVIDER_HTTP_DATE_HEADER":
+        out["provider_timestamp_utc"] = data["provider_timestamp_utc"]
+        out["provider_timestamp_source"] = "PROVIDER_HTTP_DATE_HEADER"
+    age = data.get("cache_age_seconds")
+    if data.get("cache_status") == "HIT" and isinstance(age, (int, float)) and not isinstance(age, bool) and age >= 0:
+        out["cache_age_seconds"] = age
+    return out
+
+
+def _finish_timing(result: dict[str, Any]) -> None:
+    """Server-side times are labelled as bridge-clock times; the provider timestamp is never
+    filled from them. age_seconds = responded - acquired (bridge clock), None if nothing was acquired."""
+    responded = datetime.now(timezone.utc)
+    result["responded_at_utc"] = responded.isoformat()
+    acquired = _iso_utc(result.get("retrieved_at_utc"))
+    result["age_seconds"] = round(max(0.0, (responded - acquired).total_seconds()), 3) if acquired else None
+    result["time_sources"] = {
+        "retrieved_at_utc": "BRIDGE_SERVER_CLOCK_AT_ACQUISITION" if acquired else None,
+        "responded_at_utc": "BRIDGE_SERVER_CLOCK",
+        "provider_timestamp_utc": result.get("provider_timestamp_source"),
+        "cache_age_seconds": "BRIDGE_CACHE_CLOCK" if result.get("cache_age_seconds") is not None else None,
+    }
+
+
+def pagination_state(paging: Any, params: Mapping[str, Any]) -> dict[str, Any]:
+    """FIX-04, derived from the provider's own paging (never fetched ahead): where this page is
+    and the exact parameters of the next one. Pages are never downloaded automatically."""
+    if not isinstance(paging, dict) or type(paging.get("current")) is not int or type(paging.get("total")) is not int:
+        return {"state": "PAGING_NOT_PUBLISHED", "has_next": None, "next_page": None, "auto_fetch": False}
+    current, total = paging["current"], paging["total"]
+    requested = params.get("page", 1)
+    if total == 0 or current > total:
+        return {"state": "PAGE_OUT_OF_RANGE" if total else "NO_PAGES", "current": current, "total": total,
+                "requested_page": requested, "has_next": False, "next_page": None, "next_parameters": None,
+                "auto_fetch": False}
+    has_next = current < total
+    return {"state": "MORE_PAGES" if has_next else "LAST_PAGE", "current": current, "total": total,
+            "requested_page": requested, "has_next": has_next, "next_page": current + 1 if has_next else None,
+            "next_parameters": mcp_arguments({**params, "page": current + 1}) if has_next else None,
+            "auto_fetch": False}
+
+
+# A manifest leaves room for the envelope fields of the MCP reply under the 256 KiB cap.
+_MANIFEST_BUDGET = _MAX_MCP_DATA_BYTES - 16_384
+
+
+def _encoded_size(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _real_calls(data: dict[str, Any]) -> int:
+    """Provider requests sent for THIS call: none on a cache HIT or when the call joined
+    another caller's in-flight request (that caller reports them); otherwise the real attempts."""
+    if data.get("cache_status") == "HIT" or data.get("shared_flight") is True:
+        return 0
+    return _attempts(data) or 1
 
 
 class MockClient(Protocol):
@@ -97,6 +210,11 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
         return func
 
     async def execute(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        result = await _execute_core(tool, args)
+        _finish_timing(result)
+        return result
+
+    async def _execute_core(tool: str, args: dict[str, Any]) -> dict[str, Any]:
         at = datetime.now(timezone.utc).isoformat()
         try:
             contract, params = validate(tool, args)
@@ -104,7 +222,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             return {
                 "provider": "API-FOOTBALL", "tool": tool, "status": "INVALID_INPUT",
                 "error": {"code": str(exc)},
-                "retrieved_at_utc": at, "data": None, "network_calls_made": 0,
+                "retrieved_at_utc": None, "data": None, "network_calls_made": 0,
             }
         result: dict[str, Any] = {
             "provider": "API-FOOTBALL",
@@ -115,9 +233,15 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             "source_contract": contract.confidence,
             "documentation_url": SOURCE,
             "documentation_version": VERSION,
-            "retrieved_at_utc": at,
+            # Set only when a reply was acquired (see _reply_timing); None means nothing was.
+            "retrieved_at_utc": None,
             "provider_timestamp_utc": None,
+            "provider_timestamp_source": None,
             "cache_status": "NOT_USED",
+            "cache_age_seconds": None,
+            "request_subject": _subject(params),
+            **({"timezone_context": timezone_context(str(params["timezone"]))} if "timezone" in params else {}),
+            **({"combination": fixtures_combination(params)} if tool == "apifootball_fixtures" else {}),
             "quota_remaining": None,
             "pagination": None,
             "data": None,
@@ -145,58 +269,116 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 data = await test_mock.get(contract.path, params)
                 status = "MOCK_VERIFIED"
                 cache_status = "TEST_FIXTURE"
+                result["retrieved_at_utc"] = datetime.now(timezone.utc).isoformat()
             else:
                 data = await client.get(contract.path, params)
                 status = "REAL_API_RESPONSE"
                 cache_status = data.get("cache_status", "UNKNOWN") if isinstance(data, dict) else "UNKNOWN"
-                if isinstance(data, dict) and cache_status != "HIT":
-                    received = _attempts(data) or 1
+                if isinstance(data, dict):
+                    received = _real_calls(data)
+                    result.update(_reply_timing(data))
             if not isinstance(data, dict):
                 from .errors import ProviderDataError
                 raise ProviderDataError("PROVIDER_REPLY_CONTRACT_INVALID")
             size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+            envelope = data.get("data", data) if status == "REAL_API_RESPONSE" else data
+
+            def _provenance(out_status: str) -> None:
+                result["status"] = out_status
+                # Keep provenance explicit: a mock manifest is not real evidence.
+                result["source_status"] = status
+                result["http_status"] = data.get("http_status")
+                result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
+                result["cache_status"] = cache_status
+                if status == "REAL_API_RESPONSE":
+                    result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
+                    result["quota_remaining"] = {
+                        "day": data.get("quota_remaining_provider_day"),
+                        "minute": data.get("quota_remaining_provider_minute"),
+                    }
+
+            if status == "REAL_API_RESPONSE" and isinstance(data.get("scan"), dict):
+                # FIX-01 option B: a reply above the read cap was scanned in a stream; only ids,
+                # counts, paging and a body hash exist. No provider data, no prices.
+                from .continuation import read_cap_navigation, scan_manifest
+                for with_ids in (True, False):
+                    manifest = scan_manifest(tool, params, data["scan"], with_row_ids=with_ids)
+                    if _encoded_size(manifest) <= _MANIFEST_BUDGET:
+                        _provenance("PARTIAL_ID_MANIFEST")
+                        result["data"] = manifest
+                        result["pagination"] = manifest["paging"]
+                        if tool == "apifootball_live_odds":
+                            result["live_odds_state"] = {"label": "DERIVED", "state": "NOT_EVALUATED",
+                                                         "reason": "STREAMED_SCAN_KEEPS_IDS_ONLY"}
+                        return result
+                _provenance("PAYLOAD_TOO_LARGE")
+                result["error"] = {"code": "PROVIDER_RESPONSE_TOO_LARGE"}
+                result["manifest_error"] = {"code": "ID_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"}
+                result["navigation"] = read_cap_navigation(tool, params, reason="ID_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT")
+                return result
             if size > _MAX_MCP_DATA_BYTES and tool in ("apifootball_odds", "apifootball_live_odds"):
-                # Never pretend a truncated list of prices is complete.
-                from .odds_manifest import live_odds_manifest, odds_page_manifest
-                try:
-                    manifest = (odds_page_manifest if tool == "apifootball_odds" else live_odds_manifest)(data)
-                except ValueError as exc:
-                    manifest = None
-                    manifest_error = str(exc)
-                if manifest is not None and len(json.dumps(
-                        manifest, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) <= _MAX_MCP_DATA_BYTES:
-                    result["status"] = "PARTIAL_ODDS_MANIFEST"
-                    # Keep provenance explicit: a mock manifest is not real evidence.
-                    result["source_status"] = status
+                # Never pretend a truncated list of prices is complete (FIX-05).
+                from .continuation import response_sha256
+                from .odds_manifest import DETAIL_LEVELS, live_odds_manifest, odds_page_manifest
+                build = odds_page_manifest if tool == "apifootball_odds" else live_odds_manifest
+                manifest = manifest_error = None
+                for detail in DETAIL_LEVELS:  # the most detailed level that fits
+                    try:
+                        candidate = build(data, request=params, detail=detail)
+                    except ValueError as exc:
+                        manifest_error = str(exc)
+                        break
+                    candidate["response_sha256"] = response_sha256(envelope.get("response"))
+                    if _encoded_size(candidate) <= _MANIFEST_BUDGET:
+                        manifest = candidate
+                        break
+                    manifest_error = "ODDS_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"
+                if manifest is not None:
+                    _provenance("PARTIAL_ODDS_MANIFEST")
+                    if tool == "apifootball_live_odds":
+                        result["live_odds_state"] = classify_live_odds(envelope)
                     result["data"] = manifest
                     result["pagination"] = manifest["paging"]
-                    result["http_status"] = data.get("http_status")
-                    result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else (
-                        _attempts(data) or 1)
-                    result["cache_status"] = cache_status
-                    if status == "REAL_API_RESPONSE":
-                        result["quota_remaining"] = {
-                            "day": data.get("quota_remaining_provider_day"),
-                            "minute": data.get("quota_remaining_provider_minute"),
-                        }
                     return result
-                if manifest is None:
-                    result["manifest_error"] = {"code": manifest_error}
-                else:
-                    result["manifest_error"] = {"code": "ODDS_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"}
+                result["manifest_error"] = {"code": manifest_error}
+            elif size > _MAX_MCP_DATA_BYTES:
+                # FIX-01: a navigable, data-free id manifest with plain re-validated follow-up calls.
+                from .continuation import id_manifest
+                manifest = manifest_error = None
+                for with_ids in (True, False):
+                    try:
+                        candidate = id_manifest(tool, params, envelope, with_row_ids=with_ids)
+                    except ValueError as exc:
+                        manifest_error = str(exc)
+                        break
+                    if _encoded_size(candidate) <= _MANIFEST_BUDGET:
+                        manifest = candidate
+                        break
+                    manifest_error = "ID_MANIFEST_EXCEEDS_MCP_SIZE_LIMIT"
+                if manifest is not None:
+                    _provenance("PARTIAL_ID_MANIFEST")
+                    result["data"] = manifest
+                    result["pagination"] = manifest["paging"]
+                    return result
+                result["manifest_error"] = {"code": manifest_error}
             if size > _MAX_MCP_DATA_BYTES:
                 result["status"] = "PAYLOAD_TOO_LARGE"
                 result["error"] = {"code": "MOCK_RESPONSE_TOO_LARGE" if status == "MOCK_VERIFIED" else "PROVIDER_RESPONSE_TOO_LARGE"}
                 # Keep the provider's page position so the client can still navigate (numbers only).
-                envelope = data.get("data", data) if status == "REAL_API_RESPONSE" else data
                 paging = envelope.get("paging") if isinstance(envelope, dict) else None
                 if isinstance(paging, dict) and type(paging.get("current")) is int and type(paging.get("total")) is int:
                     result["pagination"] = {"current": paging["current"], "total": paging["total"]}
                 if status == "REAL_API_RESPONSE":
-                    result["network_calls_made"] = 0 if cache_status == "HIT" else (_attempts(data) or 1)
+                    result["network_calls_made"] = _real_calls(data)
                     result["warnings"] = [w for w in result["warnings"] if w != _OFFLINE_WARNING]
                 return result
             result["status"] = status
+            if "timezone" in params:
+                from .timezones import offset_consistency
+                check = offset_consistency(data.get("data", data) if status == "REAL_API_RESPONSE" else data,
+                                           str(params["timezone"]))
+                if check is not None:
+                    result["timezone_check"] = check
             if status == "REAL_API_RESPONSE":
                 # The offline-placeholder warnings contradict a real reply.
                 result["warnings"] = [
@@ -220,13 +402,17 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                 }
             else:
                 result["data"] = provider_data
+                if tool == "apifootball_live_odds":
+                    # FIX-09: DERIVED summary beside the untouched provider data.
+                    result["live_odds_state"] = classify_live_odds(provider_data)
             result["http_status"] = data.get("http_status")
             # Real replies wrap the provider envelope: paging lives in provider_data.
             provider_paging = provider_data.get("paging") if isinstance(provider_data, dict) else None
             result["pagination"] = provider_paging if isinstance(provider_paging, dict) else data.get("pagination", data.get("paging"))
+            if contract.pagination:
+                result["pagination_state"] = pagination_state(result["pagination"], params)
             result["cache_status"] = cache_status
-            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" or cache_status == "HIT" else (
-                _attempts(data) or 1)
+            result["network_calls_made"] = 0 if status == "MOCK_VERIFIED" else _real_calls(data)
             if status == "REAL_API_RESPONSE":
                 result["quota_remaining"] = {
                     "day": data.get("quota_remaining_provider_day"),
@@ -241,6 +427,15 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
             else:
                 result["status"] = "PROVIDER_ERROR"
                 result["error"] = _error_for(exc, contract.fields)
+                if tool == "apifootball_live_odds":
+                    from .live_odds_state import unavailable
+                    result["live_odds_state"] = unavailable(result["error"].get("code"))
+                if result["error"].get("code") in ("PROVIDER_RESPONSE_TOO_LARGE",
+                                                   "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN"):
+                    from .continuation import read_cap_navigation
+                    reason = ("SCAN_BOUND_" + str(result["error"].get("bound"))
+                              if result["error"]["code"].endswith("_FOR_SCAN") else "READ_CAP_EXCEEDED_NOT_SCANNABLE")
+                    result["navigation"] = read_cap_navigation(tool, params, reason=reason)
                 if isinstance(result["error"].get("http_status"), int):
                     result["http_status"] = result["error"]["http_status"]
                 # Real attempts of the resilience layer (retries included); 0 when none was sent.
@@ -315,7 +510,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
 
     @add
     async def apifootball_fixtures(id: int | None = None, date: str | None = None, league: int | None = None, season: int | None = None, team: int | None = None, live: str | None = None, timezone: str | None = None, last: int | None = None, next: int | None = None, status: str | None = None, ids: str | None = None, venue: int | None = None, round: str | None = None, from_date: str | None = None, to_date: str | None = None) -> dict[str, Any]:
-        """Fixtures/live calendar. Requires targeted filter; 'live' only 'all'; UTC timezone."""
+        """Fixtures/live calendar. Requires a targeted filter; live='all' or league ids 'id-id'; timezone: any IANA zone (provider is the final authority)."""
         return await execute("apifootball_fixtures", dict(id=id, date=date, league=league, season=season, team=team, live=live, timezone=timezone, last=last, next=next, status=status, ids=ids, venue=venue, round=round, **{"from": from_date, "to": to_date}))
 
     @add
@@ -410,7 +605,7 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
 
     @add
     async def apifootball_fixture_rounds(league: int, season: int, current: bool | None = None, dates: bool | None = None, timezone: str | None = None) -> dict[str, Any]:
-        """Competition rounds, optionally current or with round dates; UTC only."""
+        """Competition rounds, optionally current or with round dates; timezone: any IANA zone."""
         return await execute("apifootball_fixture_rounds", dict(league=league, season=season, current=current, dates=dates, timezone=timezone))
 
     @add

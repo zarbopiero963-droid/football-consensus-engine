@@ -134,7 +134,10 @@ def test_fixture_filter_validation_and_stable_input_errors():
         ({"date": "2026-02-30"}, "INVALID_DATE"),
         ({"date": "2026-10-24\nHost: evil.example"}, "INVALID_TEXT_PARAMETER"),
         ({"live": "private"}, "INVALID_LIVE_FILTER"),
-        ({"timezone": "Etc/GMT+13", "id": 1}, "TIMEZONE_NOT_CERTIFIED"),
+        # FIX-06 (declared change, owner-approved): TIMEZONE_NOT_CERTIFIED is removed; a zone
+        # outside the IANA catalog is refused instead (Etc/GMT+13 does not exist: GMT+12 is the last).
+        ({"timezone": "Etc/GMT+13", "id": 1}, "TIMEZONE_NOT_IN_CATALOG"),
+        ({"timezone": "Mars/Olympus_Mons", "id": 1}, "TIMEZONE_NOT_IN_CATALOG"),
         ({"league": 39}, "FIXTURE_FILTER_REQUIRED"),
         ({"team": 9}, "FIXTURE_FILTER_REQUIRED"),
         ({"last": 101, "team": 9}, "PAGE_OR_BATCH_TOO_LARGE"),
@@ -196,9 +199,12 @@ def test_mock_large_payload_is_rejected_without_data_leak():
     reg = FakeRegistry()
     register_tools(reg, _settings(key="FAKE"), test_mock=mock)
     result = _call(reg.tools["apifootball_fixtures"](id=1))
-    assert result["status"] == "PAYLOAD_TOO_LARGE"
-    assert result["data"] is None
-    assert result["error"]["code"] == "MOCK_RESPONSE_TOO_LARGE"
+    # FIX-01 (declared change): a data-free manifest instead of a bare PAYLOAD_TOO_LARGE; this
+    # row has no fixture.id and the request is already one fixture, so it is not navigable.
+    assert result["status"] == "PARTIAL_ID_MANIFEST" and result["source_status"] == "MOCK_VERIFIED"
+    assert result["data"]["data_included"] is False
+    assert result["data"]["complete_retrieval_available"] is False
+    assert result["data"]["rows_without_id"] == 1
     assert "z" * 1000 not in str(result)
 
 

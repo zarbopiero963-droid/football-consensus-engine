@@ -123,7 +123,8 @@ def test_even_with_key_all_new_endpoints_remain_offline(name, args, path):
     ("apifootball_fixture_headtohead", {"h2h": "0-34"}, "INVALID_HEAD_TO_HEAD_FILTER"),
     ("apifootball_fixture_headtohead", {"h2h": "33/34"}, "INVALID_HEAD_TO_HEAD_FILTER"),
     ("apifootball_fixture_headtohead", {"h2h": "33-34", "last": 101}, "PAGE_OR_BATCH_TOO_LARGE"),
-    ("apifootball_player_profiles", {"page": 101}, "PAGE_OR_BATCH_TOO_LARGE"),
+    # FIX-04 (declared change): page 101 is valid now; the bound is the transport paging bound.
+    ("apifootball_player_profiles", {"page": 100_001}, "PAGE_OR_BATCH_TOO_LARGE"),
     ("apifootball_live_bets", {"id": 23}, "INVALID_TEXT_PARAMETER"),
     ("apifootball_live_bets", {"id": "23A"}, "INVALID_LIVE_BET_ID"),
     ("apifootball_live_bets", {"search": "AB"}, "SEARCH_TOO_SHORT"),

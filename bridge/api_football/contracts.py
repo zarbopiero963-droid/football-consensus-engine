@@ -13,6 +13,7 @@ import re
 from typing import Any, Mapping
 
 from .catalog import documented_path
+from .timezones import validate_timezone
 
 VERSION = "v3.9.3"
 SOURCE = "https://www.api-football.com/documentation_v3"
@@ -33,6 +34,9 @@ _IDS = re.compile(r"^[1-9][0-9]{0,9}(?:-[1-9][0-9]{0,9}){0,19}$")
 assert not (_POSITIVE & _BOOL_FIELDS), "Boolean fields must not be validated as integers"
 _H2H = re.compile(r"^[1-9][0-9]{0,9}-[1-9][0-9]{0,9}$")
 _VALID_VALUE = re.compile(r"^[^\x00-\x1f\x7f]{1,128}$")
+
+
+MAX_PAGE = 100_000  # == the paging.total bound of transport.InjectedHTTPXTransport
 
 
 class ParameterError(ValueError):
@@ -99,15 +103,33 @@ assert all(documented_path(endpoint.path) for endpoint in ENDPOINTS.values())
 def _string(value: str, field: str) -> str:
     if not isinstance(value, str) or not _VALID_VALUE.fullmatch(value):
         raise ParameterError("INVALID_TEXT_PARAMETER")
-    if field == "live" and value != "all":
-        raise ParameterError("INVALID_LIVE_FILTER")
+    if field == "live":
+        _live_filter(value)
     if field == "timezone":
-        # Unverified/untrusted timezone IDs may be invalid upstream.
-        # For PR-03, return timestamps in UTC only; future TZ conversion
-        # can use the provider's /timezone catalog.
-        if value != "UTC":
-            raise ParameterError("TIMEZONE_NOT_CERTIFIED")
+        # FIX-06 (owner-approved removal of TIMEZONE_NOT_CERTIFIED): any IANA zone of the
+        # tz database; the provider's /timezone catalog stays the final authority.
+        code = validate_timezone(value)
+        if code is not None:
+            raise ParameterError(code)
     return value
+
+
+# FIX-02. Documented enum: "all" | "id-id" ("All or several leagues ids"). League ids are
+# positive integers without leading zeros; a repeated id is refused. The docs give no maximum
+# number of ids: that limit is DOCS_UNVERIFIED, the only bound is the 128-character value limit
+# every text parameter has (transport.validated_request).
+_LIVE_LEAGUE_IDS = re.compile(r"^[1-9][0-9]{0,9}(?:-[1-9][0-9]{0,9})*$")
+LIVE_IDS_MAXIMUM = "DOCS_UNVERIFIED"
+
+
+def _live_filter(value: str) -> None:
+    if value == "all":
+        return
+    if not _LIVE_LEAGUE_IDS.fullmatch(value):
+        raise ParameterError("INVALID_LIVE_FILTER")
+    ids = value.split("-")
+    if len(set(ids)) != len(ids):
+        raise ParameterError("LIVE_LEAGUE_IDS_DUPLICATE")
 
 
 def _positive_int(value: int, field: str) -> int:
@@ -115,7 +137,12 @@ def _positive_int(value: int, field: str) -> int:
         raise ParameterError("INVALID_INTEGER_PARAMETER")
     if field == "season" and not (1990 <= value <= 2100):
         raise ParameterError("INVALID_SEASON")
-    if field in ("page", "last", "next") and value > 100:
+    # FIX-04: the docs give `page` no maximum ("Default: 1"); players/profiles has 250 rows
+    # per page, so pages above 100 are real. The bound is the transport's own paging bound
+    # (paging.total <= MAX_PAGE): a technical limit, never an invented provider one.
+    if field == "page" and value > MAX_PAGE:
+        raise ParameterError("PAGE_OR_BATCH_TOO_LARGE")
+    if field in ("last", "next") and value > 100:
         raise ParameterError("PAGE_OR_BATCH_TOO_LARGE")
     return value
 
@@ -187,12 +214,8 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
             raise ParameterError("INVALID_COUNTRY_CODE")
     if name == "apifootball_standings" and not ("league" in provided or "team" in provided):
         raise ParameterError("STANDINGS_FILTER_REQUIRED")
-    if name == "apifootball_fixtures" and not (
-        "id" in provided or "ids" in provided or "date" in provided or "live" in provided
-        or ("league" in provided and "season" in provided)
-        or ("team" in provided and ("last" in provided or "next" in provided))
-    ):
-        raise ParameterError("FIXTURE_FILTER_REQUIRED")
+    if name == "apifootball_fixtures":
+        fixtures_combination(provided)  # raises on an MCP_REJECTED combination
     if name == "apifootball_teams" and not provided:
         raise ParameterError("TEAM_FILTER_REQUIRED")
     if name == "apifootball_venues" and not provided:
@@ -231,8 +254,61 @@ def validate(name: str, values: Mapping[str, Any]) -> tuple[Endpoint, dict[str, 
         "fixture" in provided or "league" in provided
     ):
         raise ParameterError("LIVE_ODDS_FILTER_REQUIRED")
-    if ("league" in provided) != ("season" in provided) and name in (
-        "apifootball_fixtures", "apifootball_odds",
-    ) and "id" not in provided and "fixture" not in provided and "date" not in provided and "live" not in provided:
+    if ("league" in provided) != ("season" in provided) and name == "apifootball_odds" \
+            and "fixture" not in provided and "date" not in provided:
         raise ParameterError("LEAGUE_SEASON_PAIR_REQUIRED")
     return endpoint, provided
+
+
+# ---- FIX-03: /fixtures parameter combinations ------------------------------------------------
+# Documentary evidence only. The captured official contract (docs/api_football/
+# official_parameter_matrix_v3.9.3.json) lists the 15 /fixtures parameters as independent
+# optional filters and records NO combination rule. So:
+#   DOCUMENTED_VALID  - one documented anchor parameter on its own (with the documented
+#                       `timezone`), `season` with the `league` it is documented for ("The
+#                       season of the league"), and league+season+from+to, which also has a
+#                       real PASS in the repo evidence (runs on 37e74fd);
+#   DOCS_UNVERIFIED   - any other scoped combination: forwarded, labelled in the reply, the
+#                       provider is the final authority (its declared errors come back with keys);
+#   MCP_REJECTED      - refused locally with a fixed code: no scoping filter (an unbounded
+#                       listing), last together with next, from after to, last/next > 99.
+# A combination never becomes DOCUMENTED_VALID because the docs do not forbid it.
+DOCUMENTED_VALID = "DOCUMENTED_VALID"
+DOCS_UNVERIFIED = "DOCS_UNVERIFIED"
+MCP_REJECTED = "MCP_REJECTED"
+
+_FIXTURE_DOCUMENTED = (
+    ("F-ID", frozenset({"id"})),
+    ("F-IDS", frozenset({"ids"})),
+    ("F-LIVE", frozenset({"live"})),
+    ("F-DATE", frozenset({"date"})),
+    ("F-LEAGUE-SEASON", frozenset({"league", "season"})),
+    ("F-LEAGUE-SEASON-RANGE", frozenset({"league", "season", "from", "to"})),
+)
+_SELF_SCOPED = ("id", "ids", "live", "date", "last", "next")
+_SUBJECTS = ("league", "team", "venue")
+FIXTURE_LAST_NEXT_MAX = 99  # documented "<= 2 characters"
+
+
+def fixtures_combination(provided: Mapping[str, Any]) -> dict[str, str]:
+    """{status, rule} for a validated /fixtures parameter set; raises ParameterError when the
+    combination is MCP_REJECTED."""
+    keys = frozenset(provided)
+    for field in ("last", "next"):
+        if field in provided and provided[field] > FIXTURE_LAST_NEXT_MAX:
+            raise ParameterError("PAGE_OR_BATCH_TOO_LARGE")
+    if "last" in keys and "next" in keys:
+        raise ParameterError("FIXTURE_LAST_NEXT_EXCLUSIVE")
+    if "from" in keys and "to" in keys and str(provided["from"]) > str(provided["to"]):
+        raise ParameterError("INVALID_DATE_RANGE")
+    scoped = any(k in keys for k in _SELF_SCOPED) or (
+        any(k in keys for k in _SUBJECTS) and ("season" in keys or {"from", "to"} <= keys))
+    if not scoped:
+        raise ParameterError("FIXTURE_FILTER_REQUIRED")
+    core = keys - {"timezone"}
+    for rule, documented in _FIXTURE_DOCUMENTED:
+        if core == documented:
+            if rule == "F-LIVE" and provided["live"] != "all" and "-" not in str(provided["live"]):
+                break  # one league id: the documented form is a list ("id-id")
+            return {"status": DOCUMENTED_VALID, "rule": rule}
+    return {"status": DOCS_UNVERIFIED, "rule": "F-COMBINATION-" + "+".join(sorted(core))}

@@ -176,7 +176,9 @@ def test_transport_status_handling_never_follows_redirect(code, expect):
     (b"[]", "PROVIDER_JSON_NOT_OBJECT"),
     (b'{"results": 0}', "PROVIDER_RESPONSE_FIELD_MISSING"),
     (b'{"response":[],"errors":{"token":"not valid"}}', "PROVIDER_DECLARED_ERRORS"),
-    (b'{"response":[],"paging":{"current":4,"total":2}}', "PROVIDER_INVALID_PAGINATION"),
+    # FIX-04 / D06 (declared change): a page past the end WITHOUT rows is a valid empty answer
+    # now (tests/test_apifootball_paging_beyond_100.py); with rows it stays invalid.
+    (b'{"response":[{"id":1}],"paging":{"current":4,"total":2}}', "PROVIDER_INVALID_PAGINATION"),
     (b'{"response":[],"paging":{"current":0,"total":0}}', "PROVIDER_INVALID_PAGINATION"),
 ])
 def test_transport_rejects_bad_provider_payloads_without_leaking_body(payload, code):
@@ -198,8 +200,13 @@ def test_transport_aborts_oversized_response_before_accepting_data():
             base_url=OFFICIAL_BASE_URL,
             transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"x" * 524289)),
         ) as http:
-            with pytest.raises(ProviderDataError, match="PROVIDER_RESPONSE_TOO_LARGE"):
+            # FIX-01 option B (declared change): past the read cap a listing path is scanned in a
+            # stream instead of refused outright; garbage is still never accepted.
+            with pytest.raises(ProviderDataError, match="PROVIDER_INVALID_JSON"):
                 await InjectedHTTPXTransport(http, api_key=KEY).get("/fixtures")
+            # A path without a documented row id is still refused at the read cap.
+            with pytest.raises(ProviderDataError, match="PROVIDER_RESPONSE_TOO_LARGE"):
+                await InjectedHTTPXTransport(http, api_key=KEY).get("/fixtures/events")
     asyncio.run(go())
 
 

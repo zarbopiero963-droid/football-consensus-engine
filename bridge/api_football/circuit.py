@@ -19,6 +19,9 @@ class CircuitBreaker:
         self._open_until = 0.0
         self._half_open = False
         self._probe_inflight = False
+        # A provider-requested pause (Retry-After), kept apart from the failure opening so a
+        # concurrent success() cannot erase it.
+        self._hold_until = 0.0
         self._lock = asyncio.Lock()
 
     async def before_request(self):
@@ -36,7 +39,8 @@ class CircuitBreaker:
     async def success(self):
         async with self._lock:
             self._failures = 0
-            self._open_until = 0.0
+            # A success proves the provider answered, not that its Retry-After is over.
+            self._open_until = self._hold_until if self._hold_until > self.clock() else 0.0
             self._half_open = False
             self._probe_inflight = False
 
@@ -44,7 +48,7 @@ class CircuitBreaker:
         async with self._lock:
             self._failures += 1
             if self._half_open or self._failures >= self.threshold:
-                self._open_until = self.clock() + self.cooldown
+                self._open_until = max(self.clock() + self.cooldown, self._hold_until)
                 self._half_open = False
             self._probe_inflight = False
 
@@ -57,7 +61,8 @@ class CircuitBreaker:
         if type(seconds) is not int or seconds <= 0:
             return
         async with self._lock:
-            self._open_until = max(self._open_until, self.clock() + min(seconds, self.MAX_HOLD_SECONDS))
+            self._hold_until = max(self._hold_until, self.clock() + min(seconds, self.MAX_HOLD_SECONDS))
+            self._open_until = max(self._open_until, self._hold_until)
             self._half_open = False
             self._probe_inflight = False
 
@@ -66,7 +71,7 @@ class CircuitBreaker:
             self._probe_inflight = False
             if self._half_open:
                 # Never grant an unrestricted reset from a cancelled probe.
-                self._open_until = self.clock() + self.cooldown
+                self._open_until = max(self.clock() + self.cooldown, self._hold_until)
                 self._half_open = False
 
     @property

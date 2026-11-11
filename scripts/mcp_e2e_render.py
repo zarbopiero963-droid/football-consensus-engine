@@ -576,7 +576,7 @@ NO_NETWORK_STATUSES = frozenset({"INVALID_INPUT", "KEY_NOT_CONFIGURED", "LIVE_NO
 COORDINATOR_CODES = frozenset({"LOCAL_CONCURRENCY_BUSY", "QUOTA_COORDINATOR_UNAVAILABLE",
                                "QUOTA_RELEASE_FAILED", "QUOTA_RECONCILIATION_FAILED"})
 # Known and non-stopping: a body above the transport's read limit (F-03); that page is lost.
-KNOWN_SIZE_CODES = frozenset({"PROVIDER_RESPONSE_TOO_LARGE"})
+KNOWN_SIZE_CODES = frozenset({"PROVIDER_RESPONSE_TOO_LARGE", "PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN"})
 SUITE_REPORT_MAX_BYTES = 131_072
 _NAME_RE = re.compile(r"[^\w .'&()/-]")
 _CODE_RE = re.compile(r"^[A-Z0-9_]{1,64}$")
@@ -624,7 +624,8 @@ class ProviderBudget:
             charged, basis = worst, "WORST_CASE_NO_REPLY"
         elif status in NO_NETWORK_STATUSES:
             charged, basis = 0, "CODE_PATH_NO_REQUEST"
-        elif payload.get("cache_status") == "HIT" and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST"):
+        elif payload.get("cache_status") == "HIT" and status in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST",
+                                                                 "PARTIAL_ID_MANIFEST"):
             charged, basis = 0, "CACHE_HIT"
         else:
             charged, basis = worst, "WORST_CASE"
@@ -915,7 +916,7 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
         return _check_manifest(p, facts)
     resp = _response(p)
     over = under = selections = 0
-    live_counts = {"null_odds_kept_null": 0, "suspended": 0, "suspended_zero_odds": 0}
+    live_counts = {"null_odds_kept_null": 0, "suspended": 0, "suspended_zero_odds": 0, "open_priced": 0}
 
     def scan() -> str | None:
         nonlocal over, under, selections
@@ -944,6 +945,8 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
                         live_counts["null_odds_kept_null"] += kind == "NULL"
                         live_counts["suspended_zero_odds"] += kind == "SUSPENDED_ZERO"
                         live_counts["suspended"] += v.get("suspended") is True
+                        # Open AND priced only when the provider says so: a missing flag is not open.
+                        live_counts["open_priced"] += v.get("suspended") is False and kind == "OK"
                     elif not _odd_ok(v):  # pre-match: unchanged strictness
                         return "ODDS_SELECTION_NOT_DISTINCT_DECIMAL_FIELDS"
                     selections += 1
@@ -957,10 +960,30 @@ def _check_odds(p, ctx, facts, *, live: bool = False, fixture_key: str | None = 
     facts.update({"fixtures": len(resp), "selections": selections})
     if live:
         facts.update(live_counts)
+        if defect is None:
+            facts["live_state"] = live_state(selections, live_counts)
     if not live and ctx.get("bet_ou") is not None and defect is None:
         # Both sides counted as PUBLISHED; an absent side is never rebuilt from the other.
         facts.update({"over_published": over, "under_published": under})
     return [defect] if defect else []
+
+
+# FIX-09 (PR #185 review P3): a live reply proves live odds only if at least one selection is
+# explicitly open (suspended false) with a published price. All-suspended, all-null or never
+# explicitly open replies are PARTIAL, never PASS.
+LIVE_PARTIAL_STATES = frozenset({"ALL_SUSPENDED", "ALL_NULL_ODDS", "NO_OPEN_PRICED_SELECTION", "NO_SELECTIONS"})
+
+
+def live_state(selections: int, counts: dict[str, int]) -> str:
+    if selections == 0:
+        return "NO_SELECTIONS"
+    if counts["open_priced"]:
+        return "ACTIVE"
+    if counts["suspended"] == selections:
+        return "ALL_SUSPENDED"
+    if counts["null_odds_kept_null"] == selections:
+        return "ALL_NULL_ODDS"
+    return "NO_OPEN_PRICED_SELECTION"
 
 
 def _check_odds_page1(p, ctx, facts):
@@ -1009,6 +1032,9 @@ def _check_players(p, ctx, facts):
         ctx["player"] = ids[0]
         facts["P"] = ids[0]
     return []
+
+
+NEGATIVE_TIMEZONE = "Mars/Olympus_Mons"
 
 
 def _day(ctx: dict[str, Any], delta_days: int = 0) -> str:
@@ -1072,8 +1098,10 @@ def _plan(name: str) -> list[Case]:
     bet, odds_page2 = _bet, _odds_page2
 
     cases = [
-        Case("N00", "apifootball_fixtures", lambda c: {"date": _day(c), "timezone": "Europe/Rome"},
-             "invalid_input", what="negative: uncertified timezone refused before any request"),
+        # FIX-06: Europe/Rome and every IANA zone are accepted now; the negative uses a zone that
+        # exists in no catalog, refused before any request.
+        Case("N00", "apifootball_fixtures", lambda c: {"date": _day(c), "timezone": NEGATIVE_TIMEZONE},
+             "invalid_input", what="negative: timezone outside the IANA catalog refused before any request"),
         Case("A01", "apifootball_status", lambda c: {}, "data", _check_status, "provider auth/status"),
         Case("A02", "apifootball_leagues", _args("league", id=L, current=lambda c: True), "data", _check_league,
              "league and current season"),
@@ -1163,9 +1191,22 @@ def _classify(p: dict[str, Any]) -> str:
             return "HTTP_200"  # /status: account counters, no list to count
         resp = data.get("response")
         return "DATA_PRESENT" if isinstance(resp, list) and resp else "EMPTY_VALID"
-    if status == "PARTIAL_ODDS_MANIFEST":
+    if status in ("PARTIAL_ODDS_MANIFEST", "PARTIAL_ID_MANIFEST"):
         return "PARTIAL"
     return "ERROR"
+
+
+def check_id_manifest(p: dict[str, Any], facts: dict[str, Any]) -> list[str]:
+    """FIX-01: an oversized non-odds reply must be an explicit, data-free id manifest."""
+    m = p.get("data") if isinstance(p.get("data"), dict) else {}
+    follow = m.get("follow_up") if isinstance(m.get("follow_up"), dict) else {}
+    ok = (m.get("partial") is True and m.get("data_included") is False and isinstance(m.get("reply_sha256"), str)
+          and _is_int(m.get("rows_in_reply")) and isinstance(follow.get("calls"), list)
+          and isinstance(m.get("complete_retrieval_available"), bool))
+    facts.update({"id_manifest": True, "rows_in_reply": m.get("rows_in_reply") if _is_int(m.get("rows_in_reply")) else None,
+                  "follow_up_calls": len(follow["calls"]) if isinstance(follow.get("calls"), list) else None,
+                  "complete_retrieval_available": m.get("complete_retrieval_available")})
+    return [] if ok else ["ID_MANIFEST_NOT_EXPLICIT"]
 
 
 def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
@@ -1175,7 +1216,7 @@ def check_envelope(p: dict[str, Any], tool: str) -> list[str]:
         defects.append("HTTP_STATUS_NOT_200")
     if p.get("endpoint") != APIFOOTBALL_PROVIDER_TOOLS[tool]:
         defects.append("ENDPOINT_MISMATCH")
-    if tool == "apifootball_status" or p.get("status") == "PARTIAL_ODDS_MANIFEST":
+    if tool == "apifootball_status" or p.get("status") in ("PARTIAL_ODDS_MANIFEST", "PARTIAL_ID_MANIFEST"):
         return defects  # status keeps only non-personal counters; the manifest has its own check
     d = p.get("data")
     if not isinstance(d, dict):
@@ -1216,7 +1257,8 @@ CASE_VERDICTS = ("PASS", "FAIL", "PARTIAL", "NOT_TESTED", "PROVIDER_UNAVAILABLE"
 # is the MCP's fault (coordinator down, a failed MCP call, an unexpected error) stays FAIL.
 STOP_VERDICT = {"STOP_PROVIDER_HTTP_AUTH_RATE_OR_CIRCUIT": "NOT_TESTED",
                 "STOP_PROVIDER_QUOTA_ZERO": "NOT_TESTED",
-                "STOP_LOCAL_QUOTA_EXHAUSTED": "NOT_TESTED",
+                "STOP_LOCAL_RATE_LIMITED": "NOT_TESTED",
+                "STOP_LOCAL_DAILY_QUOTA_EXHAUSTED": "NOT_TESTED",
                 "STOP_PROVIDER_NOT_ENABLED": "NOT_TESTED"}
 
 
@@ -1250,8 +1292,11 @@ def stop_reason_for(p: dict[str, Any] | None) -> str | None:
     if status in ("KEY_NOT_CONFIGURED", "LIVE_NOT_AUTHORIZED", "PROVIDER_CLIENT_UNAVAILABLE"):
         return "STOP_PROVIDER_NOT_ENABLED"
     if status == "PROVIDER_ERROR":
-        if code == "LOCAL_QUOTA_EXHAUSTED":
-            return "STOP_LOCAL_QUOTA_EXHAUSTED"
+        # The bridge's own coordinator refused (FIX-08): the run stops, nothing was sent.
+        if code == "LOCAL_RATE_LIMITED":
+            return "STOP_LOCAL_RATE_LIMITED"
+        if code == "LOCAL_DAILY_QUOTA_EXHAUSTED":
+            return "STOP_LOCAL_DAILY_QUOTA_EXHAUSTED"
         if code in COORDINATOR_CODES:
             return "STOP_COORDINATOR_UNAVAILABLE"
         if code in PROVIDER_ENVIRONMENT_CODES or _declared_category(p) in DECLARED_ENVIRONMENT_CATEGORIES:
@@ -1260,7 +1305,8 @@ def stop_reason_for(p: dict[str, Any] | None) -> str | None:
             return None  # PLAN_NOT_INCLUDED concerns this endpoint only: the run goes on
         # Everything else, PROVIDER_REQUEST_FAILED included, may be an MCP or request defect.
         return "STOP_UNEXPECTED_PROVIDER_ERROR"
-    if status not in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST", "PAYLOAD_TOO_LARGE", "INVALID_INPUT"):
+    if status not in ("REAL_API_RESPONSE", "PARTIAL_ODDS_MANIFEST", "PARTIAL_ID_MANIFEST", "PAYLOAD_TOO_LARGE",
+                      "INVALID_INPUT"):
         return "STOP_UNEXPECTED_TOOL_STATUS"
     return None
 
@@ -1345,7 +1391,7 @@ class ApiFootballSuite:
             "quota_remaining": {k: quota.get(k) for k in ("day", "minute") if _is_int(quota.get(k))},
             "payload_sha256": _sha256(p)}
         if case.expect == "invalid_input":
-            ok = status == "INVALID_INPUT" and code == "TIMEZONE_NOT_CERTIFIED"
+            ok = status == "INVALID_INPUT" and code == "TIMEZONE_NOT_IN_CATALOG"
             return {**out, "outcome": "ERROR", "verdict": "PASS" if ok else "FAIL", "note": "EXPECTED_INVALID_INPUT",
                     "defects": [] if ok else ["NEGATIVE_INPUT_NOT_REFUSED"]}
         outcome = _classify(p)
@@ -1365,7 +1411,9 @@ class ApiFootballSuite:
                     "cache_status": p.get("cache_status") if p.get("cache_status") in ("MISS", "HIT") else None})
         facts: dict[str, Any] = {}
         defects = check_envelope(p, case.tool)
-        if case.check and not defects:
+        if p.get("status") == "PARTIAL_ID_MANIFEST":
+            defects += check_id_manifest(p, facts)  # FIX-01: real rows, but only ids: PARTIAL at best
+        elif case.check and not defects:
             defects += case.check(p, self.ctx, facts)
         if facts:
             out["facts"] = facts
@@ -1383,6 +1431,8 @@ class ApiFootballSuite:
             verdict = "PROVIDER_UNAVAILABLE"
             facts["unavailable_evidence"] = {"source": "/leagues coverage", "flag": case.coverage, "value": False}
             out["facts"] = facts
+        elif facts.get("live_state") in LIVE_PARTIAL_STATES:
+            verdict = "PARTIAL"  # FIX-09: no open, priced live selection proven
         elif outcome in ("PARTIAL", "EMPTY_VALID"):
             # An empty reply alone proves the envelope, not the data: PARTIAL, never PASS and
             # never PROVIDER_UNAVAILABLE (owner rule: unavailability needs explicit evidence).

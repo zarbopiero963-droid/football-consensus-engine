@@ -184,8 +184,9 @@ def test_live_suspended_null_odd_stays_null_and_is_counted():
     defects, facts = _live([PRICED, {"value": "Under", "odd": None, "handicap": "2.5", "main": None,
                                      "suspended": True}])
     assert defects == []
+    # FIX-09 (declared change): two new facts, open_priced and live_state.
     assert facts == {"fixtures": 1, "selections": 2, "null_odds_kept_null": 1, "suspended": 1,
-                     "suspended_zero_odds": 0}
+                     "suspended_zero_odds": 0, "open_priced": 1, "live_state": "ACTIVE"}
 
 
 def test_live_suspended_zero_odd_as_in_the_repo_fixture_is_counted_not_a_defect():
