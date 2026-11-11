@@ -1,9 +1,12 @@
 """FIX-06: timezone validation and a non-mutating consistency check of provider times.
 
-Source. The repository holds NO captured copy of the provider's /timezone catalog, so a
-requested zone is validated against the IANA database shipped with Python's zoneinfo
-(the system tz database). The provider stays the final authority: a zone it does not know
-comes back as a declared `timezone` error, classified INVALID_PARAMETER, never retried.
+Source. The repository holds NO captured copy of the provider's /timezone catalog. A requested
+zone is validated against the IANA database shipped by the pinned PyPI package `tzdata`
+(requirements.txt), never against the host's tz files, so the catalog is the same on every
+host (Render included). This is IANA validation only: whether the PROVIDER accepts a given
+zone is unverified. The provider stays the final authority: a zone it does not know comes
+back as a declared `timezone` error, classified INVALID_PARAMETER, never retried. If the
+package is missing or unreadable, only UTC is accepted (fail closed).
 
 The bridge never converts provider times. It forwards the zone, keeps the provider's data as
 received (fixture.timestamp is the provider's UTC anchor, fixture.date carries the provider's
@@ -13,24 +16,54 @@ local time, so the check has no ambiguous or non-existent local times (DST inclu
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from functools import lru_cache
 from typing import Any
 import zoneinfo
 
-TIMEZONE_SOURCE = "PYTHON_ZONEINFO_IANA"
-# Entries of the system database that are not real zones.
+TIMEZONE_SOURCE = "IANA_TZDATA_PYPI_PACKAGE"
+PROVIDER_ACCEPTANCE = "UNVERIFIED"
+# Entries that are not real zones.
 _EXCLUDED = frozenset({"Factory", "localtime", "posixrules"})
 _MAX_CHECKED = 5000
 
 
+def _tzdata_files():
+    import importlib.resources
+    return importlib.resources.files("tzdata")
+
+
+@lru_cache(maxsize=1)
+def tzdata_version() -> str | None:
+    try:
+        import tzdata
+        return str(tzdata.IANA_VERSION)
+    except Exception:
+        return None
+
+
 @lru_cache(maxsize=1)
 def timezone_catalog() -> frozenset[str]:
+    """Zone keys listed by the pinned tzdata package; empty (fail closed) when unavailable."""
     try:
-        zones = zoneinfo.available_timezones()
-    except Exception:  # an unreadable tz database: only UTC stays accepted (fail closed)
-        zones = set()
-    return frozenset(z for z in zones if z not in _EXCLUDED)
+        names = (_tzdata_files() / "zones").read_text(encoding="utf-8").split()
+    except Exception:
+        return frozenset()
+    return frozenset(z for z in names if z not in _EXCLUDED)
+
+
+@lru_cache(maxsize=1024)
+def load_zone(key: str) -> tzinfo:
+    """The zone's rules from the tzdata package itself (not the host). Catalog keys only."""
+    if key == "UTC":
+        return timezone.utc
+    if key not in timezone_catalog():
+        raise KeyError("zone not in catalog")
+    resource = _tzdata_files() / "zoneinfo"
+    for part in key.split("/"):
+        resource = resource / part
+    with resource.open("rb") as fh:
+        return zoneinfo.ZoneInfo.from_file(fh, key=key)
 
 
 def validate_timezone(value: str) -> str | None:
@@ -49,7 +82,9 @@ def timezone_context(requested: str) -> dict[str, Any]:
     return {
         "requested": requested,
         "validated_against": TIMEZONE_SOURCE,
+        "iana_version": tzdata_version(),
         "provider_catalog_captured": False,
+        "provider_acceptance": PROVIDER_ACCEPTANCE,
         "provider_is_final_authority": True,
         "bridge_conversion": "NONE",
         "utc_anchor": "provider field fixture.timestamp (Unix seconds, UTC) when published",
@@ -70,7 +105,7 @@ def offset_consistency(data: Any, requested: str) -> dict[str, Any] | None:
     IANA offset of the requested zone at its published `timestamp`? Missing or unparseable
     fields are counted as not checkable, never filled."""
     try:
-        zone = timezone.utc if requested == "UTC" else zoneinfo.ZoneInfo(requested)
+        zone = load_zone(requested)
     except Exception:
         return None
     counts = {"consistent": 0, "inconsistent": 0, "not_checkable": 0}

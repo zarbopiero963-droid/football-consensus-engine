@@ -47,6 +47,44 @@ def test_timezone_not_certified_code_is_gone():
     assert str(info.value) != "TIMEZONE_NOT_CERTIFIED"
 
 
+def test_catalog_comes_from_the_pinned_tzdata_package_not_the_host(monkeypatch):
+    import tzdata
+    tz.timezone_catalog.cache_clear()
+    tz.load_zone.cache_clear()
+    monkeypatch.setattr("zoneinfo.available_timezones", lambda: {"Only/HostZone"})
+    try:
+        catalog = tz.timezone_catalog()
+        assert "Europe/Rome" in catalog and "Only/HostZone" not in catalog
+        assert tz.tzdata_version() == tzdata.IANA_VERSION
+        assert tz.load_zone("Europe/Rome").utcoffset(datetime(2026, 7, 1)) .total_seconds() == 7200
+    finally:
+        tz.timezone_catalog.cache_clear()
+        tz.load_zone.cache_clear()
+
+
+def test_requirements_pin_tzdata():
+    from pathlib import Path
+    req = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text().split()
+    assert any(r.startswith("tzdata==") for r in req)
+
+
+def test_missing_tzdata_package_fails_closed(monkeypatch):
+    def broken():
+        raise ModuleNotFoundError("tzdata")
+    tz.timezone_catalog.cache_clear()
+    monkeypatch.setattr(tz, "_tzdata_files", broken)
+    try:
+        assert tz.validate_timezone("Europe/Rome") == "TIMEZONE_CATALOG_UNAVAILABLE"
+        assert tz.validate_timezone("UTC") is None
+    finally:
+        tz.timezone_catalog.cache_clear()
+
+
+def test_load_zone_refuses_keys_outside_the_catalog():
+    with pytest.raises(KeyError):
+        tz.load_zone("../../etc/passwd")
+
+
 def test_empty_catalog_fails_closed_but_utc_still_works(monkeypatch):
     monkeypatch.setattr(tz, "timezone_catalog", lambda: frozenset())
     assert tz.validate_timezone("UTC") is None
@@ -114,7 +152,10 @@ def test_tool_forwards_the_zone_keeps_data_raw_and_labels_the_context():
     assert mock.calls[0][1]["timezone"] == "Europe/Rome"
     assert out["data"] == payload  # raw, unconverted
     assert out["timezone_context"]["requested"] == "Europe/Rome"
-    assert out["timezone_context"]["validated_against"] == "PYTHON_ZONEINFO_IANA"
+    # Follow-up P3: the catalog is the pinned tzdata package, and provider acceptance is unverified.
+    assert out["timezone_context"]["validated_against"] == "IANA_TZDATA_PYPI_PACKAGE"
+    assert out["timezone_context"]["provider_acceptance"] == "UNVERIFIED"
+    assert out["timezone_context"]["iana_version"]
     assert out["timezone_context"]["bridge_conversion"] == "NONE"
     assert out["timezone_check"]["consistent"] == 2
 
