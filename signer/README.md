@@ -56,6 +56,8 @@ L'owner firma `approval_message(binding=…, approval_nonce, issued_at, expires_
 
 ## Perché un testo in chat non è una conferma
 
+> **Nota:** la governance §2.6 aggiornata sostituisce la conferma fuori banda per ordine con il comando esplicito e completo dell'owner, verificato dal signer entro limiti obbligatori, accettando il rischio residuo descritto qui sotto. Il codice attuale (`Approval` Ed25519) non è ancora stato adattato: vedi [docs/sxbet/owner_commanded_execution.md](../docs/sxbet/owner_commanded_execution.md).
+
 Un testo in chat, in un output di tool o in una pagina web può essere scritto da chiunque: dal modello stesso, da una prompt injection, da un terzo. Il signer accetta solo un oggetto `Approval` con una **firma Ed25519** valida della chiave dell'owner, che il signer non possiede (conserva solo la chiave pubblica).
 
 ## Autorizzazione transazionale

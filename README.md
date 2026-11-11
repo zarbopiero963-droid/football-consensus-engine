@@ -20,7 +20,7 @@ Roadmap e stato canonico: issue [#130](https://github.com/zarbopiero963-droid/fo
 - UTC canonico; una timezone non dimostrata è `TIMEZONE_UNRESOLVED`;
 - un contratto non verificabile resta `DOCS_UNVERIFIED`;
 - nessun bypass di quote o rate limit;
-- SX Bet: `LIVE_TRADING` disabilitato per default; ogni ordine reale richiede una conferma specifica dell'owner, e CI e deploy non piazzano mai ordini;
+- SX Bet: `LIVE_TRADING` disabilitato per default; ogni ordine reale richiede un comando esplicito e completo dell'owner in chat, verificato dal signer entro limiti obbligatori firmati dall'owner (§2.6), e CI, deploy e agenti di sviluppo non piazzano mai ordini;
 - le modifiche ai file di governance richiedono l'approvazione dell'owner.
 
 ## Architettura
