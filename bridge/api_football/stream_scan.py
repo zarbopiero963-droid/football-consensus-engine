@@ -14,7 +14,14 @@ no duplicate top-level keys); anything else is refused with a fixed code. Finite
   max_seconds 20 s of scanning (the request timeout of the resilience layer applies first)
   max_rows    20 000 rows (each row keeps a few small ints/strings: bounded memory)
   max_depth   32 nested containers
-  max_token   64 KiB for a single token (string or number)
+  max_token   64 KiB for a single VALID token (string or number; leading whitespace is not
+              counted). An invalid string, literal or number is PROVIDER_INVALID_JSON as soon
+              as the offending byte arrives, never a bound.
+  64 distinct top-level keys (MAX_TOP_LEVEL_KEYS), else PROVIDER_REPLY_CONTRACT_INVALID; no
+  other key set is kept (row fields are a fixed small set, error keys are capped at 64).
+
+A field that is duplicated, not a scalar, a non-integer number or an unsafe/unread string is
+never copied: the row gets an `invalid` flag for it, so no split or completeness can use it.
 
 A bound that is hit raises ScanBoundExceeded (PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN) with the
 bound's name; no partial result is ever returned.
@@ -61,8 +68,15 @@ _STARTS = frozenset(b'"-0123456789tfn')
 _INT = re.compile(rb"-?[0-9]{1,12}$")
 _MAX_FIELD_TEXT = 128
 _MAX_ERROR_KEYS = 64
+# Documented bound: the provider envelope has 6 top-level keys; more than 64 distinct ones is
+# not a provider reply (and an unbounded key set would be unbounded memory).
+MAX_TOP_LEVEL_KEYS = 64
 # A grouping string copied from a row: printable, no surrogates, bounded. Ids are ints only.
 SAFE_TEXT = re.compile(r"^[^\x00-\x1f\x7f\ud800-\udfff]{1,128}$")
+_STRING_PREFIX = re.compile(rb'"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]*)*')
+_ESCAPE_PREFIX = re.compile(rb"\\(?:u[0-9a-fA-F]{0,3})?")
+_NUMBER_TAIL = re.compile(rb"[0-9.eE+-]*")
+_LITERALS = (b"true", b"false", b"null")
 
 
 def _malformed() -> ProviderDataError:
@@ -78,11 +92,14 @@ class _Frame:
 
 class IdScanner:
     def __init__(self, fields: Mapping[str, tuple[str, ...]], *, limits: ScanLimits = DEFAULT_LIMITS,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, deadline: float | None = None):
         self.fields = dict(fields)
         self.limits = limits
         self.clock = clock
         self.started = clock()
+        # Absolute clock value set by the transport so a scan ends (non-retryable, MAX_SECONDS)
+        # before the caller's request timeout would turn it into a retryable PROVIDER_TIMEOUT.
+        self.deadline = deadline
         self.hasher = hashlib.sha256()
         self.utf8 = codecs.getincrementaldecoder("utf-8")("strict")
         self.buf = b""
@@ -136,7 +153,8 @@ class IdScanner:
                 "rows": self.rows}
 
     def _check_time(self) -> None:
-        if self.clock() - self.started > self.limits.max_seconds:
+        now = self.clock()
+        if now - self.started > self.limits.max_seconds or (self.deadline is not None and now > self.deadline):
             raise ScanBoundExceeded("MAX_SECONDS")
 
     # ---- tokenizer ----------------------------------------------------------------------------
@@ -145,18 +163,21 @@ class IdScanner:
         count = 0
         while True:
             m = _TOKEN.match(buf, pos)
-            if m is None or (m.end() == n and m.group(3) is not None and not eof):
+            if m is None or (m.group(3) is not None and not eof
+                             and _NUMBER_TAIL.match(buf, m.end()).end() == n):
+                # No complete token yet (a number may still grow: "1." / "1e" / "-" at the end).
                 ws = _WS.match(buf, pos).end()
                 if ws == n:
                     pos = ws
                     break
                 if eof or buf[ws] not in _STARTS:
                     raise _malformed()
+                self._incomplete_or_invalid(buf, ws, n)
                 if n - ws > self.limits.max_token:
-                    raise ScanBoundExceeded("MAX_TOKEN")
+                    raise ScanBoundExceeded("MAX_TOKEN")  # a VALID but still unfinished token
                 pos = ws
                 break  # an incomplete token: wait for more bytes
-            if m.end() - m.start() > self.limits.max_token:
+            if m.end() - m.start(m.lastindex) > self.limits.max_token:  # leading whitespace not counted
                 raise ScanBoundExceeded("MAX_TOKEN")
             if self.done:
                 raise _malformed()  # data after the top-level value
@@ -176,6 +197,21 @@ class IdScanner:
             pos = m.end()
         self.base += pos
         self.buf = buf[pos:]
+
+    @staticmethod
+    def _incomplete_or_invalid(buf: bytes, ws: int, n: int) -> None:
+        """An unfinished token must be a prefix of a valid one; otherwise PROVIDER_INVALID_JSON
+        at once (an invalid string is never waited on until the token bound)."""
+        c = buf[ws]
+        if c == 0x22:  # '"'
+            rest = buf[_STRING_PREFIX.match(buf, ws).end():n]
+            if rest and not _ESCAPE_PREFIX.fullmatch(rest):
+                raise _malformed()
+        elif c in b"tfn":
+            if not any(lit.startswith(buf[ws:n]) for lit in _LITERALS):
+                raise _malformed()
+        elif _NUMBER_TAIL.match(buf, ws).end() != n:
+            raise _malformed()
 
     # ---- grammar ------------------------------------------------------------------------------
     def _expecting_value(self) -> bool:
@@ -232,7 +268,7 @@ class IdScanner:
             key = self._decode(raw)
             f.key, f.expect = key, "COLON"
             if f.seen is not None:  # top-level object: duplicate keys are refused
-                if key in f.seen:
+                if key in f.seen or len(f.seen) >= MAX_TOP_LEVEL_KEYS:
                     raise ProviderDataError("PROVIDER_REPLY_CONTRACT_INVALID")
                 f.seen.add(key)
             if self._in_errors(len(self.stack)) and len(self.error_keys) < _MAX_ERROR_KEYS:
@@ -269,7 +305,7 @@ class IdScanner:
                 self.results = value if type(value) is int else None
             elif top == "get" and isinstance(value, str):
                 self.get = value[:_MAX_FIELD_TEXT]
-            elif top == "errors" and value not in (None, "", False):
+            elif top == "errors" and value is not None:  # in memory: errors not in (None, [], {})
                 self.errors_nonempty = True
             elif top == "paging":
                 self.paging_kind = "scalar"

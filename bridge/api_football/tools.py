@@ -307,6 +307,9 @@ def register_tools(server: Any, settings: Settings, *, test_mock: MockClient | N
                         _provenance("PARTIAL_ID_MANIFEST")
                         result["data"] = manifest
                         result["pagination"] = manifest["paging"]
+                        if tool == "apifootball_live_odds":
+                            result["live_odds_state"] = {"label": "DERIVED", "state": "NOT_EVALUATED",
+                                                         "reason": "STREAMED_SCAN_KEEPS_IDS_ONLY"}
                         return result
                 _provenance("PAYLOAD_TOO_LARGE")
                 result["error"] = {"code": "PROVIDER_RESPONSE_TOO_LARGE"}

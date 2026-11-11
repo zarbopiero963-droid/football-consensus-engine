@@ -355,3 +355,172 @@ def test_in_memory_rows_apply_the_same_rule():
     rows[5]["fixture"]["id"] = "6"
     m = id_manifest("apifootball_fixtures", {"date": D}, {"response": rows, "results": 30})
     assert m["rows_without_id"] == 1 and "6" not in m["row_ids"]
+
+
+# ---- re-review P3-a: numbers split across chunks ---------------------------------------------
+
+def test_numbers_split_anywhere_are_read_exactly():
+    raw = (b'{"get":"fixtures","results":3,"paging":{"current":1,"total":1},"errors":[],"response":['
+           b'{"fixture":{"id":12345},"x":1.0,"y":-2.5e-3,"z":1E3,"w":-0},'
+           b'{"fixture":{"id":7},"x":0.125,"y":1e+10},{"fixture":{"id":890},"x":-12.75E-2}]}')
+    whole = scan(raw, chunk=len(raw))
+    assert [r["id"] for r in whole["rows"]] == [12345, 7, 890]
+    for size in range(1, 8):
+        assert scan(raw, chunk=size) == whole, size
+
+
+# ---- re-review P3-b: bounded key sets ----------------------------------------------------------
+
+def test_top_level_keys_are_capped():
+    from bridge.api_football.stream_scan import MAX_TOP_LEVEL_KEYS
+    keys = ",".join(f'"k{i}":0' for i in range(MAX_TOP_LEVEL_KEYS - 1))
+    assert scan(('{' + keys + ',"response":[]}').encode())["rows"] == []
+    keys = ",".join(f'"k{i}":0' for i in range(MAX_TOP_LEVEL_KEYS))
+    with pytest.raises(ProviderDataError) as info:
+        scan(('{' + keys + ',"response":[]}').encode())
+    assert info.value.code == "PROVIDER_REPLY_CONTRACT_INVALID"
+
+
+def test_memory_stays_bounded_with_many_distinct_keys():
+    import tracemalloc
+    body = b'{"response":[{"fixture":{"id":1},' + b",".join(b'"k%d":0' % i for i in range(120_000)) + b"}]}"
+    tracemalloc.start()
+    s = IdScanner(FIX, limits=ScanLimits(max_seconds=600))  # tracemalloc slows the scan
+    for i in range(0, len(body), 65_536):
+        s.feed(body[i:i + 65_536])
+    s.finish()
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert len(body) > 1_000_000 and peak < 1_000_000  # nested keys are never kept
+    flood = b"{" + b",".join(b'"t%d":0' % i for i in range(300_000)) + b"}"
+    s = IdScanner(FIX)
+    with pytest.raises(ProviderDataError) as info:
+        for i in range(0, len(flood), 65_536):
+            s.feed(flood[i:i + 65_536])
+    assert info.value.code == "PROVIDER_REPLY_CONTRACT_INVALID"
+    assert s.bytes <= 65_536  # refused at key 65, in the first step, long before memory grows
+
+
+# ---- re-review P3-c: errors emptiness as in memory -------------------------------------------
+
+@pytest.mark.parametrize("value,nonempty", [("null", False), ("[]", False), ("{}", False),
+                                            ('""', True), ("0", True), ("false", True), ('"x"', True)])
+def test_errors_emptiness_matches_the_in_memory_rule(value, nonempty):
+    raw = b'{"errors":' + value.encode() + b',"response":[]}'
+    assert scan(raw)["errors_nonempty"] is nonempty
+    in_memory = json.loads(raw)["errors"] not in (None, [], {})
+    assert in_memory is nonempty
+
+
+# ---- re-review P3-d: time in the loop, steps, scan time vs request timeout --------------------
+
+def test_the_in_loop_time_check_fires_within_one_large_chunk():
+    now = [0.0]
+
+    def clock():
+        now[0] += 1.0
+        return now[0]
+    raw = doc(many(2000, pad="p"))
+    with pytest.raises(ScanBoundExceeded) as info:
+        scan(raw, chunk=len(raw), clock=clock, limits=ScanLimits(max_seconds=2))
+    assert info.value.bound == "MAX_SECONDS"
+
+
+def test_the_transport_feeds_bounded_steps_and_yields():
+    from bridge.api_football.transport import InjectedHTTPXTransport
+    sizes = []
+
+    class Spy(IdScanner):
+        def feed(self, chunk):
+            sizes.append(len(chunk))
+            super().feed(chunk)
+    raw = doc(many(1000))
+
+    async def go():
+        async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL,
+                                     transport=httpx.MockTransport(lambda r: httpx.Response(200, content=raw))) as http:
+            t = InjectedHTTPXTransport(http, api_key=KEY)
+            t._scanner = lambda fields, started: Spy(fields)
+            ticks = []
+
+            async def ticker():
+                while True:
+                    ticks.append(1)
+                    await asyncio.sleep(0)
+            task = asyncio.ensure_future(ticker())
+            reply = await t.get("/fixtures", {"date": D})
+            task.cancel()
+            return reply, ticks
+    reply, ticks = asyncio.run(go())
+    assert isinstance(reply, ScannedReply) and max(sizes) <= InjectedHTTPXTransport.SCAN_STEP_BYTES
+    assert len(ticks) >= len(sizes) - 1  # the loop ran between steps
+
+
+def test_scan_time_ends_before_the_request_timeout_as_a_non_retryable_code():
+    from bridge.api_football.config import Settings
+    from bridge.api_football.resilience import ResilientFootballClient, RetryPolicy
+    from apifootball_continuation_kit import Quota
+    now = [0.0]
+
+    def clock():
+        now[0] += 0.5
+        return now[0]
+    raw = doc(many(1000))
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, content=raw)
+
+    async def go():
+        async with httpx.AsyncClient(base_url=OFFICIAL_BASE_URL, transport=httpx.MockTransport(handler)) as http:
+            t = InjectedHTTPXTransport(http, api_key=KEY)
+            t.scan_clock = clock
+            settings = Settings(enabled=True, api_key=KEY, live_authorized=True, timeout_seconds=8)
+            client = ResilientFootballClient(settings, t, quota=Quota(), retry=RetryPolicy(base_delay=0, max_delay=0))
+            assert t.request_time_budget == 7.0
+            return await client.get("/fixtures", {"date": D})
+    with pytest.raises(ScanBoundExceeded) as info:
+        asyncio.run(go())
+    assert info.value.bound == "MAX_SECONDS" and len(calls) == 1  # never retried
+    assert info.value.provider_attempts == 1
+
+
+def test_normal_requests_keep_their_timeout_and_retry_policy():
+    from bridge.api_football.resilience import RetryPolicy
+    assert RetryPolicy().max_attempts == 3
+    from bridge.api_football.config import Settings
+    assert Settings().timeout_seconds == 8.0
+
+
+# ---- re-review P3-e: live odds state, invalid strings, whitespace ----------------------------
+
+def test_scanned_live_odds_say_not_evaluated():
+    rows = [{"fixture": {"id": 900 + i}, "odds": [{"id": 1, "values": [{"value": "x" * 2000, "odd": "2.0"}] * 3}]}
+            for i in range(400)]
+    body = json.dumps({"get": "odds/live", "parameters": {"league": "39"}, "errors": [], "results": 400,
+                       "paging": {"current": 1, "total": 1}, "response": rows}).encode()
+    assert len(body) > 2 * 1024 * 1024
+
+    class LiveProvider(Provider):
+        def body(self, request):
+            self.requests.append(1)
+            return body
+    out = call(boot(LiveProvider()), "apifootball_live_odds", {"league": 39})
+    assert out["status"] == "PARTIAL_ID_MANIFEST"
+    assert out["live_odds_state"] == {"label": "DERIVED", "state": "NOT_EVALUATED", "reason": "STREAMED_SCAN_KEEPS_IDS_ONLY"}
+
+
+@pytest.mark.parametrize("bad", [b'"ab\\x', b'"ab\x01', b'tx', b'nul ', b'-a', b'1.e'])
+def test_an_invalid_unfinished_token_is_invalid_json_at_once(bad):
+    s = IdScanner(FIX)
+    s.feed(b'{"response":[')
+    with pytest.raises(ProviderDataError) as info:
+        s.feed(bad)
+        s.finish()
+    assert info.value.code == "PROVIDER_INVALID_JSON"
+
+
+def test_long_whitespace_is_not_a_token():
+    raw = b'{"response":[' + b" " * 200_000 + b'{"fixture":{"id":5}}]}'
+    assert [r["id"] for r in scan(raw, chunk=4096)["rows"]] == [5]

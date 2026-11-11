@@ -102,6 +102,9 @@ class ResilientFootballClient:
         self.cache = cache or BoundedCache()
         self.breaker = breaker or CircuitBreaker(threshold=2, cooldown=30)
         self.retry = retry or RetryPolicy()
+        if hasattr(transport, "request_time_budget"):
+            # A streamed scan must end before the request timeout (see transport).
+            transport.request_time_budget = max(0.25, settings.timeout_seconds - self.SCAN_TIMEOUT_MARGIN_SECONDS)
         self._slots = asyncio.Semaphore(settings.max_concurrency)
         # No unbounded queue; maintain <= 4x concurrency active+queued.
         self._queue = asyncio.Semaphore(settings.max_concurrency * 4)
@@ -187,6 +190,7 @@ class ResilientFootballClient:
             self._queue.release()
 
     _LEASE_TIMEOUT_SECONDS = 3.0
+    SCAN_TIMEOUT_MARGIN_SECONDS = 1.0
 
     def _release_orphan(self, reservation: asyncio.Future) -> None:
         """Compensate a reservation that completed after its caller gave up.

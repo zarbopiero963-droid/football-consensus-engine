@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import asyncio
 import json
 import re
 import time
@@ -123,16 +124,31 @@ class InjectedHTTPXTransport:
         from .stream_scan import DEFAULT_LIMITS
         self.scan_limits = DEFAULT_LIMITS
         self.scan_clock = time.monotonic
+        # Set by the resilience client below its request timeout: a scan that would outlive
+        # the timeout ends as PROVIDER_RESPONSE_TOO_LARGE_FOR_SCAN (MAX_SECONDS, not retried)
+        # instead of a retryable PROVIDER_TIMEOUT. None: only the scan's own 20 s bound.
+        self.request_time_budget: float | None = None
 
-    def _scanner(self, fields):
+    # At most this much body is scanned per step; the event loop runs between steps.
+    SCAN_STEP_BYTES = 65_536
+
+    def _scanner(self, fields, started: float):
         from .stream_scan import IdScanner
-        return IdScanner(fields, limits=self.scan_limits, clock=self.scan_clock)
+        budget = self.request_time_budget
+        return IdScanner(fields, limits=self.scan_limits, clock=self.scan_clock,
+                         deadline=None if budget is None else started + budget)
+
+    async def _feed(self, scanner, chunk: bytes) -> None:
+        for i in range(0, len(chunk), self.SCAN_STEP_BYTES):
+            scanner.feed(chunk[i:i + self.SCAN_STEP_BYTES])
+            await asyncio.sleep(0)
 
     @staticmethod
     def _scanned_reply(code: int, headers: httpx.Headers, scan: dict[str, Any], count: int) -> "ScannedReply":
         if scan["errors_nonempty"]:
             raise ProviderDeclaredErrors(
-                tuple(k if _PARAM.fullmatch(k) else "OTHER" for k in scan["error_keys"]) or ("OTHER",),
+                # Same key handling as the in-memory path (declared_error_keys).
+                declared_error_keys({k: None for k in scan["error_keys"]}, _PARAM.fullmatch),
                 quota_remaining_day=_quota_header(headers, "x-ratelimit-requests-remaining"),
                 quota_remaining_minute=_quota_header(headers, "x-ratelimit-remaining"),
             )
@@ -154,6 +170,7 @@ class InjectedHTTPXTransport:
 
     async def get(self, path: str, params: Mapping[str, str | int] | None = None) -> ProviderReply:
         path, checked = validated_request(path, params)
+        started = self.scan_clock()
         try:
             # Redirects must never be followed, even if caller set a client default.
             async with self._client.stream(
@@ -174,18 +191,18 @@ class InjectedHTTPXTransport:
                 async for chunk in response.aiter_bytes():
                     count += len(chunk)
                     if scanner is not None:
-                        scanner.feed(chunk)
+                        await self._feed(scanner, chunk)
                     elif count > cap:
                         # FIX-01 option B: the read cap stays the in-memory limit. Past it, the
                         # body is streamed through a bounded id scan and never buffered whole.
                         fields = ROW_FIELDS.get(path)
                         if not fields:
                             raise ProviderDataError("PROVIDER_RESPONSE_TOO_LARGE")
-                        scanner = self._scanner(fields)
+                        scanner = self._scanner(fields, started)
                         for buffered in chunks:
-                            scanner.feed(buffered)
+                            await self._feed(scanner, buffered)
                         chunks = None
-                        scanner.feed(chunk)
+                        await self._feed(scanner, chunk)
                     else:
                         chunks.append(chunk)
                 if scanner is not None:
