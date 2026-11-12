@@ -99,7 +99,7 @@ def canonical_json(obj: Mapping[str, Any]) -> bytes:
 
 
 def intent_hash(intent: Mapping[str, Any]) -> str:
-    """sha256 over canonical JSON of the exact parameters: what an approval binds to."""
+    """sha256 over canonical JSON of the exact parameters: identifies the intent (audit); never an approval."""
     return "sha256:" + hashlib.sha256(canonical_json(intent)).hexdigest()
 
 

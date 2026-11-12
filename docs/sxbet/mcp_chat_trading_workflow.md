@@ -1,5 +1,7 @@
 # SX Bet: trading dalla chat (ChatGPT/Claude) con il wallet Magic esistente
 
+> **SUPERATO in parte** dalla governance §2.6 aggiornata: un ordine reale nasce da un comando esplicito e completo dell'owner nella chat del client MCP, verificato dal signer isolato, senza app sul telefono, passkey né approvazione fuori banda per ordine. Le parti che descrivono un'approvazione fuori banda per singolo ordine restano solo come storico. Progetto corrente: [owner_commanded_execution.md](owner_commanded_execution.md); stato della #187: [issue187_completion_matrix.md](issue187_completion_matrix.md).
+
 Inventario, gap analysis, roadmap e checklist di attivazione. Mandato `FCB-SXBET-MAGIC-WALLET-FULL-AUDIT-01`, sezioni §8, §10, §11, §12, §13 e §18. Stato del codice: `main` 54b2cb7, che include #151 (positions, hedging, regole), #152 (signer: adapter, cancellazione, ledger; mergiata su autorizzazione scritta dell'owner, eccezione al §2.6 limitata a quella PR), #153 (vettori EIP-712) e #154 (ritmo dell'audit).
 
 **LIVE_TRADING resta non disponibile.** Nessun tool MCP può firmare, inviare o cancellare.

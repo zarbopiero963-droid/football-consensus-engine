@@ -109,3 +109,14 @@ def test_invalid_path_and_query_inputs_never_reach_the_network(tool, kwargs, cod
     tools, calls = _tools()
     out = asyncio.run(tools[tool](**kwargs))
     assert out["status"] == "INVALID_INPUT" and out["error"]["code"] == code and calls == []
+
+
+def test_fund_and_wallet_routes_are_never_described_as_chat_commandable():
+    """Governance §2.6 (review 5f03c8b P1): transfers, withdrawals, deposits, proxy and Safe administration are
+    never executable via the MCP; only order placement / cancellation take an owner command in chat."""
+    for o in INV["operations"]:
+        if o["path"].startswith(("/user/multisig/", "/user/transfer-to-proxy", "/user/deploy-proxy")) \
+                and o["method"] != "GET":
+            assert "never executable via the MCP" in o["mcp"] and "owner command" not in o["mcp"], o["path"]
+        if o["method"] == "POST" and o["path"] == "/orders-v3":
+            assert "one explicit and complete owner command per order" in o["mcp"]
