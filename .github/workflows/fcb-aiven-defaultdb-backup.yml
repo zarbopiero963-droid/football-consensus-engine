@@ -1,0 +1,256 @@
+name: FCB Aiven defaultdb encrypted backup (WP-009, owner-gated)
+
+# FCB-WP-009 backup. Manual only. An encrypted, restore-tested backup of the PRODUCTION database
+# `defaultdb` (Aiven, PG18), as a short-lived GitHub artifact the owner moves to Google Drive
+# (docs/certification/areas/defaultdb_backup_runbook.md). The logic is scripts/fcb_db_backup.py;
+# this workflow is a thin wrapper around it.
+#
+# The source is only READ: one READ ONLY REPEATABLE READ transaction (default_transaction_read_only
+# =on) exports its snapshot; a catalog-only guard runs before any row is read (every object of
+# public owned by the session user, nobody else can act as it, no unexpected schema); pg_dump
+# --snapshot and the source-side verification read that same snapshot. No migration, no DDL/DML, no
+# SET ROLE: the only SQL files this workflow runs are the two catalog-only, SHA-256-pinned files
+# below. pg_dumpall --roles-only --no-role-passwords exports roles without any password.
+# The restore test runs in an ISOLATED PostgreSQL 18 cluster on the runner (unix socket only, no
+# TCP listener, no secret in its environment), after the source connection is closed; pg_restore
+# --exit-on-error; then counts, structure, migrations 1..8, functions, sequences, owners, ACLs, roles
+# and memberships, per-table row counts and content hashes must equal the source snapshot.
+# Encryption: age passphrase mode (scrypt + ChaCha20-Poly1305, authenticated), passphrase fed to
+# age through a pseudo-terminal only (never argv, env of a child, or logs); the ciphertext is
+# decrypted again and its plaintext SHA-256 compared, a tampered copy must be rejected, and every
+# plaintext file is deleted BEFORE the upload. Only <name>.tar.age and its .sha256 are uploaded
+# (retention 1 day), after a leak check; the summary is published only after a leak check of its text.
+#
+# Gates, all required (same as fcb-aiven-defaultdb-roles.yml): protected Environment
+# `aiven-production` (required reviewer, main only), owner dispatch from main, exact confirmation
+# phrase, pinned target (host/port hashes, database), PostgreSQL 18, TLS verify-full against the
+# authenticated Aiven CA, pinned SHA-256 of every SQL file, hash-pinned psycopg.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type exactly: BACKUP defaultdb TO ENCRYPTED ARTIFACT"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with the restore and roles workflows: never at the same time against defaultdb.
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    # G-02: second layer; the environment (required reviewer + branch main) is the control.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_DEFAULTDB_URL
+      CONFIRM_BACKUP: BACKUP defaultdb TO ENCRYPTED ARTIFACT
+      # SHA-256 of every SQL file the backup runs (same pins as fcb-aiven-defaultdb-roles.yml;
+      # tests/test_defaultdb_backup_workflow.py). Both are catalog-only and read no row.
+      EXPECTED_SQL_SHA256: |
+        sql/aiven/count_bridge_catalog.sql=ab0317404cf0ac9a3722a808f2e9f6c1ac4a75503ccac8c508aa2eb5aa304fae
+        sql/aiven/fingerprint_bridge_structure.sql=995ba192e5c8c93b70b484d71f110a3b955a8e1b6b3298db74d6eed557ec092c
+      # The bridge 0001-0008 object counts and structure fingerprint pinned by the roles workflow
+      # (PostgreSQL 18): the source snapshot AND the restore must both equal them.
+      EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
+      EXPECTED_STRUCTURE_0008: '82e19f8838ede071de6c26f1fbbf2ca7'
+      PGCONNECT_TIMEOUT: '15'
+      # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PG18_BINDIR: /usr/lib/postgresql/18/bin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Fails closed on any API/JSON error or a missing/zero reviewer count.
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Owner dispatch and confirmation gate
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          if [ "$GIT_REF" != "refs/heads/main" ]; then
+            echo "::error::the defaultdb backup workflow runs only from main"; exit 1
+          fi
+          if [ "$TRIGGERING_ACTOR" != "$REPO_OWNER" ] || [ "$ACTOR" != "$REPO_OWNER" ]; then
+            echo "::error::only the repository owner may run the defaultdb backup workflow"; exit 1
+          fi
+          if [ "$CONFIRM" != "$CONFIRM_BACKUP" ]; then
+            echo "::error::the backup requires the exact confirmation phrase"; exit 1
+          fi
+          echo "## Backup: confirmation phrase matched" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+          FCB_BACKUP_PASSPHRASE: ${{ secrets.FCB_BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then
+            echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+          # Presence, length >= 32, no control character. Prints a category only.
+          python3 -I -S scripts/fcb_db_backup.py check-passphrase
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || {
+            echo "::error::Aiven CA checksum mismatch"; exit 1;
+          }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+          echo "Aiven CA parsed and matched the protected SHA-256" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify the pinned SHA-256 of every SQL file and install hash-pinned psycopg
+        run: |
+          set -euo pipefail
+          # Hash-pinned: the only third-party Python code that runs with the secrets in its env.
+          python -m pip install --quiet --require-hashes --no-deps -r scripts/fcb_db_roles_requirements.txt
+          n=0
+          while IFS='=' read -r f sha; do
+            [ -n "$f" ] || continue
+            actual="$(sha256sum "$f" | cut -d' ' -f1)"
+            test "$actual" = "$sha" || { echo "::error::$f differs from its pinned SHA-256"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_SQL_SHA256"
+          test "$n" -eq 2 || { echo "::error::expected 2 pinned SQL files, found $n"; exit 1; }
+          echo "pinned SQL files: $n verified" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install PostgreSQL 18 client and server from PGDG (pinned key fingerprint) and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg /etc/postgresql-common
+          sudo curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 60 -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fpr="$(gpg --show-keys --with-colons /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc | awk -F: '/^fpr/{print $10; exit}')"
+          test "$fpr" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          # The server package is only for the isolated restore cluster the script creates itself:
+          # no default cluster, nothing listens on TCP.
+          echo 'create_main_cluster = false' | sudo tee /etc/postgresql-common/createcluster.conf >/dev/null
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq postgresql-client-18 postgresql-18 age
+          "$PG18_BINDIR/psql" --version
+          "$PG18_BINDIR/postgres" --version
+          age --version
+
+      - name: Mask connection details and enforce TLS
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          # -I -S: isolated interpreter, no site-packages (.pth) while the secret is in env.
+          python -I -S - <<'PY'
+          import os, sys
+          from urllib.parse import urlsplit, parse_qs, unquote
+          raw = os.environ['FCB_DEFAULTDB_URL']
+          try:
+              u = urlsplit(raw)
+              parts = (u.hostname, u.username, u.password, u.password and unquote(u.password), str(u.port or ''))
+              q = parse_qs(u.query, keep_blank_values=True)
+          except Exception:
+              sys.exit('::error::secret is not a parseable PostgreSQL URI')
+          for v in parts:
+              if v:
+                  print(f'::add-mask::{v}')
+          if u.scheme not in ('postgres', 'postgresql'):
+              sys.exit('::error::unexpected URL scheme')
+          if ',' in u.netloc or not u.hostname:
+              sys.exit('::error::multi-host or empty host URIs are not allowed')
+          if u.netloc.count('@') > 1:
+              sys.exit('::error::password contains an unencoded @ (percent-encode it as %40)')
+          if u.path.lstrip('/') != os.environ['EXPECTED_DB']:
+              sys.exit('::error::secret does not point to the expected database')
+          forbidden = {'dbname', 'host', 'hostaddr', 'port', 'service', 'servicefile', 'options', 'target_session_attrs'}
+          if forbidden & {k.lower() for k in q}:
+              sys.exit('::error::URI query parameters that can redirect the connection are not allowed')
+          mode = q.get('sslmode', [None])[0]
+          if mode != 'verify-full' or len(q.get('sslmode', [])) != 1:
+              sys.exit('::error::sslmode must be verify-full')
+          PY
+          python -I -S scripts/aiven_pg18_diag.py check-raw
+          python -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Backup in one snapshot, isolated restore test, verify, encrypt, decrypt-verify
+        env:
+          # Defense in depth: the script's own sessions are READ ONLY transactions and every client
+          # child gets default_transaction_read_only=on in a scrubbed environment.
+          PGOPTIONS: '-c default_transaction_read_only=on'
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_BACKUP_PASSPHRASE: ${{ secrets.FCB_BACKUP_PASSPHRASE }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          # The summary goes to a private file; the script appends it to the job summary only after
+          # a leak check of its text (PASS or FAIL). The artifact is leak-checked again below.
+          python -I scripts/fcb_db_backup.py run --require-tls \
+            --bindir "$PG18_BINDIR" --expected-db "$EXPECTED_DB" \
+            --expected-counts "$EXPECTED_COUNTS" --expected-structure "$EXPECTED_STRUCTURE_0008" \
+            --source-commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --workdir "$RUNNER_TEMP/fcb-backup-work" --outdir "$RUNNER_TEMP/fcb-backup-out" \
+            --summary "$RUNNER_TEMP/fcb-backup-summary.md" --publish-to "$GITHUB_STEP_SUMMARY"
+
+      - name: Leak check (summary and artifact directory) before the upload
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_BACKUP_PASSPHRASE: ${{ secrets.FCB_BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/fcb_db_backup.py leak-check --summary "$RUNNER_TEMP/fcb-backup-summary.md" --artifact-dir "$RUNNER_TEMP/fcb-backup-out"
+
+      - name: Upload ONLY the encrypted file and its SHA-256 (retention 1 day)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcb-defaultdb-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/fcb-backup-out/fcb-defaultdb-${{ github.run_id }}-${{ github.run_attempt }}.tar.age
+            ${{ runner.temp }}/fcb-backup-out/fcb-defaultdb-${{ github.run_id }}-${{ github.run_attempt }}.tar.age.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Remove local backup files
+        if: ${{ always() }}
+        run: |
+          rm -rf "$RUNNER_TEMP/fcb-backup-work" "$RUNNER_TEMP/fcb-backup-out" "$RUNNER_TEMP/fcb-backup-summary.md" "$RUNNER_TEMP/aiven-ca.pem"
