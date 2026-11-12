@@ -222,3 +222,27 @@ def test_review_e51b7bb_s2_returns_what_s1_returned_just_above_the_s1_size(monke
     assert out["status"] == "REAL_API_RESPONSE" and out["views_omitted"] == ["fixture_status_view"]
     if upcoming:
         assert out["upcoming"]["rows"] == rows
+
+
+@pytest.mark.parametrize("upcoming", [False, True])
+def test_review_1e1a13c_declared_residual_at_the_exact_s1_size(monkeypatch, upcoming):
+    """Pins the documented residual: cap == S1-shaped size (marker does not fit)."""
+    import json
+    rows = [{"eventId": f"U{i}", "status": 1, "startDate": "2096-01-01T00:00:00Z", "pad": "y" * 120}
+            for i in range(300)]
+    t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(rows)}))
+    full = run(t["sxbet_fixtures_active"](league_id=1, upcoming_only=upcoming))
+    s1 = len(json.dumps(_s1_shape(full), separators=(",", ":"), ensure_ascii=False).encode())
+    monkeypatch.setattr(sx, "_MAX_MCP_BYTES", s1 + 8)  # inside the ~40-byte residual (absorbs timestamp jitter)
+    out = run(t["sxbet_fixtures_active"](league_id=1, upcoming_only=upcoming))
+    if upcoming:
+        assert out["status"] == "REAL_API_RESPONSE" and out["data"] == rows
+        assert out["views_omitted"] == ["fixture_status_view", "upcoming"] and "upcoming" not in out
+    else:
+        assert out["status"] == "PAYLOAD_TOO_LARGE"
+
+
+def test_review_1e1a13c_p3_1_non_dict_fixture_status_body_is_unexpected_shape():
+    t, _, _ = make(universal(overrides={"/fixture/status": lambda r: _ok(["not", "a", "map"])}))
+    out = run(t["sxbet_fixture_status"](sportx_event_ids=["L1"]))
+    assert out["status_decoded"] == {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}

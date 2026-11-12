@@ -485,7 +485,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                   "by_event": {k: (decode_fixture_status(v.get("status")) if isinstance(v, dict) else
                                                    {"code": None, "label": None, "phase": "ROW_MALFORMED",
                                                     "provider_raw": v})
-                                               for k, v in data.items()}} if isinstance(data, dict) else None})
+                                               for k, v in data.items()}} if isinstance(data, dict) else
+                              {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}})  # like the other views (1e1a13c P3-1)
 
     @add
     async def sxbet_live_scores(sportx_event_ids: list[str]) -> dict[str, Any]:
