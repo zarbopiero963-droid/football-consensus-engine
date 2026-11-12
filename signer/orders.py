@@ -927,12 +927,11 @@ class OrderLedger:
             raw = None
             flag = True  # unreadable marker: fail closed below
         if raw == b"" and flag and not os.path.lexists(self.kill_marker_path):
-            # Only the empty flag: it carries no seq, so it holds until an owner-signed release removes it.
-            if self._kill["engaged"]:
-                self.kill_marker_status = "CONSISTENT"
-            else:
-                self.kill_marker_status = "UNRECORDED"
-                self._volatile_kill = KILL_MARKER_UNRECORDED
+            # Only the empty flag: it carries no seq, so it may belong to a LATER engagement than the one on the
+            # ledger (review c139822 P3-1). Always UNRECORDED: the KillSwitch records a new ENGAGE that
+            # supersedes the old one, and the owner signs the release of THAT engagement.
+            self.kill_marker_status = "UNRECORDED"
+            self._volatile_kill = KILL_MARKER_UNRECORDED
             return
         if raw is None and not flag:
             self.kill_marker_status = None
@@ -943,7 +942,7 @@ class OrderLedger:
             self._volatile_kill = KILL_MARKER_INVALID
             return
         after = [e for e in self._kill_engagements if e[0] > marker["ledger_seq"]]
-        if self._kill["engaged"] and after:
+        if self._kill["engaged"] and after and not flag:
             self.kill_marker_status = "CONSISTENT"  # recorded and still engaged: the normal release applies
         elif after and all(e[1] for e in after) and not flag:
             # Recorded after the marker and closed by an owner-signed RELEASE: the marker is stale.
@@ -1001,6 +1000,20 @@ class OrderLedger:
         except OSError:
             pass
         return True
+
+    def drop_kill_flag_after_recorded_engagement(self) -> bool:
+        """The flag is superseded once a JSON marker AND an ENGAGE line after it are both on disk."""
+        with self._lock:
+            if not self._kill["engaged"]:
+                return False
+            try:
+                with open(self.kill_marker_path, "rb") as fh:
+                    marker = _parse_kill_marker(fh.read(4097), self.ledger_id, self.genesis_sha256)
+            except OSError:
+                return False
+            if marker is None or not marker["ledger_seq"] < self._kill["engage_seq"]:
+                return False
+            return self._unlink(self.kill_flag_path)
 
     def remove_kill_marker_after_release(self, released_engage_seq: int) -> bool:
         """After an owner-signed RELEASE only. Removes the marker only if it predates the released engagement

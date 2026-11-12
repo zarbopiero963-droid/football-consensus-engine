@@ -141,7 +141,8 @@ class KillSwitch:
                                                                 else "KILL_SWITCH_MARKER_INVALID")
             self._log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
             self.recovery = self.engage(trigger, source="AUTOMATIC")
-            if self.recovery["persisted"]:
+            if self.recovery["persisted"] and self.recovery["marker_written"]:
+                ledger.drop_kill_flag_after_recorded_engagement()  # the JSON marker now witnesses it
                 ledger.kill_marker_status = "CONSISTENT"  # recorded: later KillSwitch objects do not re-engage
 
     # ---- state ----
@@ -276,8 +277,10 @@ class KillSwitch:
             marker_removed = self._ledger.remove_kill_marker_after_release(rel.engage_seq)
         except OrderStateError:  # engaged again meanwhile: marker kept (review 30f5a96 P3-3)
             marker_removed = False
-        if not marker_removed:  # the next open finds it stale (recorded and released) and removes it then
-            self._log("KILL_SWITCH_MARKER_REMOVE_FAILED", reason="OWNER_SIGNED_RELEASE")
+        if not marker_removed:
+            # Kept on purpose (a later engagement) or not removable (e.g. a directory, unreadable): the next open
+            # stays blocked until the owner clears it manually (README procedure). Explicit fixed code.
+            self._log("KILL_SWITCH_MARKER_UNREMOVABLE", reason="OWNER_SIGNED_RELEASE")
         self._log("KILL_SWITCH_RELEASED", reason="OWNER_SIGNED_RELEASE")
         return {"engaged": False, "released_engage_seq": rel.engage_seq, "marker_removed": marker_removed}
 

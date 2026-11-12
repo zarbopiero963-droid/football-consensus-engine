@@ -220,7 +220,7 @@ def test_review_p2_1_engage_and_release_are_serialised_on_the_ledger_kill_lock(s
     assert done.is_set()
 
 
-def test_review_p2_2_restoring_a_quarantined_ledger_does_not_resume_signing(s, monkeypatch):
+def test_review_p2_2_restored_quarantine_with_flag_does_not_resume_signing(s, monkeypatch):
     k = make_ks(s)
     _ledger_write_fails(monkeypatch, s)
     real_write = s.ledger.write_kill_marker
@@ -288,3 +288,72 @@ def test_review_p3_5_superseded_engagement_needs_one_release_only(s, monkeypatch
     monkeypatch.undo()
     s.restart()
     assert s.ledger.kill_marker_status == "STALE_REMOVED" and not s.ledger.kill_switch_engaged
+
+
+# ---------------------------------------------------------------- fixes from the independent review of c139822
+def _all_marker_writes_fail(monkeypatch, s):
+    real_open, mpath = os.open, s.ledger.kill_marker_path
+
+    def deny(path, *a, **kw):
+        if str(path).startswith(mpath):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr(os, "open", deny)
+
+
+def test_review_c139822_p2a_real_quarantine_case_is_missing_ledger_and_documented(s, monkeypatch):
+    """When quarantine happens the flag has ALREADY failed: no file witnesses the engagement. The restart path
+    (open) finds no ledger; a manual restore without the owner procedure is a declared residual risk."""
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    path = s.ledger._path
+    rep = k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.undo()
+    assert rep["marker_written"] is False and rep["ledger_quarantined"] is True
+    assert not os.path.lexists(s.ledger.kill_flag_path) and not marker(s).exists()
+    s.ledger.close()
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
+    assert e.value.code == "LEDGER_MISSING"
+    readme = (pathlib.Path(__file__).parents[1] / "signer/README.md").read_text()
+    assert "Rischi residui dichiarati" in readme and "rimettere a mano il file in quarantena" in readme
+
+
+def test_review_c139822_p3_1_flag_of_a_later_engagement_needs_its_own_release(s, monkeypatch):
+    k = make_ks(s)
+    k.engage("OWNER_MANUAL_STOP")                          # E1 recorded, marker M1
+    first_seq = s.ledger.kill_switch_state()["engage_seq"]
+    _ledger_write_fails(monkeypatch, s)
+    real_open, mpath = os.open, s.ledger.kill_marker_path
+
+    def no_json(path, *a, **kw):
+        if ".tmp-" in str(path):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr(os, "open", no_json)
+    rep = k.engage("EXPOSURE_ABOVE_LIMIT")                 # E2: flag only, ENGAGE line lost
+    monkeypatch.undo()
+    assert rep["persisted"] is False and os.path.exists(s.ledger.kill_flag_path)
+    s.restart()
+    assert s.ledger.kill_marker_status == "UNRECORDED"
+    k2 = make_ks(s)                                        # records E3, superseding E1
+    new_seq = s.ledger.kill_switch_state()["engage_seq"]
+    assert new_seq > first_seq and k2.recovery["persisted"] and not os.path.exists(s.ledger.kill_flag_path)
+    with pytest.raises(ks.KillSwitchError) as e:           # the owner's release of E1 no longer applies
+        k2.release(release(s, k2, engage_seq=first_seq))
+    assert e.value.code == "KILL_SWITCH_RELEASE_MISMATCH"
+    assert k2.release(release(s, k2))["marker_removed"] is True
+    s.restart()
+    assert not s.ledger.kill_switch_engaged and mpath
+
+
+def test_review_c139822_p3_2_unremovable_marker_is_reported_and_stays_blocked(s):
+    k = make_ks(s)
+    k.engage("OWNER_MANUAL_STOP")
+    os.mkdir(s.ledger.kill_flag_path)                      # e.g. a directory where the flag should be
+    out = k.release(release(s, k))
+    assert out["marker_removed"] is False
+    assert "KILL_SWITCH_MARKER_UNREMOVABLE" in [r["decision"] for r in ks_audit(s)]
+    s.restart()
+    assert s.ledger.kill_switch_engaged                    # fail closed until the owner clears it by hand
