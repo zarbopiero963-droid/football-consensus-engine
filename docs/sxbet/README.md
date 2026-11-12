@@ -204,8 +204,8 @@ Restano aperti e pianificati: D4 (chiusura formale proposta: il minimo dichiarat
 ## Signer isolato
 
 Vedi [`signer/README.md`](../../signer/README.md) e [`wallet_and_signing.md`](wallet_and_signing.md). Wallet Magic dell'account esistente, hosting del signer e trading dalla chat: [`magic_wallet_existing_account_audit.md`](magic_wallet_existing_account_audit.md), [`isolated_signer_architecture.md`](isolated_signer_architecture.md), [`mcp_chat_trading_workflow.md`](mcp_chat_trading_workflow.md). Il signer è un **servizio separato**: non gira mai nel processo MCP, e `import signer` fallisce se manca `SXBET_SIGNER_PROCESS=1` o se è presente `RENDER` (test `tests/test_sxbet_render_isolation.py`).
-- Firma EIP-712 dell'`Order` a 8 campi solo con un'approvazione Ed25519 dell'owner, monouso, TTL ≤ 120 s, legata a un *binding* v2 (account, maker, rete/chainId/contratto, evento, mercato, selezione con etichetta, lato, importo, quota limite, quota vista, commissioni attese, esposizione massima, scadenza, `clientOrderId`, `intent_hash`).
-- Autorizzazione transazionale: un rifiuto non consuma l'approvazione; nonce consumato, `AUTHORIZED` ed esposizione riservata sono una sola riga fsync del ledger.
+- Firma EIP-712 dell'`Order` a 8 campi solo dopo la verifica deterministica, da parte del signer (`signer/command.py`, `OwnerCommandAuthorization`), del **comando esplicito e completo dell'owner** scritto nella chat del client MCP: evento, mercato, linea, selezione, importo con valuta, quota minima o prezzo limite e tipo d'ordine confrontati campo per campo con l'ordine e con le **letture del signer** (mai del chiamante); comando monouso (id e impronta consumati nel ledger), finestra breve firmata dall'owner, un comando = una operazione. L'approvazione Ed25519 per singolo ordine (`signer/approval.py`) **non esiste più**.
+- Autorizzazione transazionale: un rifiuto non consuma il comando; id e impronta del comando consumati, `AUTHORIZED` ed esposizione riservata sono una sola riga fsync del ledger.
 - Macchina a stati degli ordini e ledger append-only con hash chain (`signer/orders.py`): l'esposizione scende solo con evidenza dell'exchange (cancel, scadenza, settlement); `UNKNOWN` non libera mai capitale. Un ledger mancante, estraneo o manomesso blocca la firma.
 - Risk engine autoritativo (`signer/risk.py`) con limiti solo da un file JSON firmato dall'owner (`SXBET_SIGNER_RISK_CONFIG`); default tutto a zero, quindi rifiuto.
 - Gateway di invio (`signer/gateway.py`) **disabilitato**: si costruisce solo con un flag firmato dall'owner, e nel repository non esiste alcun trasporto di rete (solo un fake in-memory nei test).
@@ -254,10 +254,10 @@ Se il server riporta il conteggio atteso di `sxbet` e il client ne mostra 0, il 
 1. **Lettura attiva** su Render dal 01-11-2026 09:25:52 UTC. Resta da verificare dal client MCP, dopo l'aggiornamento del connettore.
 2. **SIMULATION:** implementata (`sxbet_simulate_order`). Dopo il deploy va verificata dal client MCP con la chiave.
 3. **LIVE_TRADING: resta non disponibile.** Signer, risk engine, ledger degli ordini e gateway (disabilitato) esistono e sono testati offline con chiavi usa e getta, ma mancano ancora:
-   - il dispositivo di approvazione dell'owner;
-   - il deploy del signer come servizio separato;
+   - il deploy del signer come servizio separato (con il tool MCP di richiesta che inoltra il comando dell'owner, senza firmare);
    - un trasporto reale per il gateway (`POST /orders-v3` e letture di riconciliazione), revisionato e mergiato dall'owner;
    - le decisioni sul proxy wallet (`/user/deploy-proxy`, `/user/transfer-to-proxy`, operazioni finanziarie del §2.6);
-   - i limiti reali e lo scope della chiave.
+   - i limiti reali e lo scope della chiave;
+   - la certificazione su testnet Toronto e il GO scritto dell'owner (gate distinto da quello mainnet).
 
    Dettagli in [`signer/README.md`](../../signer/README.md). Ogni passo verso il trading reale si mergia solo dall'owner.

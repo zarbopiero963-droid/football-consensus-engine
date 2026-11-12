@@ -114,9 +114,19 @@ def test_invalid_path_and_query_inputs_never_reach_the_network(tool, kwargs, cod
 def test_fund_and_wallet_routes_are_never_described_as_chat_commandable():
     """Governance §2.6 (review 5f03c8b P1): transfers, withdrawals, deposits, proxy and Safe administration are
     never executable via the MCP; only order placement / cancellation take an owner command in chat."""
+    funds = 0
     for o in INV["operations"]:
-        if o["path"].startswith(("/user/multisig/", "/user/transfer-to-proxy", "/user/deploy-proxy")) \
-                and o["method"] != "GET":
-            assert "never executable via the MCP" in o["mcp"] and "owner command" not in o["mcp"], o["path"]
+        if o["method"] == "GET":
+            continue
+        order_route = (o["method"] == "POST" and o["path"] == "/orders-v3") or \
+            (o["method"] == "DELETE" and o["path"].startswith("/orders-v3"))
+        if not order_route:  # only order placement / cancellation take an owner chat command
+            assert "owner command" not in o["mcp"], o["path"]
+        if o["path"].startswith(("/user/multisig/", "/user/transfer-to-proxy", "/user/deploy-proxy")):
+            funds += 1
+            assert "never executable via the MCP" in o["mcp"], o["path"]
         if o["method"] == "POST" and o["path"] == "/orders-v3":
             assert "one explicit and complete owner command per order" in o["mcp"]
+        if o["method"] == "DELETE":
+            assert "one explicit owner cancel command per operation" in o["mcp"], o["path"]
+    assert funds == 13  # transfer/withdraw prepare+execute, signers, threshold, cancel, deposit, deploy

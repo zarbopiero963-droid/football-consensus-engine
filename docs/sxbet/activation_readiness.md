@@ -83,7 +83,7 @@ Sono i valori della config di rischio del signer (`SXBET_SIGNER_RISK_CONFIG`, fi
 - [ ] review indipendente del trasporto reale e del percorso di cancellazione;
 - [ ] head del ledger ancorato e lease di scrittura attivi (PostgreSQL);
 - [ ] chiave privata mai su Render, GitHub o nel MCP;
-- [ ] dispositivo di approvazione dell'owner.
+- [ ] ~~dispositivo di approvazione dell'owner~~ superato dal §2.6 aggiornato: un ordine reale nasce da un comando esplicito e completo dell'owner in chat, verificato dal signer (nessun dispositivo né seconda conferma per ordine).
 
 **Attivazione (owner):**
 - [ ] **verifica legale in Italia** (`BLOCKED_LEGAL_VERIFICATION`);
