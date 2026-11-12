@@ -1,0 +1,69 @@
+{
+ "source": "https://docs.sx.bet/openapi.json",
+ "openapi_info_version": "1.0.0",
+ "retrieved_at_utc": "2026-11-12",
+ "purpose": "Issue #187 D3: GET routes with a documented 404 response (pinned)",
+ "get_404_responses": {
+  "/metadata/obv3": {
+   "description": "",
+   "schema_ref": null,
+   "example": null
+  },
+  "/orderbook-v3/snapshot/market": {
+   "description": "",
+   "schema_ref": "#/components/schemas/ErrorNest",
+   "example": {
+    "message": "Market not found",
+    "error": "Not Found",
+    "statusCode": 404
+   }
+  },
+  "/orders-v3/client/{clientOrderId}": {
+   "description": "",
+   "schema_ref": "#/components/schemas/ErrorNest",
+   "example": {
+    "message": "Order not found",
+    "error": "Not Found",
+    "statusCode": 404
+   }
+  },
+  "/orders-v3/odds/best": {
+   "description": "",
+   "schema_ref": null,
+   "example": null
+  },
+  "/orders-v3/public": {
+   "description": "De-anonymized identity is not available on this environment.",
+   "schema_ref": null,
+   "example": null
+  },
+  "/orders-v3/public/user": {
+   "description": "No de-anonymized resting orders for this address, or de-anonymized identity is not available on this environment.",
+   "schema_ref": null,
+   "example": null
+  },
+  "/orders-v3/{orderId}": {
+   "description": "",
+   "schema_ref": "#/components/schemas/ErrorNest",
+   "example": {
+    "message": "Order not found",
+    "error": "Not Found",
+    "statusCode": 404
+   }
+  },
+  "/positions-v3/public": {
+   "description": "The bettor has no de-anonymized positions. A bettor who keeps their activity anonymized, one who has never bet, and an address that does not exist all answer the same way — this route will not confirm that an account exists. Returned on the first page only; once you hold a cursor, later pages come back empty rather than 404.",
+   "schema_ref": null,
+   "example": null
+  },
+  "/trades-v3/{tradeId}": {
+   "description": "",
+   "schema_ref": "#/components/schemas/ErrorNest",
+   "example": {
+    "message": "Trade not found",
+    "error": "Not Found",
+    "statusCode": 404
+   }
+  }
+ }
+}

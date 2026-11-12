@@ -17,6 +17,7 @@ from test_sxbet_hardening_187 import ADDR, FEES_1PCT, FUTURE, H, P, _ok, make, r
 from test_sxbet_hedging import BOOK as HEDGE_BOOK, FEES as HEDGE_FEES, MARKET as HEDGE_MARKET
 
 H2 = "0x" + "cd" * 32
+ERROR_NEST = {"message": "PROVIDER-MSG-7f3a", "error": "Not Found", "statusCode": 404}  # ErrorNest shape
 OID = "0x" + "9a" * 32
 
 
@@ -108,9 +109,10 @@ def test_d2_no_out_of_band_per_order_approval_language_left():
     ("sxbet_orderbook_market", {"market_hash": H}, "/orderbook-v3/snapshot/market"),
 ])
 def test_d3_documented_404_is_not_found_not_provider_error(tool, kwargs, path):
-    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json={"statusCode": 404})}))
+    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json=ERROR_NEST)}))
     out = run(t[tool](**kwargs))
     assert out["status"] == "NOT_FOUND" and out["http_status"] == 404
+    assert "PROVIDER-MSG-7f3a" not in str(out)  # the provider message is never echoed to the client
     assert out["error"] == {"code": "SXBET_NOT_FOUND"} and out["data"] is None
     assert out["not_found"]["proof_of_absence"] is False and "openapi.json" in out["not_found"]["contract"]
     assert out["network_calls_made"] == 1
@@ -123,7 +125,7 @@ def test_d3_documented_404_is_not_found_not_provider_error(tool, kwargs, path):
     ("sxbet_metadata", {}, "/metadata/obv3"),
 ])
 def test_d3_undocumented_404_stays_provider_error(tool, kwargs, path):
-    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json={"statusCode": 404})}))
+    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json=ERROR_NEST)}))
     out = run(t[tool](**kwargs))
     assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_HTTP_ERROR"
     assert out["http_status"] == 404 and "not_found" not in out
@@ -135,12 +137,31 @@ def test_d3_other_http_errors_stay_provider_error():
     assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_HTTP_ERROR"
 
 
-def test_d3_documented_routes_match_the_official_inventory():
+@pytest.mark.parametrize("body", [
+    {"statusCode": 404},                                   # no ErrorNest "Not Found"
+    {"statusCode": 404, "error": "Not Found"},             # no message
+    {"message": "Cannot GET /orders-v3/x", "error": "Not Found"},  # routing 404, no statusCode
+    "<html>404</html>", "",
+])
+def test_d3_documented_route_without_error_nest_body_stays_provider_error(body):
+    """Review 5bc55ce P2: an edge/CDN/routing 404 on a documented route is not a provider "not found"."""
+    resp = (lambda r: httpx.Response(404, json=body)) if isinstance(body, dict) else (
+        lambda r: httpx.Response(404, text=body))
+    t, _, _ = make(universal(overrides={"/orders-v3/" + OID: resp}))
+    out = run(t["sxbet_order"](order_id=OID))
+    assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_HTTP_ERROR" and "not_found" not in out
+
+
+def test_d3_allowlist_equals_the_pinned_official_404_snapshot():
+    """Review 5bc55ce P3: exactly the GET routes whose pinned OpenAPI 404 is an ErrorNest "Not Found"."""
     import json
     import pathlib
-    inv = json.loads((pathlib.Path(__file__).parents[1] / "docs/sxbet/official_api_inventory.json").read_text())
-    paths = {o["path"] for o in inv["operations"] if o["method"] == "GET"}
-    assert set(sx_tools.NOT_FOUND_DOCUMENTED) <= paths
+    snap = json.loads((pathlib.Path(__file__).parents[1] / "docs/sxbet/openapi_get_404_snapshot.json").read_text())
+    documented = {p for p, r in snap["get_404_responses"].items()
+                  if r["schema_ref"] == "#/components/schemas/ErrorNest" and isinstance(r["example"], dict)
+                  and r["example"].get("error") == "Not Found"}
+    assert documented == set(sx_tools.NOT_FOUND_DOCUMENTED)
+    assert "/orders-v3/public" in snap["get_404_responses"] and "/orders-v3/public" not in documented
 
 
 # ------------------------------------------------------------------ D2 compatibility of the renamed key
@@ -173,7 +194,10 @@ def test_d5_refused_market_yields_no_intent_or_intent_hash(rows, code):
     assert out["status"] == "REFUSED" and out["error"]["code"] == code
     assert out["intent"] is None and out["intent_hash"] is None and out["signing_ready"] is False
     assert "live_eligibility" not in out
-    assert out["requested"]["market_hash"] == H and out["fill"]["status"] == "NOT_SIMULATABLE"
+    assert out["requested"] == {"market_hash": H, "betting_outcome_one": True, "stake_base_units": "5000000",
+                                "requested_percentage_odds": str(50 * P), "time_in_force": "GTC",
+                                "expiry": out["requested"]["expiry"]}
+    assert type(out["requested"]["expiry"]) is int and out["fill"]["status"] == "NOT_SIMULATABLE"
     assert [c.url.path for c in calls] == ["/metadata/obv3", "/markets/find"]
 
 
@@ -228,3 +252,56 @@ def test_d9_malformed_fees_are_never_zero():
     t, _, _ = make(universal(fees={"takerPayoutFee": "0.01"}))
     out = run(t["sxbet_fees"]())
     assert out["fee_rates"]["fee_status"] == "FEES_MALFORMED" and out["fee_rates"]["percent"] is None
+
+
+# ------------------------------------------------------------------ fixes from the per-commit reviews
+def test_review_cefd2df_p2_1_conflicting_data_is_never_no_open_position():
+    out = hm.simulate_hedge(market_position=_no_position(data_conflict=True), book={**HEDGE_BOOK, "marketHash": H},
+                            market={**HEDGE_MARKET, "marketHash": H}, fees=HEDGE_FEES, max_data_age_seconds=10,
+                            data_age_seconds=1.0, min_order_base_units=1)
+    assert out["status"] == "HEDGE_UNCERTAIN" and "CONFLICTING_POSITION_DATA" in out["uncertain_reasons"]
+
+
+def test_review_cefd2df_p2_3_unknown_market_state_yields_no_intent():
+    import time
+    t, calls, _ = make(universal(overrides={"/markets/find": lambda r: httpx.Response(500, text="x")}))
+    out = run(t["sxbet_simulate_order"](
+        market_hash=H, betting_outcome_one=False, stake_base_units=5_000_000, percentage_odds=str(50 * P),
+        time_in_force="GTC", expiry=int(time.time()) + 3600, idempotency_key="key-d5-0002", maker_address=ADDR))
+    assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_HTTP_ERROR"
+    assert out["intent"] is None and out["intent_hash"] is None and out["signing_ready"] is False
+    assert "live_eligibility" not in out and out["requested"]["betting_outcome_one"] is False
+
+
+def test_review_cefd2df_p3_2_unknown_liability_is_not_no_position():
+    pos = {"market_hash": H, "mark_to_market": {"value_base_units": None}, "worst_case_liability_base_units": None,
+           "matched_stake_base_units": {"total": 0}}
+    out = rl.evaluate({"stop_loss": {"enabled": True, "max_loss_base_units": 1}}, market_position=pos,
+                      market={"status": "ACTIVE", "gameTime": FUTURE}, now_unix=1_800_000_000, data_age_seconds=1.0)
+    row = next(r for r in out["results"] if r["rule"] == "stop_loss")
+    assert row["result"] == "ALERT" and row["reason"] == "MARK_TO_MARKET_UNAVAILABLE_CANNOT_EVALUATE"
+
+
+def test_review_cefd2df_p3_3_malformed_rows_and_duplicates():
+    t, _, _ = make(universal(overrides={"/markets/find": lambda r: _ok([{"status": "ACTIVE"}])}))
+    out = run(t["sxbet_markets_find"](market_hashes=[H]))
+    assert out["not_found"] is None and out["lookup_complete"] is False
+    assert sx_tools.requested_vs_returned([H2, H2.upper().replace("0X", "0x"), H], [H], case_insensitive=True)[
+        "not_found"] == [H2]
+
+
+def test_review_5bc55ce_p3_proposal_hash_unchanged_by_the_compat_keys():
+    params = {"executable": False, "signed": False, "submitted": False, "market_hash": H,
+              "betting_outcome_one": False, "stake_base_units": "212", "percentage_odds_limit": str(45 * P)}
+    pos = {"market_hash": H, "mark_to_market": {"value_base_units": -500}, "worst_case_liability_base_units": 200,
+           "matched_stake_base_units": {"total": 200}}
+
+    def proposal(extra):
+        hedge = {"status": "HEDGE_AVAILABLE", "order_parameters_for_owner_review": {**params, **extra}}
+        return rl.evaluate({"stop_loss": {"enabled": True, "max_loss_base_units": 400}}, market_position=pos,
+                           market={"status": "ACTIVE", "gameTime": FUTURE}, now_unix=1_800_000_000,
+                           data_age_seconds=1.0, hedge=hedge)["proposal"]
+    old = proposal({"requires_owner_out_of_band_approval": True, "note": "x"})       # shape on main 315f778
+    new = proposal({"requires_explicit_owner_command": True, "requires_owner_out_of_band_approval": True,
+                    "deprecated_fields": {"requires_owner_out_of_band_approval": "use ..."}, "note": "y"})
+    assert old["proposal_hash"] == new["proposal_hash"]

@@ -39,6 +39,10 @@ RULES: dict[str, dict[str, str]] = {
     "block_on_stale_data": {"max_data_age_seconds": "pos_int"},
 }
 BLOCKERS = ("block_on_suspended_market", "block_on_stale_data")
+# Text and compatibility metadata are not order parameters: kept out of the hashed body, so proposal_hash
+# is the same as before the issue #187 D2 key rename (review 5bc55ce P3).
+_NOT_HASHED = frozenset({"note", "requires_explicit_owner_command", "requires_owner_out_of_band_approval",
+                         "deprecated_fields"})
 POSITION_RULES = ("stop_loss", "take_profit", "trailing_stop")  # meaningless without a matched position
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {name: {"enabled": False} for name in RULES}
 
@@ -108,7 +112,8 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
                         "inputs": inputs})
 
     # Issue #187 D1: a matched stake read as exactly 0 is "no open position", not a position inside its thresholds.
-    no_position = type(open_stake) is int and open_stake == 0 and not liability
+    no_position = (type(open_stake) is int and open_stake == 0
+                   and type(liability) is int and liability == 0)  # None = unknown, never "no position"
     for name in RULES:
         r = cfg[name]
         if not r["enabled"]:
@@ -207,7 +212,7 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
         else:
             body = {"kind": "CLOSE_POSITION_PROPOSAL", "triggered_by": triggers,
                     "market_hash": mp.get("market_hash"), "hedge_status": hstat,
-                    "order_parameters": {k: v for k, v in params.items() if k != "note"}}
+                    "order_parameters": {k: v for k, v in params.items() if k not in _NOT_HASHED}}
             proposal = {**body, "proposal_hash": proposal_hash(body), "executable": False, "signed": False,
                         "submitted": False, "requires_explicit_owner_command": True,
                         "requires_owner_out_of_band_approval": True,  # deprecated alias, same value (issue #187 D2)

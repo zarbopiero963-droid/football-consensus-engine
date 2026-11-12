@@ -151,7 +151,7 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
                     "uncertain_reasons": ["CONFLICTING_POSITION_DATA"]}
         return unavailable("POSITION_PNL_MISSING")
     matched = (market_position.get("matched_stake_base_units") or {}).get("total")
-    if type(matched) is int and matched == 0 and p1 == 0 and p2 == 0:
+    if type(matched) is int and matched == 0 and p1 == 0 and p2 == 0 and not market_position.get("data_conflict"):
         # Issue #187 D1: no matched bet on this market is not a "balanced" position: nothing to hedge.
         return {**unavailable("NO_OPEN_POSITION"), "position_status": "NO_OPEN_POSITION", "legs": []}
     h = pm._lower(market_position.get("market_hash"))

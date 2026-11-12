@@ -87,11 +87,15 @@ class Settings:
 
 
 class SXBetError(Exception):
-    def __init__(self, code: str, *, http_status: int | None = None, retry_after: int | None = None):
+    def __init__(self, code: str, *, http_status: int | None = None, retry_after: int | None = None,
+                 not_found_body: bool = False):
         super().__init__(code)
         self.code = code
         self.http_status = http_status
         self.retry_after = retry_after
+        # True only for a 404 whose body has the documented ErrorNest "Not Found" shape (issue #187 D3).
+        # Only this boolean leaves the client: the provider message itself is never returned.
+        self.not_found_body = not_found_body
 
 
 # Back-compatible name: the in-process limiter now applies the same documented buckets.
@@ -134,6 +138,22 @@ async def _bounded(coro, timeout: float, stage: str) -> None:
         raise _coordinator_unavailable(stage, "TIMEOUT", None) from None
     except Exception as exc:  # psycopg errors, broken adapters, anything else
         raise _coordinator_unavailable(stage, "ERROR", exc) from None
+
+
+async def _is_error_nest_not_found(response: httpx.Response) -> bool:
+    """openapi.json ErrorNest for a missing object: {"statusCode": 404, "error": "Not Found", "message": ...}."""
+    try:
+        chunks, size = [], 0
+        async for chunk in response.aiter_bytes():
+            size += len(chunk)
+            if size > 4096:
+                return False
+            chunks.append(chunk)
+        body = json.loads(b"".join(chunks), parse_constant=_reject_constant)
+    except (httpx.HTTPError, UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    return (isinstance(body, dict) and body.get("statusCode") == 404 and body.get("error") == "Not Found"
+            and isinstance(body.get("message"), str))
 
 
 def _encode(params: Mapping[str, Any]) -> dict[str, str]:
@@ -211,6 +231,9 @@ class SXBetReadClient:
                         raise SXBetError("SXBET_RATE_LIMITED", http_status=code, retry_after=_ascii_int(raw))
                     if code in (401, 403):
                         raise SXBetError("SXBET_UNAUTHORIZED", http_status=code)
+                    if code == 404:
+                        raise SXBetError("SXBET_HTTP_ERROR", http_status=code,
+                                         not_found_body=await _is_error_nest_not_found(response))
                     if not 200 <= code <= 299:
                         raise SXBetError("SXBET_HTTP_ERROR", http_status=code)
                     chunks, size = [], 0

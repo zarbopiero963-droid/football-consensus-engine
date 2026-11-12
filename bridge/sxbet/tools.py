@@ -259,7 +259,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             reply = await client.get(path, params, auth=auth)
         except SXBetError as exc:
             # Issue #187 D3: NOT_FOUND only where the official contract documents a 404 "not found" answer.
-            not_found = (exc.code == "SXBET_HTTP_ERROR" and exc.http_status == 404
+            # The body must also have the documented ErrorNest "Not Found" shape (review 5bc55ce P2): a proxy,
+            # CDN or routing 404 on the same route stays PROVIDER_ERROR.
+            not_found = (exc.code == "SXBET_HTTP_ERROR" and exc.http_status == 404 and exc.not_found_body
                          and (template or path) in NOT_FOUND_DOCUMENTED)
             out = {**base, "status": "NOT_FOUND" if not_found else "PROVIDER_ERROR", "parameters": params,
                    "network_calls_made": 0 if exc.code in NO_NETWORK_CODES else 1,
@@ -387,8 +389,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         return await call("sxbet_markets_find", "/markets/find",
                           lambda: {"marketHashes": _hashes(market_hashes)}, auth=False,
                           derive=lambda data: requested_vs_returned(
-                              hashes, [m.get("marketHash") for m in data if isinstance(m, dict)]
-                              if isinstance(data, list) else None, case_insensitive=True))
+                              hashes, [m.get("marketHash") for m in data]
+                              if isinstance(data, list) and all(isinstance(m, dict) and isinstance(
+                                  m.get("marketHash"), str) for m in data) else None, case_insensitive=True))
 
     @add
     async def sxbet_markets_popular() -> dict[str, Any]:
@@ -659,8 +662,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                  "in net_pnl (include_fees=true, account rate from /user/fees-v3).",
                                  "Market odds are prices, not model probabilities."]})
         markets, err = await fetch("/markets/find", {"marketHashes": [intent["market_hash"]]}, auth=False)
-        if err:
-            return {**out, "status": "PROVIDER_ERROR", "error": err}
+        if err:  # market state unknown: no intent either (review cefd2df P2-3)
+            return _refused_without_intent(out, "MARKET_STATE_UNKNOWN", status="PROVIDER_ERROR", error=err)
         market = sim.check_market(markets, intent["market_hash"])
         out["market"] = market
         if market["status"] != "MARKET_ACTIVE":
@@ -1384,16 +1387,20 @@ NOT_FOUND_DOCUMENTED = {
 _INTENT_KEYS = ("intent", "intent_hash", "signing_ready", "live_eligibility")
 
 
-def _refused_without_intent(out: dict[str, Any], code: str) -> dict[str, Any]:
+def _refused_without_intent(out: dict[str, Any], code: str, *, status: str = "REFUSED",
+                            error: dict[str, Any] | None = None) -> dict[str, Any]:
     """Issue #187 D5: a market that cannot be traded never yields an intent or an intent hash.
 
     The requested values stay visible (`requested`), labelled as the caller's input, never as an order.
     """
     intent = out.get("intent") or {}
-    requested = {k: intent.get(k) for k in ("market_hash", "betting_outcome_one", "total_bet_size",
-                                            "requested_percentage_odds", "time_in_force", "expiry")}
+    requested = {"market_hash": intent.get("market_hash"),
+                 "betting_outcome_one": intent.get("is_maker_betting_outcome_one"),
+                 "stake_base_units": intent.get("total_bet_size"),
+                 "requested_percentage_odds": intent.get("requested_percentage_odds"),
+                 "time_in_force": intent.get("time_in_force"), "expiry": intent.get("expiry")}
     refused = {k: v for k, v in out.items() if k not in _INTENT_KEYS}
-    return {**refused, "status": "REFUSED", "error": {"code": code}, "requested": requested,
+    return {**refused, "status": status, "error": error or {"code": code}, "requested": requested,
             "intent": None, "intent_hash": None, "signing_ready": False,
             "fill": {"status": "NOT_SIMULATABLE", "reason": code}}
 
@@ -1404,7 +1411,10 @@ def requested_vs_returned(requested: list, returned: list | None, *, case_insens
         return {"not_found": None, "lookup_complete": False, "lookup_note": "UNEXPECTED_SHAPE"}
     norm = (lambda v: v.lower() if isinstance(v, str) else v) if case_insensitive else (lambda v: v)
     got = {norm(v) for v in returned if isinstance(v, str)}
-    missing = [v for v in requested if isinstance(v, str) and norm(v) not in got]
+    missing: list = []
+    for v in requested:
+        if isinstance(v, str) and norm(v) not in got and norm(v) not in {norm(m) for m in missing}:
+            missing.append(v)
     return {"not_found": missing, "lookup_complete": True,
             "lookup_note": "Ids absent from the provider answer: unknown, inactive or not offered (not proof of absence)."}
 
