@@ -8,7 +8,7 @@ is wired by the signer service PR. Only GET routes of the official OpenAPI are u
     GET /markets/find?marketHashes=<h>                        the order's market row (exact hash, exactly one)
     GET /markets/active?eventId=<e>, every page               every market of the event
     GET /sports                                               the sports to scan (scan_sport_ids="ALL")
-    GET /markets/active?sportIds=<s>, every page, per sport   every ACTIVE market of every scanned sport, any
+    GET /markets/active?sportIds=<s>, every page, per sport   every market /markets/active returns (settled or reported excluded; INACTIVE rows DOCS_UNVERIFIED) of every scanned sport, any
                                                               league or date: the same-team scan of §2.3bis.
                                                               NOT onlyMainLine: its effect on market types
                                                               without lines is not stated by the contract
