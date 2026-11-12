@@ -43,8 +43,12 @@ class Fake:
             return self.overrides[path](params)
         if path == "/markets/find":
             return [r for r in self.rows if r["marketHash"] in params["marketHashes"]]
+        if path == "/sports":
+            return [{"sportId": x, "label": str(x)} for x in sorted({r["sportId"] for r in self.rows})]
         if path == "/markets/active":
             rows = self.rows
+            if params.get("onlyMainLine"):  # strict reading: rows without mainLine dropped (DOCS_UNVERIFIED)
+                rows = [r for r in rows if r.get("mainLine") is True]
             if "eventId" in params:
                 rows = [r for r in rows if r["sportXeventId"] == params["eventId"]]
             if "sportIds" in params:
@@ -96,8 +100,9 @@ def test_sport_scan_uses_official_params_only():
     fake = Fake(BASE)
     read(fake)
     scans = [q for p, q in fake.calls if p == "/markets/active" and "sportIds" in q]
-    assert scans and all(q["onlyMainLine"] is True and q["pageSize"] == 100 for q in scans)
-    allowed = {"eventId", "sportIds", "onlyMainLine", "pageSize", "paginationKey"}
+    # Review 98e7525 P1-1 (intentional change): no onlyMainLine, its effect is not stated by the contract.
+    assert scans and all("onlyMainLine" not in q and q["pageSize"] == 100 for q in scans)
+    allowed = {"eventId", "sportIds", "pageSize", "paginationKey"}
     assert all(set(q) <= allowed for p, q in fake.calls if p == "/markets/active")
 
 
@@ -178,14 +183,47 @@ def test_inconsistent_rows_of_one_event_are_a_refusal():
     assert e.value.code == "MARKETS_EVENT_INCONSISTENT"
 
 
-def test_order_event_missing_from_the_sport_scan_is_still_classified_from_its_own_row():
-    # Off the main line: the sport scan does not list E1, the order's own market row still classifies it.
+def test_sport_scan_without_the_order_market_is_a_refusal():
+    """Intentional change (review 98e7525): the full sport scan must contain the order's own market."""
     def scan(params):
         rows = [r for r in BASE if r["sportXeventId"] != "E1"] if "sportIds" in params else \
             [r for r in BASE if r["sportXeventId"] == params.get("eventId")]
         return {"markets": rows, "nextKey": None}
-    ctx = read(Fake(BASE, overrides={"/markets/active": scan}))
-    assert [e["sportXeventId"] for e in ctx["same_team_events"]] == ["E1"]
+    with pytest.raises(mr.MarketReadError) as e:
+        read(Fake(BASE, overrides={"/markets/active": scan}))
+    assert e.value.code == "SPORT_SCAN_INCOMPLETE"
+
+
+def test_review_p1_1_an_event_without_main_line_markets_is_still_found():
+    """RED on 98e7525: with a strict onlyMainLine reading, the line-less twin event vanished from the scan."""
+    rows = [dict(row(H, "E1", "Home FC", "Away FC"), mainLine=True),
+            row("0x" + "e5" * 32, "E7", "Home FC", "Away FC", league=50)]  # no mainLine field at all
+    assert [e["sportXeventId"] for e in read(Fake(rows))["same_team_events"]] == ["E1", "E7"]
+
+
+def test_review_p2_1_every_sport_is_scanned_by_default():
+    rows = BASE + [row("0x" + "e5" * 32, "E7", "Home FC", "Away FC", sport=7)]
+    fake = Fake(rows)
+    assert [e["sportXeventId"] for e in read(fake)["same_team_events"]] == ["E1", "E7"]
+    assert {tuple(q["sportIds"]) for p, q in fake.calls if p == "/markets/active" and "sportIds" in q} == {(5,), (7,)}
+    with pytest.raises(mr.MarketReadError) as e:  # an owner list that excludes the market's own sport
+        read(Fake(rows), scan_sport_ids=[7])
+    assert e.value.code == "MARKET_SPORT_NOT_SCANNED"
+
+
+def test_review_p3_2_same_hash_with_different_labels_is_a_conflict():
+    page = {"markets": [row(H, "E1", "Home FC", "Away FC"), dict(row(H, "E1", "Home FC", "Away FC"),
+                                                                 outcomeOneName="Over 2.5")], "nextKey": None}
+    with pytest.raises(mr.MarketReadError) as e:
+        read(Fake(BASE, overrides={"/markets/active": lambda p: page}))
+    assert e.value.code == "MARKETS_ROW_CONFLICT"
+
+
+def test_review_p3_3_find_and_active_rows_must_agree():
+    fake = Fake(BASE, overrides={"/markets/find": lambda p: [dict(row(H, "E1", "Home FC", "Away FC"), line=2.5)]})
+    with pytest.raises(mr.MarketReadError) as e:
+        read(fake)
+    assert e.value.code == "MARKET_READS_DISAGREE"
 
 
 # ---------------------------------------------------------------- quote, balance, metadata: missing never 0
@@ -270,4 +308,34 @@ def test_e2e_provider_failure_is_a_fixed_refusal(s):
         s.sim.add_market("0x" + f"{n:064x}", f"EV{n}", f"Team {n}", f"Rival {n}")
     with pytest.raises(SignerRefused) as e:
         _sign(s, "order-key-S5E04")
+    assert e.value.code == "SIGNER_MARKET_READS_FAILED"
+
+
+def test_review_p2_2_reversed_team_order_in_another_event_makes_the_command_ambiguous(s):
+    s.sim.add_market("0x" + "f7" * 32, "REVERSED-EVENT", "Away FC", "Home FC")
+    with pytest.raises(SignerRefused) as e:
+        _sign(s, "order-key-S5E05")
+    assert e.value.code == "COMMAND_AMBIGUOUS_EVENT"
+
+
+def test_review_p2_1_same_teams_in_another_sport_make_the_command_ambiguous(s):
+    m = s.sim.add_market("0x" + "f8" * 32, "ESOCCER-EVENT", "Home FC", "Away FC")
+    m.sport_id = 77
+    with pytest.raises(SignerRefused) as e:
+        _sign(s, "order-key-S5E06")
+    assert e.value.code == "COMMAND_AMBIGUOUS_EVENT"
+
+
+def test_review_p3_4_a_missing_page_is_a_fixed_signer_refusal(s):
+    for n in range(150):
+        s.sim.add_market("0x" + f"{n:064x}", f"EV{n}", f"Team {n}", f"Rival {n}")
+    real = s.signer.config.market_data._get
+
+    def flaky(path, params):
+        if path == "/markets/active" and params.get("paginationKey"):
+            raise RuntimeError("SXBET_TIMEOUT")
+        return real(path, params)
+    s.signer.config.market_data._get = flaky
+    with pytest.raises(SignerRefused) as e:
+        _sign(s, "order-key-S5E07")
     assert e.value.code == "SIGNER_MARKET_READS_FAILED"

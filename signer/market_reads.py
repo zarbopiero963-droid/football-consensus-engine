@@ -7,9 +7,13 @@ is wired by the signer service PR. Only GET routes of the official OpenAPI are u
 
     GET /markets/find?marketHashes=<h>                        the order's market row (exact hash, exactly one)
     GET /markets/active?eventId=<e>, every page               every market of the event
-    GET /markets/active?sportIds=<s>&onlyMainLine=true, every page
-                                                              every ACTIVE event of the sport, any league or
-                                                              date: the same-team scan of §2.3bis
+    GET /sports                                               the sports to scan (scan_sport_ids="ALL")
+    GET /markets/active?sportIds=<s>, every page, per sport   every ACTIVE market of every scanned sport, any
+                                                              league or date: the same-team scan of §2.3bis.
+                                                              NOT onlyMainLine: its effect on market types
+                                                              without lines is not stated by the contract
+                                                              (DOCS_UNVERIFIED), so it could hide an event
+                                                              (independent review of 98e7525, P1-1).
     GET /orderbook-v3/snapshot/market?showTakerPerspective=true   quote and liquidity at the order's limit
     GET /user/balance-v3                                      availableAmount of the exact (token, escrow) row
     GET /user/fees-v3                                         fee snapshot (null stays null)
@@ -19,8 +23,12 @@ Owner gate P2-B: the provider reads EVERY page (`nextKey` -> `paginationKey` unt
 contract says "a short page is not the last page, and the final nextKey can point at an empty page"),
 normalises team names canonically (Unicode NFKD, accents and case folded, whitespace collapsed: the same
 `canonical_label` the command verifier uses), and refuses on ANY missing page, repeated cursor, page
-budget exhausted, malformed row, inconsistent rows of one event, or a scan that does not contain the
-order's own market or event. Nothing is fuzzy: equal canonical names or nothing (§2.3bis).
+budget exhausted, malformed row, a market hash read twice with different content, inconsistent rows of one
+event, a /markets/find row that differs from the /markets/active row of the same hash, or a scan that does
+not contain the order's own market or event. Nothing is fuzzy: equal canonical names or nothing (§2.3bis).
+Every sport is scanned by default (`scan_sport_ids="ALL"`, review 98e7525 P2-1: the command names no
+sport). Cost per order: one /markets/active page per 100 active markets of every scanned sport plus the
+event pages; the transport the service injects MUST go through the shared rate coordinator (§2.4).
 """
 from __future__ import annotations
 
@@ -35,6 +43,9 @@ DEFAULT_MAX_PAGES = 200    # budget per scan; exceeding it is a refusal (incompl
 _HASH = re.compile(r"^0x[0-9a-f]{64}$")
 _ADDRESS = re.compile(r"^0x[0-9a-f]{40}$")
 _UINT = re.compile(r"^[0-9]{1,78}$")
+# Identity and label fields a /markets/find row must share with the /markets/active row of the same hash.
+IDENTITY_FIELDS = ("marketHash", "sportXeventId", "teamOneName", "teamTwoName", "outcomeOneName", "outcomeTwoName",
+                   "line", "type", "sportId", "leagueId", "gameTime", "status")
 EVENT_FIELDS = ("sportXeventId", "teamOneName", "teamTwoName", "gameTime", "leagueId", "leagueLabel", "sportId")
 FEE_FIELDS = ("refundFee", "makerPayoutFee", "takerPayoutFee", "makerParlayPayoutFee", "takerParlayPayoutFee")
 
@@ -69,8 +80,8 @@ def read_all_active_markets(get: ReadFn, params: Mapping[str, Any], *,
                   and _HASH.fullmatch(m["marketHash"].lower()) is not None, "MARKETS_ROW_MALFORMED")
             h = m["marketHash"].lower()
             prev = rows.get(h)
-            if prev is not None and any(prev.get(f) != m.get(f) for f in EVENT_FIELDS):
-                raise MarketReadError("MARKETS_ROW_CONFLICT")  # same market, different event data
+            if prev is not None and prev != dict(m):
+                raise MarketReadError("MARKETS_ROW_CONFLICT")  # same market read twice, different content (P3-2)
             rows[h] = dict(m)
         nxt = data.get("nextKey")
         if nxt is None or nxt == "":
@@ -117,7 +128,8 @@ def same_team_events(market: Mapping[str, Any], sport_rows: list[Mapping[str, An
 class RestMarketDataProvider:
     """`MarketDataProvider` over official GET reads. `base_token` / `escrow` are the owner's signer config."""
 
-    def __init__(self, get: ReadFn, *, base_token: str, escrow: str, max_pages: int = DEFAULT_MAX_PAGES):
+    def __init__(self, get: ReadFn, *, base_token: str, escrow: str, max_pages: int = DEFAULT_MAX_PAGES,
+                 scan_sport_ids: Any = "ALL"):
         _need(callable(get), "MARKET_READ_FUNCTION_MISSING")
         _need(isinstance(base_token, str) and _ADDRESS.fullmatch(base_token.lower()) is not None, "BASE_TOKEN_INVALID")
         _need(isinstance(escrow, str) and _ADDRESS.fullmatch(escrow.lower()) is not None, "ESCROW_INVALID")
@@ -126,6 +138,9 @@ class RestMarketDataProvider:
         self._token = base_token.lower()
         self._escrow = escrow.lower()
         self._max_pages = max_pages
+        _need(scan_sport_ids == "ALL" or (isinstance(scan_sport_ids, (list, tuple)) and scan_sport_ids and all(
+            type(x) is int and x > 0 for x in scan_sport_ids)), "SCAN_SPORT_IDS_INVALID")
+        self._scan_sports = scan_sport_ids
 
     def read(self, *, market_hash: str, outcome_one: bool, percentage_odds: int, now: int) -> dict[str, Any]:
         _need(isinstance(market_hash, str) and _HASH.fullmatch(market_hash.lower()) is not None, "MARKET_HASH_INVALID")
@@ -143,12 +158,18 @@ class RestMarketDataProvider:
         _need(isinstance(sport_id, int) and not isinstance(sport_id, bool), "MARKET_SPORT_MISSING")
 
         event_markets = read_all_active_markets(self._get, {"eventId": event_id}, max_pages=self._max_pages)
-        _need(any(m["marketHash"].lower() == h for m in event_markets), "EVENT_MARKETS_INCOMPLETE")
+        own = [m for m in event_markets if m["marketHash"].lower() == h]
+        _need(len(own) == 1, "EVENT_MARKETS_INCOMPLETE")
         _need(all(m.get("sportXeventId") == event_id for m in event_markets), "EVENT_MARKETS_FOREIGN_ROW")
-        sport_rows = read_all_active_markets(self._get, {"sportIds": [sport_id], "onlyMainLine": True},
-                                             max_pages=self._max_pages)
-        # The order's own market row joins the scan: its event must be classified even off the main line.
-        teams = same_team_events(market, sport_rows + [market])
+        # Two official reads of the same market must agree (review 98e7525 P3-3).
+        _need(all(own[0].get(f) == market.get(f) for f in IDENTITY_FIELDS), "MARKET_READS_DISAGREE")
+        sports = self._sports_to_scan()
+        _need(sport_id in sports, "MARKET_SPORT_NOT_SCANNED")
+        sport_rows: list[dict[str, Any]] = []
+        for sid in sports:
+            sport_rows += read_all_active_markets(self._get, {"sportIds": [sid]}, max_pages=self._max_pages)
+        _need(any(m["marketHash"].lower() == h for m in sport_rows), "SPORT_SCAN_INCOMPLETE")
+        teams = same_team_events(market, sport_rows)
 
         quote = self._quote(h, outcome_one, percentage_odds, now)
         meta = self._get("/metadata/obv3", {})
@@ -159,6 +180,15 @@ class RestMarketDataProvider:
         return {"market": market, "market_observed_at": now, "event_markets": event_markets,
                 "same_team_events": teams, "quote": quote, "balance": balance, "fees": dict(fees),
                 "exchange_limits": limits}
+
+    def _sports_to_scan(self) -> list[int]:
+        if self._scan_sports != "ALL":
+            return list(self._scan_sports)
+        data = self._get("/sports", {})
+        _need(isinstance(data, list) and data and all(isinstance(x, Mapping) and type(x.get("sportId")) is int
+                                                     for x in data), "SPORTS_MALFORMED")
+        ids = sorted({x["sportId"] for x in data})
+        return ids
 
     def _quote(self, h: str, outcome_one: bool, limit: int, now: int) -> dict[str, Any]:
         book = self._get("/orderbook-v3/snapshot/market", {"marketHash": h, "showTakerPerspective": True})

@@ -372,6 +372,9 @@ class SimExchange:
             if req.path == "/markets/find":
                 hs = [h.lower() for h in q.get("marketHashes", "").split(",") if h]
                 return ok([self._market_row(self.markets[h]) for h in hs if h in self.markets])
+            if req.path == "/sports":
+                return ok([{"sportId": sid, "label": f"Sport {sid}"} for sid in sorted(
+                    {getattr(m, "sport_id", 5) for m in self.markets.values()})])
             if req.path == "/metadata/obv3":
                 return ok(dict(self.meta))
             if req.path == "/markets/active":
@@ -708,7 +711,8 @@ class SimExchange:
         # Moneyline-style row (type 52): the team names are the outcome names; sport / league ids are test values.
         return {"marketHash": m.market_hash, "status": m.status, "sportXeventId": m.event_id,
                 "outcomeOneName": m.outcome_one_name, "outcomeTwoName": m.outcome_two_name,
-                "teamOneName": m.outcome_one_name, "teamTwoName": m.outcome_two_name, "sportId": 5,
+                "teamOneName": m.outcome_one_name, "teamTwoName": m.outcome_two_name,
+                "sportId": getattr(m, "sport_id", 5),
                 "leagueId": getattr(m, "league_id", 1236), "gameTime": m.game_time, "type": 52}
 
     def _levels(self, market_hash: str, outcome_one: bool) -> list[tuple[int, int]]:

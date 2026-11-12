@@ -540,7 +540,9 @@ def _resolve_event(cmd: PlaceCommand, market: Mapping[str, Any], same_team_event
         one, two = e.get("teamOneName"), e.get("teamTwoName")
         if not (isinstance(one, str) and isinstance(two, str)):
             matching.add("<unverifiable>")  # an event we cannot read could be a second match: fail closed
-        elif (canonical_label(one), canonical_label(two)) == want:
+        elif (canonical_label(one), canonical_label(two)) in (want, (want[1], want[0])):
+            # Reversed order counts too (review 98e7525 P2-2): the OpenAPI defines teamOneName only as "the
+            # first team/player", not as the home side, so "B - A" is not proven to be a different fixture.
             matching.add(str(e.get("sportXeventId")))
     if matching != {own}:
         raise CommandRefused("COMMAND_AMBIGUOUS_EVENT")
