@@ -41,8 +41,8 @@ RULES: dict[str, dict[str, str]] = {
 BLOCKERS = ("block_on_suspended_market", "block_on_stale_data")
 # Text and compatibility metadata are not order parameters: kept out of the hashed body, so proposal_hash
 # is the same as before the issue #187 D2 key rename (review 5bc55ce P3).
-_NOT_HASHED = frozenset({"note", "requires_explicit_owner_command", "requires_owner_out_of_band_approval",
-                         "deprecated_fields"})
+# The alias requires_owner_out_of_band_approval IS hashed, exactly as on main 315f778 (review 8425a72 P2-A).
+_NOT_HASHED = frozenset({"note", "requires_explicit_owner_command", "deprecated_fields"})
 POSITION_RULES = ("stop_loss", "take_profit", "trailing_stop")  # meaningless without a matched position
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {name: {"enabled": False} for name in RULES}
 

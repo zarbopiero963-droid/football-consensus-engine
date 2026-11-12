@@ -152,7 +152,8 @@ async def _is_error_nest_not_found(response: httpx.Response) -> bool:
         body = json.loads(b"".join(chunks), parse_constant=_reject_constant)
     except (httpx.HTTPError, UnicodeDecodeError, ValueError, RecursionError):
         return False
-    return (isinstance(body, dict) and body.get("statusCode") == 404 and body.get("error") == "Not Found"
+    return (isinstance(body, dict) and type(body.get("statusCode")) is int and body["statusCode"] == 404
+            and body.get("error") == "Not Found"
             and isinstance(body.get("message"), str))
 
 

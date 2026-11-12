@@ -828,7 +828,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         except SXBetError as exc:
             if exc.code not in NO_NETWORK_CODES:
                 out["network_calls_made"] += 1
-            err = {"code": exc.code, "http_status": exc.http_status, "endpoint": template or path}
+            err = {"code": exc.code, "http_status": exc.http_status, "endpoint": template or path,
+                   "documented_not_found": bool(exc.not_found_body and (template or path) in NOT_FOUND_DOCUMENTED)}
             if exc.retry_after is not None:
                 err["retry_after_seconds"] = exc.retry_after
             out["reads"].append({**entry, "status": "ERROR", **err})
@@ -1000,7 +1001,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             return k
         oid = order_id.lower()
         order_data, err = await dread(out, f"/orders-v3/{oid}", {}, auth=True, template="/orders-v3/{orderId}")
-        if err and err.get("http_status") != 404:
+        # Review 8425a72 P2-B: only a documented ErrorNest "Not Found" 404 is a lookup answer; a proxy/CDN/
+        # routing 404 is a provider failure, never a reconciliation hint.
+        if err and not err.get("documented_not_found"):
             return dfail(out, err)
         fills, ferr = await dread(out, "/fills-v3", {"orderId": oid, "perPage": 100}, auth=True)
         if ferr:

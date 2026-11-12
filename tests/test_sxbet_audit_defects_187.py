@@ -290,18 +290,32 @@ def test_review_cefd2df_p3_3_malformed_rows_and_duplicates():
         "not_found"] == [H2]
 
 
-def test_review_5bc55ce_p3_proposal_hash_unchanged_by_the_compat_keys():
-    params = {"executable": False, "signed": False, "submitted": False, "market_hash": H,
-              "betting_outcome_one": False, "stake_base_units": "212", "percentage_odds_limit": str(45 * P)}
-    pos = {"market_hash": H, "mark_to_market": {"value_base_units": -500}, "worst_case_liability_base_units": 200,
-           "matched_stake_base_units": {"total": 200}}
+def test_review_8425a72_p2a_proposal_hash_equals_the_value_pinned_on_main_315f778():
+    """The pinned value was computed with these exact inputs on main 315f778 (before the D2 key rename)."""
+    from test_sxbet_hedging import BOOK, FEES, MARKET
+    h11 = "0x" + "11" * 32
+    pos = {"market_hash": h11, "pnl_base_units": {"if_outcome_one": 300, "if_outcome_two": -200, "if_void": 0},
+           "projected_payout_fee_base_units": {"if_outcome_one": "3", "if_outcome_two": "0"}, "data_conflict": False,
+           "matched_stake_base_units": {"total": 500}, "worst_case_liability_base_units": 200,
+           "mark_to_market": {"value_base_units": -500}}
+    hedge = hm.simulate_hedge(market_position=pos, book={**BOOK, "marketHash": h11}, market={**MARKET, "marketHash": h11},
+                              fees=FEES, max_slippage_percentage_odds=5 * P, data_age_seconds=1.0,
+                              max_data_age_seconds=10, min_order_base_units=1)
+    out = rl.evaluate({"stop_loss": {"enabled": True, "max_loss_base_units": 400}}, market_position=pos,
+                      market={"status": "ACTIVE", "gameTime": 4_000_000_000}, now_unix=1_800_000_000,
+                      data_age_seconds=1.0, hedge=hedge)
+    assert out["proposal"]["proposal_hash"] == \
+        "sha256:af5245f344eadd4c0542f3bb64f02a28bc974189c2bdf00c490b36a07d85a695"
 
-    def proposal(extra):
-        hedge = {"status": "HEDGE_AVAILABLE", "order_parameters_for_owner_review": {**params, **extra}}
-        return rl.evaluate({"stop_loss": {"enabled": True, "max_loss_base_units": 400}}, market_position=pos,
-                           market={"status": "ACTIVE", "gameTime": FUTURE}, now_unix=1_800_000_000,
-                           data_age_seconds=1.0, hedge=hedge)["proposal"]
-    old = proposal({"requires_owner_out_of_band_approval": True, "note": "x"})       # shape on main 315f778
-    new = proposal({"requires_explicit_owner_command": True, "requires_owner_out_of_band_approval": True,
-                    "deprecated_fields": {"requires_owner_out_of_band_approval": "use ..."}, "note": "y"})
-    assert old["proposal_hash"] == new["proposal_hash"]
+
+@pytest.mark.parametrize("body,documented", [(ERROR_NEST, True), ({"statusCode": 404}, False),
+                                              ({"statusCode": 404.0, "error": "Not Found", "message": "m"}, False)])
+def test_review_8425a72_p2b_order_status_only_trusts_a_documented_not_found(body, documented):
+    t, calls, _ = make(universal(overrides={"/orders-v3/" + OID: lambda r: httpx.Response(404, json=body),
+                                            "/fills-v3": lambda r: _ok({"fills": [], "nextKey": None})}))
+    out = run(t["sxbet_order_status"](order_id=OID))
+    if documented:
+        assert out["derived"]["lookup"] == "NOT_FOUND"
+    else:  # proxy/CDN/routing 404, or a non-integer statusCode: a failure, never a reconciliation hint
+        assert out["status"] == "PROVIDER_ERROR" and "derived" not in out
+        assert [c.url.path for c in calls] == ["/orders-v3/" + OID]

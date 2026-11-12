@@ -210,7 +210,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
         if expect_not_found and out.get("http_status") == 404:
             # documented: a missing or foreign id returns 404 (ErrorNest). Issue #187 D3: the MCP must say
             # NOT_FOUND; a PROVIDER_ERROR 404 means the mapping regressed or the body was not ErrorNest.
-            outcome = "PASS" if status == "NOT_FOUND" else "PARTIAL"
+            outcome = "PASS" if status == "NOT_FOUND" else "FAIL"  # review 8425a72 P3-A: a regression fails
         elif status == "PROVIDER_ERROR" and code == "SXBET_UNAUTHORIZED" and scope_sensitive:
             outcome = "BLOCKED_EXTERNAL"  # the key lacks the documented scope; owner decision, not a code failure
         if status == "REAL_API_RESPONSE" and is_empty_payload(data):

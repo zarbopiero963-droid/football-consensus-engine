@@ -80,7 +80,8 @@ def router(*, market_status="ACTIVE", trades_rows=None, order_404=False, overrid
             data = {"orders": [ORDER]}
         elif path == f"/orders-v3/{OID}":
             if order_404:
-                return httpx.Response(404, json={"message": "Order not found"})
+                # Official ErrorNest example (openapi.json GET /orders-v3/{orderId} 404); review 8425a72 P2-B.
+                return httpx.Response(404, json={"message": "Order not found", "error": "Not Found", "statusCode": 404})
             data = {"order": dict(ORDER, remainingSize="1000000")}
         elif path == "/fills-v3":
             data = {"fills": [FILL] if q.get("orderId") or q.get("status") == "LOCKED" else []}
