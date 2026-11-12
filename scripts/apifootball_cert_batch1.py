@@ -95,6 +95,29 @@ RUNNER_IDENTITY_SQL = (
 # review P3 F4: each connection must REALLY be on its database (current_database(), not the DSN).
 COORDINATOR_DATABASE = "defaultdb"
 CURRENT_DATABASE_SQL = "SELECT pg_catalog.current_database()::pg_catalog.text AS db"
+# Review #201 P1-A / P1-B: anything that changes what the runner's INSERT / SELECT does or sees on a
+# relation `c`: a rewrite rule, row level security (enabled or forced) or a policy, a relation that is
+# not a plain permanent heap table (view, partitioned, foreign...), a partition, inheritance either way.
+RELATION_HAZARDS_SQL = (
+    # (relhasrules is NOT used: PostgreSQL leaves it true after DROP RULE until a VACUUM; pg_rewrite is exact)
+    "c.relrowsecurity OR c.relforcerowsecurity OR c.relispartition "
+    "OR c.relkind OPERATOR(pg_catalog.<>) 'r' OR c.relpersistence OPERATOR(pg_catalog.<>) 'p' "
+    "OR c.relam IS DISTINCT FROM (SELECT am.oid FROM pg_catalog.pg_am am WHERE am.amname OPERATOR(pg_catalog.=) 'heap') "
+    "OR EXISTS (SELECT 1 FROM pg_catalog.pg_rewrite rw WHERE rw.ev_class OPERATOR(pg_catalog.=) c.oid) "
+    "OR EXISTS (SELECT 1 FROM pg_catalog.pg_policy pol WHERE pol.polrelid OPERATOR(pg_catalog.=) c.oid) "
+    "OR EXISTS (SELECT 1 FROM pg_catalog.pg_inherits ih WHERE ih.inhrelid OPERATOR(pg_catalog.=) c.oid "
+    "OR ih.inhparent OPERATOR(pg_catalog.=) c.oid)")
+COORDINATOR_TABLES = ("api_football_quota_counters", "api_football_quota_leases", "api_football_quota_attempts")
+COORDINATOR_TABLES_SQL = (
+    "SELECT (pg_catalog.count(*) OPERATOR(pg_catalog.=) 3 AND NOT pg_catalog.bool_or(" + RELATION_HAZARDS_SQL + ")) AS ok "
+    "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) 'public' AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s)")
+# Review #201: per-RUN in-memory request caps (one process run = one execute), independent of the
+# database, counting every reserved attempt (first send, retry, ambiguous outcome). The persistent
+# per-plan budget in the ledger stays the shared budget across runs, restarts and campaign_ids.
+RUN_REQUEST_CAPS = {"BATCH1": 78, "LIVE_FULL_MATCH_SNAPSHOT": 8}
+
+
 # Review #201 P1 (owner decision, option A): the APPROVED plans and their budgets, pinned and versioned
 # here (tests/test_apifootball_cert_path_a.py derives them from the committed plan files). The runner
 # requires the plan file's sha256 to be BOTH one of these AND approved in the ledger, and caps every
@@ -214,7 +237,11 @@ LEDGER_INTEGRITY_SQL = (
     "FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) k.conrelid "
     "JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
     "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) "
-    "AND k.contype OPERATOR(pg_catalog.=) 'c') z) OPERATOR(pg_catalog.=) %(checks)s) AS ok "
+    "AND k.contype OPERATOR(pg_catalog.=) 'c') z) OPERATOR(pg_catalog.=) %(checks)s "
+    # review #201 P1-A / P1-B: no rewrite rule, no row level security or policy, plain heap tables only
+    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) AND ("
+    + RELATION_HAZARDS_SQL + "))) AS ok "
     "FROM pg_catalog.pg_roles o WHERE o.rolname OPERATOR(pg_catalog.=) %(owner)s")
 
 
@@ -540,14 +567,41 @@ class PostgresCampaignLedger:
             if self._one(cur, "t") is None:
                 raise LedgerUnavailable("CAMPAIGN_LEDGER_MIGRATION_REQUIRED")
         if self._owner_role is not None:  # every ledger transaction, before any write
-            cur.execute(RUNNER_IDENTITY_SQL)
-            if not self._one(cur, "ok"):
-                raise LedgerUnavailable("RUNNER_IDENTITY_NOT_DEDICATED")
-            cur.execute(LEDGER_INTEGRITY_SQL, {"schema": self._schema, "tables": list(LEDGER_TABLES),
-                                               "owner": self._owner_role, "functions": LEDGER_FUNCTION_SIGNATURES,
-                                               "triggers": LEDGER_TRIGGER_SIGNATURES, "checks": LEDGER_CHECK_SIGNATURES})
-            if not self._one(cur, "ok"):
-                raise LedgerUnavailable("CAMPAIGN_LEDGER_INTEGRITY_FAILED")
+            self._take_ledger_locks(cur)  # review #201 P2: BEFORE the checks, held until COMMIT/ROLLBACK
+            self._check_identity_and_integrity(cur)
+
+    def _take_ledger_locks(self, cur) -> None:
+        """Review #201 P2 (TOCTOU): table locks taken at the start of EVERY ledger transaction, in one fixed
+        order (plans, campaigns, attempts, outcomes; the reservation's INSERT then adds plan_usage through
+        the budget trigger), with a short lock_timeout (55P03 -> CAMPAIGN_LEDGER_LOCK_TIMEOUT, fail closed).
+        Only the approved privileges are used:
+          * campaigns / attempts / outcomes: ROW EXCLUSIVE, taken by an INSERT of zero rows on the runner's
+            INSERT columns (LOCK TABLE ... ROW EXCLUSIVE would need a TABLE-level INSERT grant). It is
+            self-compatible (concurrent reservations are not serialized) and conflicts with SHARE ROW
+            EXCLUSIVE (CREATE/DROP-less trigger changes: CREATE [OR REPLACE] TRIGGER, ALTER TABLE ENABLE/
+            DISABLE TRIGGER) and ACCESS EXCLUSIVE (CREATE RULE, ENABLE/FORCE ROW LEVEL SECURITY, CREATE/ALTER
+            POLICY, DROP TRIGGER, ADD/DROP/ALTER CONSTRAINT, ALTER COLUMN, INHERIT, SET ACCESS METHOD, DROP);
+          * plans: ACCESS SHARE (SELECT is the runner's only privilege there): conflicts with ACCESS
+            EXCLUSIVE only. plan_usage cannot be locked (no privilege at all); the reservation's INSERT
+            takes ROW EXCLUSIVE on it through the budget trigger's UPDATE, before the post-INSERT re-check.
+        Not lockable by any table lock: CREATE OR REPLACE FUNCTION. That window is closed by the
+        post-INSERT own-row, coherence and cap checks (see _reserve)."""
+        cur.execute("SET LOCAL lock_timeout = '3s'")
+        cur.execute(f"LOCK TABLE {self._plans} IN ACCESS SHARE MODE")
+        cur.execute(f"INSERT INTO {self._campaigns} (campaign_id, plan_sha256) SELECT NULL, NULL WHERE false")
+        cur.execute(f"INSERT INTO {self._attempts} (campaign_id, call_id) SELECT NULL, NULL WHERE false")
+        cur.execute(f"INSERT INTO {self._outcomes} (campaign_id, seq, outcome, http_status) "
+                    "SELECT NULL, NULL, NULL, NULL WHERE false")
+
+    def _check_identity_and_integrity(self, cur) -> None:
+        cur.execute(RUNNER_IDENTITY_SQL)
+        if not self._one(cur, "ok"):
+            raise LedgerUnavailable("RUNNER_IDENTITY_NOT_DEDICATED")
+        cur.execute(LEDGER_INTEGRITY_SQL, {"schema": self._schema, "tables": list(LEDGER_TABLES),
+                                           "owner": self._owner_role, "functions": LEDGER_FUNCTION_SIGNATURES,
+                                           "triggers": LEDGER_TRIGGER_SIGNATURES, "checks": LEDGER_CHECK_SIGNATURES})
+        if not self._one(cur, "ok"):
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_INTEGRITY_FAILED")
 
     def _plan_evidence_consistent(self, cur, plan_sha: str) -> None:
         """PATH A: the committed attempts of the plan carry seqs exactly 1..n, n <= budget. A counter
@@ -571,6 +625,8 @@ class PostgresCampaignLedger:
             text = type(exc).__name__ + ":" + (getattr(getattr(exc, "diag", None), "message_primary", "") or "")
             if getattr(exc, "sqlstate", None) in ("40001", "40P01"):  # a conflict, NOT an exhausted budget
                 raise SerializationRefused("SERIALIZATION_FAILURE") from None
+            if getattr(exc, "sqlstate", None) == "55P03":  # review #201 P2: a held DDL lock, fail closed
+                raise LedgerUnavailable("CAMPAIGN_LEDGER_LOCK_TIMEOUT") from None
             if "API_FOOTBALL_CERT_CAMPAIGN_BUDGET_EXHAUSTED" in text:  # only the counter at the budget
                 raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED") from None
             if "API_FOOTBALL_CERT_PLAN_NOT_APPROVED" in text:
@@ -619,11 +675,24 @@ class PostgresCampaignLedger:
                 cap = min(int(budget), int(self._pinned[plan_sha][1]), HARD_CAP)
             cur.execute(f"INSERT INTO {self._attempts} (campaign_id, call_id) VALUES (%s, %s) RETURNING seq",
                         (campaign_id, call_id))
-            seq = int(self._one(cur, "seq"))
+            seq = self._one(cur, "seq")
+            if seq is None:  # the INSERT returned no row (e.g. rewritten away): fail closed
+                raise LedgerUnavailable("CAMPAIGN_LEDGER_RESERVATION_NOT_OWN")
+            seq = int(seq)
+            if self._owner_role is not None:  # review #201 P2: the row is OURS, in OUR campaign, this tx
+                cur.execute(f"SELECT pg_catalog.count(*) AS n FROM {self._attempts} a "
+                            "WHERE a.campaign_id OPERATOR(pg_catalog.=) %s AND a.seq OPERATOR(pg_catalog.=) %s "
+                            "AND a.call_id OPERATOR(pg_catalog.=) %s "
+                            "AND a.xmin OPERATOR(pg_catalog.=) pg_catalog.xid(pg_catalog.pg_current_xact_id())",
+                            (campaign_id, seq, call_id))
+                if self._one(cur, "n") != 1:
+                    raise LedgerUnavailable("CAMPAIGN_LEDGER_RESERVATION_NOT_OWN")
             self._counter_matches_committed(cur, campaign_id, seq)  # SAME transaction, before COMMIT
             if cap is not None and seq > cap:  # count == seq is enforced above: this caps the plan
                 raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")  # rolled back with the INSERT
-            return seq  # committed on leaving the block
+            if self._owner_role is not None:  # review #201 P2: re-check AFTER the INSERT, under its locks
+                self._check_identity_and_integrity(cur)
+            return seq  # committed on leaving the block; a COMMIT error raises: the request is never sent
 
     def _counter_matches_committed(self, cur, campaign_id: str, seq: int) -> None:
         """Review #201 (owner decision, option A): the plan counter must equal the plan's attempts.
@@ -781,10 +850,13 @@ async def _record_outcome(ledger: CampaignLedger, campaign_id: str, seq: int, ou
         return None
 
 
-def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: dict[str, str] | None = None):
+def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: dict[str, str] | None = None,
+                     run_cap: int | None = None):
     """httpx transport that reserves one ledger attempt BEFORE every request it sends (write-ahead).
     With `capture`, the provider body text of each call is kept verbatim (snapshot mode)."""
     import httpx
+
+    run_count = {"reserved": 0}
 
     class _BudgetTransport(httpx.AsyncBaseTransport):
         async def handle_async_request(self, request):
@@ -800,7 +872,10 @@ def budget_transport(inner, ledger: CampaignLedger, campaign_id: str, capture: d
             call_id = _CURRENT_CALL.get()
             if os.environ.get(AUTH_VAR, "") != "true":
                 raise NotAuthorized("CAMPAIGN_NOT_AUTHORIZED_BY_OWNER")  # before any reservation or send
+            if run_cap is not None and run_count["reserved"] >= run_cap:  # review #201: per-run cap
+                raise BudgetExhausted("RUN_REQUEST_CAP_REACHED")  # in memory, before any reservation or send
             seq = await ledger.reserve(campaign_id, call_id)  # write-ahead: raises before any send
+            run_count["reserved"] += 1  # every reserved attempt counts: sent, retried or ambiguous
             if log is not None:
                 log["reserved"] += 1
             # From here the attempt is RESERVED: it stays RESERVED_UNKNOWN in the ledger until an
@@ -837,7 +912,7 @@ class _Registry:
         return deco
 
 
-def _tools(settings, ledger: CampaignLedger, campaign_id: str, inner_transport, quota, capture=None):
+def _tools(settings, ledger: CampaignLedger, campaign_id: str, inner_transport, quota, capture=None, run_cap=None):
     import httpx
 
     from bridge.api_football.resilience import ResilientFootballClient, RetryPolicy
@@ -845,7 +920,7 @@ def _tools(settings, ledger: CampaignLedger, campaign_id: str, inner_transport, 
     from bridge.api_football.transport import InjectedHTTPXTransport
 
     http = httpx.AsyncClient(base_url=settings.base_url, timeout=settings.timeout_seconds, follow_redirects=False,
-                             transport=budget_transport(inner_transport, ledger, campaign_id, capture))
+                             transport=budget_transport(inner_transport, ledger, campaign_id, capture, run_cap))
     client = ResilientFootballClient(settings, InjectedHTTPXTransport(http, api_key=settings.api_key),
                                      quota=quota, retry=RetryPolicy(max_attempts=ATTEMPTS_PER_CALL))
     registry = _Registry()
@@ -915,7 +990,8 @@ def _summary_of(out: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger: CampaignLedger,
-                  inner_transport, quota=None, plan_text: str, source_sha: str) -> dict[str, Any]:
+                  inner_transport, quota=None, plan_text: str, source_sha: str,
+                  run_cap: int | None = None) -> dict[str, Any]:
     if not CAMPAIGN_ID.fullmatch(campaign_id):
         raise ValueError("INVALID_CAMPAIGN_ID")
     if plan.get("max_attempts_total", HARD_CAP + 1) > HARD_CAP:
@@ -923,7 +999,8 @@ async def execute(plan: Mapping[str, Any], *, campaign_id: str, settings, ledger
     await ledger.open(campaign_id, HARD_CAP, plan_sha256(plan_text))
     already = await ledger.attempted_calls(campaign_id)
     prior_states = {s["call_id"]: s["state"] for s in await ledger.attempt_states(campaign_id)}
-    tools, http = _tools(settings, ledger, campaign_id, inner_transport, quota)
+    cap = RUN_REQUEST_CAPS["BATCH1"] if run_cap is None else min(int(run_cap), RUN_REQUEST_CAPS["BATCH1"])
+    tools, http = _tools(settings, ledger, campaign_id, inner_transport, quota, run_cap=cap)
     replies: dict[str, Any] = {}
     results = []
     try:
@@ -1058,7 +1135,8 @@ async def execute_snapshot(*, snapshot_id: str, fixture_id: int | None, settings
     await ledger.open(snapshot_id, cap, plan_sha256(plan_text))
     already = await ledger.attempted_calls(snapshot_id)
     capture: dict[str, str] = {}
-    tools, http = _tools(settings, ledger, snapshot_id, inner_transport, quota, capture)
+    tools, http = _tools(settings, ledger, snapshot_id, inner_transport, quota, capture,
+                         run_cap=min(int(cap), RUN_REQUEST_CAPS["LIVE_FULL_MATCH_SNAPSHOT"]))
     sources: dict[str, Any] = {}
     stopped: str | None = None
 
@@ -1195,6 +1273,10 @@ def main(argv: list[str] | None = None) -> int:
             if identity is None and conn.execute(
                     "SELECT pg_catalog.to_regclass('public.api_football_cert_plans') IS NOT NULL AS x").fetchone()["x"]:
                 identity = "SECOND_LEDGER_PRESENT"
+            # review #201 P1-A / P1-B: the coordinator tables are plain tables, without rule, RLS or policy
+            if identity is None and not conn.execute(COORDINATOR_TABLES_SQL,
+                                                     {"tables": list(COORDINATOR_TABLES)}).fetchone()["ok"]:
+                identity = "COORDINATOR_TABLES_TAMPERED"
     except LookupError:
         identity = "COORDINATOR_DATABASE_WRONG"
     except Exception:  # noqa: BLE001 - fixed code only, never the message or the DSN

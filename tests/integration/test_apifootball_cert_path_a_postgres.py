@@ -1557,3 +1557,296 @@ def test_p1_an_error_of_the_integrity_check_itself_refuses_fail_closed(env, monk
     monkeypatch.setattr(batch, "LEDGER_INTEGRITY_SQL", "SELECT NULL::boolean AS ok WHERE %(schema)s::text IS NOT NULL")
     sent, codes = _plan_run(env, text, 2, "camp-p1-inul-" + uuid.uuid4().hex[:6])
     assert sent == 0 and codes == ["CAMPAIGN_LEDGER_INTEGRITY_FAILED"], codes
+
+
+# ------------------------------------------------------------------ review #201 P1-A (RULE), P1-B (RLS), P2 (TOCTOU), run cap
+
+def _spent_plan(env, budget, tag):
+    text, sha = _plan_variant(env, budget, tag + "-" + uuid.uuid4().hex[:6])
+    assert _plan_run(env, text, budget, "camp-" + tag + "-a" + uuid.uuid4().hex[:6])[0] == budget
+    _counter_matches(env, sha, budget)
+    return text, sha
+
+
+def test_p1a_rule_diverting_the_insert_to_another_table_is_refused(env):
+    """Reviewer's P1-A: rrr.sink (LIKE attempts) + SECURITY DEFINER trigger setting seq = count of the plan,
+    then `CREATE RULE ... ON INSERT TO attempts DO INSTEAD INSERT INTO rrr.sink ... RETURNING sink.*`."""
+    text, sha = _spent_plan(env, 3, "p1a-div")
+    _as_owner_deliberately(
+        env, "CREATE SCHEMA rrr",
+        "CREATE TABLE rrr.sink (LIKE public.api_football_cert_campaign_attempts)",
+        "CREATE FUNCTION rrr.s() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$"
+        " BEGIN NEW.seq := (SELECT count(*) FROM public.api_football_cert_campaign_attempts a"
+        " JOIN public.api_football_cert_campaigns c USING (campaign_id) WHERE c.plan_sha256 ="
+        " (SELECT plan_sha256 FROM public.api_football_cert_campaigns WHERE campaign_id = NEW.campaign_id));"
+        " NEW.reserved_at := clock_timestamp(); RETURN NEW; END $$",
+        "CREATE TRIGGER s BEFORE INSERT ON rrr.sink FOR EACH ROW EXECUTE FUNCTION rrr.s()",
+        "GRANT USAGE ON SCHEMA rrr TO fcb_cert_runner",
+        "CREATE RULE fcbpa_divert AS ON INSERT TO public.api_football_cert_campaign_attempts DO INSTEAD "
+        "INSERT INTO rrr.sink (campaign_id, call_id) VALUES (NEW.campaign_id, NEW.call_id) RETURNING sink.*")
+    try:
+        sent, codes = _plan_run(env, text, 3, "camp-p1a-div-b" + uuid.uuid4().hex[:6])
+        assert sent == 0, codes
+        assert codes[0] == "CAMPAIGN_LEDGER_INTEGRITY_FAILED", codes
+    finally:
+        _as_owner_deliberately(env, "DROP RULE fcbpa_divert ON public.api_football_cert_campaign_attempts",
+                               "DROP SCHEMA rrr CASCADE")
+    _counter_matches(env, sha, 3)
+
+
+def test_p1a_rule_do_instead_nothing_is_refused(env):
+    text, sha = _spent_plan(env, 3, "p1a-noth")
+    _as_owner_deliberately(env, "CREATE RULE fcbpa_nothing AS ON INSERT TO public.api_football_cert_campaign_attempts "
+                                "DO INSTEAD NOTHING")
+    try:
+        sent, codes = _plan_run(env, text, 2, "camp-p1a-noth-b" + uuid.uuid4().hex[:6])
+        assert sent == 0 and codes[0] in ("CAMPAIGN_LEDGER_INTEGRITY_FAILED",), codes
+    finally:
+        _as_owner_deliberately(env, "DROP RULE fcbpa_nothing ON public.api_football_cert_campaign_attempts")
+
+
+@pytest.mark.parametrize("table", ["api_football_cert_campaign_attempts", "api_football_cert_campaigns"])
+def test_p1b_rls_hiding_previous_attempts_is_refused(env, table):
+    """Reviewer's P1-B: counter reset to 0, then RLS with a SELECT policy hiding the spent campaign."""
+    budget = 3
+    text, sha = _plan_variant(env, budget, "p1b-" + uuid.uuid4().hex[:6])
+    old = "camp-p1b-old-" + uuid.uuid4().hex[:6]
+    assert _plan_run(env, text, budget, old)[0] == budget
+    _set_counter_deliberately(env, sha, 0)
+    _as_owner_deliberately(
+        env, f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY",
+        f"CREATE POLICY fcbpa_hide ON public.{table} FOR SELECT TO fcb_cert_runner USING (campaign_id <> '{old}')",
+        f"CREATE POLICY fcbpa_ins ON public.{table} FOR INSERT TO fcb_cert_runner WITH CHECK (true)")
+    try:
+        sent, codes = _plan_run(env, text, budget, "camp-p1b-new-" + uuid.uuid4().hex[:6])
+        assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_INTEGRITY_FAILED", codes
+    finally:
+        _as_owner_deliberately(env, f"DROP POLICY fcbpa_hide ON public.{table}", f"DROP POLICY fcbpa_ins ON public.{table}",
+                               f"ALTER TABLE public.{table} DISABLE ROW LEVEL SECURITY")
+        _set_counter_deliberately(env, sha, budget)
+    _counter_matches(env, sha, budget)
+
+
+def test_p2_toctou_lock_and_trigger_swap_never_sends(env):
+    """Reviewer's P2, reproduced deterministically: INSIDE the runner's reservation transaction, after its
+    integrity check and right before its INSERT, the admin (as owner, deliberate act) swaps the budget
+    trigger to rrt.g() (row moved to a dummy campaign with seq = count of the plan) and commits. Before the
+    fix the runner held no lock on attempts: the swap went through and the request was sent. Now the
+    runner already holds ROW EXCLUSIVE on attempts: the admin's DDL cannot run (lock timeout) and the
+    genuine trigger refuses the exhausted plan; either way, never a request."""
+    text, sha = _spent_plan(env, 3, "p2-toc")
+    dummy = _approve(env, 78, "p2-dummy")
+    dummy_campaign = "camp-p2-dummy-" + uuid.uuid4().hex[:6]
+    with env.runner() as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)", (dummy_campaign, dummy))
+    hook = {"armed": True, "swap": None}
+
+    def swap():
+        try:
+            with env.admin("fcb_cert") as admin:
+                admin.execute(f"GRANT {OWNER} TO {ADMIN} WITH INHERIT FALSE, SET TRUE")
+                admin.execute(f"SET LOCAL ROLE {OWNER}")
+                admin.execute("SET LOCAL lock_timeout = '1s'")
+                admin.execute("CREATE SCHEMA rrt")
+                admin.execute(
+                    "CREATE FUNCTION rrt.g() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$"
+                    f" BEGIN NEW.campaign_id := '{dummy_campaign}'; NEW.seq := (SELECT count(*) FROM public.api_football_cert_campaign_attempts a"
+                    f" JOIN public.api_football_cert_campaigns c USING (campaign_id) WHERE c.plan_sha256 = '{sha}');"
+                    " NEW.reserved_at := clock_timestamp(); RETURN NEW; END $$")
+                admin.execute("DROP TRIGGER api_football_cert_attempt_budget ON public.api_football_cert_campaign_attempts")
+                admin.execute("CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON public.api_football_cert_campaign_attempts"
+                              " FOR EACH ROW EXECUTE FUNCTION rrt.g()")
+                admin.execute("RESET ROLE")
+                admin.execute(f"REVOKE {OWNER} FROM {ADMIN}")
+            hook["swap"] = "SWAPPED"
+        except psycopg.errors.LockNotAvailable:
+            hook["swap"] = "BLOCKED_BY_THE_RUNNER_LOCK"
+
+    class HookCursor(psycopg.Cursor):
+        def execute(self, query, params=None, **kw):
+            if hook["armed"] and "RETURNING seq" in str(query):
+                hook["armed"] = False
+                swap()  # the admin acts between the runner's check and its INSERT
+            return super().execute(query, params, **kw)
+    ledger = batch.PostgresCampaignLedger(
+        lambda: psycopg.connect(env.runner_dsn(), row_factory=dict_row, cursor_factory=HookCursor),
+        schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
+    events = _Events()
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:1]
+    try:
+        run = asyncio.run(batch.execute(plan, campaign_id="camp-p2-toc-b" + uuid.uuid4().hex[:6], settings=settings(),
+                                        ledger=ledger, inner_transport=transport, quota=_recording_quota(env, events),
+                                        plan_text=text, source_sha="x"))
+        codes = [c.get("refusal_code") or c["outcome"] for c in run["calls"]]
+    except batch.LedgerUnavailable as exc:
+        codes = [str(exc)]
+    try:
+        assert hook["swap"] is not None and sent == [], (hook, codes)  # never a request
+    finally:
+        if hook["swap"] == "SWAPPED":
+            _as_owner_deliberately(
+                env, "DROP TRIGGER api_football_cert_attempt_budget ON public.api_football_cert_campaign_attempts",
+                "CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON public.api_football_cert_campaign_attempts"
+                " FOR EACH ROW EXECUTE FUNCTION public.api_football_cert_attempt_guard()", "DROP SCHEMA rrt CASCADE")
+    assert hook["swap"] == "BLOCKED_BY_THE_RUNNER_LOCK" and codes == ["CAMPAIGN_BUDGET_EXHAUSTED"], (hook, codes)
+    _counter_matches(env, sha, 3)
+
+
+def test_p2_a_body_swap_that_fools_the_catalog_check_is_still_refused_by_the_own_row_check(env, monkeypatch):
+    """Defence in depth for the window the table locks cannot cover (CREATE OR REPLACE FUNCTION takes no
+    table lock): even with the catalog check neutralised, a guard that diverts the row is refused by the
+    post-INSERT own-row / coherence / cap checks, before COMMIT."""
+    text, sha = _spent_plan(env, 3, "p2-body")
+    dummy = _approve(env, 78, "p2-body-dummy")
+    dummy_campaign = "camp-p2-bd-" + uuid.uuid4().hex[:6]
+    with env.runner() as conn:
+        conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)", (dummy_campaign, dummy))
+    _, body = _function_body("api_football_cert_attempt_guard")
+    fake = (" BEGIN NEW.campaign_id := '" + dummy_campaign + "'; NEW.seq := (SELECT count(*) FROM public.api_football_cert_campaign_attempts a"
+            " JOIN public.api_football_cert_campaigns c USING (campaign_id) WHERE c.plan_sha256 = '" + sha + "'); RETURN NEW; END ")
+    _as_owner_deliberately(env, _replace_function("api_football_cert_attempt_guard", fake))
+    monkeypatch.setattr(batch, "LEDGER_INTEGRITY_SQL", "SELECT true AS ok WHERE %(schema)s::text IS NOT NULL")  # fooled
+    try:
+        sent, codes = _plan_run(env, text, 2, "camp-p2-body-b" + uuid.uuid4().hex[:6])
+        assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_RESERVATION_NOT_OWN", codes
+    finally:
+        monkeypatch.undo()
+        _as_owner_deliberately(env, _replace_function("api_football_cert_attempt_guard", body))
+    _counter_matches(env, sha, 3)
+
+
+def test_p2_the_runner_takes_every_lock_with_only_the_approved_privileges(env):
+    """Real SCRAM login as fcb_cert_runner, no extra grant: the ledger locks of every transaction."""
+    ledger = _ledger(env)
+    with env.runner() as conn:
+        with conn.cursor() as cur:
+            ledger._take_ledger_locks(cur)
+            locks = {r["relname"]: r["mode"] for r in cur.execute(
+                "SELECT c.relname, l.mode FROM pg_locks l JOIN pg_class c ON c.oid = l.relation "
+                "WHERE l.pid = pg_backend_pid() AND c.relname LIKE 'api_football_cert_%%' AND c.relkind = 'r'")}
+    assert locks == {"api_football_cert_plans": "AccessShareLock", "api_football_cert_campaigns": "RowExclusiveLock",
+                     "api_football_cert_campaign_attempts": "RowExclusiveLock",
+                     "api_football_cert_campaign_outcomes": "RowExclusiveLock"}, locks
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):  # a stronger mode would need a new grant
+        with env.runner() as conn:
+            conn.execute("LOCK TABLE public.api_football_cert_campaign_attempts IN SHARE ROW EXCLUSIVE MODE")
+
+
+def test_p2_ddl_waits_for_a_reservation_and_a_held_ddl_lock_is_a_fixed_lock_timeout(env):
+    """The runner's locks block structural DDL (trigger, rule, RLS) for its whole transaction; conversely a
+    DDL lock held by the owner makes the runner refuse with CAMPAIGN_LEDGER_LOCK_TIMEOUT, 0 requests."""
+    text, sha = _plan_variant(env, 78, "p2-lt-" + uuid.uuid4().hex[:6])
+    holder = env.runner()
+    with holder.cursor() as cur:
+        _ledger(env)._take_ledger_locks(cur)
+        for ddl in ("ALTER TABLE public.api_football_cert_campaign_attempts DISABLE TRIGGER api_football_cert_attempts_stamp",
+                    "CREATE RULE x AS ON INSERT TO public.api_football_cert_campaign_attempts DO INSTEAD NOTHING",
+                    "ALTER TABLE public.api_football_cert_campaign_attempts ENABLE ROW LEVEL SECURITY"):
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                with env.admin("fcb_cert") as admin:
+                    admin.execute(f"GRANT {OWNER} TO {ADMIN} WITH INHERIT FALSE, SET TRUE")
+                    admin.execute(f"SET LOCAL ROLE {OWNER}")
+                    admin.execute("SET LOCAL lock_timeout = '500ms'")
+                    admin.execute(ddl)
+    holder.rollback()
+    holder.close()
+    admin = env.admin("fcb_cert")
+    admin.execute(f"GRANT {OWNER} TO {ADMIN} WITH INHERIT FALSE, SET TRUE")
+    admin.execute(f"SET LOCAL ROLE {OWNER}")
+    admin.execute("LOCK TABLE public.api_football_cert_campaign_attempts IN SHARE ROW EXCLUSIVE MODE")
+    try:
+        sent, codes = _plan_run(env, text, 1, "camp-p2-lt-" + uuid.uuid4().hex[:6])
+        assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_LOCK_TIMEOUT", codes
+    finally:
+        admin.rollback()
+        admin.close()
+
+
+def test_ambiguous_commit_outcome_never_sends_and_is_accounted(env):
+    """The COMMIT succeeds but its acknowledgement is lost (connection error after commit): the runner
+    refuses (0 requests), the attempt stays RESERVED_UNKNOWN and counts; it is never re-sent."""
+    text, sha = _plan_variant(env, 78, "ambig-" + uuid.uuid4().hex[:6])
+    campaign = "camp-ambig-" + uuid.uuid4().hex[:6]
+
+    class LostAck(psycopg.Connection):
+        def commit(self):
+            super().commit()
+            if getattr(self, "_reserving", False):
+                raise psycopg.OperationalError("server closed the connection unexpectedly")
+
+    class Ledger(batch.PostgresCampaignLedger):
+        def _reserve(self, campaign_id, call_id):
+            keep = self._connect
+
+            def connect():
+                conn = LostAck.connect(env.runner_dsn(), row_factory=dict_row)
+                conn._reserving = True
+                return conn
+            self._connect = connect
+            try:
+                return super()._reserve(campaign_id, call_id)
+            finally:
+                self._connect = keep
+    ledger = Ledger(env.runner, schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
+    events = _Events()
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:1]
+    run = asyncio.run(batch.execute(plan, campaign_id=campaign, settings=settings(), ledger=ledger,
+                                    inner_transport=transport, quota=_recording_quota(env, events),
+                                    plan_text=text, source_sha="x"))
+    assert sent == [] and run["calls"][0]["outcome"] == "REFUSED_BEFORE_SEND", run["calls"]
+    states = asyncio.run(_ledger(env).attempt_states(campaign))
+    assert [s["state"] for s in states] == ["RESERVED_UNKNOWN"]  # committed: it counts
+    _counter_matches(env, sha, 1)
+    again = _plan_run(env, text, 1, campaign)  # same campaign, same call: never re-sent
+    assert again[0] == 0 and again[1] == ["ALREADY_ATTEMPTED_IN_CAMPAIGN_NOT_RETRIED"], again
+
+
+def test_per_run_in_memory_cap_stops_even_when_the_database_allows_more(env):
+    """Run cap independent of the database: the plan's 5 calls, a database and a pinned budget of 78,
+    an in-memory cap of 2 per run -> exactly 2 requests; the rest refused before the send."""
+    text, sha = _plan_variant(env, 78, "runcap-" + uuid.uuid4().hex[:6])
+    events = _Events()
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:5]
+    run = asyncio.run(batch.execute(plan, campaign_id="camp-runcap-" + uuid.uuid4().hex[:6], settings=settings(),
+                                    ledger=_ledger(env), inner_transport=transport, quota=_recording_quota(env, events),
+                                    plan_text=text, source_sha="x", run_cap=2))
+    assert len(sent) == 2
+    assert [c.get("refusal_code") for c in run["calls"][2:]] in (["RUN_REQUEST_CAP_REACHED"] * 3,
+                                                                  ["RUN_REQUEST_CAP_REACHED", "CIRCUIT_OPEN", "CIRCUIT_OPEN"],
+                                                                  ["RUN_REQUEST_CAP_REACHED", "RUN_REQUEST_CAP_REACHED", "CIRCUIT_OPEN"])
+    _counter_matches(env, sha, 2)
+
+
+@pytest.mark.parametrize("tamper,undo", [
+    ("CREATE RULE fcbpa_q AS ON INSERT TO public.api_football_quota_leases DO INSTEAD NOTHING",
+     "DROP RULE fcbpa_q ON public.api_football_quota_leases"),
+    ("ALTER TABLE public.api_football_quota_counters ENABLE ROW LEVEL SECURITY",
+     "ALTER TABLE public.api_football_quota_counters DISABLE ROW LEVEL SECURITY"),
+    ("CREATE POLICY fcbpa_p ON public.api_football_quota_attempts USING (true)",
+     "DROP POLICY fcbpa_p ON public.api_football_quota_attempts"),
+])
+def test_p1ab_coordinator_tables_with_a_rule_rls_or_policy_are_refused(env, monkeypatch, capsys, tamper, undo):
+    """The coordinator tables (owned by the administrator in defaultdb) are checked on the coordinator
+    connection before any lease: a rule, RLS or a policy there -> COORDINATOR_TABLES_TAMPERED, 0 requests."""
+    import httpx
+    with env.admin() as conn:
+        conn.execute(tamper)
+    try:
+        monkeypatch.setenv("DATABASE_URL", env.runner_dsn("defaultdb"))
+        monkeypatch.setenv("APIFOOTBALL_ENABLED", "true")
+        monkeypatch.setenv("APIFOOTBALL_LIVE_AUTHORIZED", "true")
+        monkeypatch.setenv("APIFOOTBALL_API_KEY", KEY)
+        hits = []
+        monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda *a, **k: httpx.MockTransport(lambda r: hits.append(r)))
+        assert batch.main(["--execute", "--authorize-live-campaign", "--campaign-id", "camp-coord-00001",
+                           "--out", "/dev/shm/pgpa_tmp/out-coord"]) == 2
+        assert "CAMPAIGN_REFUSED COORDINATOR_TABLES_TAMPERED" in capsys.readouterr().out and hits == []
+    finally:
+        with env.admin() as conn:
+            conn.execute(undo)

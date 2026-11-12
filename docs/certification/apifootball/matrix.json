@@ -269,7 +269,7 @@
    "mcp_schema_type": "",
    "notes": "must not be provoked live (invalid key, quota burn, or not reproducible on demand); covered through httpx.MockTransport",
    "offline_status": "COVERED",
-   "offline_tests": "tests/test_apifootball_cert_batch1.py::test_each_answered_attempt_records_its_outcome_and_transport_errors_are_explicit;tests/test_apifootball_cert_batch1.py::test_timeouts_and_ambiguous_replies_are_counted;tests/test_apifootball_error_codes.py::test_client_layer_failures_keep_their_own_fixed_code;tests/test_apifootball_live_snapshot.py::test_timeout_is_counted_and_the_snapshot_is_incomplete;tests/test_mcp_e2e_apifootball_error_codes.py::test_stop_reason_for_each_fixed_code",
+   "offline_tests": "tests/test_apifootball_cert_batch1.py::test_each_answered_attempt_records_its_outcome_and_transport_errors_are_explicit;tests/test_apifootball_cert_batch1.py::test_per_run_cap_counts_every_reserved_attempt_including_ambiguous_ones;tests/test_apifootball_cert_batch1.py::test_timeouts_and_ambiguous_replies_are_counted;tests/test_apifootball_error_codes.py::test_client_layer_failures_keep_their_own_fixed_code;tests/test_apifootball_live_snapshot.py::test_timeout_is_counted_and_the_snapshot_is_incomplete;tests/test_mcp_e2e_apifootball_error_codes.py::test_stop_reason_for_each_fixed_code",
    "reuse_proof": "",
    "reuse_reason": "",
    "reuse_status": "",
