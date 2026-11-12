@@ -19,9 +19,12 @@
 --              and no bridge role can reach (MEMBER) another bridge role or the session;
 --   ownership  every relation, routine and type in public is owned by fcb_migrator;
 --   tables     the only non-owner privileges in public are the runtime allowlist of fcb_app
+--              and (PATH A2) the exact quota-coordinator grant of a plain fcb_cert_runner;
 --              (finalize_bridge_privileges.sql); no column privilege; no PUBLIC or signer grant;
+--   grants     (G2) no non-owner privilege is held WITH GRANT OPTION, even an allowed one;
 --   routines   no non-owner EXECUTE (PUBLIC revoked);
---   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, nothing for PUBLIC/fcb_signer
+--   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, (PATH A2) a plain fcb_cert_runner
+--              USAGE, nothing for PUBLIC/fcb_signer
 --              (grants held by the schema owner or the session identity are not judged);
 --   database   no bridge role may CREATE (schemas) in the database;
 --   settings   no per-role setting (ALTER ROLE ... SET) for any bridge role;
@@ -51,7 +54,7 @@ owner_oid AS (SELECT CASE WHEN (SELECT phase.two FROM phase) THEN (SELECT mig.oi
 ns AS (SELECT n.oid, n.nspowner, n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name),
 rels AS (SELECT c.oid, c.relname, c.relkind, c.relowner, c.relacl FROM pg_catalog.pg_class c JOIN ns ON ns.oid OPERATOR(pg_catalog.=) c.relnamespace),
 rel_grants AS (
-    SELECT c.relname::pg_catalog.text AS relname, a.grantee, a.privilege_type::pg_catalog.text AS priv
+    SELECT c.relname::pg_catalog.text AS relname, a.grantee, a.privilege_type::pg_catalog.text AS priv, a.is_grantable AS grantable
     FROM rels c, LATERAL pg_catalog.aclexplode(COALESCE(c.relacl, pg_catalog.acldefault(
         CASE WHEN c.relkind OPERATOR(pg_catalog.=) 'S'::pg_catalog."char" THEN 's'::pg_catalog."char" ELSE 'r'::pg_catalog."char" END,
         c.relowner))) a
@@ -101,7 +104,7 @@ expected_column_grants(relname, attname, priv, since) AS (VALUES
 ),
 column_grants AS (
     SELECT c.relname::pg_catalog.text AS relname, a.attname::pg_catalog.text AS attname, x.grantee,
-           x.privilege_type::pg_catalog.text AS priv
+           x.privilege_type::pg_catalog.text AS priv, x.is_grantable AS grantable
     FROM rels c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid,
          LATERAL pg_catalog.aclexplode(a.attacl) x
     WHERE a.attacl IS NOT NULL
@@ -122,12 +125,44 @@ runtime_tables(relname, privs) AS (
     ('sxbet_rate_cooldowns', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
     ) AS base(relname, privs)
 ),
+-- PATH A2 (owner GO): the dedicated certification runner fcb_cert_runner, when it exists as a PLAIN
+-- role (no attribute, member of nothing), holds EXACTLY the shared quota coordinator grant of
+-- sql/aiven/apifootball_cert_path_a_roles.sql and nothing else; any other privilege of it, or the
+-- same privileges held by a non-plain fcb_cert_runner, stays unexpected.
+cert_runner AS (
+    SELECT r.oid FROM pg_catalog.pg_roles r
+    WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_cert_runner'::pg_catalog.name
+      AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolbypassrls
+      AND NOT r.rolreplication AND NOT r.rolinherit
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid)
+      -- review P3 F3: no role may act as / inherit from the runner; only the automatic bootstrap
+      -- ADMIN-only grant to the creating administrator (admin, no inherit, no set) may exist
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid
+                      AND NOT (m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+                               AND m.grantor OPERATOR(pg_catalog.=) 10::pg_catalog.oid))
+      AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid)
+          OPERATOR(pg_catalog.<=) 1::pg_catalog.int8
+),
+cert_runner_grants(relname, priv) AS (VALUES
+    ('api_football_quota_counters'::pg_catalog.text, 'SELECT'::pg_catalog.text),
+    ('api_football_quota_counters', 'INSERT'),
+    ('api_football_quota_leases', 'SELECT'),
+    ('api_football_quota_leases', 'INSERT'),
+    ('api_football_quota_leases', 'DELETE'),
+    ('api_football_quota_attempts', 'SELECT'),
+    ('api_football_quota_attempts', 'INSERT'),
+    ('api_football_quota_attempts', 'DELETE')
+),
+cert_runner_column_grants(relname, attname, priv) AS (VALUES
+    ('api_football_quota_counters'::pg_catalog.text, 'used'::pg_catalog.text, 'UPDATE'::pg_catalog.text)
+),
 expected_grants AS (
     SELECT t.relname, (SELECT app.oid FROM app) AS grantee, p.priv
     FROM runtime_tables t, LATERAL pg_catalog.unnest(t.privs) AS p(priv)
+    UNION ALL SELECT g.relname, w.oid, g.priv FROM cert_runner_grants g, cert_runner w
 ),
 schema_grants AS (
-    SELECT a.grantee, a.privilege_type::pg_catalog.text AS priv
+    SELECT a.grantee, a.privilege_type::pg_catalog.text AS priv, a.is_grantable AS grantable
     FROM ns, LATERAL pg_catalog.aclexplode(COALESCE(ns.nspacl, pg_catalog.acldefault('n'::pg_catalog."char", ns.nspowner))) a
     WHERE a.grantee OPERATOR(pg_catalog.<>) ns.nspowner AND a.grantee OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess)
 ),
@@ -135,6 +170,9 @@ expected_schema_grants(grantee, priv) AS (
     SELECT (SELECT app.oid FROM app), 'USAGE'::pg_catalog.text
     UNION ALL SELECT (SELECT mig.oid FROM mig), 'USAGE'::pg_catalog.text WHERE (SELECT phase.two FROM phase)
     UNION ALL SELECT (SELECT mig.oid FROM mig), 'CREATE'::pg_catalog.text WHERE (SELECT phase.two FROM phase)
+    -- PATH A2 post-WP-009: a plain fcb_cert_runner holds exactly one explicit USAGE on public (phase 1
+    -- revoked PUBLIC's); required while it exists, like its coordinator grant (no grant option: G2)
+    UNION ALL SELECT w.oid, 'USAGE'::pg_catalog.text FROM cert_runner w
 ),
 inventory AS (
     SELECT m.roleid, m.member, m.admin_option, m.inherit_option, m.set_option, m.grantor
@@ -293,12 +331,24 @@ checks(code, bad) AS (
         EXCEPT SELECT g.relname, g.grantee, g.priv FROM rel_grants g))
     UNION ALL SELECT 'column_grant', (EXISTS (
         SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g
-        EXCEPT SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
-        WHERE e.since OPERATOR(pg_catalog.<=) b.v)
+        EXCEPT (SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
+        WHERE e.since OPERATOR(pg_catalog.<=) b.v
+        UNION ALL SELECT g.relname, g.attname, w.oid, g.priv FROM cert_runner_column_grants g, cert_runner w))
         OR EXISTS (
         SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
         WHERE e.since OPERATOR(pg_catalog.<=) b.v
+        UNION ALL SELECT g.relname, g.attname, w.oid, g.priv FROM cert_runner_column_grants g, cert_runner w
         EXCEPT SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g))
+    -- G2 (owner Q3): no non-owner privilege WITH GRANT OPTION, even on a privilege the model allows
+    -- (relations, columns, schema public, and any database ACL of a bridge or certification role).
+    UNION ALL SELECT 'grant_option', (EXISTS (SELECT 1 FROM rel_grants g WHERE g.grantable)
+        OR EXISTS (SELECT 1 FROM column_grants g WHERE g.grantable)
+        OR EXISTS (SELECT 1 FROM schema_grants g WHERE g.grantable)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_database d, LATERAL pg_catalog.aclexplode(d.datacl) a
+            JOIN pg_catalog.pg_roles r ON r.oid OPERATOR(pg_catalog.=) a.grantee
+            WHERE a.is_grantable AND a.grantee OPERATOR(pg_catalog.<>) d.datdba
+              AND r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer', 'fcb_cert_owner',
+                                                              'fcb_cert_runner']::pg_catalog.name[])))
     UNION ALL SELECT 'bridge_state', ((SELECT b.v FROM bridge_state b) OPERATOR(pg_catalog.=) 0)
     UNION ALL SELECT 'routine_grant', (EXISTS (
         SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace,

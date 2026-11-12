@@ -28,7 +28,9 @@ Subcommands (secrets are always read from the environment, never from argv):
                          (python -I, psycopg from scripts/fcb_db_roles_requirements.txt) log in as
                          fcb_app (both phases), as fcb_migrator (phase 2; phase 1 proves its login
                          is refused) and, in phase 2, prove the administrator is denied on a bridge
-                         table; every probe is rolled back
+                         table; for fcb_app also its EFFECTIVE powers (G1: SET ROLE, membership,
+                         GRANT/ALTER ROLE without effect, ownership, grant options, CREATE, CONNECT
+                         to fcb_cert); every probe is rolled back; any finding fails closed
 """
 from __future__ import annotations
 
@@ -127,8 +129,6 @@ def scram_verifier(password: str, salt: bytes | None = None, iterations: int = S
 
 
 _STRUCTURE_REPLACEMENTS = (
-    ("' acl='::pg_catalog.text\n        OPERATOR(pg_catalog.||) COALESCE(c.relacl::pg_catalog.text, '-'::pg_catalog.text)",
-     "' acl=*'::pg_catalog.text"),
     ("' own='::pg_catalog.text\n        OPERATOR(pg_catalog.||) (c.relowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))::pg_catalog.text",
      "' own=*'::pg_catalog.text"),
     ("' acl='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(p.proacl::pg_catalog.text, '-'::pg_catalog.text)",
@@ -146,8 +146,17 @@ STRUCTURE_HEADER = (
 )
 
 
+# PATH A2: the relation ACL field of fingerprint_bridge_schema.sql renders '-' for no ACL or for exactly
+# the fcb_cert_runner coordinator grant; the structure fingerprint masks the whole field, as before.
+_STRUCTURE_REL_ACL = re.compile(
+    r"' acl='::pg_catalog\.text\n        OPERATOR\(pg_catalog\.\|\|\) CASE WHEN \(c\.relacl IS NULL OR [^\n]*"
+    r" THEN '-'::pg_catalog\.text ELSE c\.relacl::pg_catalog\.text END")
+
+
 def structure_fingerprint_sql(full: str) -> str:
-    out = full
+    out, n = _STRUCTURE_REL_ACL.subn(lambda _m: "' acl=*'::pg_catalog.text", full)
+    if n != 1:
+        raise ValueError("fingerprint_bridge_schema.sql changed; update the structure transform")
     for old, new in _STRUCTURE_REPLACEMENTS:
         if out.count(old) != 1:
             raise ValueError("fingerprint_bridge_schema.sql changed; update the structure transform")
@@ -207,6 +216,205 @@ def _denied(conn, statement: str) -> bool:
     return False
 
 
+# G1 (owner Q3, prerequisite of phase 2): the EFFECTIVE powers of the real fcb_app credential, proved
+# with the same password Render uses (one SCRAM verifier per role on the server). Every write probe
+# runs in a transaction that is always rolled back; a GRANT without grant option only WARNs, so the
+# probe compares a catalog snapshot taken INSIDE that transaction with the one taken before it.
+# Self-scoped catalog entries a plain role may always create for itself (ALTER ROLE fcb_app SET ...,
+# ALTER DEFAULT PRIVILEGES for its own future objects) grant nothing; their PRESENCE is refused here
+# (role_settings, default_acl) and by verify_bridge_roles.sql (role_settings, default_acl_grant).
+PRIVILEGED_ROLE_NAMES = ("fcb_migrator", "fcb_signer", "fcb_cert_owner", "fcb_cert_runner")
+CERT_DATABASE = "fcb_cert"
+# Catalog state a GRANT / ALTER ROLE could change (no row content, no secret: pg_roles masks passwords).
+# ACLs are compared as their exploded entries with NULL read as the built-in default: a GRANT that
+# grants nothing may still materialize a NULL ACL into its (equivalent) explicit default.
+_EFFECT_SNAPSHOT_SQL = """
+SELECT pg_catalog.md5(pg_catalog.concat_ws('|',
+  (SELECT pg_catalog.string_agg(c.oid::pg_catalog.text || ':' || c.relowner::pg_catalog.text || ':' || COALESCE((SELECT pg_catalog.string_agg(e.grantor::pg_catalog.text || '/' || e.grantee::pg_catalog.text || '/' || e.privilege_type || '/' || e.is_grantable::pg_catalog.text, ';' ORDER BY e.grantor, e.grantee, e.privilege_type) FROM pg_catalog.aclexplode(COALESCE(c.relacl, pg_catalog.acldefault(CASE WHEN c.relkind OPERATOR(pg_catalog.=) 'S'::pg_catalog."char" THEN 's'::pg_catalog."char" ELSE 'r'::pg_catalog."char" END, c.relowner))) e), '-'), ',' ORDER BY c.oid)
+     FROM pg_catalog.pg_class c),
+  (SELECT pg_catalog.string_agg(a.attrelid::pg_catalog.text || '.' || a.attnum::pg_catalog.text || ':' || a.attacl::pg_catalog.text, ',' ORDER BY a.attrelid, a.attnum)
+     FROM pg_catalog.pg_attribute a WHERE a.attacl IS NOT NULL),
+  (SELECT pg_catalog.string_agg(n.oid::pg_catalog.text || ':' || n.nspowner::pg_catalog.text || ':' || COALESCE((SELECT pg_catalog.string_agg(e.grantor::pg_catalog.text || '/' || e.grantee::pg_catalog.text || '/' || e.privilege_type || '/' || e.is_grantable::pg_catalog.text, ';' ORDER BY e.grantor, e.grantee, e.privilege_type) FROM pg_catalog.aclexplode(COALESCE(n.nspacl, pg_catalog.acldefault('n'::pg_catalog."char", n.nspowner))) e), '-'), ',' ORDER BY n.oid)
+     FROM pg_catalog.pg_namespace n),
+  (SELECT pg_catalog.string_agg(p.oid::pg_catalog.text || ':' || p.proowner::pg_catalog.text || ':' || COALESCE((SELECT pg_catalog.string_agg(e.grantor::pg_catalog.text || '/' || e.grantee::pg_catalog.text || '/' || e.privilege_type || '/' || e.is_grantable::pg_catalog.text, ';' ORDER BY e.grantor, e.grantee, e.privilege_type) FROM pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f'::pg_catalog."char", p.proowner))) e), '-'), ',' ORDER BY p.oid)
+     FROM pg_catalog.pg_proc p WHERE p.pronamespace OPERATOR(pg_catalog.<>) 'pg_catalog'::pg_catalog.regnamespace),
+  (SELECT pg_catalog.string_agg(d.oid::pg_catalog.text || ':' || d.datdba::pg_catalog.text || ':' || COALESCE((SELECT pg_catalog.string_agg(e.grantor::pg_catalog.text || '/' || e.grantee::pg_catalog.text || '/' || e.privilege_type || '/' || e.is_grantable::pg_catalog.text, ';' ORDER BY e.grantor, e.grantee, e.privilege_type) FROM pg_catalog.aclexplode(COALESCE(d.datacl, pg_catalog.acldefault('d'::pg_catalog."char", d.datdba))) e), '-'), ',' ORDER BY d.oid)
+     FROM pg_catalog.pg_database d),
+  (SELECT pg_catalog.string_agg(m.roleid::pg_catalog.text || '>' || m.member::pg_catalog.text || ':' || m.admin_option::pg_catalog.text
+          || m.inherit_option::pg_catalog.text || m.set_option::pg_catalog.text, ',' ORDER BY m.roleid, m.member, m.grantor)
+     FROM pg_catalog.pg_auth_members m),
+  (SELECT pg_catalog.string_agg(r.oid::pg_catalog.text || ':' || r.rolsuper::pg_catalog.text || r.rolinherit::pg_catalog.text
+          || r.rolcreaterole::pg_catalog.text || r.rolcreatedb::pg_catalog.text || r.rolcanlogin::pg_catalog.text
+          || r.rolreplication::pg_catalog.text || r.rolbypassrls::pg_catalog.text || ':' || r.rolconnlimit::pg_catalog.text
+          || ':' || COALESCE(r.rolvaliduntil::pg_catalog.text, '-'), ',' ORDER BY r.oid)
+     FROM pg_catalog.pg_roles r),
+  (SELECT pg_catalog.string_agg(s.setdatabase::pg_catalog.text || '/' || s.setrole::pg_catalog.text || ':' || s.setconfig::pg_catalog.text, ','
+          ORDER BY s.setdatabase, s.setrole) FROM pg_catalog.pg_db_role_setting s),
+  (SELECT pg_catalog.string_agg(x.oid::pg_catalog.text || ':' || COALESCE(x.defaclacl::pg_catalog.text, '-'), ',' ORDER BY x.oid)
+     FROM pg_catalog.pg_default_acl x),
+  (SELECT pg_catalog.string_agg(t.oid::pg_catalog.text || ':' || t.typacl::pg_catalog.text, ',' ORDER BY t.oid)
+     FROM pg_catalog.pg_type t WHERE t.typacl IS NOT NULL)))"""
+# Ownership, grant options, membership and CREATE, from the catalog, for CURRENT_USER (fcb_app).
+_EFFECTIVE_STATE_SQL = """
+WITH me AS (SELECT r.oid, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, r.rolbypassrls
+            FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER)
+SELECT
+  (SELECT me.rolsuper OR me.rolcreaterole OR me.rolcreatedb OR me.rolreplication OR me.rolbypassrls FROM me) AS attributes,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) (SELECT me.oid FROM me)) AS direct_members,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_roles r WHERE r.oid OPERATOR(pg_catalog.<>) (SELECT me.oid FROM me)
+     AND (pg_catalog.pg_has_role(CURRENT_USER, r.oid, 'MEMBER') OR pg_catalog.pg_has_role(CURRENT_USER, r.oid, 'USAGE')
+          OR pg_catalog.pg_has_role(CURRENT_USER, r.oid, 'SET'))) AS reachable_roles,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_shdepend d WHERE d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_authid'::pg_catalog.regclass
+     AND d.refobjid OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND d.deptype OPERATOR(pg_catalog.=) 'o'::pg_catalog."char")
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class c WHERE c.relowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_proc p WHERE p.proowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_namespace n WHERE n.nspowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_type t WHERE t.typowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_database d WHERE d.datdba OPERATOR(pg_catalog.=) (SELECT me.oid FROM me)) AS owned,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class c, LATERAL pg_catalog.aclexplode(c.relacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable)
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_attribute a, LATERAL pg_catalog.aclexplode(a.attacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable)
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable)
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_proc p, LATERAL pg_catalog.aclexplode(p.proacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable)
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_database d, LATERAL pg_catalog.aclexplode(d.datacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable)
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_type t, LATERAL pg_catalog.aclexplode(t.typacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable)
+  + (SELECT pg_catalog.count(*) FROM pg_catalog.pg_default_acl t, LATERAL pg_catalog.aclexplode(t.defaclacl) x
+     WHERE x.grantee OPERATOR(pg_catalog.=) (SELECT me.oid FROM me) AND x.is_grantable) AS grant_options,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_namespace n WHERE pg_catalog.has_schema_privilege(n.oid, 'CREATE')) AS create_schemas,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_database d WHERE pg_catalog.has_database_privilege(d.oid, 'CREATE')) AS create_databases,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_db_role_setting s WHERE s.setrole OPERATOR(pg_catalog.=) (SELECT me.oid FROM me)) AS role_settings,
+  (SELECT pg_catalog.count(*) FROM pg_catalog.pg_default_acl x WHERE x.defaclrole OPERATOR(pg_catalog.=) (SELECT me.oid FROM me)) AS default_acls,
+  EXISTS (SELECT 1 FROM pg_catalog.pg_database d WHERE d.datname OPERATOR(pg_catalog.=) %(cert)s) AS cert_exists,
+  COALESCE((SELECT pg_catalog.has_database_privilege(d.oid, 'CONNECT') FROM pg_catalog.pg_database d
+            WHERE d.datname OPERATOR(pg_catalog.=) %(cert)s), false) AS cert_connect"""
+# Privileged targets: the bridge/cert roles, the administrative login (from the DSN, never printed),
+# every role with an attribute above a plain role, and every owner of a database or of a relation in
+# public. Predefined pg_* roles are covered by the membership/reachability count (it must be 0).
+_TARGETS_SQL = """
+SELECT r.rolname::pg_catalog.text FROM pg_catalog.pg_roles r
+WHERE r.rolname OPERATOR(pg_catalog.<>) CURRENT_USER AND r.rolname::pg_catalog.text OPERATOR(pg_catalog.!~) '^pg_'::pg_catalog.text
+  AND (r.rolname OPERATOR(pg_catalog.=) ANY (%(names)s::pg_catalog.name[])
+       OR r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls
+       OR r.oid IN (SELECT d.datdba FROM pg_catalog.pg_database d)
+       OR r.oid IN (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.relnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace))
+ORDER BY 1"""
+
+
+def _probe_effect(conn, statement, snapshot_sql: str = _EFFECT_SNAPSHOT_SQL) -> str:
+    """'denied' (refused for lack of privilege), 'no_effect' (accepted, catalog unchanged INSIDE the
+    transaction) or 'EFFECT'. Always rolled back; a lock wait is bounded (an error = not 'denied')."""
+    import psycopg
+
+    before = conn.execute(snapshot_sql).fetchone()[0]
+    after = None
+    try:
+        with conn.transaction():
+            conn.execute("SET LOCAL lock_timeout = '5s'")
+            conn.execute(statement)
+            after = conn.execute(snapshot_sql).fetchone()[0]
+            raise psycopg.Rollback()
+    except (psycopg.errors.InsufficientPrivilege, psycopg.errors.InvalidGrantOperation):
+        return "denied"
+    except psycopg.Error:
+        return "ERROR"
+    return "no_effect" if after == before else "EFFECT"
+
+
+def _cert_connect_refused(env) -> bool:
+    """A REAL login of fcb_app to the ledger database must be refused for lack of CONNECT."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    params = conninfo_to_dict(env[URL_VAR])
+    params.update(user="fcb_app", password=env[PASSWORD_VARS["fcb_app"]], dbname=CERT_DATABASE)
+    params.setdefault("connect_timeout", "15")
+    try:
+        psycopg.connect(**params).close()
+    except psycopg.OperationalError as exc:
+        return "permission denied for database" in str(exc)
+    return False
+
+
+def fcb_app_effective(conn, env) -> tuple[bool, str]:
+    """G1: what the real fcb_app credential can EFFECTIVELY do. Fail-closed: any probe that is not
+    refused (or, for a GRANT, provably without effect) and any catalog finding makes it False."""
+    from psycopg.sql import SQL, Identifier
+
+    try:
+        admin = unquote(urlsplit(env.get(URL_VAR, "")).username or "")
+    except ValueError:
+        admin = ""
+    names = [*PRIVILEGED_ROLE_NAMES, *([admin] if admin else [])]
+    targets = [r[0] for r in conn.execute(_TARGETS_SQL, {"names": names}).fetchall()]
+    database = conn.execute("SELECT pg_catalog.current_database()::pg_catalog.text").fetchone()[0]
+    cert_db = conn.execute("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_database d WHERE d.datname OPERATOR(pg_catalog.=) %s)",
+                           (CERT_DATABASE,)).fetchone()[0]
+    me = Identifier("fcb_app")
+    counts = {"set_role": [0, 0], "alter_role": [0, 0], "grant": [0, 0]}
+    bad = []
+
+    def probe(kind, stmt, accepted):
+        counts[kind][1] += 1
+        result = _probe_effect(conn, stmt)
+        if result in accepted:
+            counts[kind][0] += 1
+        else:
+            bad.append(kind)
+
+    for target in targets:
+        t = Identifier(target)
+        for stmt in (SQL("SET ROLE {}").format(t), SQL("SET SESSION AUTHORIZATION {}").format(t)):
+            probe("set_role", stmt, ("denied",))
+        for stmt in (SQL("ALTER ROLE {} PASSWORD NULL").format(t), SQL("ALTER ROLE {} NOLOGIN").format(t),
+                     SQL("ALTER ROLE {} SET search_path = pg_temp").format(t)):
+            probe("alter_role", stmt, ("denied",))
+        for stmt in (SQL("GRANT {} TO {}").format(t, me), SQL("GRANT {} TO {} WITH INHERIT TRUE, SET TRUE").format(t, me),
+                     SQL("GRANT {} TO {}").format(me, t)):
+            probe("grant", stmt, ("denied", "no_effect"))
+    for attribute in ("SUPERUSER", "CREATEROLE", "CREATEDB", "REPLICATION", "BYPASSRLS"):
+        probe("alter_role", SQL("ALTER ROLE {} {}").format(me, SQL(attribute)), ("denied",))
+    db = Identifier(database)
+    for stmt in (SQL("GRANT SELECT ON ALL TABLES IN SCHEMA public TO PUBLIC"),
+                 SQL("GRANT ALL ON ALL TABLES IN SCHEMA public TO {}").format(me),
+                 SQL("GRANT SELECT ON TABLE public.schema_migrations TO {} WITH GRANT OPTION").format(me),
+                 SQL("GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC"),
+                 SQL("GRANT CREATE ON SCHEMA public TO {}").format(me),
+                 SQL("GRANT CREATE, CONNECT, TEMPORARY ON DATABASE {} TO {}").format(db, me),
+                 SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {}").format(me),
+                 SQL("ALTER TABLE public.schema_migrations OWNER TO {}").format(me),
+                 SQL("ALTER SCHEMA public OWNER TO {}").format(me),
+                 SQL("ALTER DATABASE {} OWNER TO {}").format(db, me),
+                 *((SQL("GRANT CONNECT ON DATABASE {} TO {}").format(Identifier(CERT_DATABASE), me),) if cert_db else ())):
+        probe("grant", stmt, ("denied", "no_effect"))
+    (attributes, direct, reachable, owned, grant_options, create_schemas, create_databases,
+     role_settings, default_acls, cert_exists, cert_connect) = conn.execute(_EFFECTIVE_STATE_SQL, {"cert": CERT_DATABASE}).fetchone()
+    for name, value in (("attributes", attributes), ("member_of", direct), ("reachable_roles", reachable),
+                        ("owns", owned), ("grant_option", grant_options), ("create_schema", create_schemas),
+                        ("create_database", create_databases), ("role_settings", role_settings),
+                        ("default_acl", default_acls)):
+        if value:
+            bad.append(name)
+    if cert_exists:
+        cert = "refused" if not cert_connect and _cert_connect_refused(env) else "REACHABLE"
+        if cert != "refused":
+            bad.append("fcb_cert_connect")
+    else:
+        cert = "absent"
+    line = (f"login fcb_app effective: targets={len(targets)} "
+            f"set_role_refused={counts['set_role'][0]}/{counts['set_role'][1]} "
+            f"alter_role_refused={counts['alter_role'][0]}/{counts['alter_role'][1]} "
+            f"grant_without_effect={counts['grant'][0]}/{counts['grant'][1]} "
+            f"attributes={bool(attributes)} member_of={direct} reachable_roles={reachable} owns={owned} "
+            f"grant_option={grant_options} create_schema={create_schemas} create_database={create_databases} "
+            f"role_settings={role_settings} default_acl={default_acls} fcb_cert={cert}")
+    return (not bad and len(targets) >= 1), line
+
+
 def _repo_on_path() -> None:
     # Runs under `python -I` (no PYTHONPATH, no user site, no script dir on sys.path): the
     # repository root is added explicitly, nothing else.
@@ -243,15 +451,16 @@ def _check_role(role: str, env, require_tls: bool) -> str:
             legacy_denied = _denied(conn, "SELECT 1 FROM public.model_snapshots LIMIT 0")
             # WP-009 compatibility: one of the admitted bridge states (the exact rows, checksums,
             # catalog and structure of that state are proved by the workflow before this check)
-            ok = readiness == "READY" and create_denied and legacy_denied and migrations in BRIDGE_STATES
+            effective_ok, effective = fcb_app_effective(conn, env)
+            ok = readiness == "READY" and create_denied and legacy_denied and migrations in BRIDGE_STATES and effective_ok
             line = (f"login {role}: tls={row[1]} schema_migrations_rows={migrations} readiness={readiness} "
-                    f"create_denied={create_denied} legacy_read_denied={legacy_denied}")
+                    f"create_denied={create_denied} legacy_read_denied={legacy_denied}\n{effective}")
         else:
             # The migrator owns the bridge: CREATE succeeds, but inside a rolled-back transaction.
             ok = migrations in BRIDGE_STATES and not create_denied
             line = f"login {role}: tls={row[1]} schema_migrations_rows={migrations} can_create={not create_denied}"
     if not ok:
-        raise RuntimeError("FCB_LOGIN_MODEL_MISMATCH " + line)
+        raise RuntimeError("FCB_LOGIN_MODEL_MISMATCH " + line.replace("\n", " | "))
     return line
 
 

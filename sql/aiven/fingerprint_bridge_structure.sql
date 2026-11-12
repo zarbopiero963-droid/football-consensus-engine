@@ -4,6 +4,7 @@
 -- (ownership to fcb_migrator, runtime allowlist). Column ACLs, columns, defaults, constraints,
 -- indexes, triggers, rules, policies, functions' bodies and types are all still covered: equal
 -- before and after the apply proves the bridge structure is unchanged. Read-only.
+-- PATH A2 (owner GO): the ONLY accepted ACL besides none is the fcb_cert_runner coordinator grant.
 -- FCB-WP-005: read-only catalog fingerprint of the schema public after the restore.
 -- One line per object property, schema name stripped, sorted; md5 of the whole text is
 -- compared inside the restore transaction with the value pinned in the workflow (PG18),
@@ -38,7 +39,7 @@ lines(x) AS (
         OPERATOR(pg_catalog.||) ' nn='::pg_catalog.text OPERATOR(pg_catalog.||) a.attnotnull::pg_catalog.text
         OPERATOR(pg_catalog.||) ' def='::pg_catalog.text
         OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_expr(d.adbin, d.adrelid), '-'::pg_catalog.text)
-        OPERATOR(pg_catalog.||) ' acl='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(a.attacl::pg_catalog.text, '-'::pg_catalog.text)
+        OPERATOR(pg_catalog.||) ' acl='::pg_catalog.text OPERATOR(pg_catalog.||) CASE WHEN (a.attacl IS NULL OR (c.relname::pg_catalog.text OPERATOR(pg_catalog.=) 'api_football_quota_counters'::pg_catalog.text AND a.attname OPERATOR(pg_catalog.=) 'used'::pg_catalog.name AND (SELECT pg_catalog.string_agg(z.e, ','::pg_catalog.text ORDER BY z.e) FROM (SELECT x.grantor::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.grantee::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.privilege_type::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.is_grantable::pg_catalog.text AS e FROM pg_catalog.aclexplode(a.attacl) x) z) OPERATOR(pg_catalog.=) (SELECT (SELECT o.relowner FROM pg_catalog.pg_class o WHERE o.oid OPERATOR(pg_catalog.=) a.attrelid)::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) w.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/UPDATE/false'::pg_catalog.text FROM (SELECT r.oid AS oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_cert_runner'::pg_catalog.name AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolbypassrls AND NOT r.rolreplication AND NOT r.rolinherit AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid AND NOT (m.admin_option AND NOT m.inherit_option AND NOT m.set_option AND m.grantor OPERATOR(pg_catalog.=) 10::pg_catalog.oid)) AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid) OPERATOR(pg_catalog.<=) 1::pg_catalog.int8) w))) THEN '-'::pg_catalog.text ELSE a.attacl::pg_catalog.text END
         OPERATOR(pg_catalog.||) ' id='::pg_catalog.text OPERATOR(pg_catalog.||) a.attidentity::pg_catalog.text
         OPERATOR(pg_catalog.||) ' gen='::pg_catalog.text OPERATOR(pg_catalog.||) a.attgenerated::pg_catalog.text
     FROM c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid

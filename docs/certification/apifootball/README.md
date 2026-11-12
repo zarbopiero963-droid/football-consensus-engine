@@ -343,3 +343,48 @@ Fuori scope: raccolta continuativa delle quote, storico, calcolo del drop.
 
 - **Lunghezza minima di `search`.** Lo snapshot indica 3 caratteri per `countries`, `bets`, `bookmakers`, `coaches` e `venues`; il contratto ne ammette 1. La chiamata `C08` del lotto serve a decidere.
 - **Tipo di `odds/bets.id`.** La documentazione lo dà come `string`, il contratto come `integer`.
+
+## PATH A2: ledger nel database dedicato `fcb_cert` (owner GO, PR #201)
+
+Il ledger è la 0010 byte per byte nel database `fcb_cert` dello stesso servizio Aiven. Database e oggetti appartengono a `fcb_cert_owner` (NOLOGIN). Il runner `fcb_cert_runner` ha SELECT e INSERT di colonna sul ledger; su `defaultdb` ha solo i 9 privilegi approvati del coordinatore. I workflow legacy 0010 e plan-approve sono disabilitati (`LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2`); installazione e approvazione passano dai workflow `fcb-aiven-apifootball-cert-a2-*`.
+
+**Controllo contatore = tentativi (review #201, opzione A).** Nella stessa transazione della prenotazione, dopo l'INSERT e prima del COMMIT, il runner esige che il numero dei tentativi del piano, i seq distinti e il seq massimo siano tutti uguali al `seq` appena assegnato. Il `seq` è il valore del contatore dopo l'incremento del trigger.
+- Il lock di riga sul contatore serializza le prenotazioni del piano.
+- In READ COMMITTED lo snapshot della query di controllo è preso dopo il lock.
+- In REPEATABLE READ e SERIALIZABLE un aggiornamento concorrente produce 40001, che viene ritentato.
+- Un'incoerenza produce `CAMPAIGN_LEDGER_COUNTER_MISMATCH`; un errore o un NULL del controllo stesso produce `CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED`. In entrambi i casi la transazione viene annullata e non parte nessuna richiesta.
+
+**Limite accettato e dichiarato.** Il ledger è protetto dal runner, dalle modifiche ordinarie e dalle manomissioni strutturali che il runner rileva o blocca (elencate sotto). Non è protetto da un amministratore intenzionalmente malevolo, né da un runtime compromesso con credenziali admin, che riscriva in modo **coerente** contatore, tentativi ed evidenze: questo resta fuori dal modello. Su Aiven avnadmin può sempre concedersi `fcb_cert_owner`. Il tetto in memoria per run (78 per batch1, 8 per lo snapshot) e l'approvazione manuale dell'owner nell'Environment protetto **limitano ogni singolo run**, ma **non ripristinano il budget globale per piano** dopo una riscrittura amministrativa coerente. Il rischio sul budget globale in quello scenario resta aperto ed è dichiarato.
+
+Nel funzionamento normale, e contro tutte le manomissioni che controlli e lock rilevano o bloccano, il budget persistente condiviso per piano **deve** impedire qualsiasi superamento. Il ledger non va presentato come resistente a qualunque attacco admin.
+
+**Tetto indipendente dal database (review #201, P1, opzione A).** Il runner accetta solo i piani versionati nel codice (`PINNED_PLANS` in `scripts/apifootball_cert_batch1.py`):
+- batch1 `e75ce939…` con budget 78;
+- snapshot `0f4262a1…` con budget 8.
+
+Lo sha256 del file del piano deve essere pinnato e approvato nel ledger, altrimenti `PLAN_NOT_PINNED`. Ogni prenotazione è limitata a `min(budget approvato nel DB, budget versionato)` nella stessa transazione, dopo il controllo di coerenza: oltre il tetto c'è `CAMPAIGN_BUDGET_EXHAUSTED` con rollback. Un budget alzato nel DB, CHECK rimossi o il trigger di budget ripuntato non alzano quindi il tetto. Un nuovo piano o un nuovo budget richiede un commit revisionato.
+
+Il controllo di integrità a ogni transazione verifica anche:
+- i 12 trigger: tabella, funzione esatta con schema, `tgtype`, abilitazione, nessun `WHEN` e nessun argomento;
+- tutti i CHECK delle 5 tabelle: definizione esatta e `convalidated`, nessuno mancante o in più.
+
+Qualunque differenza, o errore del controllo stesso, rifiuta prima dell'invio.
+
+**RULE, RLS e TOCTOU (review #201, P1-A, P1-B e P2, opzione A).** Le versioni precedenti non controllavano questi tre punti:
+- una regola di riscrittura poteva deviare o annullare l'INSERT della prenotazione (P1-A);
+- RLS e policy potevano nascondere al conteggio i tentativi già fatti (P1-B);
+- tra il controllo e l'INSERT l'owner poteva sostituire il trigger di budget (P2).
+
+Ora il runner fa questo:
+- **Rifiuta in modo fail-closed** se sulle 5 tabelle del ledger esiste una regola (`pg_rewrite`), RLS abilitata o forzata, una policy, un'ereditarietà o partizione, un relkind diverso da tabella, una tabella non permanente o non heap. Lo stesso controllo vale per le 3 tabelle del coordinatore in `defaultdb`, sulla connessione del coordinatore, prima di qualsiasi lease (`COORDINATOR_TABLES_TAMPERED`).
+- **Prende i lock all'inizio di ogni transazione del ledger**, prima di ogni controllo, in ordine fisso, con `lock_timeout` di 3 s. Un timeout produce `CAMPAIGN_LEDGER_LOCK_TIMEOUT`.
+  - ROW EXCLUSIVE su campaigns, attempts e outcomes, tramite un INSERT di zero righe: nessun nuovo privilegio e nessuna serializzazione tra prenotazioni.
+  - ACCESS SHARE su plans.
+  - Questi lock bloccano per tutta la transazione le modifiche ai trigger, le regole, RLS, le policy e gli ALTER TABLE.
+- **Dopo l'INSERT, prima del COMMIT,** verifica che la riga sia sua (stessa campagna, seq, call_id e transazione), poi coerenza e tetto, poi ripete identità e integrità. Qualunque anomalia annulla INSERT e incremento del contatore. La richiesta parte solo dopo il COMMIT confermato. Un esito di COMMIT ambiguo resta `RESERVED_UNKNOWN`, conta nel budget e non viene mai reinviato.
+- **Tetto in memoria per run:** 78 per batch1 e 8 per lo snapshot, contando ogni tentativo prenotato (primi invii, retry, esiti ambigui), con `RUN_REQUEST_CAP_REACHED`. È solo una difesa aggiuntiva che limita il singolo run; non sostituisce il budget persistente per piano, che resta condiviso tra run, riavvii e campaign_id, e non chiude il rischio sul budget globale dopo una riscrittura coerente.
+
+**Rischi residui dichiarati (P3).**
+- **Riscrittura coerente delle evidenze (P3-a).** Un amministratore malevolo che, con atto deliberato, ricollega le campagne a un altro piano e azzera il contatore produce uno stato coerente. Il tetto versionato limita comunque ogni piano al budget del codice, ma la riscrittura dell'evidenza non è rilevabile.
+- **Sostituzione di una funzione durante la transazione.** `CREATE OR REPLACE FUNCTION` non prende lock di tabella. Un corpo sostituito e ripristinato nella finestra tra INSERT e ricontrollo non viene visto dall'impronta. Resta però vincolato dai controlli successivi all'INSERT: riga propria, conteggio uguale a seq e seq entro il tetto (`test_p2_a_body_swap_that_fools_the_catalog_check_is_still_refused_by_the_own_row_check`). Con prenotatori concorrenti e un corpo che non blocca il contatore, il superamento possibile è al massimo di una unità per runner concorrente.
+- **Fuori perimetro:** F2, F5, F6, la membership F3 non legata all'amministratore atteso (P3-b) e le role settings modificabili dal runner.

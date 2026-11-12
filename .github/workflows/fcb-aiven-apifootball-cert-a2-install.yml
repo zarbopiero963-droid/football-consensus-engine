@@ -1,0 +1,259 @@
+name: FCB Aiven API-FOOTBALL cert ledger A2 install (owner-gated)
+
+# PATH A2 (owner GO "FCB PATH A2 IMPLEMENTATION"). Manual only. Installs the API-FOOTBALL
+# certification ledger in the DEDICATED database `fcb_cert` of the SAME Aiven service, without any
+# WP-009 phase, without changing the owner of any existing object and without touching the Render
+# DATABASE_URL (scripts/apifootball_cert_path_a.py):
+#   step 1 (defaultdb, one tx, administrator): roles fcb_cert_owner NOLOGIN and fcb_cert_runner LOGIN
+#          (SCRAM verifier computed here, never the cleartext on the server) + the runner's explicit
+#          USAGE on schema public (WP-009 phase 1 revoked it from PUBLIC);
+#   step 1b (defaultdb, one tx, AS fcb_migrator = owner of the coordinator tables after WP-009
+#          phase 2): EXACTLY the runner's quota coordinator grant (9 privileges on the 3
+#          api_football_quota_* tables), asserted. Post-WP-009 only: the precheck refuses unless
+#          FCB_MIGRATOR_DB_URL logs in as fcb_migrator and fcb_migrator owns the coordinator tables;
+#   step 2: CREATE DATABASE fcb_cert OWNER fcb_cert_owner (temporary SET grant revoked in finally);
+#   step 3 (fcb_cert, one tx): bridge 0010 byte-for-byte AS fcb_cert_owner, runner grants, asserts,
+#          the administrator's temporary SET grant revoked and asserted before COMMIT.
+# Gates, all required: protected Environment `aiven-production` (required reviewer, main only);
+# owner dispatch from main; mode=apply AND the exact confirmation phrase (default mode=diagnose is
+# read-only); pinned SHA-256 of every file it runs; pinned target (host/port hashes, database),
+# PostgreSQL 18, TLS verify-full with the authenticated Aiven CA; administrative identity (no
+# superuser, CREATEROLE, not an fcb_cert role). apply runs the installer TWICE: the second run must
+# leave the catalog evidence unchanged (no-op). mode=rotate-runner (phrase ROTATE fcb_cert_runner
+# PASSWORD) re-runs step 1 only with the new FCB_CERT_RUNNER_DB_PASSWORD (no re-grant) and asserts
+# the exact grant set in the same transaction. No DROP anywhere; rollback = stop dispatching the
+# campaign workflow (the append-only ledger stays as evidence). Nothing dispatches this automatically.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "diagnose = read-only catalog evidence (default); apply = install A2 (twice, second run no-op); rotate-runner = new runner password, no re-grant"
+        type: choice
+        options: [diagnose, apply, rotate-runner]
+        default: diagnose
+      confirm:
+        description: "apply: INSTALL API-FOOTBALL CERT LEDGER A2 IN fcb_cert / rotate-runner: ROTATE fcb_cert_runner PASSWORD"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with the restore, roles and approval workflows: never two writers against the service.
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  certa2install:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_DEFAULTDB_URL
+      CONFIRM_PHRASE: INSTALL API-FOOTBALL CERT LEDGER A2 IN fcb_cert
+      CONFIRM_ROTATE: ROTATE fcb_cert_runner PASSWORD
+      # SHA-256 of every file this workflow runs (tests/test_apifootball_cert_a2_workflows.py).
+      EXPECTED_FILE_SHA256: |
+        sql/aiven/apifootball_cert_path_a_roles.sql=c1b4299d7cf734b13ae81d35c81f60e2a18abb472a819c8a8492494ee2a68fc7
+        sql/aiven/apifootball_cert_path_a_coordinator_grants.sql=e95765f8abaed49c95e132fb29d9d1cd3af8fe2b3db266e5509137563e9378b1
+        sql/aiven/apifootball_cert_path_a_coordinator_assert.sql=6c944e6a274153a12a208abe5951b9c3ee4e32b76b8014bf3a147cc07e119095
+        sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
+        sql/aiven/apifootball_cert_path_a_ledger_post.sql=8d9bf2565fa11864bb9a0a48a07fbf425111cbfa8077c9ae8048c356072d0fdc
+        sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql=64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8
+        scripts/apifootball_cert_path_a.py=59d34dd6bc0b98672bad51951a79f0500360f5d92c801e195604916138346ace
+        scripts/fcb_db_roles.py=1a48c678934f91d14acfb10711884e64b3ba4c06578c3473eca28cebdce349b9
+        scripts/aiven_pg18_diag.py=825235c2b70126f438343efd61ab6805b1b498848cb294ee1efa494e8812d8e6
+      PGCONNECT_TIMEOUT: '15'
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            apply)
+              if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+                echo "::error::mode=apply requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: apply (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            rotate-runner)
+              if [ "$CONFIRM" != "$CONFIRM_ROTATE" ]; then
+                echo "::error::mode=rotate-runner requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: rotate-runner (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - name: Verify the pinned SHA-256 of every file it runs
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS='=' read -r path sha; do
+            [ -n "$path" ] || continue
+            test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_FILE_SHA256"
+          test "$n" -eq 9
+          python3 -m pip install --quiet 'psycopg[binary]==3.3.6'
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          FCB_CERT_RUNNER_DB_PASSWORD: ${{ secrets.FCB_CERT_RUNNER_DB_PASSWORD }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1; fi
+          if [ -z "${FCB_MIGRATOR_DB_URL:-}" ]; then echo "::error::environment secret FCB_MIGRATOR_DB_URL is not set (A2 is post-WP-009 only)"; exit 1; fi
+          if [ "${#FCB_CERT_RUNNER_DB_PASSWORD}" -lt 32 ]; then
+            echo "::error::environment secret FCB_CERT_RUNNER_DB_PASSWORD missing or shorter than 32 characters"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || { echo "::error::Aiven CA checksum mismatch"; exit 1; }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+
+      - name: Mask connection details and enforce the pinned target
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          python3 -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+          # the grantor DSN (fcb_migrator): masked, same pinned target, checked by the same helper
+          python3 -I -S - <<'PY'
+          import os
+          from urllib.parse import unquote, urlsplit
+          u = urlsplit(os.environ["FCB_MIGRATOR_DB_URL"])
+          for v in (u.hostname, u.password, u.password and unquote(u.password)):
+              if v:
+                  print(f"::add-mask::{v}")
+          PY
+          FCB_DB_URL_VAR=FCB_MIGRATOR_DB_URL python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          FCB_DB_URL_VAR=FCB_MIGRATOR_DB_URL python3 -I -S scripts/aiven_pg18_diag.py target >/dev/null
+
+      - name: Prechecks (administrative identity, PostgreSQL 18, TLS) and read-only evidence
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          PGSSLMODE: verify-full
+          PGOPTIONS: '-c search_path=public'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys
+          import psycopg
+          with psycopg.connect(os.environ["FCB_DEFAULTDB_URL"], dbname=os.environ["EXPECTED_DB"]) as conn:
+              ok = conn.execute(
+                  "SELECT pg_catalog.current_database() OPERATOR(pg_catalog.=) %s AND CURRENT_USER OPERATOR(pg_catalog.=) SESSION_USER "
+                  "AND NOT r.rolsuper AND r.rolcreaterole AND r.rolname OPERATOR(pg_catalog.<>) ALL (ARRAY['fcb_cert_owner', 'fcb_cert_runner']::pg_catalog.name[]) "
+                  "AND pg_catalog.current_setting('server_version_num')::pg_catalog.int4 BETWEEN 180000 AND 189999 "
+                  "AND COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) "
+                  "FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER", (os.environ["EXPECTED_DB"],)).fetchone()
+          if not (ok and ok[0]):
+              print("::error::FCB_CERT_A2_PRECHECK_FAILED"); sys.exit(1)
+          # Post-WP-009 only: the grantor is fcb_migrator (LOGIN, plain), it owns the three coordinator
+          # tables, and the administrator owns none of them (phase 2 done).
+          with psycopg.connect(os.environ["FCB_MIGRATOR_DB_URL"], dbname=os.environ["EXPECTED_DB"]) as conn:
+              ok = conn.execute(
+                  "SELECT CURRENT_USER OPERATOR(pg_catalog.=) 'fcb_migrator' AND SESSION_USER OPERATOR(pg_catalog.=) 'fcb_migrator' "
+                  "AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolbypassrls AND NOT r.rolreplication "
+                  "AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class c WHERE c.relnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace "
+                  "     AND c.relkind OPERATOR(pg_catalog.=) 'r' AND c.relowner OPERATOR(pg_catalog.=) r.oid "
+                  "     AND c.relname OPERATOR(pg_catalog.=) ANY (ARRAY['api_football_quota_counters', 'api_football_quota_leases', 'api_football_quota_attempts']::pg_catalog.name[])) "
+                  "    OPERATOR(pg_catalog.=) 3 "
+                  "AND COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) "
+                  "FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER").fetchone()
+          if not (ok and ok[0]):
+              print("::error::FCB_CERT_A2_NOT_POST_WP009 (grantor is not fcb_migrator owning the coordinator)"); sys.exit(1)
+          PY
+          python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL FCB_MIGRATOR_DB_URL > "$RUNNER_TEMP/evidence_before.txt"
+          { echo '## Evidence before'; echo '```'; cat "$RUNNER_TEMP/evidence_before.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode == 'diagnose' }}
+        run: echo "## Diagnose mode - nothing was written" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install A2 (run twice; the second run must change nothing)
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'INSTALL API-FOOTBALL CERT LEDGER A2 IN fcb_cert' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          FCB_CERT_RUNNER_DB_PASSWORD: ${{ secrets.FCB_CERT_RUNNER_DB_PASSWORD }}
+          PGSSLMODE: verify-full
+          PGOPTIONS: '-c search_path=public'
+        run: |
+          set -euo pipefail
+          python3 scripts/apifootball_cert_path_a.py install FCB_DEFAULTDB_URL FCB_MIGRATOR_DB_URL FCB_CERT_RUNNER_DB_PASSWORD > "$RUNNER_TEMP/run1.txt" \
+            || { echo "::error::install run 1 failed (fixed code only)"; exit 1; }
+          first="$(python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL FCB_MIGRATOR_DB_URL)"
+          python3 scripts/apifootball_cert_path_a.py install FCB_DEFAULTDB_URL FCB_MIGRATOR_DB_URL FCB_CERT_RUNNER_DB_PASSWORD > "$RUNNER_TEMP/run2.txt" \
+            || { echo "::error::install run 2 failed (fixed code only)"; exit 1; }
+          second="$(python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL FCB_MIGRATOR_DB_URL)"
+          grep -qx 'FCB_CERT_PATH_A_INSTALLED database=ALREADY_PRESENT' "$RUNNER_TEMP/run2.txt" || { echo "::error::run 2 was not a no-op"; exit 1; }
+          test "$first" = "$second" || { echo "::error::second run changed the catalog evidence"; exit 1; }
+          printf '%s\n' "$second" | grep -qx 'defaultdb bridge_versions=1,2,3,4,5,6,7,8' || { echo "::error::defaultdb bridge series changed"; exit 1; }
+          { echo "## A2 install: PASS ($(cat "$RUNNER_TEMP/run1.txt"); run 2 no-op)"; echo '```'; printf '%s\n' "$second"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rotate the runner password (step 1 only, no re-grant; exact grants asserted)
+        if: ${{ inputs.mode == 'rotate-runner' && inputs.confirm == 'ROTATE fcb_cert_runner PASSWORD' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_MIGRATOR_DB_URL: ${{ secrets.FCB_MIGRATOR_DB_URL }}
+          FCB_CERT_RUNNER_DB_PASSWORD: ${{ secrets.FCB_CERT_RUNNER_DB_PASSWORD }}
+          PGSSLMODE: verify-full
+          PGOPTIONS: '-c search_path=public'
+        run: |
+          set -euo pipefail
+          grep -q '^role fcb_cert_runner ' "$RUNNER_TEMP/evidence_before.txt" || { echo "::error::A2 is not installed; nothing to rotate"; exit 1; }
+          python3 scripts/apifootball_cert_path_a.py rotate-runner FCB_DEFAULTDB_URL FCB_CERT_RUNNER_DB_PASSWORD > "$RUNNER_TEMP/rotate.txt" \
+            || { echo "::error::rotation failed (fixed code only): $(cat "$RUNNER_TEMP/rotate.txt")"; exit 1; }
+          after="$(python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL FCB_MIGRATOR_DB_URL)"
+          test "$after" = "$(cat "$RUNNER_TEMP/evidence_before.txt")" || { echo "::error::rotation changed the catalog evidence"; exit 1; }
+          echo "## Runner rotation: PASS ($(cat "$RUNNER_TEMP/rotate.txt"); catalog evidence unchanged)" >> "$GITHUB_STEP_SUMMARY"

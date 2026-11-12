@@ -1046,3 +1046,106 @@ def test_the_post_guard_needs_the_state_recorded_by_the_guard(schema):
                        "-f", str(AIVEN / "assert_bridge_counts.sql"), "-f", str(AIVEN / "defaultdb_restore_post_guard.sql"))
     assert rc != 0 and "FCB_RESTORE_PRIOR_STATE_UNKNOWN" in err
     assert _nothing_written(schema)
+
+
+# ---------------------------------------------------------------- PATH A2 (owner GO): fcb_cert_runner
+# The ONLY change PATH A2 makes to defaultdb is the exact quota-coordinator grant to the plain role
+# fcb_cert_runner (sql/aiven/apifootball_cert_path_a_roles.sql + _coordinator_grants.sql) and its
+# explicit USAGE on public (not part of the restore fingerprint). The restore precheck, its in-
+# transaction guards and the catalog fingerprint accept exactly that grant (the fingerprint renders it
+# as no ACL), and keep refusing every other privilege, owner change or role shape.
+
+A2_ROLES = ("fcb_cert_runner", "fcb_cert_owner")
+
+
+def _a2_install_roles(schema_name, owner):
+    """The real A2 step 1 file, run by the database owner (given CREATEROLE like Aiven's avnadmin);
+    only the database-name pin is adapted to this throwaway database."""
+    import sys
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from fcb_db_roles import scram_verifier
+    sql = (AIVEN / "apifootball_cert_path_a_roles.sql").read_text(encoding="utf-8")
+    assert sql.count("'defaultdb'::pg_catalog.name") == 1
+    sql = sql.replace("'defaultdb'::pg_catalog.name", f"'{owner.dbname}'::pg_catalog.name")
+    _exec(schema_name.dsn, SQL("ALTER ROLE {} CREATEROLE CREATEDB BYPASSRLS").format(Identifier(owner.role)))  # Aiven shape
+    with psycopg.connect(owner.dsn, options="-c search_path=public -c createrole_self_grant=inherit,set") as conn:
+        conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)",
+                     (scram_verifier("a2-" + uuid.uuid4().hex + uuid.uuid4().hex),))
+        conn.execute(sql)
+        # step 1b (post-WP-009 split): the coordinator grants AS the tables' owner, here the database
+        # owner (pre-WP-009 shape of this module), then the exact-set assertion
+        for name in ("apifootball_cert_path_a_coordinator_grants.sql", "apifootball_cert_path_a_coordinator_assert.sql"):
+            step = (AIVEN / name).read_text(encoding="utf-8")
+            assert step.count("'defaultdb'::pg_catalog.name") == 1
+            conn.execute(step.replace("'defaultdb'::pg_catalog.name", f"'{owner.dbname}'::pg_catalog.name"))
+
+
+def _a2_drop_roles(schema_name):
+    with psycopg.connect(schema_name.dsn, autocommit=True) as conn:
+        for role in (*A2_ROLES, "fcbpa_other", "fcbpa_group"):
+            if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+                conn.execute(SQL("DROP OWNED BY {}").format(Identifier(role)))
+                conn.execute(SQL("DROP ROLE {}").format(Identifier(role)))
+
+
+@pytest.fixture
+def a2_installed(owned):
+    schema_name, owner = owned
+    with psycopg.connect(schema_name.dsn) as conn:
+        if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = ANY(%s)", (list(A2_ROLES),)).fetchone():
+            pytest.skip("PATH A2 roles already exist on this server; not touching them")
+    rc, _, err = _workflow_tx(owner)
+    assert rc == 0, err
+    # WITHOUT the A2 installation: the restore behaves exactly as before
+    assert _state(owner) == "BRIDGE_0001_0008" and _fingerprint(owner) == _clean_fingerprint()
+    try:
+        _a2_install_roles(schema_name, owner)
+        yield schema_name, owner
+    finally:
+        _a2_drop_roles(schema_name)
+
+
+def test_a2_after_install_the_restore_workflow_path_still_passes_and_changes_nothing(a2_installed):
+    schema_name, owner = a2_installed
+    with psycopg.connect(schema_name.dsn) as conn:
+        assert conn.execute("SELECT count(*) AS n FROM pg_class c, LATERAL aclexplode(c.relacl) x "
+                            "WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchone()[0] == 8
+    assert _state(owner) == "BRIDGE_0001_0008"
+    assert _fingerprint(owner) == _clean_fingerprint()  # the exact runner grant renders as no ACL
+    if _major() == 18:
+        assert _fingerprint(owner) == _pinned_fingerprint()  # the production pin still matches
+    rows = _migration_rows(owner)
+    rc, _, err = _workflow_tx(owner)  # the production no-op restore, through the workflow's transaction
+    assert rc == 0, err
+    assert _migration_rows(owner) == rows and _state(owner) == "BRIDGE_0001_0008"
+    with psycopg.connect(schema_name.dsn) as conn:  # and it keeps the runner grant as it was
+        assert conn.execute("SELECT count(*) AS n FROM pg_class c, LATERAL aclexplode(c.relacl) x "
+                            "WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchone()[0] == 8
+
+
+A2_TAMPER = {
+    "extra_table_privilege": ["GRANT TRUNCATE ON public.api_football_quota_counters TO fcb_cert_runner"],
+    "extra_column_privilege": ["GRANT UPDATE (window_kind) ON public.api_football_quota_counters TO fcb_cert_runner"],
+    "grant_option": ["REVOKE SELECT ON public.api_football_quota_leases FROM fcb_cert_runner",
+                     "GRANT SELECT ON public.api_football_quota_leases TO fcb_cert_runner WITH GRANT OPTION"],
+    "missing_privilege": ["REVOKE DELETE ON public.api_football_quota_attempts FROM fcb_cert_runner"],
+    "other_table": ["GRANT SELECT ON public.oauth_claude_dcr_clients TO fcb_cert_runner"],
+    "other_role": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT SELECT ON public.api_football_quota_counters TO fcbpa_other"],
+    "public_grant": ["GRANT SELECT ON public.api_football_quota_leases TO PUBLIC"],
+    "runner_not_plain": ["ALTER ROLE fcb_cert_runner CREATEDB"],
+    "runner_member": ["CREATE ROLE fcbpa_group NOLOGIN", "GRANT fcbpa_group TO fcb_cert_runner"],
+    "owner_change": ["ALTER TABLE public.api_football_quota_leases OWNER TO fcb_cert_runner"],
+    # review P3 F3: any role able to inherit from / act as the runner
+    "member_inherit": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT fcb_cert_runner TO fcbpa_other WITH INHERIT TRUE, SET FALSE"],
+    "member_set": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT fcb_cert_runner TO fcbpa_other WITH INHERIT FALSE, SET TRUE"],
+}
+
+
+@pytest.mark.parametrize("tamper", sorted(A2_TAMPER))
+def test_a2_anything_beyond_the_exact_runner_grant_is_still_refused(a2_installed, tamper):
+    schema_name, owner = a2_installed
+    _exec(schema_name.dsn, *A2_TAMPER[tamper])
+    assert _state(owner).startswith("REFUSE_"), tamper
+    rows = _migration_rows(owner)
+    rc, _, _err = _workflow_tx(owner)
+    assert rc != 0 and _migration_rows(owner) == rows  # refused before commit: nothing written

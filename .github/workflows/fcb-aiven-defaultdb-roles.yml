@@ -79,13 +79,13 @@ jobs:
         sql/aiven/enable_bridge_migrator.sql=f72274593da4d640b12a4dff35a6a756f6be0cee9abafa88496766b23c5b421d
         sql/aiven/prepare_bridge_roles.sql=150c7895f9245d5dca4ba1981310ad8bef782c9ec232ce06a2d66792671a6d0f
         sql/aiven/finalize_bridge_privileges.sql=43acc3ee43337c84507a2c3390aa2740f7f554ee6f49d41113f2faecc82a3e28
-        sql/aiven/verify_bridge_roles.sql=e6d7549b6e3aa9e538b483ff4aec4846babc670baa2cd3452f867fef021c615a
+        sql/aiven/verify_bridge_roles.sql=eeb7bd8d39cd57094e8bb489a33a8389bc1453f04eca59d563de7b8c8e6d4ce8
         sql/aiven/diagnose_bridge_roles.sql=b6052fb941fd52bd48064a71bbf3a9ffd61cdccac292b45c0cb2383b5cd0f270
         sql/aiven/verify_bridge_schema.sql=fd063c1d7fee80616647f3f98a42693bbf4a7c77691846d89a8df590e14deb24
-        sql/aiven/defaultdb_precheck.sql=d3291db3e7d6cc75ba9e40f34c86f44241f4c883f22d2098d5abfde274311d6d
+        sql/aiven/defaultdb_precheck.sql=c5fa638194b082ca5f2598580ad9610104e5e518b0cd64b69c1e6c3d84399595
         sql/aiven/defaultdb_precheck_tracked.sql=e20c845d49a8af61d12975d7756f51a806a8833ffe09b7ef500106143ee5b493
-        sql/aiven/fingerprint_bridge_schema.sql=9a04f81ac3fa6a24fb72f0e2e911b76a4c3b33bdeb6f12c8347b674767e36ba8
-        sql/aiven/fingerprint_bridge_structure.sql=995ba192e5c8c93b70b484d71f110a3b955a8e1b6b3298db74d6eed557ec092c
+        sql/aiven/fingerprint_bridge_schema.sql=950e94949e95ed4487bfc2ab2902bf20c9807566987068b533445f969aed1184
+        sql/aiven/fingerprint_bridge_structure.sql=3d03f05174b7fb50bfda83e936cc4969dacf8185a39db72845f6ce95e6c5564f
       # The restore's pinned catalog fingerprint (PostgreSQL 18): a first phase 1 requires it.
       EXPECTED_FINGERPRINT: 'b825ab11029502140b038ce6d3add670'
       # Same pinned object counts as the restore (PostgreSQL 18); they must hold after each phase.
