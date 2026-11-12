@@ -2,6 +2,8 @@
 
 Stato: **progettazione verificata sulla documentazione ufficiale** (01-11-2026). Il trading reale resta **non disponibile** (governance §2.6).
 
+> **SUPERATO in parte** dalla governance §2.6 aggiornata: un ordine reale nasce da un comando esplicito e completo dell'owner nella chat del client MCP, verificato dal signer isolato, senza passkey né approvazione fuori banda per ordine. Le parti di questo documento che descrivono un'approvazione fuori banda per singolo ordine restano solo come storico. Progetto corrente: [owner_commanded_execution.md](owner_commanded_execution.md).
+
 ## Cosa dice la documentazione ufficiale
 
 | Tema | Fatto documentato | Fonte |

@@ -114,7 +114,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -125,7 +125,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -406,7 +406,7 @@
    "classification": "REAL_FUNDS_RISK",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "DELETE",
@@ -417,7 +417,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "DELETE",
@@ -428,7 +428,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -462,7 +462,7 @@
     }
    ],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "DELETE",
@@ -479,7 +479,7 @@
     }
    ],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -839,7 +839,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -861,7 +861,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -872,7 +872,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -883,7 +883,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -911,7 +911,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -922,7 +922,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -933,7 +933,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -944,7 +944,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -955,7 +955,7 @@
    "classification": "REAL_FUNDS_RISK",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -966,7 +966,7 @@
    "classification": "REAL_FUNDS_RISK",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -977,7 +977,7 @@
    "classification": "REAL_FUNDS_RISK",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "POST",
@@ -988,7 +988,7 @@
    "classification": "REAL_FUNDS_RISK",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -1038,7 +1038,7 @@
    "classification": "STATE_MUTATION",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
@@ -1060,7 +1060,7 @@
    "classification": "REAL_FUNDS_RISK",
    "parameters": [],
    "mcp_tool": null,
-   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + per-operation out-of-band confirmation)"
+   "mcp": "NOT_EXPOSED (governance §2.6: needs isolated signer + explicit, complete owner command verified by the signer)"
   },
   {
    "method": "GET",
