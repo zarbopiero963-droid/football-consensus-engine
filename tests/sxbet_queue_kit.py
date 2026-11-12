@@ -12,10 +12,11 @@ class MemoryQueue:
         self.requests = []        # (request_id, kind, payload, payload_sha256, network)
         self.events = {}          # request_id -> [{"seq", "state", "detail", "signer_id"}]
 
-    def insert(self, payload, *, sha=None):
-        assert payload["request_id"] not in {r[0] for r in self.requests}, "duplicate request_id"
-        self.requests.append((payload["request_id"], payload["kind"], json.loads(json.dumps(payload)),
-                              sha or canonical_sha256(payload), payload["network"]))
+    def insert(self, payload, *, sha=None, row_request_id=None, row_network=None):
+        rid = row_request_id or payload["request_id"]
+        assert rid not in {r[0] for r in self.requests}, "duplicate request_id"
+        self.requests.append((rid, payload["kind"], json.loads(json.dumps(payload)),
+                              sha or canonical_sha256(payload), row_network or payload["network"]))
 
     def pending(self, network, limit):
         return [{"request_id": r[0], "kind": r[1], "payload": json.loads(json.dumps(r[2])), "payload_sha256": r[3]}
@@ -31,6 +32,9 @@ class MemoryQueue:
     def append_event(self, request_id, state, detail, signer_id):
         assert state != "CLAIMED" and request_id in self.events
         evs = self.events[request_id]
+        # Same guards as the draft migration triggers.
+        assert not any(e["state"] in TERMINAL_STATES for e in evs), "SIGNER_ORDER_REQUEST_ALREADY_TERMINAL"
+        assert any(e["state"] == "CLAIMED" and e["signer_id"] == signer_id for e in evs), "NOT_CLAIMED_BY_WRITER"
         evs.append({"seq": len(evs) + 1, "state": state, "detail": json.loads(json.dumps(dict(detail))),
                     "signer_id": signer_id})
         return len(evs)

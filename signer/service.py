@@ -17,6 +17,7 @@ permanent private worker (owner decision) can run the same loop later without re
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Callable, Mapping
 
@@ -24,11 +25,13 @@ from . import command as cmd
 from .cancellation import CancelRefused
 from .core import Signer, SignerRefused
 from .gateway import GatewayRefused
+from .intent import IntentInvalid, intent_hash, validate
 from .orders import AUTHORIZED, SIGNED, UNKNOWN
 from .request_queue import QueueError, RequestQueue, canonical_sha256, event_detail, validate_request
 
 DEFAULT_MAX_REQUEST_AGE_SECONDS = 120   # never above the owner-signed command window (checked again by the signer)
-_FINAL_ORDER_STATES = frozenset({"FILLED", "CANCELLED", "EXPIRED", "SETTLED", "REJECTED"})
+# REJECTED is not final: a rejected order whose signature left can still turn out executed (signer/orders.py H3).
+_FINAL_ORDER_STATES = frozenset({"FILLED", "CANCELLED", "EXPIRED", "SETTLED"})
 
 
 class SignerService:
@@ -47,15 +50,18 @@ class SignerService:
         self._signer_id = signer_id
         self._clock = clock
         self._max_age = max_request_age_seconds
+        # One process per signer_id; inside it, processing, recovery and sync never run concurrently (review P2-3).
+        self._lock = threading.Lock()
 
     # ---------------------------------------------------------------- loop
     def process_once(self, limit: int = 10) -> list[dict[str, Any]]:
-        out = []
-        for req in self._q.pending(self._network, limit):
-            if not self._q.claim(req["request_id"], self._signer_id):
-                continue  # another instance or an earlier run owns it
-            out.append(self._handle(req))
-        return out
+        with self._lock:
+            out = []
+            for req in self._q.pending(self._network, limit):
+                if not self._q.claim(req["request_id"], self._signer_id):
+                    continue  # another instance or an earlier run owns it
+                out.append(self._handle(req))
+            return out
 
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
         d = event_detail(**detail)
@@ -87,13 +93,18 @@ class SignerService:
 
     def _place(self, rid: str, p: Mapping[str, Any], auth: Any) -> dict[str, Any]:
         intent = p["intent"]
-        cid0 = intent.get("idempotency_key")
-        existing = self._signer._ledger.get(cid0) if isinstance(cid0, str) else None
+        try:
+            clean = validate(intent, odds_ladder_step_size=self._signer.config.odds_ladder_step_size)
+        except IntentInvalid as exc:
+            return self._refuse(rid, str(exc))
+        cid0 = clean["idempotency_key"]
+        existing = self._signer._ledger.get(cid0)
         if existing is not None:
-            # A second request for an order the ledger already knows (a retry, a duplicate or a replay by a
-            # compromised writer): never signed or sent again, reported explicitly, never as a new submission.
-            return self._event(rid, "DONE", code="DUPLICATE_OF_EXISTING_ORDER", client_order_id=cid0,
-                               order_id=existing.order_id, state=existing.state, sent=False)
+            # A second request for a key the ledger already knows: never signed or sent again, and never reported
+            # as a success or with the old order's state (its command was not verified): review 1a9e09e P2-1.
+            if existing.intent_hash != intent_hash(clean):
+                return self._refuse(rid, "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT", client_order_id=cid0)
+            return self._refuse(rid, "DUPLICATE_REQUEST", client_order_id=cid0)
         try:
             signed = self._signer.sign_order(intent, auth, post_only=p["post_only"])
         except SignerRefused as exc:
@@ -103,9 +114,14 @@ class SignerService:
         try:
             res = self._gw.submit(signed, intent)
         except GatewayRefused as exc:
-            # Signed, never sent: the ledger keeps the stake reserved until the signed expiry (signer/orders.py).
-            return self._event(rid, "DONE", code=exc.code, client_order_id=cid, order_id=signed.get("order_id"),
-                               sent=False, note="SIGNED_NOT_SENT_RESERVED_UNTIL_EXPIRY")
+            o = self._signer._ledger.get(cid)
+            if o is not None and o.state == SIGNED:
+                # Refused before any send: the ledger keeps the stake reserved until the signed expiry.
+                return self._event(rid, "DONE", code=exc.code, client_order_id=cid, order_id=signed.get("order_id"),
+                                   sent=False, note="SIGNED_NOT_SENT_RESERVED_UNTIL_EXPIRY")
+            # Past the write-ahead: it may have been sent (review 1a9e09e P2-2). Never "not sent".
+            return self._event(rid, "UNKNOWN", code=exc.code, client_order_id=cid, order_id=signed.get("order_id"),
+                               state=None if o is None else o.state, note="RECONCILE_BEFORE_ANY_RETRY")
         state = res.get("state")
         if state == UNKNOWN:
             return self._event(rid, "UNKNOWN", client_order_id=cid, order_id=res.get("order_id"), state=state,
@@ -124,22 +140,39 @@ class SignerService:
                 rep = self._cx.cancel_event(p["event_id"], auth)
             else:
                 rep = self._cx.cancel_all(auth)
-        except (CancelRefused, GatewayRefused, SignerRefused) as exc:
+        except (CancelRefused, SignerRefused) as exc:
             return self._refuse(rid, getattr(exc, "code", "CANCEL_REFUSED"), scope=scope)
+        except GatewayRefused as exc:  # may be after the send: never a terminal refusal (review P3)
+            return self._event(rid, "UNKNOWN", code=exc.code, scope=scope,
+                               note="CANCEL_MAY_HAVE_BEEN_SENT_RECONCILE_FROM_READS")
         orders = {oid: {k: v for k, v in r.items() if k in ("bucket", "reason", "state")}
                   for oid, r in (rep.get("orders") or {}).items()}
-        return self._event(rid, "DONE", scope=scope, sent=bool(rep.get("sent")), orders=orders,
-                           note="CANCEL_REPLY_IS_NOT_PROOF_STATE_FROM_READS")
+        if rep.get("sent") and rep.get("accepted") is False:
+            return self._event(rid, "UNKNOWN", scope=scope, sent=True, accepted=False, code=rep.get("reason"),
+                               note="CANCEL_NOT_ACCEPTED_STATE_FROM_READS")
+        return self._event(rid, "DONE", scope=scope, sent=bool(rep.get("sent")), accepted=rep.get("accepted"),
+                           orders=orders or None, note="CANCEL_REPLY_IS_NOT_PROOF_STATE_FROM_READS")
 
     # ---------------------------------------------------------------- after a restart / periodically
     def recover(self) -> list[dict[str, Any]]:
         """Requests this signer claimed but never finished (crash between steps), resolved from its own ledger:
-        never re-sent blindly. No ledger row: the command was not consumed, so the request is processed again."""
+        never re-sent blindly. No ledger row: the command was not consumed, so the request is processed again.
+        Runs under the service lock, never concurrently with process_once (review 1a9e09e P2-3), and records
+        only transitions: a request already recorded SUBMITTED / UNKNOWN is left to sync_outcomes (P2-4)."""
+        with self._lock:
+            return self._recover()
+
+    def _recover(self) -> list[dict[str, Any]]:
         out = []
         for req in self._q.unfinished(self._network, self._signer_id):
             rid, last = req["request_id"], req.get("last_state")
             p = req["payload"]
-            cid = (p.get("intent") or {}).get("idempotency_key") if isinstance(p, Mapping) else None
+            if not isinstance(p, Mapping):
+                out.append(self._refuse(rid, "REQUEST_MALFORMED"))
+                continue
+            if last not in ("CLAIMED", "SIGNED"):
+                continue  # already recorded as SUBMITTED / UNKNOWN: nothing new to append
+            cid = (p.get("intent") or {}).get("idempotency_key") if isinstance(p.get("intent"), Mapping) else None
             o = self._signer._ledger.get(cid) if (p.get("kind") == "PLACE" and isinstance(cid, str)) else None
             if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
@@ -160,6 +193,10 @@ class SignerService:
 
     def sync_outcomes(self) -> list[dict[str, Any]]:
         """Final order states learnt by reconciliation (gateway / monitor reads) are mirrored as DONE events."""
+        with self._lock:
+            return self._sync_outcomes()
+
+    def _sync_outcomes(self) -> list[dict[str, Any]]:
         out = []
         for req in self._q.unfinished(self._network, self._signer_id):
             if req.get("last_state") not in ("SUBMITTED", "UNKNOWN"):

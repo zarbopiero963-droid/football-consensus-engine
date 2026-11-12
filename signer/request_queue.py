@@ -31,11 +31,11 @@ KINDS = ("PLACE", "CANCEL")
 CANCEL_SCOPES = ("ORDER_IDS", "MARKET", "EVENT", "ALL")
 EVENT_STATES = ("CLAIMED", "REFUSED", "SIGNED", "SUBMITTED", "UNKNOWN", "DONE")
 TERMINAL_STATES = frozenset({"REFUSED", "DONE"})
-DETAIL_KEYS = frozenset({"code", "order_id", "client_order_id", "state", "sent", "orders", "note", "scope"})
+DETAIL_KEYS = frozenset({"code", "order_id", "client_order_id", "state", "sent", "orders", "note", "scope", "accepted"})
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 _HASH = re.compile(r"^0x[0-9a-f]{64}$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
-_EVENT_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_EVENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # same rule as signer/cancellation.py
 
 
 class QueueError(ValueError):
@@ -130,12 +130,16 @@ class PostgresRequestQueue:
     def __init__(self, connect: Callable[[], Any]):
         self._connect = connect
 
-    def _run(self, sql: str, params: Sequence[Any] = (), *, fetch: bool = True) -> list[tuple]:
+    def _run(self, sql: str, params: Sequence[Any] = (), *, fetch: bool = True,
+             lock_request: str | None = None) -> list[tuple]:
         conn = self._connect()
         try:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute("SET LOCAL statement_timeout = '2500ms'")
+                    if lock_request is not None:  # serialises seq allocation per request (review P3)
+                        cur.execute("SELECT 1 FROM signer_order_requests WHERE request_id = %s FOR UPDATE",
+                                    (lock_request,))
                     cur.execute(sql, params)
                     return list(cur.fetchall()) if fetch else []
         finally:
@@ -162,7 +166,8 @@ class PostgresRequestQueue:
             "INSERT INTO signer_order_request_events (request_id, seq, state, detail, signer_id) "
             "SELECT %s, coalesce(max(seq), 0) + 1, %s, %s::jsonb, %s FROM signer_order_request_events "
             "WHERE request_id = %s RETURNING seq",
-            (request_id, state, json.dumps(dict(detail), sort_keys=True), signer_id, request_id))
+            (request_id, state, json.dumps(dict(detail), sort_keys=True), signer_id, request_id),
+            lock_request=request_id)
         return rows[0][0]
 
     def unfinished(self, network: str, signer_id: str) -> list[dict[str, Any]]:

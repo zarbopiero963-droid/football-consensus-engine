@@ -43,3 +43,23 @@ CREATE OR REPLACE TRIGGER signer_order_request_events_no_mutation
 CREATE OR REPLACE TRIGGER signer_order_request_events_no_truncate
     BEFORE TRUNCATE ON signer_order_request_events
     FOR EACH STATEMENT EXECUTE FUNCTION signer_order_requests_append_only();
+-- No event after a terminal one (review 1a9e09e P2-3): REFUSED and DONE close a request for good.
+CREATE OR REPLACE FUNCTION signer_order_request_events_guard_insert() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF EXISTS (SELECT 1 FROM signer_order_request_events e WHERE e.request_id = NEW.request_id
+               AND e.state IN ('REFUSED', 'DONE')) THEN
+        RAISE EXCEPTION 'SIGNER_ORDER_REQUEST_ALREADY_TERMINAL';
+    END IF;
+    IF NEW.state = 'CLAIMED' AND NEW.seq <> 1 THEN
+        RAISE EXCEPTION 'SIGNER_ORDER_REQUEST_CLAIM_NOT_FIRST';
+    END IF;
+    IF NEW.state <> 'CLAIMED' AND NOT EXISTS (SELECT 1 FROM signer_order_request_events c
+               WHERE c.request_id = NEW.request_id AND c.state = 'CLAIMED' AND c.signer_id = NEW.signer_id) THEN
+        RAISE EXCEPTION 'SIGNER_ORDER_REQUEST_NOT_CLAIMED_BY_WRITER';
+    END IF;
+    RETURN NEW;
+END;
+$fn$;
+CREATE OR REPLACE TRIGGER signer_order_request_events_insert_guard
+    BEFORE INSERT ON signer_order_request_events
+    FOR EACH ROW EXECUTE FUNCTION signer_order_request_events_guard_insert();

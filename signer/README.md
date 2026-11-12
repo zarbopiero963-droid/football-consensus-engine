@@ -124,21 +124,29 @@ Il MCP non chiama mai il signer: scrive **una riga** per richiesta dell'owner in
 2. validazione della forma (contratto `sxbet.order_request.v1`, nessun campo in più: nessuna chiave, firma, limite o modalità può viaggiare in una richiesta);
 3. ricalcolo dello sha256 del payload e controllo della rete;
 4. freschezza (≤ 120 s);
-5. per un ordine già noto al ledger, esito `DUPLICATE_OF_EXISTING_ORDER` senza firma né invio;
+5. per una chiave d'ordine già nota al ledger, rifiuto `DUPLICATE_REQUEST` o `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT`, senza firma né invio;
 6. `Signer.sign_order`: verifica deterministica del comando dell'owner sulle **letture del signer**, monouso, finestra breve, limiti firmati dall'owner, kill switch;
 7. `SubmissionGateway.submit`: flag `LIVE_TRADING` firmato dall'owner; in questo repository nessun trasporto reale;
 8. eventi `SIGNED`, `SUBMITTED`, `UNKNOWN` (mai ritentato: riconciliare prima), `DONE`, `REFUSED` con codici fissi e identificativi.
 
 Gli eventi non contengono mai una firma, una chiave o il testo del comando. `recover()` risolve dal ledger le richieste interrotte: firma mai uscita → rilascio; firma uscita ma mai inviata → `DONE` con esposizione riservata fino alla scadenza; nessuna riga → elaborazione ripresa, perché il comando non era stato consumato. Non re-invia mai alla cieca. `sync_outcomes()` riporta gli esiti finali appresi dalle letture.
 
-**Scenario di scrittore compromesso** (MCP o client ChatGPT/Claude compromesso): la presenza nel database non prova nulla. Sono rifiutati senza firma:
-- un testo alterato con l'hash vecchio (`COMMAND_TEXT_HASH_MISMATCH`);
-- un comando che non corrisponde all'ordine (`COMMAND_MISMATCH_*`);
-- un comando riusato (`COMMAND_ID_ALREADY_CONSUMED`);
-- un messaggio vecchio (`COMMAND_EXPIRED`);
-- un payload modificato dopo la scrittura (`REQUEST_HASH_MISMATCH`);
-- campi estranei (`REQUEST_UNEXPECTED_FIELD`);
-- un duplicato dello stesso ordine (`DUPLICATE_OF_EXISTING_ORDER`, nessun secondo invio).
+**Scenario di scrittore compromesso** (MCP o client ChatGPT/Claude compromesso): la presenza nel database non prova nulla. I controlli che valgono **davvero** contro uno scrittore compromesso sono quattro:
+- il **monouso** del comando (`command_id` e impronta consumati nel ledger: `COMMAND_ID_ALREADY_CONSUMED` / `COMMAND_REPLAYED`);
+- la **verifica deterministica** del testo contro l'ordine, sulle letture del signer (`COMMAND_MISMATCH_*`, `COMMAND_TEXT_HASH_MISMATCH` se il testo non corrisponde al suo hash);
+- i **limiti firmati dall'owner**;
+- il **kill switch**.
+
+Una chiave d'ordine già nota al ledger non viene mai firmata né inviata di nuovo: `DUPLICATE_REQUEST`, oppure `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT` se l'intent è diverso; in nessuno dei due casi l'esito è riportato come successo o con lo stato del vecchio ordine. Campi estranei sono rifiutati (`REQUEST_UNEXPECTED_FIELD`).
+
+**Limiti dichiarati** (review indipendente di `1a9e09e`, P2-5):
+- `payload_sha256`, `created_at` e `received_at` li scrive chi inserisce la richiesta, quindi un MCP compromesso li ricalcola: `REQUEST_HASH_MISMATCH`, `REQUEST_EXPIRED` e `COMMAND_EXPIRED` intercettano corruzioni o scrittori difettosi, **non** uno scrittore malevolo;
+- un messaggio vecchio dell'owner mai consumato (per esempio rifiutato per un limite) può essere riproposto con orari nuovi;
+- la modifica dopo la scrittura è impedita dai trigger append-only, non dall'hash.
+
+**Prerequisito per promuovere la bozza** (review `1a9e09e`, P2-6): i ruoli a privilegio minimo sono **vincolanti**, perché chi può inserire eventi può nascondere una richiesta o falsificarne l'esito mostrato all'owner. Il ruolo MCP ha solo `INSERT` sulle richieste e `SELECT` sugli eventi; il ruolo signer ha `SELECT` sulle richieste e `SELECT, INSERT` sugli eventi. Sono provati in un test su PostgreSQL usa e getta, ma vanno creati con WP-009. I trigger aggiuntivi (nessun evento dopo `REFUSED`/`DONE`, nessun evento da un `signer_id` che non ha preso in carico la richiesta, `CLAIMED` solo come primo evento) sono difesa in profondità: il `signer_id` lo dichiara chi scrive e **non autentica nessuno**.
+
+Un solo processo per `signer_id`. Al suo interno `process_once`, `recover` e `sync_outcomes` non girano mai in parallelo (lock del servizio); `recover` registra solo transizioni nuove (mai eventi ripetuti). Un errore dopo il write-ahead dell'invio è `UNKNOWN` (`RECONCILE_BEFORE_ANY_RETRY`), mai "non inviato"; un cancel fallito dopo l'invio è `UNKNOWN`; `REJECTED` non è considerato finale (un ordine respinto la cui firma era uscita può risultare eseguito).
 
 **Rischio residuo accettato dall'owner (§2.6):** un comando forgiato in modo coerente da chi controlla il testo della chat non è distinguibile crittograficamente da quello dell'owner. Lo limitano i limiti obbligatori firmati dall'owner (test: oltre il limite per ordine è rifiutato) e il kill switch. Il servizio è indipendente dal trasporto: la certificazione Toronto (S8) e un futuro worker privato permanente usano lo stesso ciclo. Test: `tests/test_sxbet_signer_service.py` e `tests/integration/test_signer_request_queue_postgres.py` (PostgreSQL usa e getta: append-only, una sola presa in carico con 8 istanze concorrenti, percorso completo).
 

@@ -231,8 +231,9 @@ def test_compromised_writer_duplicates_a_request_with_a_new_id_is_refused(s):
     dup = dict(p, request_id="f" * 32)                     # same command, same order, new request id
     q.insert(dup)
     (res,) = service(s, q).process_once()
-    assert res["event"] == "DONE" and res["detail"]["code"] == "DUPLICATE_OF_EXISTING_ORDER"
-    assert res["detail"]["sent"] is False and len([r for r in s.sim.writes() if r.method == "POST"]) == 1
+    # Review 1a9e09e P2-1 (intentional): a duplicate is a refusal, never reported with the old order's state.
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "DUPLICATE_REQUEST"
+    assert "state" not in res["detail"] and len([r for r in s.sim.writes() if r.method == "POST"]) == 1
 
 
 def test_compromised_writer_stale_command_replayed_later_is_refused(s):
@@ -260,3 +261,109 @@ def test_compromised_writer_cannot_carry_limits_keys_or_modes_in_a_request(s):
     p = enqueue_place(s, q, "order-key-CW006", mutate=lambda p: p.update(live_trading="ENABLED"))
     (res,) = service(s, q).process_once()
     assert res["event"] == "REFUSED" and res["detail"]["code"] == "REQUEST_UNEXPECTED_FIELD"
+
+
+# ---------------------------------------------------------------- fixes from the independent review of 1a9e09e
+def test_review_p2_1_same_key_different_intent_is_refused_never_reported_as_done(s):
+    q = MemoryQueue()
+    enqueue_place(s, q, "order-key-R6001")
+    service(s, q).process_once()
+    i2, ctx2 = _fresh(s, "order-key-R6001", stake=7 * USDC)   # same key, different stake
+    q.insert(place_request(i2, s.command(i2, ctx2), created_at=int(s.clock())))
+    (res,) = service(s, q).process_once()
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
+    assert len([r for r in s.sim.writes() if r.method == "POST"]) == 1
+
+
+def test_review_p2_2_failure_after_the_write_ahead_is_unknown_never_not_sent(s, monkeypatch):
+    from signer.gateway import GatewayRefused
+    q = MemoryQueue()
+    p = enqueue_place(s, q, "order-key-R6002")
+    real = s.gw.submit
+
+    def sent_then_ledger_failed(signed, intent):
+        s.sim.inject("POST", "/orders-v3", "timeout_after")
+        real(signed, intent)                                 # really sent; ledger UNKNOWN
+        raise GatewayRefused("LEDGER_WRITE_FAILED")
+    monkeypatch.setattr(s.gw, "submit", sent_then_ledger_failed)
+    (res,) = service(s, q).process_once()
+    assert res["event"] == "UNKNOWN" and res["detail"]["note"] == "RECONCILE_BEFORE_ANY_RETRY"
+    assert "sent" not in res["detail"] and q.states(p["request_id"])[-1] == "UNKNOWN"
+
+
+def test_review_p2_3_recover_never_runs_while_a_request_is_being_processed(s, monkeypatch):
+    import threading
+    q = MemoryQueue()
+    p = enqueue_place(s, q, "order-key-R6003")
+    svc = service(s, q)
+    gate, inside = threading.Event(), threading.Event()
+    real = s.gw.submit
+
+    def slow(signed, intent):
+        inside.set()
+        gate.wait(5)
+        return real(signed, intent)
+    monkeypatch.setattr(s.gw, "submit", slow)
+    t = threading.Thread(target=svc.process_once)
+    t.start()
+    assert inside.wait(5)
+    rec = []
+    r = threading.Thread(target=lambda: rec.extend(svc.recover()))
+    r.start()
+    r.join(0.3)
+    assert r.is_alive()                                      # waits for the service lock
+    gate.set()
+    t.join(5)
+    r.join(5)
+    assert rec == [] and q.states(p["request_id"]) == ["CLAIMED", "SIGNED", "SUBMITTED"]
+
+
+def test_review_p2_4_repeated_recover_appends_nothing_new(s):
+    q = MemoryQueue()
+    s.sim.inject("POST", "/orders-v3", "timeout_after")
+    p = enqueue_place(s, q, "order-key-R6004")
+    svc = service(s, q)
+    svc.process_once()
+    before = q.states(p["request_id"])
+    for _ in range(5):
+        svc.recover()
+    assert q.states(p["request_id"]) == before == ["CLAIMED", "SIGNED", "UNKNOWN"]
+
+
+def test_review_guards_request_id_mismatch_future_created_at_and_row_network(s):
+    q = MemoryQueue()
+    i, ctx = _fresh(s, "order-key-R6005")
+    p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
+    q.insert(p, row_request_id="e" * 32)                       # row id differs from payload id
+    i2, ctx2 = _fresh(s, "order-key-R6006")
+    q.insert(place_request(i2, s.command(i2, ctx2), created_at=int(s.clock()) + 600))  # from the future
+    i3, ctx3 = _fresh(s, "order-key-R6007")
+    q.insert(place_request(i3, s.command(i3, ctx3), created_at=int(s.clock()), network="testnet"),
+             row_network="mainnet")                            # row says mainnet, payload says testnet
+    codes = sorted(r["detail"]["code"] for r in service(s, q).process_once())
+    assert codes == ["REQUEST_EXPIRED", "REQUEST_HASH_MISMATCH", "REQUEST_NETWORK_MISMATCH"]
+
+
+def test_review_recover_abandons_an_authorization_whose_signature_never_left(s, monkeypatch):
+    q = MemoryQueue()
+    p = enqueue_place(s, q, "order-key-R6008")
+    # The process dies inside the signing step (BaseException): AUTHORIZED, no signature ever left.
+    monkeypatch.setattr(s.signer, "_produce_signature", lambda msg: (_ for _ in ()).throw(SystemExit("crash")))
+    with pytest.raises(SystemExit):
+        service(s, q).process_once()
+    monkeypatch.undo()
+    assert s.ledger.get("order-key-R6008").state == od.AUTHORIZED
+    (res,) = service(s, q).recover()
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "INTERRUPTED_BEFORE_SIGNATURE"
+    assert s.ledger.get("order-key-R6008").state == od.REJECTED
+
+
+def test_review_p3_cancel_failure_after_send_is_unknown(s, monkeypatch):
+    from signer.gateway import GatewayRefused
+    q = MemoryQueue()
+    i, sg, _ = s.place("order-key-R6009")
+    auth = s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[sg["order_id"]])
+    monkeypatch.setattr(s.cx, "cancel_orders", lambda *a, **k: (_ for _ in ()).throw(GatewayRefused("X")))
+    q.insert(cancel_request(auth, scope="ORDER_IDS", order_ids=[sg["order_id"]], created_at=int(s.clock())))
+    (res,) = service(s, q).process_once()
+    assert res["event"] == "UNKNOWN" and res["detail"]["note"].startswith("CANCEL_MAY_HAVE_BEEN_SENT")

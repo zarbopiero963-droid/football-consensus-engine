@@ -118,3 +118,49 @@ def test_full_service_path_on_real_postgres(tmp_path):
     assert [r["event"] for r in out if r["request_id"] == p["request_id"]] == ["SUBMITTED"]
     assert [e["state"] for e in q.events(p["request_id"])] == ["CLAIMED", "SIGNED", "SUBMITTED"]
     assert p["command"]["command_text"] not in json.dumps(q.events(p["request_id"]))
+
+
+def test_review_events_after_terminal_and_unclaimed_writers_are_refused():
+    import psycopg
+    rid = "d" * 32
+    _insert(_payload(rid))
+    q = PostgresRequestQueue(_connect)
+    with pytest.raises(psycopg.Error) as e:                    # nobody claimed it: no outcome can be forged
+        q.append_event(rid, "DONE", {"code": "FORGED"}, "intruder")
+    assert "NOT_CLAIMED_BY_WRITER" in str(e.value)
+    assert q.claim(rid, "sig-y")
+    with pytest.raises(psycopg.Error):                         # another identity cannot write outcomes either
+        q.append_event(rid, "SUBMITTED", {}, "intruder")
+    q.append_event(rid, "REFUSED", {"code": "X"}, "sig-y")
+    with pytest.raises(psycopg.Error) as e:
+        q.append_event(rid, "SUBMITTED", {}, "sig-y")
+    assert "ALREADY_TERMINAL" in str(e.value)
+
+
+def test_review_least_privilege_roles_on_a_throwaway_database():
+    """What WP-009 must provide before the draft is promoted (created here on the throwaway DB only)."""
+    import psycopg
+    with _connect(autocommit=True) as conn:
+        for role in ("fce_it_mcp_queue", "fce_it_signer_queue"):
+            conn.execute(f"DROP ROLE IF EXISTS {role}")
+            conn.execute(f"CREATE ROLE {role} NOLOGIN")
+        conn.execute("GRANT INSERT ON signer_order_requests TO fce_it_mcp_queue")
+        conn.execute("GRANT SELECT ON signer_order_request_events TO fce_it_mcp_queue")
+        conn.execute("GRANT SELECT ON signer_order_requests TO fce_it_signer_queue")
+        conn.execute("GRANT SELECT, INSERT ON signer_order_request_events TO fce_it_signer_queue")
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("SET ROLE fce_it_mcp_queue")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                cur.execute("INSERT INTO signer_order_request_events (request_id, seq, state, signer_id) "
+                            "VALUES (%s, 1, 'CLAIMED', 'x')", ("a" * 32,))
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("SET ROLE fce_it_signer_queue")
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                cur.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
+                            "VALUES (%s, 'CANCEL', '{}'::jsonb, %s, 'testnet')", ("9" * 32, "sha256:" + "0" * 64))
+    finally:
+        with _connect(autocommit=True) as conn:
+            for role in ("fce_it_mcp_queue", "fce_it_signer_queue"):
+                conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
+                conn.execute(f"DROP ROLE {role}")
