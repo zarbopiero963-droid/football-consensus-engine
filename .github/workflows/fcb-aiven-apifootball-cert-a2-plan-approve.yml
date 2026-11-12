@@ -51,7 +51,7 @@ jobs:
       CONFIRM_PHRASE: APPROVE API-FOOTBALL CERT PLAN IN fcb_cert
       EXPECTED_FILE_SHA256: |
         sql/aiven/apifootball_cert_path_a_plan_approve.sql=dea288d57b660366ae78421b80ad666d8e5ebf00d52091330bf5ba5091e46a18
-        scripts/apifootball_cert_path_a.py=55684ee8c29c02db695e1c0e871b995dd0ca030cb5835d0874c0c33aa06eb593
+        scripts/apifootball_cert_path_a.py=59d34dd6bc0b98672bad51951a79f0500360f5d92c801e195604916138346ace
       PGCONNECT_TIMEOUT: '15'
       EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
       EXPECTED_PORT: '14274'

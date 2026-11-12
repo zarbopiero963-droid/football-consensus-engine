@@ -93,6 +93,9 @@ def env(tmp_path_factory):
             conn.execute("INSERT INTO sxbet_rate_cooldowns SELECT * FROM sxbet_rate_cooldowns LIMIT 0")
         ns.before = _defaultdb_fingerprint(ns)
         path_a.install_roles(ns.admin, scram_verifier(runner_pw))
+        # step 1b AS the coordinator tables' owner: the administrator in this pre-WP-009 simulation
+        # (fcb_migrator after WP-009 phase 2: test_wp009_roles_runtime_postgres.py, full sequence)
+        path_a.install_coordinator_grants(ns.admin)
         ns.db_state = path_a.create_database(lambda: ns.admin(autocommit=True))
         path_a.install_ledger(lambda: ns.admin("fcb_cert"))
         yield ns
@@ -161,6 +164,7 @@ def test_install_is_idempotent_and_changes_no_existing_object(env):
         catalog = conn.execute("SELECT string_agg(c.relname || c.relacl::text, ',' ORDER BY c.relname) AS a "
                                "FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace").fetchone()
     path_a.install_roles(env.admin, scram_verifier(env.runner_pw))  # second run: no-op
+    path_a.install_coordinator_grants(env.admin)
     assert path_a.create_database(lambda: env.admin(autocommit=True)) == "ALREADY_PRESENT"
     path_a.install_ledger(lambda: env.admin("fcb_cert"))
     with env.su("fcb_cert") as conn:
@@ -788,7 +792,8 @@ def test_a2_the_runner_coordinator_grant_is_exactly_nine_privileges(env):
         schema = conn.execute("SELECT count(*) AS n FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x "
                               "WHERE x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"]
     got = {(r["relname"], r["privilege_type"], None) for r in rows} | {(c["relname"], c["privilege_type"], c["attname"]) for c in cols}
-    assert got == set(COORDINATOR_PRIVILEGES) and len(got) == 9 and schema == 0
+    # post-WP-009 adaptation (intentional change): one EXPLICIT USAGE on public, no longer from PUBLIC
+    assert got == set(COORDINATOR_PRIVILEGES) and len(got) == 9 and schema == 1
     assert all(r["is_grantable"] is False and r["grantor"] == ADMIN for r in rows)
     assert _coordinator_cycle(env)["remaining_day"] == 0  # the full cycle works with exactly these
 
@@ -1131,6 +1136,7 @@ def test_a2_evidence_is_catalog_only_stable_and_free_of_secrets(env):
     assert "database fcb_cert owner=fcb_cert_owner acl_entries=3" in first
     assert "defaultdb bridge_versions=1,2,3,4,5,6,7,8" in first
     assert sum(line.startswith("grant ") for line in first) == 8 and sum(line.startswith("column_grant ") for line in first) == 1
+    assert "schema_grant public USAGE grantable=false" in first
     assert "ledger triggers_enabled=13 triggers=13" in first
 
 

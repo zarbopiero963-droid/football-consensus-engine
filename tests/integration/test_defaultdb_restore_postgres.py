@@ -1050,7 +1050,8 @@ def test_the_post_guard_needs_the_state_recorded_by_the_guard(schema):
 
 # ---------------------------------------------------------------- PATH A2 (owner GO): fcb_cert_runner
 # The ONLY change PATH A2 makes to defaultdb is the exact quota-coordinator grant to the plain role
-# fcb_cert_runner (sql/aiven/apifootball_cert_path_a_roles.sql). The restore precheck, its in-
+# fcb_cert_runner (sql/aiven/apifootball_cert_path_a_roles.sql + _coordinator_grants.sql) and its
+# explicit USAGE on public (not part of the restore fingerprint). The restore precheck, its in-
 # transaction guards and the catalog fingerprint accept exactly that grant (the fingerprint renders it
 # as no ACL), and keep refusing every other privilege, owner change or role shape.
 
@@ -1071,6 +1072,12 @@ def _a2_install_roles(schema_name, owner):
         conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)",
                      (scram_verifier("a2-" + uuid.uuid4().hex + uuid.uuid4().hex),))
         conn.execute(sql)
+        # step 1b (post-WP-009 split): the coordinator grants AS the tables' owner, here the database
+        # owner (pre-WP-009 shape of this module), then the exact-set assertion
+        for name in ("apifootball_cert_path_a_coordinator_grants.sql", "apifootball_cert_path_a_coordinator_assert.sql"):
+            step = (AIVEN / name).read_text(encoding="utf-8")
+            assert step.count("'defaultdb'::pg_catalog.name") == 1
+            conn.execute(step.replace("'defaultdb'::pg_catalog.name", f"'{owner.dbname}'::pg_catalog.name"))
 
 
 def _a2_drop_roles(schema_name):

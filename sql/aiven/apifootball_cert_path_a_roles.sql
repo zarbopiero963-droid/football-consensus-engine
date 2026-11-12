@@ -1,16 +1,23 @@
 -- PATH A (owner mandate FCB-OWNER-APIFOOTBALL-PATH-A-20261112), step 1 of 3, database `defaultdb`.
 -- Run in ONE transaction by the existing administrative identity (Aiven's avnadmin: no superuser,
 -- CREATEROLE). No WP-009 phase, no ownership change of any existing object, no change to the
--- Render DATABASE_URL. Creates two DEDICATED roles and grants the runner the minimum it needs on
--- the shared API-FOOTBALL quota coordinator (CLAUDE.md §2.4), nothing else:
+-- Render DATABASE_URL. Creates two DEDICATED roles, sets the runner password and grants the runner
+-- USAGE on schema public explicitly, nothing else:
 --   fcb_cert_owner   NOLOGIN: owns the database fcb_cert and every ledger object (step 2/3)
 --   fcb_cert_runner  LOGIN (SCRAM verifier only): the campaign runner's identity
 -- Precondition set by the caller IN THIS TRANSACTION: fcb_cert.runner_verifier = the SCRAM-SHA-256
 -- verifier of the runner password (computed client-side; the cleartext never reaches the server).
 -- Aiven runs with createrole_self_grant = 'inherit,set': it is turned off for this transaction, so
 -- the creator keeps only PostgreSQL's automatic ADMIN-only membership (no INHERIT, no SET).
--- Coordinator privileges: EXACTLY these 9 (8 table-level + 1 column-level, in 4 GRANT statements),
--- each required by bridge/api_football/quota.py (PostgresQuota), the only SQL the runner sends to
+-- Post-WP-009 (owner decision: A2 is installed only after WP-009 phase 2): WP-009 phase 1 revokes
+-- USAGE on public from PUBLIC, so the runner gets ONE explicit USAGE (no CREATE, no grant option),
+-- granted here by the administrator as member of pg_database_owner (owner of public); the WP-009
+-- model (verify_bridge_roles.sql) accepts exactly that entry. The coordinator table grants are NOT
+-- issued here: after phase 2 the administrator no longer owns those tables, so they are issued by
+-- their owner fcb_migrator in sql/aiven/apifootball_cert_path_a_coordinator_grants.sql (separate
+-- step). Re-running THIS file alone rotates the runner password without any re-grant.
+-- Coordinator privileges (granted by the table owner, asserted by apifootball_cert_path_a_coordinator_assert.sql):
+-- EXACTLY these 9 (8 table-level + 1 column-level, in 4 GRANT statements), each required by bridge/api_football/quota.py (PostgresQuota), the only SQL the runner sends to
 -- defaultdb (tests/integration/test_apifootball_cert_path_a_postgres.py revokes each one in turn and
 -- shows the coordinator then fails):
 --   api_football_quota_counters  SELECT       _reserve/_snapshot read `used`; ON CONFLICT ... WHERE used < max RETURNING used
@@ -22,9 +29,10 @@
 --   api_football_quota_attempts  SELECT       rolling 60 s window count / retry-after / provider-zero probe
 --   api_football_quota_attempts  INSERT       _reserve records the attempt; _mark_exhausted fills the window
 --   api_football_quota_attempts  DELETE       _reserve prunes attempts older than 60 s
--- No schema grant: USAGE on public comes from PUBLIC (asserted below). No TRUNCATE, REFERENCES,
+-- This file asserts the UPPER bound (nothing beyond those 9, no grant option); the exact set is
+-- asserted after the owner's grant step and after every rotation. No TRUNCATE, REFERENCES,
 -- TRIGGER, MAINTAIN or grant option; nothing on any other table, sequence or function.
--- Catalog-qualified. Idempotent: a second run changes nothing.
+-- Catalog-qualified. Idempotent: a second run changes nothing (but the password verifier's salt).
 SET LOCAL createrole_self_grant = '';
 SET LOCAL search_path = pg_catalog, public;
 DO $fcbcertguard$
@@ -52,9 +60,7 @@ END $fcbcertguard$;
 ALTER ROLE fcb_cert_owner WITH NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS PASSWORD NULL;
 ALTER ROLE fcb_cert_runner WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS CONNECTION LIMIT 12;
 
-GRANT SELECT, INSERT ON TABLE public.api_football_quota_counters TO fcb_cert_runner;
-GRANT UPDATE (used) ON TABLE public.api_football_quota_counters TO fcb_cert_runner;
-GRANT SELECT, INSERT, DELETE ON TABLE public.api_football_quota_leases, public.api_football_quota_attempts TO fcb_cert_runner;
+GRANT USAGE ON SCHEMA public TO fcb_cert_runner;
 
 DO $fcbcertassert$
 DECLARE
@@ -79,13 +85,17 @@ BEGIN
     IF pg_catalog.has_schema_privilege('fcb_cert_runner', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_RUNNER_CAN_CREATE';
     END IF;
-    -- no schema grant is made: USAGE on public comes from PUBLIC (PostgreSQL 15+ default); without
-    -- it the runner could not reach the coordinator, so the install refuses instead of widening
+    -- schema public: EXACTLY one explicit entry for the two roles: fcb_cert_runner USAGE, without
+    -- grant option (it no longer depends on PUBLIC, which WP-009 phase 1 revokes)
     IF NOT pg_catalog.has_schema_privilege('fcb_cert_runner', 'public', 'USAGE')
-       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) a
-                  JOIN pg_catalog.pg_roles r ON r.oid OPERATOR(pg_catalog.=) a.grantee
-                  WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
-                    AND r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_cert_owner', 'fcb_cert_runner']::pg_catalog.name[])) THEN
+       OR (SELECT pg_catalog.string_agg(r.rolname::pg_catalog.text OPERATOR(pg_catalog.||) ':'::pg_catalog.text
+                  OPERATOR(pg_catalog.||) a.privilege_type::pg_catalog.text OPERATOR(pg_catalog.||) ':'::pg_catalog.text
+                  OPERATOR(pg_catalog.||) a.is_grantable::pg_catalog.text, ','::pg_catalog.text)
+           FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) a
+           JOIN pg_catalog.pg_roles r ON r.oid OPERATOR(pg_catalog.=) a.grantee
+           WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
+             AND r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_cert_owner', 'fcb_cert_runner']::pg_catalog.name[]))
+          IS DISTINCT FROM 'fcb_cert_runner:USAGE:false'::pg_catalog.text THEN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_RUNNER_SCHEMA_USAGE_UNEXPECTED';
     END IF;
     FOR t IN SELECT c.relname::pg_catalog.text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
@@ -109,16 +119,15 @@ BEGIN
     IF pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_counters', 'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
        OR pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_leases', 'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
        OR pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_attempts', 'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_counters', 'SELECT')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_counters', 'INSERT')
-       OR NOT pg_catalog.has_column_privilege('fcb_cert_runner', 'public.api_football_quota_counters', 'used', 'UPDATE')
        OR pg_catalog.has_column_privilege('fcb_cert_runner', 'public.api_football_quota_counters', 'api_key_hash', 'UPDATE')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_leases', 'SELECT')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_leases', 'INSERT')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_leases', 'DELETE')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_attempts', 'SELECT')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_attempts', 'INSERT')
-       OR NOT pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_quota_attempts', 'DELETE') THEN
+       -- upper bound only (the exact 9 are asserted after the owner's grant step): never a grant option
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c, LATERAL pg_catalog.aclexplode(c.relacl) x
+                  WHERE c.relnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace AND x.is_grantable
+                    AND x.grantee OPERATOR(pg_catalog.=) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_cert_runner'::pg_catalog.name))
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid,
+                  LATERAL pg_catalog.aclexplode(a.attacl) x
+                  WHERE c.relnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace AND x.is_grantable
+                    AND x.grantee OPERATOR(pg_catalog.=) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_cert_runner'::pg_catalog.name)) THEN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_COORDINATOR_GRANTS_UNEXPECTED';
     END IF;
     -- every existing table keeps its owner: this file never changes ownership

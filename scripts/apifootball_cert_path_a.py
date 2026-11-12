@@ -2,8 +2,13 @@
 ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-009.
 
 * No ownership change of any existing object, no change to the Render DATABASE_URL, no new service.
-* defaultdb (bridge 0001-0008, owned by the administrative identity) only gains two roles and the
-  runner's minimal grant on the three shared quota-coordinator tables (CLAUDE.md §2.4).
+* defaultdb only gains two roles, the runner's explicit USAGE on public and its minimal grant on the
+  three shared quota-coordinator tables (CLAUDE.md §2.4).
+* Post-WP-009 (owner decision: A2 is installed only after WP-009 phase 2, when fcb_migrator owns the
+  bridge): step 1 (roles, runner password, USAGE on public) runs as the administrator; step 1b (the
+  9 coordinator grants) runs as the OWNER of the coordinator tables (fcb_migrator; the workflow
+  requires that identity). A runner password rotation re-runs step 1 only (no re-grant) and then
+  asserts the exact grant set, in the same transaction.
 * fcb_cert is OWNED by the NOLOGIN role fcb_cert_owner, which also owns every ledger object and the
   SECURITY DEFINER budget trigger. The ledger DDL is bridge migration 0010 byte-for-byte (pinned).
 * The runner logs in as fcb_cert_runner (SCRAM), to defaultdb for the coordinator and to fcb_cert
@@ -15,9 +20,12 @@ ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-
   revokes in `finally` and asserts the end state.
 
 Nothing here prints a password, a verifier, a DSN or a host. Usage (owner-gated workflows only):
-  install   ADMIN_DSN_VAR RUNNER_PASSWORD_VAR   steps 1-3 (idempotent)
-  approve   ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID
-  evidence  ADMIN_DSN_VAR                       read-only catalog evidence (diagnose, rerun no-op)
+  install        ADMIN_DSN_VAR GRANTOR_DSN_VAR RUNNER_PASSWORD_VAR   steps 1, 1b, 2, 3 (idempotent)
+  rotate-runner  ADMIN_DSN_VAR RUNNER_PASSWORD_VAR                   step 1 only + exact-grant assert
+  approve        ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID
+  evidence       ADMIN_DSN_VAR [BRIDGE_DSN_VAR]                      read-only catalog evidence; the
+                 defaultdb bridge versions are read with BRIDGE_DSN_VAR (fcb_migrator after phase 2,
+                 when the administrator is denied on schema_migrations), else with ADMIN_DSN_VAR
 """
 from __future__ import annotations
 
@@ -71,6 +79,29 @@ def install_roles(connect_defaultdb, runner_verifier: str) -> None:
     with connect_defaultdb() as conn:
         conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)", (runner_verifier,))
         conn.execute(_sql("apifootball_cert_path_a_roles.sql"))
+
+
+def install_coordinator_grants(connect_owner) -> None:
+    """Step 1b, one transaction in defaultdb AS the owner of the coordinator tables: the 9 grants,
+    then the exact-set assertion."""
+    with connect_owner() as conn:
+        conn.execute(_sql("apifootball_cert_path_a_coordinator_grants.sql"))
+        conn.execute(_sql("apifootball_cert_path_a_coordinator_assert.sql"))
+
+
+def assert_coordinator_grants(connect_defaultdb) -> None:
+    """Read-only: the runner holds exactly the 9 coordinator privileges and USAGE on public."""
+    with connect_defaultdb() as conn:
+        conn.execute(_sql("apifootball_cert_path_a_coordinator_assert.sql"))
+
+
+def rotate_runner(connect_defaultdb, runner_verifier: str) -> None:
+    """Runner password rotation: step 1 only (administrator; NO coordinator re-grant, which only the
+    table owner could issue after WP-009 phase 2), then the exact-grant assertion, one transaction."""
+    with connect_defaultdb() as conn:
+        conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)", (runner_verifier,))
+        conn.execute(_sql("apifootball_cert_path_a_roles.sql"))
+        conn.execute(_sql("apifootball_cert_path_a_coordinator_assert.sql"))
 
 
 def create_database(connect_defaultdb_autocommit) -> str:
@@ -136,11 +167,17 @@ FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamesp
 JOIN pg_catalog.pg_attribute t ON t.attrelid = c.oid, LATERAL pg_catalog.aclexplode(t.attacl) x
 WHERE n.nspname = 'public' AND x.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'fcb_cert_runner')
 UNION ALL
+SELECT 'schema_grant public ' || x.privilege_type || ' grantable=' || x.is_grantable
+FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) x
+WHERE n.nspname = 'public' AND x.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'fcb_cert_runner')
+UNION ALL
 SELECT 'database fcb_cert owner=' || pg_catalog.pg_get_userbyid(d.datdba) || ' acl_entries=' || pg_catalog.cardinality(d.datacl)
 FROM pg_catalog.pg_database d WHERE d.datname = 'fcb_cert'
-UNION ALL
-SELECT 'defaultdb bridge_versions=' || (SELECT pg_catalog.string_agg(m.version::text, ',' ORDER BY m.version) FROM public.schema_migrations m)
 ORDER BY 1"""
+# Read with the bridge reader (fcb_migrator after WP-009 phase 2: the administrator is denied there).
+EVIDENCE_BRIDGE_SQL = """
+SELECT 'defaultdb bridge_versions=' || (SELECT pg_catalog.string_agg(m.version::text, ',' ORDER BY m.version) FROM public.schema_migrations m)
+  AS line"""
 EVIDENCE_LEDGER_SQL = """
 SELECT 'ledger relations_owned_by_owner=' || pg_catalog.count(*) FILTER (WHERE c.relowner = o.oid)
        || ' relations_total=' || pg_catalog.count(*) AS line
@@ -157,11 +194,14 @@ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespa
 ORDER BY 1"""
 
 
-def evidence(connect_defaultdb, connect_ledger) -> list[str]:
+def evidence(connect_defaultdb, connect_ledger, connect_bridge=None) -> list[str]:
     """Catalog-only, read-only evidence (no row of any ledger or bridge table but schema_migrations
     versions; no secret). Used by the install workflow: the second run must leave it unchanged."""
     with connect_defaultdb() as conn:
         lines = [r["line"] if isinstance(r, dict) else r[0] for r in conn.execute(EVIDENCE_DEFAULTDB_SQL)]
+    with (connect_bridge or connect_defaultdb)() as conn:
+        lines += [r["line"] if isinstance(r, dict) else r[0] for r in conn.execute(EVIDENCE_BRIDGE_SQL)]
+    lines.sort()
     if any(line.startswith("database fcb_cert ") for line in lines):
         with connect_ledger() as conn:
             lines += [r["line"] if isinstance(r, dict) else r[0] for r in conn.execute(EVIDENCE_LEDGER_SQL)]
@@ -189,15 +229,17 @@ def main(argv: list[str]) -> int:
 def _main(argv: list[str]) -> int:
     import psycopg
     from psycopg.rows import dict_row
-    if len(argv) >= 3 and argv[0] == "install":
-        dsn, password = os.environ.get(argv[1], ""), os.environ.get(argv[2], "")
-        if not dsn or len(password) < 32:
+    if len(argv) == 4 and argv[0] == "install":
+        dsn, grantor, password = (os.environ.get(argv[1], ""), os.environ.get(argv[2], ""),
+                                  os.environ.get(argv[3], ""))
+        if not dsn or not grantor or len(password) < 32:
             print("FCB_CERT_PATH_A_INPUT_MISSING")
             return 2
         sys.path.insert(0, str(ROOT / "scripts"))
         from fcb_db_roles import scram_verifier
         install_roles(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row),
                       scram_verifier(password))
+        install_coordinator_grants(lambda: psycopg.connect(grantor, dbname=COORDINATOR_DATABASE, row_factory=dict_row))
         state = create_database(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row,
                                                         autocommit=True))
         install_ledger(lambda: psycopg.connect(dsn, dbname=LEDGER_DATABASE, row_factory=dict_row))
@@ -209,14 +251,30 @@ def _main(argv: list[str]) -> int:
                      argv[2], argv[3], int(argv[4]), argv[5], argv[6])
         print("FCB_CERT_PATH_A_PLAN_APPROVED")
         return 0
-    if len(argv) == 2 and argv[0] == "evidence":
+    if len(argv) == 3 and argv[0] == "rotate-runner":
+        dsn, password = os.environ.get(argv[1], ""), os.environ.get(argv[2], "")
+        if not dsn or len(password) < 32:
+            print("FCB_CERT_PATH_A_INPUT_MISSING")
+            return 2
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from fcb_db_roles import scram_verifier
+        rotate_runner(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row),
+                      scram_verifier(password))
+        print("FCB_CERT_PATH_A_RUNNER_ROTATED grants=unchanged")
+        return 0
+    if len(argv) in (2, 3) and argv[0] == "evidence":
         dsn = os.environ.get(argv[1], "")
+        bridge = os.environ.get(argv[2], "") if len(argv) == 3 else dsn
+        if not dsn or not bridge:
+            print("FCB_CERT_PATH_A_INPUT_MISSING")
+            return 2
         for line in evidence(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row),
-                             lambda: psycopg.connect(dsn, dbname=LEDGER_DATABASE, row_factory=dict_row)):
+                             lambda: psycopg.connect(dsn, dbname=LEDGER_DATABASE, row_factory=dict_row),
+                             lambda: psycopg.connect(bridge, dbname=COORDINATOR_DATABASE, row_factory=dict_row)):
             print(line)
         return 0
-    print("usage: install ADMIN_DSN_VAR RUNNER_PASSWORD_VAR | approve ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID"
-          " | evidence ADMIN_DSN_VAR")
+    print("usage: install ADMIN_DSN_VAR GRANTOR_DSN_VAR RUNNER_PASSWORD_VAR | rotate-runner ADMIN_DSN_VAR RUNNER_PASSWORD_VAR"
+          " | approve ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID | evidence ADMIN_DSN_VAR [BRIDGE_DSN_VAR]")
     return 2
 
 

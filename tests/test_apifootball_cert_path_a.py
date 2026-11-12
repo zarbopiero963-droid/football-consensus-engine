@@ -55,16 +55,36 @@ def test_every_temporary_owner_grant_is_revoked_in_the_same_transaction_and_asse
 
 
 def test_defaultdb_gets_only_two_roles_and_the_minimal_coordinator_grant():
+    # Post-WP-009 split (intentional change): the administrator's step 1 creates the roles and grants
+    # ONLY the explicit USAGE on public; the 9 coordinator grants are issued by the tables' owner
+    # (fcb_migrator after WP-009 phase 2) in the separate step 1b file, never in step 1.
     code = _code("apifootball_cert_path_a_roles.sql")
     assert code.index("SET LOCAL createrole_self_grant = '';") < code.index("CREATE ROLE")
-    granted = set(re.findall(r"GRANT [^;]*?ON TABLE ([^;]*?) TO fcb_cert_runner", code))
+    assert not re.search(r"GRANT [^;]*\bON TABLE\b", code)
+    assert re.findall(r"^GRANT [^;]*;", code, re.M) == ["GRANT USAGE ON SCHEMA public TO fcb_cert_runner;"]
+    assert re.findall(r"CREATE ROLE (\w+) NOLOGIN", code) == ["fcb_cert_owner", "fcb_cert_runner"]
+    assert "WITH LOGIN" in code and "PASSWORD %L" in code  # a SCRAM verifier, never a cleartext password
+    grants = _code("apifootball_cert_path_a_coordinator_grants.sql")
+    granted = set(re.findall(r"GRANT [^;]*?ON TABLE ([^;]*?) TO fcb_cert_runner", grants))
     tables = {t.strip() for g in granted for t in g.split(",")}
     assert tables == {"public.api_football_quota_counters", "public.api_football_quota_leases",
                       "public.api_football_quota_attempts"}
-    assert "GRANT UPDATE (used) ON TABLE public.api_football_quota_counters" in code
-    assert not re.search(r"GRANT [^;]*\b(TRUNCATE|REFERENCES|TRIGGER|ALL)\b", code)
-    assert re.findall(r"CREATE ROLE (\w+) NOLOGIN", code) == ["fcb_cert_owner", "fcb_cert_runner"]
-    assert "WITH LOGIN" in code and "PASSWORD %L" in code  # a SCRAM verifier, never a cleartext password
+    assert "GRANT UPDATE (used) ON TABLE public.api_football_quota_counters" in grants
+    assert not re.search(r"GRANT [^;]*\b(TRUNCATE|REFERENCES|TRIGGER|ALL|OPTION)\b", grants)
+    assert not re.search(r"\b(CREATE|ALTER|DROP)\s+ROLE\b|PASSWORD", grants)  # never a rotation
+    assert len(re.findall(r"^GRANT ", grants, re.M)) == 3
+    # the guard: only the owner of the 3 coordinator tables, never a superuser or an A2/runtime role
+    assert "FCB_CERT_PATH_A_GRANTS_GUARD_FAILED" in grants and "3::pg_catalog.int8" in grants
+    assert "'fcb_cert_owner', 'fcb_cert_runner', 'fcb_app', 'fcb_signer'" in grants
+    expected = _code("apifootball_cert_path_a_coordinator_assert.sql")
+    assert expected.count(":false") == 10 and ":true" not in expected  # 9 + USAGE, never a grant option
+
+
+def test_runner_rotation_is_step_one_only_and_asserts_the_exact_grants():
+    src = (ROOT / "scripts" / "apifootball_cert_path_a.py").read_text(encoding="utf-8")
+    body = src[src.index("def rotate_runner("):src.index("def create_database(")]
+    assert "apifootball_cert_path_a_roles.sql" in body and "apifootball_cert_path_a_coordinator_assert.sql" in body
+    assert "coordinator_grants" not in body  # no re-grant: only the table owner could issue it
 
 
 def test_the_runner_defaults_to_the_dedicated_ledger_database_and_owner():

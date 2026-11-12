@@ -23,7 +23,8 @@
 --              (finalize_bridge_privileges.sql); no column privilege; no PUBLIC or signer grant;
 --   grants     (G2) no non-owner privilege is held WITH GRANT OPTION, even an allowed one;
 --   routines   no non-owner EXECUTE (PUBLIC revoked);
---   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, nothing for PUBLIC/fcb_signer
+--   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, (PATH A2) a plain fcb_cert_runner
+--              USAGE, nothing for PUBLIC/fcb_signer
 --              (grants held by the schema owner or the session identity are not judged);
 --   database   no bridge role may CREATE (schemas) in the database;
 --   settings   no per-role setting (ALTER ROLE ... SET) for any bridge role;
@@ -169,6 +170,9 @@ expected_schema_grants(grantee, priv) AS (
     SELECT (SELECT app.oid FROM app), 'USAGE'::pg_catalog.text
     UNION ALL SELECT (SELECT mig.oid FROM mig), 'USAGE'::pg_catalog.text WHERE (SELECT phase.two FROM phase)
     UNION ALL SELECT (SELECT mig.oid FROM mig), 'CREATE'::pg_catalog.text WHERE (SELECT phase.two FROM phase)
+    -- PATH A2 post-WP-009: a plain fcb_cert_runner holds exactly one explicit USAGE on public (phase 1
+    -- revoked PUBLIC's); required while it exists, like its coordinator grant (no grant option: G2)
+    UNION ALL SELECT w.oid, 'USAGE'::pg_catalog.text FROM cert_runner w
 ),
 inventory AS (
     SELECT m.roleid, m.member, m.admin_option, m.inherit_option, m.set_option, m.grantor

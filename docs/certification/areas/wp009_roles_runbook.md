@@ -183,6 +183,7 @@ ROLES_ABSENT
 The summary must show:
 - `Phase 1: PASS (… model after: HARDENED_PHASE1; … objects still owned by the administrator)`;
 - `login fcb_app: tls=True … readiness=READY create_denied=True legacy_read_denied=True`;
+- `login fcb_app effective: targets=N set_role_refused=2N/2N alter_role_refused=K/K grant_without_effect=G/G attributes=False member_of=0 reachable_roles=0 owns=0 grant_option=0 create_schema=0 create_database=0 role_settings=0 default_acl=0 fcb_cert=absent` (G1: the effective powers of the REAL `fcb_app` password, the one Render uses. Every write probe is rolled back; a GRANT that only WARNs is judged by comparing the catalog inside the transaction. `fcb_cert=refused` once A2 exists. Any other value fails closed);
 - `login fcb_migrator: refused (phase 1: NOLOGIN, no password)`;
 - `owners relations session=34`, the three membership lines above, and 11 `grant fcb_app …` lines matching the matrix.
 
@@ -230,8 +231,14 @@ The transaction then refuses while **any other `avnadmin` session** is connected
 The `avnadmin` DSN is **no longer a rollback**: it fails closed (healthz not READY, OAuth 503). Making it work again would need an explicit, recorded owner action: granting the administrator privileges or membership. That reopens exactly the escalation this design removes. Only consider it with a fresh `diagnose` reporting HARDENED, in an emergency where both bridge passwords are lost; re-run phase 2 with new secrets instead whenever possible.
 
 ### 6. Other consumers of `avnadmin`
-- `api-football-live` / `APIFOOTBALL_COORDINATOR_DATABASE_URL`: switch it to the `fcb_app` DSN after step 5 (quota tables only). The owner approves one live smoke.
+- `api-football-live` / `APIFOOTBALL_COORDINATOR_DATABASE_URL`: **leave it absent** (owner decision Q5) until PATH A2 is installed post-WP-009; the live scripts then fail closed. After the A2 install it holds the **`fcb_cert_runner`** DSN (the runner refuses any other identity). Never the `fcb_app` DSN: that would copy the Render runtime password into another Environment.
 - `FCB_DEFAULTDB_URL` and `FCB_PG18_TEST_URL` stay administrative.
+
+### 6bis. PATH A2 after WP-009 (PR #201, owner GO, only after phase 2)
+- Step 1 (administrator, `FCB_DEFAULTDB_URL`): roles `fcb_cert_owner`/`fcb_cert_runner`, runner password, and ONE explicit `USAGE` on `public` for the runner (phase 1 revoked PUBLIC's). The administrator can still grant on `public` as member of `pg_database_owner`.
+- Step 1b (**`fcb_migrator`**, `FCB_MIGRATOR_DB_URL`): exactly the 9 coordinator privileges, then the exact-set assertion. After phase 2 the administrator owns no coordinator table and cannot grant on them (`FCB_CERT_PATH_A_GRANTS_GUARD_FAILED`, tested).
+- `verify_bridge_roles.sql` accepts exactly: the 9 coordinator privileges plus the runner's `USAGE`, nothing else, no grant option (G2).
+- Runner password rotation: `mode=rotate-runner`, phrase `ROTATE fcb_cert_runner PASSWORD`. It re-runs step 1 only (no re-grant) and asserts the exact grant set in the same transaction. `ALTER ROLE … PASSWORD` needs CREATEROLE + ADMIN on the role, which only the administrator has: `fcb_migrator` has no CREATEROLE by design.
 
 ### 7. Rotate the `avnadmin` password (owner GO only, after steps 5 and 6)
 1. Confirm nothing at runtime uses `avnadmin`: Render is on `fcb_app`, and the coordinator secret is on `fcb_app` or unused.
@@ -259,7 +266,8 @@ The MCP service has no downtime, because the runtime does not use `avnadmin`.
 - **SCRAM verifiers on the server side.** They never reach stdout, stderr, the summary, artifacts or argv (tested). On the server, the `ALTER ROLE … PASSWORD 'SCRAM-SHA-256$…'` text can appear, on success and on failure, in the log (`log_statement`, `log_min_error_statement`), in `pg_stat_statements` and in `pg_stat_activity`. Only the administrator and Aiven can see those. A verifier is not a login secret.
 - **Self password change.** Any login can change its own password: a lock-out, not an escalation.
 - **Phase-2 session check limits.** It sees sessions of the administrator role on `defaultdb` only. Aiven's internal superusers are outside the model (`superusers=<n>` is reported).
-- **Network.** `avnadmin` is still reachable from any IP (Aiven `ip_filter` 0.0.0.0/0), and termination protection is off.
+- **Network.** `avnadmin` is still reachable from any IP (Aiven `ip_filter` 0.0.0.0/0). Termination protection is ON (owner read-only inventory); it protects the service from deletion, not the data from an administrative SQL error.
+- **Self-scoped entries of `fcb_app`.** Any plain login can run `ALTER ROLE fcb_app SET …` and `ALTER DEFAULT PRIVILEGES` for its own future objects. Neither grants a privilege (`fcb_app` can create nothing); both make the login-check and the model fail closed (`role_settings`, `default_acl`).
 - **Evidence.** Local runs on PostgreSQL 16.15 and 18.6 (PGDG), both with `createrole_self_grant=inherit,set`. CI runs PostgreSQL 16 and 18 with the same per-session setting. Production Aiven is not exercised.
 
 This runbook prepares WP-009. It does not certify it. WP-009 becomes PRODUCTION_VERIFIED only after steps 2–5 pass in production and are recorded on #130.
