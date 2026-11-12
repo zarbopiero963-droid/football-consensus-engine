@@ -92,7 +92,7 @@ Sono i valori della config di rischio del signer (`SXBET_SIGNER_RISK_CONFIG`, fi
 - [ ] proxy finanziato;
 - [ ] scope `Orders: create/cancel`;
 - [ ] flag `LIVE_TRADING` firmato con scadenza breve;
-- [ ] conferma specifica per ogni ordine.
+- [ ] comando esplicito e completo dell'owner per ogni ordine, verificato dal signer (§2.6; nessuna seconda conferma).
 
 ## 7. Note dalle fonti ufficiali
 - **Fee:** la guida utente indica "1% … taker … Maker bets pay 0%" (parlay 5%), mentre la documentazione per sviluppatori dice che le fee sono "set **per account**" (`/user/fees-v3`; `null` = nulla addebitato). Fanno fede le aliquote lette dall'API e `settlement.settleFeeAmount`. L'1% fisso non va mai assunto.

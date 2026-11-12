@@ -15,7 +15,7 @@ Tre gate distinti, mai confusi: **implementazione completata**, **certificazione
 
 | # | Requisito | Stato | Evidenza o motivo | PR |
 |---|---|---|---|---|
-| R1 | Mercati, quote, order book, liquidità (36 GET ufficiali) | PASS | collaudo live 11-11: 35 PASS, 11 EMPTY_VALID, 0 FAIL; suite offline | — |
+| R1 | Mercati, quote, order book, liquidità (36 GET ufficiali) | PASS | collaudo live 11-11 sui 46 tool `sxbet_*` (36 GET + derivati): 35 PASS, 11 EMPTY_VALID, 0 FAIL; suite offline | — |
 | R2 | Saldo, ordini, posizioni, esposizione (lettura) | PARTIAL | live solo con account vuoto (EMPTY_VALID); logica coperta offline | S8 (testnet) |
 | R3 | Simulazione ordini e costi | PASS (offline + live) | `sxbet_simulate_order`, `net_pnl` con fee lette da `/user/fees-v3` | — |
 | R4 | P&L lordo e netto, fee, USDC a 6 decimali | PARTIAL | formule e Decimal PASS offline; scala delle fee VERIFIED (S1); fee reale al settlement mai osservata | S8 |
