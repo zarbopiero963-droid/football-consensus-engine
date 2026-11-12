@@ -15,9 +15,15 @@ Budget model (owner conditions A and C, 2026-11-11):
   * every request also takes a lease of the shared quota coordinator (PostgresQuota, CLAUDE.md §2.4).
   * every request needs the owner authorization variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true,
     checked by the transport itself before the reservation.
-The campaign ledger is bridge migration 0010 (dedicated tables), applied ONLY by the owner-gated
-workflow fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml. Where it is not applied,
-PostgresCampaignLedger refuses with CAMPAIGN_LEDGER_MIGRATION_REQUIRED before any request.
+The campaign ledger is bridge migration 0010 (dedicated tables). PATH A (owner mandate
+FCB-OWNER-APIFOOTBALL-PATH-A-20261112): it lives in the DEDICATED database fcb_cert (same Aiven
+service), owned by the NOLOGIN role fcb_cert_owner, installed only by scripts/apifootball_cert_path_a.py
+from an owner-gated workflow. The runner logs in as fcb_cert_runner with ONE DSN
+(APIFOOTBALL_COORDINATOR_DATABASE_URL -> DATABASE_URL): database defaultdb for the shared quota
+coordinator, the same credentials with dbname fcb_cert for the ledger. Before any request it refuses
+an identity that is not a plain dedicated role (RUNNER_IDENTITY_NOT_DEDICATED, e.g. the administrator)
+and a ledger whose owner, guards or counter evidence are not intact (CAMPAIGN_LEDGER_INTEGRITY_FAILED).
+Where 0010 is not installed, PostgresCampaignLedger refuses with CAMPAIGN_LEDGER_MIGRATION_REQUIRED.
 
 Usage:
   python scripts/apifootball_cert_batch1.py --write-plan
@@ -66,6 +72,45 @@ RESERVED_UNKNOWN = "RESERVED_UNKNOWN"
 # Owner authorization (repository variable passed by the workflow). Checked by the transport before
 # EVERY request, whatever the entry point: without it nothing is reserved and nothing is sent.
 AUTH_VAR = "APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED"
+# PATH A: the ledger database and the NOLOGIN role that owns it and every ledger object.
+LEDGER_DATABASE = "fcb_cert"
+LEDGER_OWNER_ROLE = "fcb_cert_owner"
+# The connected identity must be a plain role: not the administrator (CREATEROLE/CREATEDB/BYPASSRLS),
+# not a superuser, no SET ROLE in effect and member of no role at all (so it can act as nobody else).
+RUNNER_IDENTITY_SQL = (
+    "SELECT (CURRENT_USER OPERATOR(pg_catalog.=) SESSION_USER AND NOT r.rolsuper AND NOT r.rolcreaterole "
+    "AND NOT r.rolcreatedb AND NOT r.rolbypassrls AND NOT r.rolreplication AND NOT EXISTS ("
+    "SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid)) AS ok "
+    "FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER")
+# The ledger as installed: 5 tables owned by the NOLOGIN owner (not the caller), nobody holding SET or
+# INHERIT on the owner, the 12 0010 triggers present and ENABLED, the budget trigger SECURITY DEFINER
+# owned by the owner with its pinned search_path. Catalog only (readable by every role).
+LEDGER_INTEGRITY_SQL = (
+    "SELECT (NOT o.rolcanlogin AND o.rolname OPERATOR(pg_catalog.<>) CURRENT_USER "
+    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) o.oid "
+    "AND (m.inherit_option OR m.set_option)) "
+    "AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) "
+    "AND c.relkind OPERATOR(pg_catalog.=) 'r' AND c.relowner OPERATOR(pg_catalog.=) o.oid) OPERATOR(pg_catalog.=) 5 "
+    "AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.tgrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s "
+    "AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) AND NOT t.tgisinternal AND t.tgenabled OPERATOR(pg_catalog.=) 'O' "
+    "AND t.tgname OPERATOR(pg_catalog.~) '^api_football_cert_') OPERATOR(pg_catalog.=) 12 "
+    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.tgrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s "
+    "AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) AND t.tgenabled OPERATOR(pg_catalog.<>) 'O') "
+    "AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND p.proname OPERATOR(pg_catalog.=) 'api_football_cert_attempt_guard' "
+    "AND p.prosecdef AND p.proowner OPERATOR(pg_catalog.=) o.oid "
+    "AND p.proconfig OPERATOR(pg_catalog.=) ARRAY['search_path=pg_catalog, pg_temp']::pg_catalog.text[])) AS ok "
+    "FROM pg_catalog.pg_roles o WHERE o.rolname OPERATOR(pg_catalog.=) %(owner)s")
+
+
+def runner_identity_problem(conn) -> str | None:
+    """None when the connection's identity is a dedicated plain role, else a fixed code."""
+    row = conn.execute(RUNNER_IDENTITY_SQL).fetchone()
+    ok = row is not None and (row["ok"] if isinstance(row, dict) else row[0])
+    return None if ok else "RUNNER_IDENTITY_NOT_DEDICATED"
 
 L, S, T = 39, 2025, 33  # Premier League, season 2025 (2025/26, completed), Manchester United
 
@@ -323,11 +368,20 @@ class PostgresCampaignLedger:
     message, DSN or value is surfaced."""
 
 
-    def __init__(self, connect=None, schema: str = "public"):
-        if connect is None:
-            from app.db import connect as connect  # noqa: PLW0127 - DATABASE_URL from env, never logged
+    def __init__(self, connect=None, schema: str = "public", owner_role: str | None = None):
+        if connect is None:  # PATH A: the runner's DSN, database fcb_cert; DSN never logged
+            def connect():
+                import psycopg
+                from psycopg.rows import dict_row
+
+                from app.db import database_url
+                return psycopg.connect(database_url(), dbname=LEDGER_DATABASE, row_factory=dict_row)
+            owner_role = owner_role or LEDGER_OWNER_ROLE
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
             raise ValueError("INVALID_SCHEMA")
+        if owner_role is not None and not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", owner_role):
+            raise ValueError("INVALID_OWNER_ROLE")
+        self._owner_role = owner_role  # PATH A integrity checks (None: offline/legacy tests only)
         self._connect = connect
         self._schema = schema  # "public" in production; a throwaway schema in integration tests
         self._plans = f"{schema}.api_football_cert_plans"
@@ -356,6 +410,27 @@ class PostgresCampaignLedger:
             cur.execute("SELECT pg_catalog.to_regclass(%s) AS t", (f"{self._schema}.{table}",))
             if self._one(cur, "t") is None:
                 raise LedgerUnavailable("CAMPAIGN_LEDGER_MIGRATION_REQUIRED")
+        if self._owner_role is not None:  # every ledger transaction, before any write
+            cur.execute(RUNNER_IDENTITY_SQL)
+            if not self._one(cur, "ok"):
+                raise LedgerUnavailable("RUNNER_IDENTITY_NOT_DEDICATED")
+            cur.execute(LEDGER_INTEGRITY_SQL, {"schema": self._schema, "tables": list(LEDGER_TABLES),
+                                               "owner": self._owner_role})
+            if not self._one(cur, "ok"):
+                raise LedgerUnavailable("CAMPAIGN_LEDGER_INTEGRITY_FAILED")
+
+    def _plan_evidence_consistent(self, cur, plan_sha: str) -> None:
+        """PATH A: the committed attempts of the plan carry seqs exactly 1..n, n <= budget. A counter
+        reset (only possible as a deliberate owner/administrator act) leaves duplicate seqs: refused."""
+        cur.execute(f"SELECT pg_catalog.count(a.seq) AS n, pg_catalog.count(DISTINCT a.seq) AS d, "
+                    f"COALESCE(pg_catalog.max(a.seq), 0) AS m, pg_catalog.min(p.budget) AS b "
+                    f"FROM {self._campaigns} c JOIN {self._plans} p ON p.plan_sha256 = c.plan_sha256 "
+                    f"LEFT JOIN {self._attempts} a ON a.campaign_id = c.campaign_id WHERE c.plan_sha256 = %s",
+                    (plan_sha,))
+        row = cur.fetchone()
+        n, d, m, b = ((row["n"], row["d"], row["m"], row["b"]) if isinstance(row, dict) else tuple(row))
+        if not (n == d == m and (b is None or m <= b)):
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_INTEGRITY_FAILED")
 
     def _guarded(self, fn, *args):
         try:
@@ -387,6 +462,8 @@ class PostgresCampaignLedger:
             cur.execute(f"SELECT plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
             if self._one(cur, "plan_sha256") != plan_sha:
                 raise LedgerUnavailable("CAMPAIGN_PLAN_MISMATCH")
+            if self._owner_role is not None:
+                self._plan_evidence_consistent(cur, plan_sha)
 
     def _reserve(self, campaign_id: str, call_id: str) -> int:
         """One short READ COMMITTED transaction, committed BEFORE the request is sent. The 0010
@@ -927,6 +1004,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not os.environ.get("DATABASE_URL", "").strip():
         print("COORDINATOR_DATABASE_REQUIRED")
+        return 2
+    try:  # PATH A: the coordinator connection (defaultdb) must be the dedicated runner too
+        from app.db import connect as _coordinator_connect
+        with _coordinator_connect() as conn:
+            identity = runner_identity_problem(conn)
+    except Exception:  # noqa: BLE001 - fixed code only, never the message or the DSN
+        identity = "COORDINATOR_DATABASE_UNAVAILABLE"
+    if identity:
+        print(f"CAMPAIGN_REFUSED {identity}")
         return 2
     if args.campaign == "live_full_match_snapshot":
         try:
