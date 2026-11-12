@@ -168,6 +168,7 @@ class SimExchange:
         self.requests: list[RestRequest] = []
         self.accepted: list[str] = []        # order ids accepted by POST /orders-v3 (exactly-once checks)
         self.faults: list[dict] = []
+        self.deferred_matches: list[tuple[int, str, int]] = []  # (at, order id, taker stake): CANCEL_AFTER_MATCH
         self.read_lag = 0
         self.fill_lag = 0
         self.heartbeat: tuple[int, int] | None = None   # (last_beat_at, timeout_seconds)
@@ -211,7 +212,8 @@ class SimExchange:
     def inject(self, method: str, path: str, kind: str, **params: Any) -> None:
         """One-shot fault for the next request with this method and path prefix. kind: timeout_before,
         timeout_after, http500_before, http500_after, http429, crash_before, crash_after, get_error,
-        fill_before_cancel(taker_stake), unconfirmed(land_after), async_cancel(land_after), or "none" (only
+        fill_before_cancel(taker_stake), unconfirmed(land_after), async_cancel(land_after),
+        cancel_after_match(taker_stake), cancel_after_match_deferred(taker_stake, land_after), or "none" (only
         params). POST /orders-v3 also takes visibility_delay=<seconds> with any kind."""
         self.faults.append({"method": method, "path": path, "kind": kind, **params})
 
@@ -424,15 +426,16 @@ class SimExchange:
 
     def _tick(self) -> None:
         now = int(self.clock())
-        for at, oid, stake in list(getattr(self, "deferred_matches", [])):
-            if now >= at:
-                self.deferred_matches.remove((at, oid, stake))
-                o = self.orders[oid]
-                if o.status in ("PENDING", "ACTIVE"):
-                    self.take(o.market_hash, outcome_one=not o.outcome_one, taker_stake=stake,
-                              max_taker_odds=ODDS - o.odds)
-                if o.status in ("PENDING", "ACTIVE"):
-                    self._inactivate(o, "USER_REQUESTED")
+        # Take the due entries out BEFORE acting: take() re-enters _tick (review 016c964 P2).
+        due = [d for d in self.deferred_matches if now >= d[0]]
+        self.deferred_matches = [d for d in self.deferred_matches if now < d[0]]
+        for _at, oid, stake in due:
+            o = self.orders[oid]
+            if o.status in ("PENDING", "ACTIVE"):
+                self.take(o.market_hash, outcome_one=not o.outcome_one, taker_stake=stake,
+                          max_taker_odds=ODDS - o.odds)
+            if o.status in ("PENDING", "ACTIVE"):
+                self._inactivate(o, "USER_REQUESTED")
         for o in list(self.orders.values()):
             if o.status == "PENDING" and now >= o.visible_from:
                 self._activate(o)
@@ -613,7 +616,6 @@ class SimExchange:
             return "NOT_ACTIVE"
         if fault.get("kind") == "cancel_after_match_deferred":
             # Contract shape: the reply comes first; the match and then the cancel land after the delay.
-            self.deferred_matches = getattr(self, "deferred_matches", [])
             self.deferred_matches.append((int(self.clock()) + fault["land_after"], o.id, fault["taker_stake"]))
             return "CANCEL_AFTER_MATCH"
         if fault.get("kind") == "cancel_after_match":
@@ -640,7 +642,7 @@ class SimExchange:
             if o is None or o.maker != self.account or self._purged(o):
                 out["notCancelled"].append({"orderId": oid, "reason": "NOT_FOUND"})
                 continue
-            if o.pending_cancel_at is not None:
+            if o.pending_cancel_at is not None or any(d[1] == oid for d in self.deferred_matches):
                 out["notCancelled"].append({"orderId": oid, "reason": "CANCEL_PENDING"})
                 continue
             r = self._cancel_one(o, fault)

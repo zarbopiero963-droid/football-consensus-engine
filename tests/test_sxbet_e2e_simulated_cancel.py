@@ -191,6 +191,28 @@ def test_simulated_cancel_after_match_deferred_keeps_exposure_reserved_until_rea
     assert rep["orders"][oid]["reason"] == "CANCEL_AFTER_MATCH"
     assert s.state(key) == od.OPEN and s.exposure().total == before  # nothing released on the reply
     s.sim.advance(9)
+    assert s.state(key) == od.OPEN and s.exposure().total == before  # the engine matched; no read yet
     assert s.gw.reconcile(key)["state"] == od.CANCELLED
     o = s.ledger.get(key)
     assert o.filled == 1 * USDC and s.exposure().total == before - 1 * USDC and s.exposure().matched == 1 * USDC
+
+
+
+def test_simulated_cancel_after_match_deferred_on_two_orders_in_one_batch(tmp_path):
+    """Review 016c964 P2: two deferred matches due in the same tick (the simulator crashed)."""
+    s = Stack(tmp_path)
+    (oid1, key1), (oid2, key2) = two_open(s)
+    s.sim.inject("DELETE", "/orders-v3", "cancel_after_match_deferred", taker_stake=1_500_000, land_after=8)
+    rep = s.cx.cancel_orders([oid1, oid2], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid1, oid2]))
+    assert {rep["orders"][o]["reason"] for o in (oid1, oid2)} == {"CANCEL_AFTER_MATCH"}
+    s.sim.advance(9)
+    assert {s.gw.reconcile(k)["state"] for k in (key1, key2)} <= {od.CANCELLED, od.FILLED}
+
+
+def test_simulated_second_cancel_inside_the_window_is_cancel_pending(tmp_path):
+    s = Stack(tmp_path)
+    (oid, key), _ = two_open(s)
+    s.sim.inject("DELETE", "/orders-v3", "cancel_after_match_deferred", taker_stake=1_500_000, land_after=8)
+    s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    rep = s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))  # new owner command
+    assert rep["orders"][oid].get("reason") == "CANCEL_PENDING" and s.state(key) == od.OPEN
