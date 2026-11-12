@@ -959,7 +959,9 @@ class OrderLedger:
             return False
         if not (gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()):
             return False
-        return _filesystem_keeps_setgid(os.path.dirname(os.path.abspath(path)) or ".")
+        # The probe gets the ledger's group on open (review 2f3a0a4 P3-c: a g+s directory of a foreign group must
+        # not refuse a ledger whose own group is fine); on create it inherits what the new file will inherit.
+        return _filesystem_keeps_setgid(os.path.dirname(os.path.abspath(path)) or ".", gid=None if create else gid)
 
     def _check_kill_marker(self) -> None:
         """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
@@ -1101,13 +1103,17 @@ class OrderLedger:
         (rename: content never modified, kept as evidence)."""
         d = os.path.dirname(os.path.abspath(self._path)) or "."
         base = os.path.basename(self._path)
+        self.archived_quarantine = []  # [(name, sha256)] for the audit (review 2f3a0a4 P3-b)
         try:
-            for n in os.listdir(d):
+            for n in sorted(os.listdir(d)):
                 if n.startswith(base + KILL_QUARANTINE_SUFFIX):
+                    src = os.path.join(d, n)
                     target = os.path.join(d, base + KILL_RELEASED_SUFFIX + n[len(base + KILL_QUARANTINE_SUFFIX):])
-                    if os.path.lexists(target):
-                        return False
-                    os.rename(os.path.join(d, n), target)
+                    if os.path.lexists(target):  # never overwrite: a fresh random suffix (review 2f3a0a4 P3-a)
+                        target += "-" + os.urandom(4).hex()
+                    digest = _file_sha256(src)
+                    os.rename(src, target)
+                    self.archived_quarantine.append((n, digest))
             _fsync_dir(self._path)
             return True
         except OSError:
@@ -1133,9 +1139,9 @@ class OrderLedger:
                     return "KEPT_LATER_ENGAGEMENT"
                 if not self._unlink(self.kill_marker_path):
                     return "UNREMOVABLE"
-            ok = (self._unlink(self.kill_flag_path) and self._clear_inode_witness()
-                  and self._archive_quarantine_siblings())
-            return "REMOVED" if ok else "UNREMOVABLE"
+            if not (self._unlink(self.kill_flag_path) and self._clear_inode_witness()):
+                return "UNREMOVABLE"
+            return "REMOVED" if self._archive_quarantine_siblings() else "QUARANTINE_UNARCHIVABLE"
 
     def quarantine_for_kill_switch(self) -> bool:
         return self.quarantine_for_kill_switch_detailed()[0]
@@ -1442,7 +1448,15 @@ def _fd_witness_capable(fd: int) -> bool:
     return st.st_gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()
 
 
-def _filesystem_keeps_setgid(directory: str) -> bool:
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def _filesystem_keeps_setgid(directory: str, gid: int | None = None) -> bool:
     """Real probe (review b8337c1 P3-4): a temporary file in the ledger's directory gets S_ISGID via fchmod and is
     read back with fstat; vfat or some NFS/FUSE mounts drop it. The probe file is always removed."""
     probe = os.path.join(directory, f".sxbet-witness-probe-{os.urandom(8).hex()}")
@@ -1452,6 +1466,8 @@ def _filesystem_keeps_setgid(directory: str) -> bool:
     except OSError:
         return False
     try:
+        if gid is not None and os.fstat(fd).st_gid != gid:
+            os.fchown(fd, -1, gid)
         os.fchmod(fd, 0o600 | KILL_INODE_WITNESS)
         return bool(os.fstat(fd).st_mode & KILL_INODE_WITNESS)
     except OSError:

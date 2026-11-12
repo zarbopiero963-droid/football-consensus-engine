@@ -602,7 +602,7 @@ def test_review_b8337c1_p3_2_witness_is_set_whenever_the_engage_line_fails(s, mo
 def test_review_b8337c1_p3_4_filesystem_that_drops_setgid_is_refused(s, monkeypatch):
     path = s.ledger._path
     s.ledger.close()
-    monkeypatch.setattr(od, "_filesystem_keeps_setgid", lambda d: False)
+    monkeypatch.setattr(od, "_filesystem_keeps_setgid", lambda d, gid=None: False)  # signature: + gid (2f3a0a4 P3-c)
     with pytest.raises(od.LedgerError) as e:
         od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
     assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE"
@@ -622,3 +622,51 @@ def test_review_b8337c1_p3_5_recovery_audit_runs_after_the_engagement_is_recorde
     with pytest.raises(ValueError):
         make_ks(s)
     assert s.ledger.kill_switch_state()["engaged"]  # recorded on the ledger before the broken audit
+
+
+# ---------------------------------------------------------------- fixes from the review of 2f3a0a4
+def _quarantined_then_restored(s, monkeypatch):
+    import shutil
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    path = s.ledger._path
+    k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.undo()
+    (q,) = [p for p in pathlib.Path(path).parent.iterdir() if od.KILL_QUARANTINE_SUFFIX in p.name]
+    s.ledger.close()
+    shutil.copy2(q, path)
+    s.restart()
+    return q
+
+
+def test_review_2f3a0a4_p3_a_b_archive_never_overwrites_and_is_audited(s, monkeypatch):
+    q = _quarantined_then_restored(s, monkeypatch)
+    clash = q.parent / q.name.replace(od.KILL_QUARANTINE_SUFFIX, od.KILL_RELEASED_SUFFIX)
+    clash.write_text("older evidence")
+    k = make_ks(s)
+    assert k.release(release(s, k))["marker_removed"] is True
+    assert clash.read_text() == "older evidence" and not q.exists()
+    assert len([p for p in q.parent.iterdir() if od.KILL_RELEASED_SUFFIX in p.name]) == 2
+    archived = [r for r in ks_audit(s) if r["decision"] == "KILL_SWITCH_QUARANTINE_ARCHIVED"]
+    assert len(archived) == 1 and "sha256:" in archived[0]["reason"]
+
+
+def test_review_2f3a0a4_p3_a_unarchivable_quarantine_has_a_distinct_code(s, monkeypatch):
+    _quarantined_then_restored(s, monkeypatch)
+    k = make_ks(s)
+    monkeypatch.setattr(s.ledger, "_archive_quarantine_siblings", lambda: False)
+    assert k.release(release(s, k))["marker_removed"] is False
+    assert "KILL_SWITCH_MARKER_QUARANTINE_UNARCHIVABLE" in [r["decision"] for r in ks_audit(s)]
+
+
+def test_review_2f3a0a4_p3_c_probe_uses_the_ledger_group_on_open(s, monkeypatch):
+    seen = {}
+    real = od._filesystem_keeps_setgid
+
+    def spy(directory, gid=None):
+        seen["gid"] = gid
+        return real(directory, gid=gid)
+    monkeypatch.setattr(od, "_filesystem_keeps_setgid", spy)
+    s.restart()
+    assert seen["gid"] == os.stat(s.ledger._path).st_gid

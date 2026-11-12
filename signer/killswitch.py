@@ -321,6 +321,8 @@ class KillSwitch:
         except OrderStateError:  # engaged again meanwhile: marker kept (review 30f5a96 P3-3)
             outcome = "KEPT_LATER_ENGAGEMENT"
         marker_removed = outcome == "REMOVED"
+        for name, digest in getattr(self._ledger, "archived_quarantine", []) or []:
+            self._safe_log("KILL_SWITCH_QUARANTINE_ARCHIVED", reason=f"{name} {digest}")
         if not marker_removed:
             # KEPT_LATER_ENGAGEMENT: a later engagement needs its own release. UNREMOVABLE (a directory, unreadable,
             # mode not clearable): the next open stays blocked until the owner clears it by hand (README).
