@@ -397,22 +397,25 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         def size(obj):
             return len(json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         if derive is not None:
-            result = {**result, **derive(data)}
-            # The raw provider answer must never become unreadable because of a DERIVED view (review d7f186b P2-1).
-            # Only OMITTABLE_VIEWS are dropped, one at a time in that order (S2 views first, review 79da023 P2-2);
-            # typed lookup fields (not_found, lookup_complete, lookup_note) are never replaced (P2-1). Every omission
-            # is listed at the top level and in warnings (P2-3).
-            omitted = []
-            for key in OMITTABLE_VIEWS:
-                if size(result) <= _MAX_MCP_BYTES:
-                    break
-                if key in result:
-                    result[key] = {"label": "DERIVED", "status": "VIEW_OMITTED_FOR_SIZE"}
+            derived = derive(data)
+            full = {**result, **derived}
+            if size(full) <= _MAX_MCP_BYTES:
+                result = full
+            else:
+                # A DERIVED view never makes readable provider data unreadable (reviews d7f186b, 79da023, e51b7bb).
+                # Views are REMOVED (no placeholder: a placeholder can be larger than a small view), the S2 views
+                # first, so the S1-shaped answer is tried before any S1 view goes; one compact top-level marker lists
+                # them and is INCLUDED in every measurement. Typed lookup fields are never touched.
+                result = full
+                omitted: list[str] = []
+                for key in OMITTABLE_VIEWS:
+                    if key not in result:
+                        continue
+                    result = {k: v for k, v in result.items() if k != key}
                     omitted.append(key)
-            if omitted:
-                result["views_omitted"] = omitted
-                result["warnings"] = [*result.get("warnings", []),
-                                      "VIEW_OMITTED_FOR_SIZE: " + ", ".join(omitted) + " (provider data complete)"]
+                    if size({**result, "views_omitted": omitted}) <= _MAX_MCP_BYTES:
+                        break
+                result = {**result, "views_omitted": omitted}
         if size(result) > _MAX_MCP_BYTES:
             # Never truncate silently: ask for a smaller page instead.
             return {**base, "status": "PAYLOAD_TOO_LARGE", "parameters": params, "network_calls_made": 1,

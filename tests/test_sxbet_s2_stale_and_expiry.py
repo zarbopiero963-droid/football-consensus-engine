@@ -161,8 +161,7 @@ def test_review_d7f186b_p2_1_view_is_omitted_never_the_data_at_the_cap_boundary(
     monkeypatch.setattr(sx, "_MAX_MCP_BYTES", (raw_only + with_view) // 2)
     out = run(t["sxbet_fixtures_active"](league_id=1))
     assert out["status"] == "REAL_API_RESPONSE" and out["data"] == rows
-    assert out["fixture_status_view"]["status"] == "VIEW_OMITTED_FOR_SIZE"
-    assert out["views_omitted"] == ["fixture_status_view"] and any("VIEW_OMITTED_FOR_SIZE" in w for w in out["warnings"])
+    assert "fixture_status_view" not in out and out["views_omitted"] == ["fixture_status_view"]
     monkeypatch.setattr(sx, "_MAX_MCP_BYTES", raw_only - 10)  # the data itself does not fit: explicit error
     assert run(t["sxbet_fixtures_active"](league_id=1))["status"] == "PAYLOAD_TOO_LARGE"
 
@@ -191,7 +190,7 @@ def test_review_79da023_p2_2_upcoming_survives_when_only_the_s2_view_is_too_much
 def test_review_79da023_p2_1_lookup_fields_keep_their_types_under_size_pressure(monkeypatch):
     import json
     hashes = ["0x" + f"{i:064x}" for i in range(30)]
-    rows = [{"marketHash": h, "status": "ACTIVE", "pad": "z" * 3000} for h in hashes[:29]]
+    rows = [{"marketHash": h, "status": "ACTIVE", "pad": "z" * 12000} for h in hashes[:10]]  # 20 of 30 missing
     t, _, _ = make(universal(overrides={"/markets/find": lambda r: _ok(rows)}))
     full = run(t["sxbet_markets_find"](market_hashes=hashes))
     monkeypatch.setattr(sx, "_MAX_MCP_BYTES",
@@ -201,4 +200,25 @@ def test_review_79da023_p2_1_lookup_fields_keep_their_types_under_size_pressure(
     assert out["status"] == "PAYLOAD_TOO_LARGE" and "not_found" not in out
     monkeypatch.undo()
     ok = run(t["sxbet_markets_find"](market_hashes=hashes))
-    assert ok["not_found"] == [hashes[29]] and ok["lookup_complete"] is True and "views_omitted" not in ok
+    assert ok["not_found"] == hashes[10:] and ok["lookup_complete"] is True and "views_omitted" not in ok
+
+
+def _s1_shape(out):
+    return {k: v for k, v in out.items() if k not in ("fixture_status_view", "stale_active_view", "status_decoded")}
+
+
+@pytest.mark.parametrize("upcoming", [False, True])
+@pytest.mark.parametrize("extra", [60, 150, 300])
+def test_review_e51b7bb_s2_returns_what_s1_returned_just_above_the_s1_size(monkeypatch, upcoming, extra):
+    """Cap = size of the S1-shaped answer + a few bytes: S2 returns the data, and the S1 upcoming view stays."""
+    import json
+    rows = [{"eventId": f"U{i}", "status": 1, "startDate": "2096-01-01T00:00:00Z", "pad": "y" * 120}
+            for i in range(300)]
+    t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(rows)}))
+    full = run(t["sxbet_fixtures_active"](league_id=1, upcoming_only=upcoming))
+    s1 = len(json.dumps(_s1_shape(full), separators=(",", ":"), ensure_ascii=False).encode())
+    monkeypatch.setattr(sx, "_MAX_MCP_BYTES", s1 + extra)
+    out = run(t["sxbet_fixtures_active"](league_id=1, upcoming_only=upcoming))
+    assert out["status"] == "REAL_API_RESPONSE" and out["views_omitted"] == ["fixture_status_view"]
+    if upcoming:
+        assert out["upcoming"]["rows"] == rows
