@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import hedging as hedge_mod
+from . import order_requests as oreq
 from . import positions as pos_mod
 from . import rules as rules_mod
 from . import simulation as sim
@@ -230,11 +231,15 @@ TOOL_COST_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
-def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadClient | None = None) -> tuple[str, ...]:
+def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadClient | None = None,
+                         order_requests: oreq.OrderRequestSettings | None = None,
+                         order_request_writer: Any = None) -> tuple[str, ...]:
     if not settings.enabled:
         return ()
     client = client or SXBetReadClient(settings)
     names: list[str] = []
+    # S7: owner order-request tools, OFF by default (SXBET_ORDER_REQUESTS_ENABLED); never sign or send.
+    ors = order_requests if order_requests is not None else oreq.OrderRequestSettings.from_env()
 
     def add(fn):
         server.tool()(fn)
@@ -295,7 +300,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "tool_cost_catalog": {"label": "DECLARED_MAX_PROVIDER_CALLS_PER_TOOL_CALL",
                                       "unit": "GET requests (each = 1 slot of the global and of its route bucket)",
                                       "tools": {n: dict(TOOL_COST_CATALOG[n]) for n in sorted(TOOL_COST_CATALOG)}},
-                "source_contract": DOCS, "network_calls_made": 0}
+                "source_contract": DOCS, "network_calls_made": 0,
+                **({} if not (ors.enabled or ors.error) else {"order_requests": {
+                    "status": "ENABLED" if ors.enabled else "DISABLED_MISCONFIGURED", "error": ors.error,
+                    "tools": list(ORDER_REQUEST_TOOLS) if ors.enabled else [],
+                    "note": ("The MCP only queues the owner's explicit command for the isolated signer, which "
+                             "verifies it, applies the owner-signed limits, the kill switch and its own LIVE "
+                             "flag. The MCP never signs or sends.")}})}
 
     # ---- public routes ----
     @add
@@ -1345,7 +1356,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                 "otherwise CONFLICT: reported and excluded from every computation"],
                      "sources": list(pos_mod.SOURCES)})
 
+    if ors.enabled:
+        from .order_request_tools import register_order_request_tools
+        names.extend(register_order_request_tools(server, settings, client, ors, writer=order_request_writer))
     return tuple(names)
+
+
+ORDER_REQUEST_TOOLS = ("sxbet_order_request_place", "sxbet_order_request_cancel", "sxbet_order_request_status")
 
 
 def _raise(code: str):

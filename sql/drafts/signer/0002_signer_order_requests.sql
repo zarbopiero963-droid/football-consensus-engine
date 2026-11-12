@@ -4,8 +4,9 @@
 -- Signer series only (never the bridge database: WP-009 guards refuse signer schema there). Additive.
 -- Both tables are APPEND-ONLY: the database refuses UPDATE, DELETE and TRUNCATE. A request is written once
 -- by the MCP side; every state change is a new row in signer_order_request_events written by the signer.
--- No roles and no GRANT here: least-privilege roles (MCP: INSERT requests + SELECT events; signer: SELECT
--- requests + INSERT events) are an explicit owner step coordinated with WP-009, not part of this migration.
+-- No roles and no GRANT here: least-privilege roles (MCP: INSERT + SELECT requests, SELECT events -- SELECT
+-- on requests is needed by the S7 idempotent insert, ON CONFLICT ... RETURNING and the payload comparison;
+-- signer: SELECT requests + SELECT, INSERT events) are an explicit owner step coordinated with WP-009.
 CREATE TABLE IF NOT EXISTS signer_order_requests (
     request_id TEXT PRIMARY KEY CHECK (request_id ~ '^[0-9a-f]{32}$'),
     kind TEXT NOT NULL CHECK (kind IN ('PLACE', 'CANCEL')),

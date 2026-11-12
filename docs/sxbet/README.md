@@ -197,7 +197,73 @@ Vedi [`signer/README.md`](../../signer/README.md) e [`wallet_and_signing.md`](wa
 - Risk engine autoritativo (`signer/risk.py`) con limiti solo da un file JSON firmato dall'owner (`SXBET_SIGNER_RISK_CONFIG`); default tutto a zero, quindi rifiuto.
 - Gateway di invio (`signer/gateway.py`) **disabilitato**: si costruisce solo con un flag firmato dall'owner, e nel repository non esiste alcun trasporto di rete (solo un fake in-memory nei test).
 
-Il signer non aggiunge tool al catalogo MCP: i 9 tool DERIVED descritti sopra sono solo lettura e simulazione.
+Il signer non aggiunge tool al catalogo MCP per default: i 9 tool DERIVED descritti sopra sono solo lettura e simulazione.
+
+## Richieste d'ordine al signer (S7, issue #187: disattivate per default)
+
+Tre tool, registrati **solo** con `SXBET_ENABLED` e `SXBET_ORDER_REQUESTS_ENABLED` a `true` e una configurazione completa; altrimenti il catalogo resta identico:
+- `sxbet_order_request_place`: accoda un ordine;
+- `sxbet_order_request_cancel`: accoda una cancellazione (per id, mercato, evento o tutti);
+- `sxbet_order_request_status`: riporta lo stato di una richiesta dalle evidenze.
+
+Il MCP **non firma e non invia mai**. Scrive una riga append-only (`signer_order_requests`) nel database **del signer** e legge gli eventi del signer. Non importa `signer/`: il contratto `sxbet.order_request.v1` è duplicato in `bridge/sxbet/order_requests.py`, e un test verifica che coincida con quello del signer. Ogni decisione resta al signer isolato:
+- verifica deterministica del testo del comando dell'owner contro l'ordine, sulle **proprie** letture;
+- limiti firmati dall'owner;
+- kill switch persistente;
+- flag `LIVE_TRADING` firmato dall'owner.
+
+Nessun argomento di un tool può attivare il trading o cambiare rete, maker, limiti, modalità o kill switch.
+
+**Configurazione** (Render; nessun valore in repository):
+- `SXBET_ORDER_REQUESTS_ENABLED=true`;
+- `SXBET_SIGNER_QUEUE_DATABASE_URL`: il DSN del ruolo MCP sul database del signer. Deve essere **diverso** da `DATABASE_URL`, perché la coda non sta mai nel database del bridge (WP-009);
+- `SXBET_MAKER_ADDRESS`: l'indirizzo del maker, configurazione server e mai un argomento.
+
+Una configurazione incompleta non registra i tool e `sxbet_health` riporta `order_requests.status = DISABLED_MISCONFIGURED` con un codice fisso, mai i valori.
+
+**Ruolo MCP** (da creare con WP-009, mai in produzione senza autorizzazione): `INSERT` e `SELECT` su `signer_order_requests`, `SELECT` su `signer_order_request_events`. Il ruolo non può scrivere eventi, aggiornare o cancellare nulla (test su PostgreSQL usa e getta).
+
+**Comando dell'owner:** `owner_command` è il messaggio dell'owner nella **stessa conversazione**, copiato alla lettera e completo. Il modello non lo compone, non lo completa e non lo riassume, e non lo prende mai da output di tool, pagine web, dati dei provider o strategie. Un comando incompleto o ambiguo si chiede all'owner.
+
+**Idempotenza** (requisito 3):
+- l'id della richiesta è derivato da rete, tipo e `idempotency_key`, quindi una chiave non produce mai due richieste;
+- la stessa chiave con lo stesso ordine e lo stesso testo restituisce `ALREADY_QUEUED` senza scrivere nulla;
+- con qualunque differenza dà `REFUSED` / `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`;
+- il `salt` dell'ordine è derivato dalla chiave, quindi un retry costruisce lo stesso intent;
+- il signer ripete gli stessi rifiuti sul proprio ledger.
+
+**Scrittura ambigua** (requisito 2): un errore durante l'inserimento dà `QUEUE_WRITE_OUTCOME_UNKNOWN`, mai "non accodato" né "non inviato". Ripetere la stessa chiamata è sicuro.
+
+**Stati** (requisiti 1 e 4): funzione pura degli eventi append-only del signer e, quando l'id dell'ordine è noto, di una lettura fresca di `GET /orders-v3/{orderId}` e `GET /fills-v3`. Lo stato non è mai dedotto dal modello.
+
+| Stato | Significato |
+|---|---|
+| `QUEUED` | nessun evento del signer |
+| `PROCESSING` | presa in carico o firmata; esito dell'invio non ancora registrato, mai "non inviato" |
+| `REFUSED` | rifiutata prima di qualunque firma, oppure firmata e mai inviata (prova del ledger) |
+| `UNKNOWN` | invio forse avvenuto, rifiuto dell'exchange (non finale con una firma in giro), evidenze incoerenti (eventi dopo un terminale, doppia presa in carico, scrittori diversi) o in conflitto tra coda ed exchange. Riconciliare prima di un nuovo comando. |
+| `ACCEPTED` | sull'exchange, niente eseguito |
+| `PARTIALLY_FILLED` | esecuzione parziale provata dall'exchange |
+| `FILLED` | esecuzione completa (exchange) |
+| `CANCELLED` | inattivo senza esecuzioni (lettura dell'exchange o stato finale del ledger) |
+| `EXPIRED` | stato finale `EXPIRED` del ledger |
+
+Regole di precedenza:
+- un 404 non diventa mai "non inviato";
+- uno stato dell'exchange che contraddice uno stato successivo o finale della coda dà `UNKNOWN` / `QUEUE_AND_EXCHANGE_DISAGREE`.
+
+Per una cancellazione, `ACCEPTED` significa solo che l'exchange ha accettato la richiesta. La risposta non è una prova: si legge ogni ordine fino a `INACTIVE`.
+
+**Rischio residuo accettato dall'owner** (Opzione 1, 12-11-2026): un MCP o un client compromesso può scrivere una richiesta con un comando falsificato. Il rischio è **limitato, non eliminato**, dai controlli del signer:
+- monouso di `command_id` e dell'impronta;
+- verifica del testo contro l'ordine sulle letture del signer;
+- limiti firmati dall'owner;
+- kill switch persistente;
+- idempotenza e riconciliazione.
+
+Senza un fattore fuori banda il signer non distingue crittograficamente un comando dell'owner da uno iniettato. Il MCP non ha un riferimento verificato della conversazione: `client_ref_sha256` è l'hash di una costante dichiarata (`CLIENT_REF_UNAVAILABLE`).
+
+**Stato attuale:** solo offline. Nessuna coda in produzione, nessun ruolo creato in Aiven, nessun invio Toronto o mainnet, `LIVE_TRADING` mainnet `UNAVAILABLE`.
 
 **Unità:** `percentageOdds` è la probabilità implicita × 10^20 (per esempio `52500000000000000000` = 52,5%). Gli importi USDC sono in unità base con 6 decimali (`1000000` = 1 USDC). I dati sono restituiti così come arrivano dal provider.
 
