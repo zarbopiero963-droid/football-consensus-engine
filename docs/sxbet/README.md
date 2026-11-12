@@ -248,7 +248,7 @@ Ogni risposta riporta anche `final`, vero solo quando lo stato non può più cam
 | `UNKNOWN` | invio forse avvenuto; ordine firmato e mai inviato con la firma ancora valida fino alla scadenza (`SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING`, si legge comunque l'exchange); rifiuto dell'exchange (non finale con una firma in giro); stato finale senza importo eseguito (`FILL_AMOUNT_NOT_PROVEN`); evidenze incoerenti (eventi dopo un terminale, doppia presa in carico, scrittori diversi, transizioni non ammesse) o in conflitto tra coda ed exchange. Riconciliare prima di un nuovo comando. |
 | `ACCEPTED` | sull'exchange, nessuna esecuzione vista nelle evidenze lette: è un'istantanea (vedi `fill_evidence`) |
 | `PARTIALLY_FILLED` | esecuzione parziale provata (lettura dell'exchange o ledger); `resting: false` se il resto non è più attivo |
-| `FILLED` | esecuzione completa (lettura dell'exchange o stato finale `FILLED` del ledger) |
+| `FILLED` | esecuzione completa: riga dell'exchange `INACTIVE`/`FILLED` con residuo 0, oppure `FILLED` del ledger con `filled` **uguale alla puntata firmata**. Il ledger registra come `FILLED` anche una riga `FILLED` con un residuo: in quel caso lo stato è `PARTIALLY_FILLED` (`FILLED_AMOUNT_BELOW_STAKE`); senza importo è `UNKNOWN` (review indipendente di `47a770b`, P2-1) |
 | `CANCELLED` | inattivo, nessuna esecuzione nelle evidenze lette (lettura dell'exchange, o `CANCELLED` del ledger con `filled` = 0). **Non finale**: un fill tardivo può comparire fino al settlement |
 | `EXPIRED` | scaduto, nessuna esecuzione nelle evidenze lette (stesse regole di `CANCELLED`) |
 | `SETTLED` | regolato dall'exchange; l'importo abbinato è `filled_base_units`, mai "esecuzione completa" |
@@ -264,7 +264,11 @@ La riga dell'ordine segue le **stesse regole fail-closed del signer** (`evidence
 - ha un `totalBetSize` diverso dalla puntata firmata;
 - ha un `remainingSize` fuori da 0..totale;
 - è `FILLED` senza nulla eseguito;
-- ha uno `status` o un `inactiveReason` non documentato.
+- ha uno `status` o un `inactiveReason` non documentato;
+- ha l'intera puntata abbinata senza essere marcata `FILLED`;
+- ha numeri in un formato diverso da quello accettato dal signer (per esempio zeri iniziali).
+
+`exchange_read.filled_base_units_from_order_row` è riportato solo per una riga accettata come evidenza.
 
 Quando decide la lettura, i codici e le note della sola coda (per esempio "firmato ma non inviato") passano in `queue_code` / `queue_note`, e `resting` viene dalla riga. Un parziale "non più attivo" per il ledger contro una riga attiva è un conflitto.
 

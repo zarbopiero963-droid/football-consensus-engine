@@ -343,7 +343,9 @@ def ev(*states_details, signer="sig-1"):
     # Changed by the review of ce4a702 (P2-1): signed, never sent, signature outstanding -> UNKNOWN, not final.
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("DONE", {"sent": False, "code": "INTERRUPTED_AFTER_SIGNATURE"})),
      "UNKNOWN"),
-    (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", {"state": "FILLED"})), "FILLED"),
+    # Changed by the review of 47a770b (P2-1): ledger FILLED without its amount (and without the stake) is no
+    # longer "fully filled" (declared behaviour change; FILLED with filled == stake: test_review_47a770b_*).
+    (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", {"state": "FILLED"})), "UNKNOWN"),
     # Changed by the review of ce4a702 (P1-1): a final CANCELLED / EXPIRED needs its fill amount.
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
         ("DONE", {"state": "EXPIRED", "filled": "0"})), "EXPIRED"),
@@ -800,3 +802,75 @@ def test_review_21082c0_p3_3_queue_only_code_moves_when_the_exchange_decides():
     assert out["state"] == "ACCEPTED" and out.get("code") is None and out.get("note") is None
     assert out["queue_code"] == "SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING" and out["queue_state"] == "UNKNOWN"
     assert out["resting"] is True
+
+
+# ---------------------------------------------------------------- review of 47a770b (NOT SAFE): regressions
+def _done_filled(filled):
+    d = {"state": "FILLED"}
+    if filled is not None:
+        d["filled"] = filled
+    return ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", d))
+
+
+@pytest.mark.parametrize("filled, total, state, final, code", [
+    ("5000000", "5000000", "FILLED", True, None),
+    ("1000000", "5000000", "PARTIALLY_FILLED", False, "FILLED_AMOUNT_BELOW_STAKE"),
+    (None, "5000000", "UNKNOWN", False, "FILL_AMOUNT_NOT_PROVEN"),
+    ("5000000", None, "UNKNOWN", False, "FILL_AMOUNT_NOT_PROVEN"),
+    ("0", "5000000", "UNKNOWN", False, "FILL_AMOUNT_INCONSISTENT"),
+    ("6000000", "5000000", "UNKNOWN", False, "FILL_AMOUNT_INCONSISTENT"),
+    ("05000000", "5000000", "UNKNOWN", False, "FILL_AMOUNT_NOT_PROVEN"),
+])
+def test_review_47a770b_p2_1_ledger_filled_is_full_only_when_it_matches_the_signed_stake(filled, total, state, final,
+                                                                                         code):
+    v = oreq.queue_view("PLACE", _done_filled(filled), intent_total=total)
+    assert (v["state"], v["final"], v.get("code")) == (state, final, code)
+
+
+def test_review_47a770b_p2_1_partial_ledger_filled_after_purge_or_without_key_is_never_filled():
+    v = oreq.queue_view("PLACE", _done_filled("1000000"), intent_total="5000000")
+    for lookup in (None, "NOT_ON_EXCHANGE"):
+        out = oreq.merge_exchange(v, lookup)
+        assert out["state"] == "PARTIALLY_FILLED" and out["final"] is False and out["resting"] is False
+
+
+def test_review_47a770b_p3_1_partial_ledger_filled_agrees_with_the_same_row():
+    v = oreq.queue_view("PLACE", _done_filled("1000000"), intent_total="5000000")
+    r = oreq.exchange_row_state(row(status="INACTIVE", inactiveReason="FILLED", remainingSize="4000000"),
+                                order_id=OID, intent_total="5000000")
+    assert r["state"] == "PARTIALLY_FILLED" and r["resting"] is False
+    out = oreq.merge_exchange(v, r["state"], ex_resting=r["resting"])
+    assert out["state"] == "PARTIALLY_FILLED" and out.get("evidence") != "CONFLICT"
+
+
+def test_review_47a770b_p2_1_send_time_filled_without_amount_is_unknown():
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "FILLED"})),
+                        intent_total="5000000")
+    assert v["state"] == "UNKNOWN" and v["code"] == "FILL_AMOUNT_NOT_PROVEN"
+    assert oreq.merge_exchange(v, "FILLED")["state"] == "FILLED"                     # a fresh row can settle it
+
+
+@pytest.mark.parametrize("r", [row(totalBetSize="05000000"), row(remainingSize="0001"), row(remainingSize="+1"),
+                               row(remainingSize="1_000"), row(remainingSize="1.0")])
+def test_review_47a770b_p3_2_number_format_follows_the_signer(r):
+    assert oreq.exchange_row_state(r, order_id=OID, intent_total="5000000")["reason"] == "EVIDENCE_SIZE_MISMATCH"
+
+
+def test_review_47a770b_p3_3_no_fill_amount_from_a_refused_row(s, monkeypatch):
+    st = _status_with_row(s, monkeypatch, "order-key-S7501", {"id": "0x" + "e" * 64, "remainingSize": "1000"})
+    assert st["exchange_read"]["row_evidence"] == "EVIDENCE_OTHER_ORDER"
+    assert st["exchange_read"]["filled_base_units_from_order_row"] is None
+
+
+def test_review_47a770b_p3_4_no_resting_flag_on_a_fills_conflict():
+    v = {"state": "PROCESSING", "final": False, "evidence": "QUEUE_EVENTS"}
+    out = oreq.merge_exchange(v, "SUBMITTED", fills_seen=True, ex_resting=True)
+    assert out["code"] == "FILLS_SEEN_ON_EXCHANGE" and "resting" not in out
+
+
+@pytest.mark.parametrize("r", [row(remainingSize="0"), row(status="PENDING", remainingSize="0"),
+                               row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="0"),
+                               row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="0")])
+def test_review_47a770b_p3_5_whole_stake_matched_but_not_marked_filled_is_not_evidence(r):
+    out = oreq.exchange_row_state(r, order_id=OID, intent_total="5000000")
+    assert out["state"] is None and out["reason"] == "EVIDENCE_FULL_FILL_NOT_MARKED_FILLED"

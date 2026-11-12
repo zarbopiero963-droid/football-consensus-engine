@@ -223,7 +223,8 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         kind = payload.get("kind")
         if payload.get("network") != settings.network:
             return {**out, "status": "INVALID_INPUT", "error": {"code": "REQUEST_OF_ANOTHER_NETWORK"}}
-        view = oreq.queue_view(kind, events)
+        intent0 = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
+        view = oreq.queue_view(kind, events, intent_total=intent0.get("total_bet_size"))
         out.update({"kind": kind, "created_at_unix": payload.get("created_at"),
                     "events": [{"seq": e["seq"], "event": e["state"], "detail": e["detail"]} for e in events]})
         lookup_state = None
@@ -250,15 +251,12 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     if lookup["kind"] == "FOUND" else {"state": None, "reason": "EVIDENCE_" + lookup["kind"]}
                 lookup_state = ex["state"]
                 fills_complete = not ferr and complete_fills
-                row = lookup.get("order") if isinstance(lookup.get("order"), dict) else {}
-                try:
-                    ex_filled = int(row["totalBetSize"]) - int(row["remainingSize"])
-                except (KeyError, TypeError, ValueError):
-                    ex_filled = None
+                # Only for a row accepted as evidence, with the signer's number rule (review 47a770b P3-3).
+                ex_filled = ex.get("filled")
                 out["exchange_read"] = {"status": lookup["kind"], "order": lookup.get("order"),
                                         "row_evidence": ex["reason"], "resting": ex.get("resting"),
                                         "fills_complete": fills_complete,
-                                        "filled_base_units_from_order_row": (None if ex_filled is None or ex_filled < 0
+                                        "filled_base_units_from_order_row": (None if ex_filled is None
                                                                              else str(ex_filled)),
                                         "fills_count": len(rows) if isinstance(rows, list) else None,
                                         "fills_more_pages": bool(isinstance(fills, dict) and fills.get("nextKey")),

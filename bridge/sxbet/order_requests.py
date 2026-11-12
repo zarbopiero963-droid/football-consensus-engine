@@ -204,8 +204,11 @@ def _check_events(events: Sequence[Mapping[str, Any]]) -> str | None:
     return None
 
 
+_DECIMAL = re.compile(r"^(0|[1-9][0-9]{0,77})$")  # same rule as signer/orders.py (review 47a770b P3-2)
+
+
 def _units(v: Any) -> int | None:
-    return int(v) if isinstance(v, str) and v.isascii() and v.isdigit() and len(v) <= 78 else None
+    return int(v) if isinstance(v, str) and _DECIMAL.fullmatch(v) is not None else None
 
 
 # Exchange read (bridge/sxbet/simulation.state_from_lookup, EXPIRED split by inactiveReason in the tool).
@@ -216,7 +219,7 @@ _RANK = {"ACCEPTED": 0, "PARTIALLY_FILLED": 1, "FILLED": 2}
 _INACTIVE_NO_FILL = frozenset({"CANCELLED", "EXPIRED"})
 
 
-def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dict[str, Any]:
+def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any], stake: int | None) -> dict[str, Any]:
     states = [e["state"] for e in events]
     last = events[-1]
     ev, d = last["state"], last["detail"]
@@ -239,8 +242,11 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dic
                     "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
         if ledger in ("SUBMITTED", "OPEN"):
             return {**out, "state": "ACCEPTED", "final": False, "ledger_state": ledger}
-        if ledger in ("PARTIALLY_FILLED", "FILLED"):
+        if ledger == "PARTIALLY_FILLED":
             return {**out, "state": ledger, "final": False, "ledger_state": ledger}
+        if ledger == "FILLED":
+            # The send-time event carries no amount: never "fully filled" without it (review 47a770b P2-1).
+            return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_NOT_PROVEN"}
         # REJECTED is not final while a signature is out (signer/orders.py H3); anything else is not conclusive.
         return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
                 "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
@@ -256,7 +262,16 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dic
     # fill until settlement (signer/orders.py LATE_FILL_AFTER_EXPIRY, CANCELLED self-transition): review of
     # 8396424, P2-A.
     if ledger == "FILLED":
-        return {**out, "state": "FILLED", "final": True, "ledger_final": True, "ledger_state": ledger}
+        # signer/orders.py records an INACTIVE/FILLED row with a remainder as ledger FILLED with filled < stake:
+        # FILLED here only when the matched amount IS the signed stake (review of 47a770b, P2-1).
+        if filled is None or stake is None:
+            return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_NOT_PROVEN"}
+        if filled == stake:
+            return {**out, "state": "FILLED", "final": True, "ledger_final": True, "ledger_state": ledger}
+        if 0 < filled < stake:
+            return {**out, "state": "PARTIALLY_FILLED", "final": False, "ledger_final": True, "resting": False,
+                    "ledger_state": ledger, "code": "FILLED_AMOUNT_BELOW_STAKE"}
+        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_INCONSISTENT"}
     if ledger == "SETTLED":
         # Settled by the exchange: some stake was matched; how much is filled_base_units (ledger), never "full".
         return {**out, "state": "SETTLED", "final": True, "ledger_final": True, "ledger_state": ledger}
@@ -310,7 +325,7 @@ def _cancel_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> di
     return {**out, "state": "UNKNOWN", "final": False}
 
 
-def queue_view(kind: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def queue_view(kind: str, events: Sequence[Mapping[str, Any]], *, intent_total: Any = None) -> dict[str, Any]:
     """MCP state from the signer events alone (labelled; the exchange read is merged by `merge_exchange`)."""
     bad = _check_events(events)
     if bad:
@@ -324,7 +339,7 @@ def queue_view(kind: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]
         ids = [e["detail"].get(k) for e in events if isinstance(e["detail"].get(k), str)]
         if ids:
             out[k] = ids[-1]
-    return _cancel_view(events, out) if kind == "CANCEL" else _place_view(events, out)
+    return _cancel_view(events, out) if kind == "CANCEL" else _place_view(events, out, _units(intent_total))
 
 
 _NO_FILL_CLAIMED = frozenset({"ACCEPTED", "CANCELLED", "EXPIRED"})
@@ -347,11 +362,14 @@ def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[st
         return none("EVIDENCE_SIZE_MISMATCH")
     filled = total - remaining
     status, reason = row.get("status"), row.get("inactiveReason")
+    if status not in ("PENDING", "ACTIVE", "INACTIVE"):
+        return none("EVIDENCE_STATUS_UNKNOWN")
+    if filled == total and not (status == "INACTIVE" and reason == "FILLED"):
+        # Whole stake matched but not reported as FILLED: the signer records no evidence either (review P3-5).
+        return none("EVIDENCE_FULL_FILL_NOT_MARKED_FILLED")
     if status in ("PENDING", "ACTIVE"):
         return {"state": "PARTIALLY_FILLED" if filled else "SUBMITTED", "reason": "EXCHANGE_ORDER_" + status,
-                "resting": True}
-    if status != "INACTIVE":
-        return none("EVIDENCE_STATUS_UNKNOWN")
+                "resting": True, "filled": filled}
     if reason == "FILLED":
         if not filled:
             return none("EVIDENCE_FILLED_WITHOUT_FILL")
@@ -362,7 +380,7 @@ def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[st
         st = "PARTIALLY_FILLED" if filled else "CANCELLED"
     else:
         return none("EVIDENCE_INACTIVE_REASON_UNKNOWN")
-    return {"state": st, "reason": "EXCHANGE_ORDER_INACTIVE_" + str(reason), "resting": False}
+    return {"state": st, "reason": "EXCHANGE_ORDER_INACTIVE_" + str(reason), "resting": False, "filled": filled}
 
 
 def _merge(view: Mapping[str, Any], lookup_state: str | None, fills_seen: bool) -> dict[str, Any]:
@@ -427,6 +445,7 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
     if fills_seen and out["state"] in _NO_FILL_CLAIMED and lookup_state not in ("PARTIALLY_FILLED", "FILLED"):
         out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="FILLS_SEEN_ON_EXCHANGE",
                    queue_state=view["state"])
+        out.pop("resting", None)  # review 47a770b P3-4
     return out
 
 
