@@ -196,6 +196,70 @@ def upcoming_filter(data: Any, *, kind: str, now_unix: int | None = None) -> dic
                                     "excluded_started": len(started), "excluded_unresolved": len(unresolved)}}}
 
 
+# ---- issue #187 D7: official fixture statuses (https://docs.sx.bet/api-reference/fixture-statuses, 12-11-2026) ----
+# code -> (official label, phase). A transition into 2, 3 or 4 sweeps resting orders (EVENT_LIFECYCLE).
+FIXTURE_STATUSES: dict[int, tuple[str, str]] = {
+    1: ("Not started yet", "NOT_STARTED"), 2: ("In progress", "LIVE"), 3: ("Finished", "FINISHED"),
+    4: ("Cancelled", "CANCELLED"), 5: ("Postponed", "POSTPONED"), 6: ("Interrupted", "INTERRUPTED"),
+    7: ("Abandoned", "ABANDONED"), 8: ("Coverage lost", "COVERAGE_LOST"), 9: ("About to start", "NOT_STARTED"),
+}
+FINAL_FIXTURE_STATUSES = frozenset({3, 4, 7})
+SWEEPING_FIXTURE_STATUSES = frozenset({2, 3, 4})
+FIXTURE_STATUS_SOURCE = "https://docs.sx.bet/api-reference/fixture-statuses"
+# Local heuristic (DERIVED, not a provider rule): an ACTIVE market whose gameTime is more than this in the past.
+STALE_ACTIVE_AFTER_SECONDS = 24 * 3600
+
+
+def decode_fixture_status(code: Any) -> dict[str, Any]:
+    """Official label and phase of a fixture status code; an unknown code is never guessed."""
+    if type(code) is not int or code not in FIXTURE_STATUSES:
+        return {"code": code, "label": None, "phase": "UNDOCUMENTED_STATUS"}
+    label, phase = FIXTURE_STATUSES[code]
+    return {"code": code, "label": label, "phase": phase, "final": code in FINAL_FIXTURE_STATUSES,
+            "sweeps_resting_orders": code in SWEEPING_FIXTURE_STATUSES}
+
+
+def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
+    """Issue #187 D7 for GET /fixture/active: decoded statuses plus fixtures the provider lists as active
+    although their status is final, or not started with a start time already past. Rows are never removed."""
+    now = int(time.time()) if now_unix is None else now_unix
+    if not isinstance(data, list):
+        return {"fixture_status_view": {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}}
+    decoded, final, overdue = {}, [], []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        eid, code = row.get("eventId"), row.get("status")
+        d = decode_fixture_status(code)
+        decoded[str(eid)] = d
+        if d.get("final"):
+            final.append({"eventId": eid, "provider_status": code, "label": d["label"]})
+        start, _ = _start_unix(row.get("startDate"), "fixtures")
+        if d["phase"] == "NOT_STARTED" and start is not None and start < now - STALE_ACTIVE_AFTER_SECONDS:
+            overdue.append({"eventId": eid, "provider_status": code, "start_unix": start})
+    return {"fixture_status_view": {
+        "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "decoded": decoded,
+        "final_status_listed_as_active": final, "not_started_but_start_long_past": overdue,
+        "heuristic": f"not started with startDate older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
+        "note": "Raw rows stay in data; nothing is removed or re-labelled."}}
+
+
+def stale_active_markets(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
+    """Issue #187 D7 for GET /markets/active: ACTIVE rows of this page whose gameTime is long past (live-only lists
+    showed 2024 events marked ACTIVE). DERIVED heuristic; rows are never removed."""
+    now = int(time.time()) if now_unix is None else now_unix
+    rows = data.get("markets") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return {"stale_active_view": {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}}
+    stale = [{"marketHash": r.get("marketHash"), "gameTime": r.get("gameTime"), "provider_status": r.get("status")}
+             for r in rows if isinstance(r, dict) and r.get("status") == "ACTIVE" and type(r.get("gameTime")) is int
+             and r["gameTime"] < now - STALE_ACTIVE_AFTER_SECONDS]
+    return {"stale_active_view": {
+        "label": "DERIVED", "scope": "THIS_PAGE_ONLY", "rows": stale, "count": len(stale),
+        "heuristic": f"status ACTIVE and gameTime older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
+        "note": "Possibly stale provider rows; raw rows stay in data. Not proof the market is closed."}}
+
+
 # ---- declared worst-case provider cost per tool (governance 2.4: budgets known before calling) ----
 # max_provider_calls = the most GET requests one call can send; each GET takes one slot in the global
 # per-key budget and one in its documented route bucket (ratelimit.py). 0 = no provider call.
@@ -334,7 +398,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                               auth=False)
         return await call("sxbet_fixtures_active", "/fixture/active",
                           lambda: {"leagueId": _int(league_id, "league_id")}, auth=False,
-                          derive=(lambda d: upcoming_filter(d, kind="fixtures")) if upcoming_only else None)
+                          derive=lambda d: {**fixtures_view(d),
+                                            **(upcoming_filter(d, kind="fixtures") if upcoming_only else {})})
 
     @add
     async def sxbet_fixture_status(sportx_event_ids: list[str]) -> dict[str, Any]:
@@ -342,8 +407,12 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         ids = sportx_event_ids if isinstance(sportx_event_ids, list) else []
         return await call("sxbet_fixture_status", "/fixture/status",
                           lambda: {"sportXEventIds": _events(sportx_event_ids)}, auth=False,
-                          derive=lambda data: requested_vs_returned(
-                              ids, list(data) if isinstance(data, dict) else None, case_insensitive=False))
+                          derive=lambda data: {**requested_vs_returned(
+                              ids, list(data) if isinstance(data, dict) else None, case_insensitive=False),
+                              "status_decoded": {k: decode_fixture_status(v.get("status") if isinstance(v, dict)
+                                                                          else None)
+                                                 for k, v in data.items()} if isinstance(data, dict) else None,
+                              "status_source": FIXTURE_STATUS_SOURCE})
 
     @add
     async def sxbet_live_scores(sportx_event_ids: list[str]) -> dict[str, Any]:
@@ -380,7 +449,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "gameTime": None if game_time is None else _int(game_time, "game_time"),
             }
         return await call("sxbet_markets_active", "/markets/active", build, auth=False,
-                          derive=(lambda d: upcoming_filter(d, kind="markets")) if upcoming_only is True else None)
+                          derive=lambda d: {**stale_active_markets(d),
+                                            **(upcoming_filter(d, kind="markets") if upcoming_only is True else {})})
 
     @add
     async def sxbet_markets_find(market_hashes: list[str]) -> dict[str, Any]:

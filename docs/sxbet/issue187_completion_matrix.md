@@ -43,10 +43,10 @@ Tre gate distinti, mai confusi: **implementazione completata**, **certificazione
 | D1 hedge/chiusura/regole senza posizione | corretto | S1 |
 | D2 testi sul vecchio modello di approvazione | corretto | S1 |
 | D3 404 come `PROVIDER_ERROR` | corretto (`NOT_FOUND`) | S1 |
-| D4 minimo di scadenza prima dei metadati | già dichiarato `min_is_lower_bound_only`: chiusura formale da approvare | S2 |
+| D4 minimo di scadenza prima dei metadati | chiuso formalmente (approvazione owner 12-11): limite inferiore dichiarato e testato | S2 |
 | D5 intent per mercato sconosciuto | corretto | S1 |
 | D6 id scartati in silenzio | corretto (`not_found`) | S1 |
-| D7 righe obsolete `ACTIVE`, fixture non paginate, status interi | aperto | S2 |
+| D7 righe obsolete `ACTIVE`, fixture non paginate, status interi | corretto (viste DERIVED: stati decodificati, finali/scaduti segnalati; la route `/fixture/active` non ha paginazione nel contratto) | S2 |
 | D8 parametri di path non riportati | corretto (`path_parameters`) | S1 |
 | D9 scala delle fee | corretto (VERIFIED) | S1 |
 | D10 minimo 1 vs 5 USDC | PASS: vale il valore runtime | — |
