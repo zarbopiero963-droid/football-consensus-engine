@@ -20,19 +20,22 @@ same situations again on its own ledger.
 States (owner requirements 1, 2, 4): the status reported to the model is a pure function of the append-only
 signer events (written from the signer's ledger, i.e. from exchange replies and reconciliation reads) and,
 when an order id is known, of a fresh exchange read (GET /orders-v3/{orderId} + GET /fills-v3). It is never
-deduced by the model:
+deduced by the model. Every view carries `final` (True only when nothing can change any more):
     QUEUED            no signer event yet (the request may still expire unprocessed)
     PROCESSING        claimed / signed, outcome of the send not recorded yet: never "not sent"
-    REFUSED           refused by the signer BEFORE any signature left, or signed but never sent (ledger proof)
-    UNKNOWN           anything ambiguous: a send that may have happened, an exchange rejection (not final while
-                      a signature is out), inconsistent evidence. Reconcile before any new command.
-    ACCEPTED          on the exchange, nothing filled (exchange reply or read)
-    PARTIALLY_FILLED  some fill proven by the exchange
-    FILLED            fully filled (exchange)
-    CANCELLED         inactive on the exchange with nothing filled (exchange read or final ledger state)
-    EXPIRED           final ledger state EXPIRED
-Cancel requests report REFUSED / UNKNOWN / PROCESSING / ACCEPTED (the exchange accepted the cancel request:
-per-order buckets are attached; the reply is not proof, read each order to confirm it is INACTIVE).
+    REFUSED           refused by the signer BEFORE any signature (final); for a cancel, also "nothing sent"
+    UNKNOWN           anything ambiguous: a send that may have happened, a signed order never sent (signature
+                      outstanding until its expiry), an exchange rejection (not final while a signature is out), a
+                      final state without its fill amount, inconsistent or conflicting evidence. Reconcile first.
+    ACCEPTED          on the exchange; no fill proven (exchange reply or read)
+    PARTIALLY_FILLED  some fill proven (exchange read or ledger); `resting: False` when the rest is inactive
+    FILLED            fully filled (exchange read or final ledger state FILLED)
+    CANCELLED         inactive with NOTHING filled (exchange read, or ledger CANCELLED with filled = 0)
+    EXPIRED           expired with NOTHING filled (same evidence as CANCELLED)
+    SETTLED           settled by the exchange; the matched amount is `filled_base_units` (never "full")
+Cancel requests: REFUSED (nothing sent), UNKNOWN, PROCESSING, and for a cancel that was sent: ACCEPTED (every
+order reported cancelled; scope cancels: request accepted), NOT_CANCELLED, PARTIALLY_CANCELLED. A cancel reply is
+not proof: read each order until INACTIVE.
 
 Residual risk (owner decision "Opzione 1", 12-11-2026): a compromised MCP can write a request with a forged
 command text. It is bounded, not eliminated, by the signer: single-use command id and fingerprint, deterministic
@@ -48,6 +51,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import parse_qs, unquote, urlsplit
 
 REQUEST_SCHEMA = "sxbet.order_request.v1"
 KINDS = ("PLACE", "CANCEL")
@@ -59,7 +63,7 @@ MAX_COMMAND_CHARS = 500
 # (the OAuth middleware exposes none to tools): it says so explicitly instead of inventing one.
 CLIENT_REF_UNAVAILABLE = "bridge:no-conversation-reference"
 MCP_STATES = ("QUEUED", "PROCESSING", "REFUSED", "UNKNOWN", "ACCEPTED", "PARTIALLY_FILLED", "FILLED",
-              "CANCELLED", "EXPIRED")
+              "CANCELLED", "EXPIRED", "SETTLED", "NOT_CANCELLED", "PARTIALLY_CANCELLED")
 
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 _HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
@@ -169,6 +173,15 @@ def same_request(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------- state from evidence
+# Allowed successor of each signer event (signer/service.py: process, recover, sync_outcomes). Anything else is
+# evidence the MCP cannot trust as it is (S7 review of ce4a702, P3-4).
+_NEXT = {"CLAIMED": frozenset({"SIGNED", "REFUSED", "UNKNOWN", "SUBMITTED", "DONE"}),
+         "SIGNED": frozenset({"SUBMITTED", "UNKNOWN", "DONE", "REFUSED"}),
+         "SUBMITTED": frozenset({"DONE"}),
+         "UNKNOWN": frozenset({"DONE"}),
+         "REFUSED": frozenset(), "DONE": frozenset()}
+
+
 def _check_events(events: Sequence[Mapping[str, Any]]) -> str | None:
     """Structural evidence check; any violation means the events cannot be trusted as they are."""
     for i, e in enumerate(events, start=1):
@@ -184,90 +197,154 @@ def _check_events(events: Sequence[Mapping[str, Any]]) -> str | None:
         return "QUEUE_EVIDENCE_EVENT_AFTER_TERMINAL"
     if len({e.get("signer_id") for e in events}) > 1:
         return "QUEUE_EVIDENCE_MIXED_WRITERS"
+    if any(b not in _NEXT[a] for a, b in zip(states, states[1:])):
+        return "QUEUE_EVIDENCE_TRANSITION_NOT_ALLOWED"
     return None
 
 
-_LEDGER_TO_MCP = {"SUBMITTED": "ACCEPTED", "OPEN": "ACCEPTED", "PARTIALLY_FILLED": "PARTIALLY_FILLED",
-                  "FILLED": "FILLED", "SETTLED": "FILLED", "CANCELLED": "CANCELLED", "EXPIRED": "EXPIRED"}
-# Exchange read (bridge/sxbet/simulation.state_from_lookup) -> MCP state. NOT_ON_EXCHANGE is never mapped to
-# "not sent": a 404 is weak evidence and is reported, not promoted.
+def _units(v: Any) -> int | None:
+    return int(v) if isinstance(v, str) and v.isascii() and v.isdigit() and len(v) <= 78 else None
+
+
+# Exchange read (bridge/sxbet/simulation.state_from_lookup, EXPIRED split by inactiveReason in the tool).
+# NOT_ON_EXCHANGE is never mapped: a 404 is weak evidence and is reported, not promoted.
 _LOOKUP_TO_MCP = {"SUBMITTED": "ACCEPTED", "PARTIALLY_FILLED": "PARTIALLY_FILLED", "FILLED": "FILLED",
-                  "CANCELLED": "CANCELLED"}
+                  "CANCELLED": "CANCELLED", "EXPIRED": "EXPIRED"}
 _RANK = {"ACCEPTED": 0, "PARTIALLY_FILLED": 1, "FILLED": 2}
+_INACTIVE_NO_FILL = frozenset({"CANCELLED", "EXPIRED"})
+
+
+def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dict[str, Any]:
+    states = [e["state"] for e in events]
+    last = events[-1]
+    ev, d = last["state"], last["detail"]
+    if ev in ("CLAIMED", "SIGNED"):
+        return {**out, "state": "PROCESSING", "final": False}
+    if ev == "REFUSED":
+        if "SIGNED" in states:
+            # A refusal recorded after this request's SIGNED event: a signature may be outstanding.
+            return {**out, "state": "UNKNOWN", "final": False, "code": d.get("code") or "REFUSED_AFTER_SIGNATURE"}
+        return {**out, "state": "REFUSED", "final": True}
+    if ev == "UNKNOWN":
+        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": d.get("state")}
+    ledger, filled = d.get("state"), _units(d.get("filled"))
+    if filled is not None:
+        out["filled_base_units"] = str(filled)
+    if ev == "SUBMITTED":
+        if d.get("sent") is False:  # e.g. a duplicate the gateway did not send: not proof of anything here
+            return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
+                    "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
+        if ledger in ("SUBMITTED", "OPEN"):
+            return {**out, "state": "ACCEPTED", "final": False, "ledger_state": ledger}
+        if ledger in ("PARTIALLY_FILLED", "FILLED"):
+            return {**out, "state": ledger, "final": False, "ledger_state": ledger}
+        # REJECTED is not final while a signature is out (signer/orders.py H3); anything else is not conclusive.
+        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
+                "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
+    # DONE
+    if ledger is None and d.get("sent") is False:
+        # Signed, never sent (ledger proof at that moment), the stake stays reserved until the signed expiry and
+        # the signature is outstanding: NOT a final refusal (S7 review of ce4a702, P2-1). Exchange read follows.
+        return {**out, "state": "UNKNOWN", "final": False, "code": "SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING",
+                "note": "Signed but not sent according to the signer's ledger; the signed order stays reserved "
+                        "until its expiry. Not a final refusal: reconcile before any new command."}
+    if ledger == "FILLED":
+        return {**out, "state": "FILLED", "final": True, "ledger_state": ledger}
+    if ledger == "SETTLED":
+        # Settled by the exchange: some stake was matched; how much is filled_base_units (ledger), never "full".
+        return {**out, "state": "SETTLED", "final": True, "ledger_state": ledger}
+    if ledger in _INACTIVE_NO_FILL:
+        if filled is None:
+            return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
+                    "code": "FILL_AMOUNT_NOT_PROVEN"}
+        if filled == 0:
+            return {**out, "state": ledger, "final": True, "ledger_state": ledger}
+        return {**out, "state": "PARTIALLY_FILLED", "final": True, "resting": False, "ledger_state": ledger}
+    return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
+            "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
+
+
+def _bucket_state(orders: Any) -> str:
+    """Cancel by ids: the state follows the per-order buckets of the exchange reply (S7 review P2-2)."""
+    if not isinstance(orders, Mapping) or not orders:
+        return "UNKNOWN"
+    buckets = {o.get("bucket") if isinstance(o, Mapping) else None for o in orders.values()}
+    if buckets == {"CANCELLED"}:
+        return "ACCEPTED"
+    if buckets == {"NOT_CANCELLED"}:
+        return "NOT_CANCELLED"
+    if buckets == {"CANCELLED", "NOT_CANCELLED"}:
+        return "PARTIALLY_CANCELLED"
+    return "UNKNOWN"  # UNKNOWN / UNCONFIRMED / missing: the cancel may or may not have landed
+
+
+def _cancel_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dict[str, Any]:
+    last = events[-1]
+    ev, d = last["state"], last["detail"]
+    out["scope"] = d.get("scope")
+    if isinstance(d.get("orders"), Mapping):
+        out["orders"] = d["orders"]
+    if ev == "CLAIMED":
+        return {**out, "state": "PROCESSING", "final": False}
+    if ev == "REFUSED":
+        return {**out, "state": "REFUSED", "final": True}
+    if ev == "DONE" and d.get("sent") is False:
+        return {**out, "state": "REFUSED", "final": True, "sent": False}  # command not consumed, nothing sent
+    if ev == "DONE" and d.get("sent") is True:
+        if d.get("scope") == "ORDER_IDS":
+            st = _bucket_state(d.get("orders"))
+        else:
+            st = "ACCEPTED" if d.get("accepted") is True else "UNKNOWN"
+        return {**out, "state": st, "final": st != "UNKNOWN",
+                "warning": "A cancel reply is not proof: read each order (sxbet_order_status) until INACTIVE."}
+    return {**out, "state": "UNKNOWN", "final": False}
 
 
 def queue_view(kind: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """MCP state from the signer events alone (labelled; the exchange read is merged by `merge_exchange`)."""
     bad = _check_events(events)
     if bad:
-        return {"state": "UNKNOWN", "code": bad, "evidence": "QUEUE_EVENTS"}
+        return {"state": "UNKNOWN", "final": False, "code": bad, "evidence": "QUEUE_EVENTS"}
     if not events:
-        return {"state": "QUEUED", "evidence": "QUEUE_EVENTS"}
-    last = events[-1]
-    ev, d = last["state"], dict(last["detail"])
-    out: dict[str, Any] = {"evidence": "QUEUE_EVENTS", "last_event": ev, "code": d.get("code"),
+        return {"state": "QUEUED", "final": False, "evidence": "QUEUE_EVENTS"}
+    d = events[-1]["detail"]
+    out: dict[str, Any] = {"evidence": "QUEUE_EVENTS", "last_event": events[-1]["state"], "code": d.get("code"),
                            "note": d.get("note")}
     for k in ("order_id", "client_order_id"):
         ids = [e["detail"].get(k) for e in events if isinstance(e["detail"].get(k), str)]
         if ids:
             out[k] = ids[-1]
-    if kind == "CANCEL":
-        out["scope"] = d.get("scope")
-        if ev == "CLAIMED":
-            return {**out, "state": "PROCESSING"}
-        if ev == "REFUSED":
-            return {**out, "state": "REFUSED"}
-        # "accepted" is set only by the scope cancels; cancel-by-ids reports per-order buckets instead.
-        if ev == "DONE" and d.get("sent") is True and d.get("accepted") is not False:
-            return {**out, "state": "ACCEPTED", "orders": d.get("orders"),
-                    "warning": "The cancel reply is not proof: read each order (sxbet_order_status) until INACTIVE."}
-        if ev == "DONE" and d.get("sent") is False:
-            return {**out, "state": "REFUSED", "sent": False}
-        return {**out, "state": "UNKNOWN"}
-    if ev in ("CLAIMED", "SIGNED"):
-        return {**out, "state": "PROCESSING"}
-    if ev == "REFUSED":
-        return {**out, "state": "REFUSED"}
-    if ev == "UNKNOWN":
-        return {**out, "state": "UNKNOWN", "ledger_state": d.get("state")}
-    if ev == "SUBMITTED":
-        mapped = _LEDGER_TO_MCP.get(d.get("state"))
-        if mapped is None or d.get("sent") is False:
-            # e.g. REJECTED (not final while a signature is out) or a duplicate the gateway did not send
-            return {**out, "state": "UNKNOWN", "ledger_state": d.get("state"),
-                    "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
-        return {**out, "state": mapped, "ledger_state": d.get("state")}
-    # DONE
-    if d.get("sent") is False and "state" not in d:
-        return {**out, "state": "REFUSED", "sent": False}
-    mapped = _LEDGER_TO_MCP.get(d.get("state"))
-    if mapped is None:
-        return {**out, "state": "UNKNOWN", "ledger_state": d.get("state"),
-                "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
-    return {**out, "state": mapped, "ledger_state": d.get("state")}
+    return _cancel_view(events, out) if kind == "CANCEL" else _place_view(events, out)
 
 
 def merge_exchange(view: Mapping[str, Any], lookup_state: str | None) -> dict[str, Any]:
     """Combine the queue view with a fresh exchange reconciliation. Deterministic precedence:
-    - REFUSED (nothing ever reached the exchange) is never overridden;
-    - a conclusive exchange state is fresher than the queue: it wins when it is the same or a later stage of the
-      same life (ACCEPTED < PARTIALLY_FILLED < FILLED), and it resolves UNKNOWN / PROCESSING;
-    - an exchange state that contradicts a later or final queue state is a conflict: UNKNOWN."""
+    - REFUSED / QUEUED / SETTLED are never changed by an order read (SETTLED comes after the order lifecycle);
+    - a final queue state stands unless the read contradicts it: then UNKNOWN (conflict);
+    - otherwise a conclusive read that proves presence on the exchange (ACCEPTED, PARTIALLY_FILLED, FILLED) wins
+      unless it is an earlier stage than the queue's (conflict);
+    - an inactive-without-fills read (CANCELLED / EXPIRED) replaces only ACCEPTED: it never resolves UNKNOWN or
+      PROCESSING, because a signature may still be outstanding (review P3-2)."""
     out = dict(view)
     out["exchange_state"] = lookup_state
-    if view["state"] in ("REFUSED", "QUEUED") or lookup_state is None:
-        return out
-    ex = _LOOKUP_TO_MCP.get(lookup_state)
-    if ex is None:
-        return out  # e.g. NOT_ON_EXCHANGE: reported as exchange_state, never promoted to "not sent"
     q = view["state"]
-    if q in ("UNKNOWN", "PROCESSING") or q == ex:
+    ex = _LOOKUP_TO_MCP.get(lookup_state) if lookup_state is not None else None
+    if q in ("REFUSED", "QUEUED", "SETTLED") or ex is None:
+        return out
+    if view.get("final"):
+        if ex != q and not (q == "PARTIALLY_FILLED" and ex == "PARTIALLY_FILLED"):
+            out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="QUEUE_AND_EXCHANGE_DISAGREE",
+                       queue_state=q)
+        return out
+    if ex in _RANK:
+        if q in _RANK and _RANK[ex] < _RANK[q]:
+            out.update(state="UNKNOWN", evidence="CONFLICT", code="QUEUE_AND_EXCHANGE_DISAGREE", queue_state=q)
+        else:
+            out.update(state=ex, evidence="EXCHANGE_READ")
+        return out
+    if q == "ACCEPTED":  # ex is CANCELLED / EXPIRED: inactive with nothing filled
         out.update(state=ex, evidence="EXCHANGE_READ")
-    elif q in _RANK and ex in _RANK and _RANK[ex] >= _RANK[q]:
-        out.update(state=ex, evidence="EXCHANGE_READ")
-    elif q in _RANK and ex == "CANCELLED" and q == "ACCEPTED":
-        out.update(state=ex, evidence="EXCHANGE_READ")
-    else:
+    elif q in _RANK:     # the queue proves a fill, the read says nothing filled: never pick one silently
         out.update(state="UNKNOWN", evidence="CONFLICT", code="QUEUE_AND_EXCHANGE_DISAGREE", queue_state=q)
     return out
 
@@ -290,7 +367,7 @@ class OrderRequestSettings:
         maker = e.get("SXBET_MAKER_ADDRESS", "").strip()
         if not dsn:
             return cls(error="SXBET_SIGNER_QUEUE_DATABASE_URL_MISSING")
-        if dsn == e.get("DATABASE_URL", "").strip():
+        if _same_database(dsn, e.get("DATABASE_URL", "").strip()):
             # The queue lives in the signer's own database, never in the bridge database (WP-009).
             return cls(error="SXBET_SIGNER_QUEUE_MUST_NOT_BE_THE_BRIDGE_DATABASE")
         if not _ADDRESS.fullmatch(maker):
@@ -299,6 +376,26 @@ class OrderRequestSettings:
 
     def __repr__(self) -> str:  # never print the DSN
         return f"OrderRequestSettings(enabled={self.enabled}, maker={self.maker!r}, error={self.error!r})"
+
+
+def _db_identity(dsn: str) -> tuple:
+    """(host, port, database) of a URL DSN, case-folded, default port 5432; any other form: the raw string.
+    A best-effort guard only (review P3-6): the binding control is the WP-009 role grants."""
+    if "://" not in dsn:
+        return ("RAW", dsn)
+    try:
+        u = urlsplit(dsn)
+        q = parse_qs(u.query)
+        host = (u.hostname or (q.get("host") or [""])[0]).lower()
+        port = u.port or int((q.get("port") or ["5432"])[0])
+        db = unquote(u.path.lstrip("/")) or (q.get("dbname") or [""])[0]
+    except ValueError:
+        return ("RAW", dsn)
+    return (host, port, db)
+
+
+def _same_database(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and (a == b or _db_identity(a) == _db_identity(b))
 
 
 class QueueUnavailable(RuntimeError):

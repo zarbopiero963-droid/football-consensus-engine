@@ -223,7 +223,7 @@ class SignerService:
                 # Ours and past the send write-ahead: UNKNOWN unless the ledger shows it reached the exchange.
                 ev = "SUBMITTED" if o.state in ("SUBMITTED", "OPEN", "PARTIALLY_FILLED", "FILLED") else "UNKNOWN"
                 out.append(self._event(rid, ev, client_order_id=cid, order_id=o.order_id, state=o.state,
-                                       note="RECOVERED_FROM_LEDGER"))
+                                       filled=str(o.filled), note="RECOVERED_FROM_LEDGER"))
             elif p.get("kind") == "CANCEL" and last == "CLAIMED":
                 out.append(self._event(rid, "UNKNOWN", scope=p.get("scope"),
                                        note="CANCEL_INTERRUPTED_RECONCILE_FROM_READS_BEFORE_A_NEW_COMMAND"))
@@ -242,8 +242,10 @@ class SignerService:
             cid = (req["payload"].get("intent") or {}).get("idempotency_key")
             o = self._signer._ledger.get(cid) if isinstance(cid, str) else None
             if o is not None and o.state in _FINAL_ORDER_STATES:
+                # The matched amount goes with the final state: CANCELLED / EXPIRED / SETTLED can follow a
+                # partial fill, so the state alone never says "nothing filled" (S7 review of ce4a702, P1-1).
                 out.append(self._event(req["request_id"], "DONE", client_order_id=cid, order_id=o.order_id,
-                                       state=o.state))
+                                       state=o.state, filled=str(o.filled)))
         return out
 
 

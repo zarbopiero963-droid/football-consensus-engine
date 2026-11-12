@@ -340,11 +340,20 @@ def ev(*states_details, signer="sig-1"):
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "PARTIALLY_FILLED"})), "PARTIALLY_FILLED"),
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "REJECTED", "sent": True})), "UNKNOWN"),
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN", "sent": False})), "UNKNOWN"),
+    # Changed by the review of ce4a702 (P2-1): signed, never sent, signature outstanding -> UNKNOWN, not final.
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("DONE", {"sent": False, "code": "INTERRUPTED_AFTER_SIGNATURE"})),
-     "REFUSED"),
+     "UNKNOWN"),
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", {"state": "FILLED"})), "FILLED"),
+    # Changed by the review of ce4a702 (P1-1): a final CANCELLED / EXPIRED needs its fill amount.
+    (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+        ("DONE", {"state": "EXPIRED", "filled": "0"})), "EXPIRED"),
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", {"state": "EXPIRED"})),
-     "EXPIRED"),
+     "UNKNOWN"),
+    (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+        ("DONE", {"state": "CANCELLED", "filled": "2000000"})), "PARTIALLY_FILLED"),
+    (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+        ("DONE", {"state": "SETTLED", "filled": "2000000"})), "SETTLED"),
+    (ev(("CLAIMED", {}), ("SIGNED", {}), ("REFUSED", {"code": "DUPLICATE_REQUEST"})), "UNKNOWN"),
     (ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", {"state": "REJECTED"})),
      "UNKNOWN"),
 ])
@@ -365,29 +374,161 @@ def test_inconsistent_or_duplicate_terminal_evidence_is_unknown_never_a_false_su
     assert v["state"] == "UNKNOWN" and v["code"] == code
 
 
-@pytest.mark.parametrize("queue, lookup, state", [
-    ("UNKNOWN", "SUBMITTED", "ACCEPTED"),
-    ("UNKNOWN", "NOT_ON_EXCHANGE", "UNKNOWN"),                 # a 404 is never promoted to "not sent"
-    ("PROCESSING", None, "PROCESSING"),
-    ("ACCEPTED", "PARTIALLY_FILLED", "PARTIALLY_FILLED"),
-    ("ACCEPTED", "CANCELLED", "CANCELLED"),
-    ("FILLED", "SUBMITTED", "UNKNOWN"),                        # contradiction: never pick one silently
-    ("FILLED", "CANCELLED", "UNKNOWN"),
-    ("CANCELLED", "FILLED", "UNKNOWN"),
-    ("REFUSED", "FILLED", "REFUSED"),
+@pytest.mark.parametrize("queue, final, lookup, state", [
+    ("UNKNOWN", False, "SUBMITTED", "ACCEPTED"),
+    ("UNKNOWN", False, "NOT_ON_EXCHANGE", "UNKNOWN"),          # a 404 is never promoted to "not sent"
+    ("UNKNOWN", False, "CANCELLED", "UNKNOWN"),                # review P3-2: a signature may be outstanding
+    ("PROCESSING", False, "CANCELLED", "PROCESSING"),
+    ("PROCESSING", False, None, "PROCESSING"),
+    ("ACCEPTED", False, "PARTIALLY_FILLED", "PARTIALLY_FILLED"),
+    ("ACCEPTED", False, "CANCELLED", "CANCELLED"),
+    ("ACCEPTED", False, "EXPIRED", "EXPIRED"),
+    ("PARTIALLY_FILLED", False, "SUBMITTED", "UNKNOWN"),       # earlier stage than the queue: conflict
+    ("FILLED", False, "CANCELLED", "UNKNOWN"),                 # contradiction: never pick one silently
+    ("FILLED", True, "SUBMITTED", "UNKNOWN"),
+    ("FILLED", True, "FILLED", "FILLED"),
+    ("CANCELLED", True, "FILLED", "UNKNOWN"),
+    ("PARTIALLY_FILLED", True, "PARTIALLY_FILLED", "PARTIALLY_FILLED"),
+    ("SETTLED", True, "CANCELLED", "SETTLED"),                 # settlement comes after the order lifecycle
+    ("REFUSED", True, "FILLED", "REFUSED"),
 ])
-def test_exchange_evidence_merge_is_deterministic(queue, lookup, state):
-    out = oreq.merge_exchange({"state": queue, "evidence": "QUEUE_EVENTS"}, lookup)
+def test_exchange_evidence_merge_is_deterministic(queue, final, lookup, state):
+    out = oreq.merge_exchange({"state": queue, "final": final, "evidence": "QUEUE_EVENTS"}, lookup)
     assert out["state"] == state
+
+
+# ---------------------------------------------------------------- review of ce4a702 (NOT SAFE): regressions
+def test_review_ce4a702_p1_1_partial_fill_then_cancel_then_settled_never_reads_as_full_or_empty(s):
+    """Signer side: the final DONE carries the matched amount, so the MCP never says FILLED / nothing filled."""
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7101")
+    res = place(t, s, "order-key-S7101", text)
+    svc = signer_service(s, q)
+    svc.process_once()
+    oid = status(t, res["request_id"])["order_id"]
+    s.sim.fill_maker_order(oid, 2 * USDC)
+    s.gw.reconcile("order-key-S7101")
+    s.ledger.transition("order-key-S7101", "CANCELLED", reason="TEST_REMAINDER_CANCELLED")
+    (done,) = svc.sync_outcomes()
+    assert done["detail"]["state"] == "CANCELLED" and done["detail"]["filled"] == str(2 * USDC)
+    st = oreq.queue_view("PLACE", q.events_of(res["request_id"]))
+    assert st["state"] == "PARTIALLY_FILLED" and st["resting"] is False and st["filled_base_units"] == str(2 * USDC)
+    settled = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+                                          ("DONE", {"state": "SETTLED", "filled": str(2 * USDC)})))
+    assert settled["state"] == "SETTLED" and settled["state"] != "FILLED"
+    assert oreq.merge_exchange(settled, None)["state"] == "SETTLED"   # purged row: still not "FILLED"
+
+
+def test_review_ce4a702_p2_1_signed_not_sent_is_not_final_and_the_exchange_is_still_read(s):
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {"order_id": "0x" + "1" * 64}),
+                                    ("DONE", {"sent": False, "code": "INTERRUPTED_AFTER_SIGNATURE"})))
+    assert v["state"] == "UNKNOWN" and v["final"] is False and v["code"] == "SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING"
+    assert oreq.merge_exchange(v, "FILLED")["state"] == "FILLED"   # it was live after all: the read says so
+
+
+def test_review_ce4a702_p2_1_end_to_end_recovered_signed_not_sent_reads_the_exchange(s, monkeypatch):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7102")
+    res = place(t, s, "order-key-S7102", text)
+    monkeypatch.setattr(s.gw, "submit", lambda *a, **k: (_ for _ in ()).throw(SystemExit("crash")))
+    with pytest.raises(SystemExit):
+        signer_service(s, q).process_once()
+    monkeypatch.undo()
+    signer_service(s, q).recover()
+    st = status(t, res["request_id"])
+    assert st["state"] == "UNKNOWN" and st["final"] is False and "exchange_read" in st
+    assert st["state"] != "REFUSED"
+
+
+@pytest.mark.parametrize("buckets, state", [
+    ({"a": "CANCELLED", "b": "CANCELLED"}, "ACCEPTED"),
+    ({"a": "NOT_CANCELLED"}, "NOT_CANCELLED"),
+    ({"a": "CANCELLED", "b": "NOT_CANCELLED"}, "PARTIALLY_CANCELLED"),
+    ({"a": "CANCELLED", "b": "UNKNOWN"}, "UNKNOWN"),
+    ({"a": "UNCONFIRMED"}, "UNKNOWN"),
+    ({"a": None}, "UNKNOWN"),
+    ({}, "UNKNOWN"),
+])
+def test_review_ce4a702_p2_2_cancel_by_ids_state_follows_the_buckets(buckets, state):
+    orders = {k: {"bucket": b} for k, b in buckets.items()}
+    v = oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"scope": "ORDER_IDS", "sent": True,
+                                                                 "orders": orders})))
+    assert v["state"] == state
+
+
+def test_review_ce4a702_p2_2_cancel_by_ids_timeout_is_unknown_end_to_end(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7103")
+    placed = place(t, s, "order-key-S7103", text)
+    signer_service(s, q).process_once()
+    oid = status(t, placed["request_id"])["order_id"]
+    s.sim.inject("DELETE", "/orders-v3", "timeout_before")    # cancel by ids: DELETE /orders-v3
+    res = run(t["sxbet_order_request_cancel"](owner_command=f"Cancella l'ordine {oid}", scope="ORDER_IDS",
+                                              idempotency_key="cancel-key-S7103", order_ids=[oid]))
+    signer_service(s, q).process_once()
+    st = status(t, res["request_id"])
+    assert st["state"] == "UNKNOWN" and st["final"] is False
+
+
+def test_review_ce4a702_p3_4_out_of_order_events_are_unknown():
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SUBMITTED", {"state": "OPEN"}), ("SIGNED", {})))
+    assert v["state"] == "UNKNOWN" and v["code"] == "QUEUE_EVIDENCE_TRANSITION_NOT_ALLOWED"
+
+
+def test_review_ce4a702_p3_5_cancel_not_sent_keeps_the_per_order_report():
+    orders = {"0x" + "1" * 64: {"bucket": "NOT_CANCELLED", "reason": "ALREADY_TERMINAL"}}
+    v = oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"scope": "ORDER_IDS", "sent": False,
+                                                                 "orders": orders})))
+    assert v["state"] == "REFUSED" and v["orders"] == orders
+
+
+@pytest.mark.parametrize("bridge_url, queue_url", [
+    ("postgresql://u:p@db.example:5432/app", "postgres://other:x@DB.example/app"),
+    ("postgresql://u:p@db.example/app?sslmode=require", "postgresql://u2:p2@db.example:5432/app"),
+])
+def test_review_ce4a702_p3_6_the_same_database_spelled_differently_is_refused(bridge_url, queue_url):
+    ors = oreq.OrderRequestSettings.from_env({"SXBET_ORDER_REQUESTS_ENABLED": "true", "DATABASE_URL": bridge_url,
+                                              "SXBET_SIGNER_QUEUE_DATABASE_URL": queue_url,
+                                              "SXBET_MAKER_ADDRESS": "0x" + "a" * 40})
+    assert ors.error == "SXBET_SIGNER_QUEUE_MUST_NOT_BE_THE_BRIDGE_DATABASE"
+    ok = oreq.OrderRequestSettings.from_env({"SXBET_ORDER_REQUESTS_ENABLED": "true", "DATABASE_URL": bridge_url,
+                                             "SXBET_SIGNER_QUEUE_DATABASE_URL": "postgresql://s@db.example/signer",
+                                             "SXBET_MAKER_ADDRESS": "0x" + "a" * 40})
+    assert ok.enabled
+
+
+def test_review_ce4a702_p3_7_health_declares_the_cost_of_the_request_tools(s):
+    reg = _Registry()
+    register_sxbet_tools(reg, Settings(enabled=True, network="mainnet"), client=SimClient(s.sim),
+                         order_requests=ors_for(s), order_request_writer=MemoryWriter(MemoryQueue()))
+    costs = run(reg.tools["sxbet_health"]())["order_requests"]["tool_cost_catalog"]
+    assert {k: v["max_provider_calls"] for k, v in costs.items()} == {
+        "sxbet_order_request_place": 1, "sxbet_order_request_cancel": 0, "sxbet_order_request_status": 2}
+
+
+def test_review_ce4a702_p3_8_retry_refused_after_validation_points_to_the_existing_request(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7104")
+    expiry = int(s.clock()) + 60
+    first = place(t, s, "order-key-S7104", text, expiry=expiry)
+    assert first["status"] == "QUEUED"
+    s.clock.t = expiry - 5                                      # the same retry now has an expiry too soon
+    again = place(t, s, "order-key-S7104", text, expiry=expiry)
+    assert again["status"] == "INVALID_INPUT" and again["request_id"] == first["request_id"]
+    assert again["request_with_this_key_exists"] is True
 
 
 def test_cancel_states_never_claim_a_cancellation_as_proven():
     done = ev(("CLAIMED", {}), ("DONE", {"scope": "ALL", "sent": True, "accepted": True}))
     assert oreq.queue_view("CANCEL", done)["state"] == "ACCEPTED"
-    assert oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"sent": True, "accepted": False})))["state"] \
-        == "UNKNOWN"
-    assert oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"sent": True, "orders": {}})))["state"] \
-        == "ACCEPTED"
+    assert oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"scope": "ALL", "sent": True})))["state"] \
+        == "UNKNOWN"                                         # scope cancel without an explicit acceptance
+    assert oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"scope": "ORDER_IDS", "sent": True,
+                                                                     "orders": {}})))["state"] == "UNKNOWN"
     assert oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("DONE", {"sent": None})))["state"] == "UNKNOWN"
     assert oreq.queue_view("CANCEL", ev(("CLAIMED", {}), ("UNKNOWN", {})))["state"] == "UNKNOWN"
 

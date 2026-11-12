@@ -216,8 +216,10 @@ Nessun argomento di un tool può attivare il trading o cambiare rete, maker, lim
 
 **Configurazione** (Render; nessun valore in repository):
 - `SXBET_ORDER_REQUESTS_ENABLED=true`;
-- `SXBET_SIGNER_QUEUE_DATABASE_URL`: il DSN del ruolo MCP sul database del signer. Deve essere **diverso** da `DATABASE_URL`, perché la coda non sta mai nel database del bridge (WP-009);
+- `SXBET_SIGNER_QUEUE_DATABASE_URL`: il DSN del ruolo MCP sul database del signer. Deve essere **diverso** da `DATABASE_URL`, perché la coda non sta mai nel database del bridge (WP-009). Il confronto normalizza host, porta e nome del database degli URL; è solo una protezione di base, il controllo vincolante sono i permessi dei ruoli;
 - `SXBET_MAKER_ADDRESS`: l'indirizzo del maker, configurazione server e mai un argomento.
+
+`sxbet_health.order_requests.tool_cost_catalog` dichiara il costo massimo: 1 GET per `place` (`/metadata/obv3`), 0 per `cancel`, 2 per `status` (`/orders-v3/{orderId}` e `/fills-v3`). Se un retry di `place` viene rifiutato dopo la validazione (per esempio la scadenza è ormai troppo vicina), la risposta riporta `request_id` e `request_with_this_key_exists`, così non sembra mai "non accodato".
 
 Una configurazione incompleta non registra i tool e `sxbet_health` riporta `order_requests.status = DISABLED_MISCONFIGURED` con un codice fisso, mai i valori.
 
@@ -236,26 +238,38 @@ Una configurazione incompleta non registra i tool e `sxbet_health` riporta `orde
 
 **Stati** (requisiti 1 e 4): funzione pura degli eventi append-only del signer e, quando l'id dell'ordine è noto, di una lettura fresca di `GET /orders-v3/{orderId}` e `GET /fills-v3`. Lo stato non è mai dedotto dal modello.
 
+Ogni risposta riporta anche `final`, vero solo quando lo stato non può più cambiare.
+
 | Stato | Significato |
 |---|---|
 | `QUEUED` | nessun evento del signer |
 | `PROCESSING` | presa in carico o firmata; esito dell'invio non ancora registrato, mai "non inviato" |
-| `REFUSED` | rifiutata prima di qualunque firma, oppure firmata e mai inviata (prova del ledger) |
-| `UNKNOWN` | invio forse avvenuto, rifiuto dell'exchange (non finale con una firma in giro), evidenze incoerenti (eventi dopo un terminale, doppia presa in carico, scrittori diversi) o in conflitto tra coda ed exchange. Riconciliare prima di un nuovo comando. |
-| `ACCEPTED` | sull'exchange, niente eseguito |
-| `PARTIALLY_FILLED` | esecuzione parziale provata dall'exchange |
-| `FILLED` | esecuzione completa (exchange) |
-| `CANCELLED` | inattivo senza esecuzioni (lettura dell'exchange o stato finale del ledger) |
-| `EXPIRED` | stato finale `EXPIRED` del ledger |
+| `REFUSED` | rifiutata dal signer **prima** di qualunque firma (finale). Per una cancellazione: nulla inviato |
+| `UNKNOWN` | invio forse avvenuto; ordine firmato e mai inviato con la firma ancora valida fino alla scadenza (`SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING`, si legge comunque l'exchange); rifiuto dell'exchange (non finale con una firma in giro); stato finale senza importo eseguito (`FILL_AMOUNT_NOT_PROVEN`); evidenze incoerenti (eventi dopo un terminale, doppia presa in carico, scrittori diversi, transizioni non ammesse) o in conflitto tra coda ed exchange. Riconciliare prima di un nuovo comando. |
+| `ACCEPTED` | sull'exchange, **nessuna esecuzione provata** |
+| `PARTIALLY_FILLED` | esecuzione parziale provata (lettura dell'exchange o ledger); `resting: false` se il resto non è più attivo |
+| `FILLED` | esecuzione completa (lettura dell'exchange o stato finale `FILLED` del ledger) |
+| `CANCELLED` | inattivo **senza nulla eseguito** (lettura dell'exchange, o `CANCELLED` del ledger con `filled` = 0) |
+| `EXPIRED` | scaduto **senza nulla eseguito** (stesse evidenze di `CANCELLED`) |
+| `SETTLED` | regolato dall'exchange; l'importo abbinato è `filled_base_units`, mai "esecuzione completa" |
+
+Il signer riporta nell'evento finale l'importo abbinato dal ledger (`filled`, unità base). `CANCELLED`, `EXPIRED` e `SETTLED` possono infatti seguire un'esecuzione parziale (review indipendente di `ce4a702`, P1-1).
 
 Regole di precedenza:
-- un 404 non diventa mai "non inviato";
-- uno stato dell'exchange che contraddice uno stato successivo o finale della coda dà `UNKNOWN` / `QUEUE_AND_EXCHANGE_DISAGREE`.
+- `REFUSED`, `QUEUED` e `SETTLED` non cambiano per una lettura dell'ordine;
+- uno stato finale resta tale, salvo una lettura che lo contraddice: in quel caso `UNKNOWN` / `QUEUE_AND_EXCHANGE_DISAGREE`;
+- una lettura che prova la presenza sull'exchange (`ACCEPTED`, `PARTIALLY_FILLED`, `FILLED`) prevale, salvo che indichi una fase precedente a quella della coda (conflitto);
+- una lettura "inattivo senza esecuzioni" sostituisce solo `ACCEPTED`: non risolve mai `UNKNOWN` né `PROCESSING`, perché una firma può essere ancora valida;
+- un 404 non diventa mai "non inviato".
 
-Per una cancellazione, `ACCEPTED` significa solo che l'exchange ha accettato la richiesta. La risposta non è una prova: si legge ogni ordine fino a `INACTIVE`.
+Per una cancellazione inviata:
+- per id, lo stato segue i bucket per ordine della risposta: tutti `CANCELLED` → `ACCEPTED`; tutti `NOT_CANCELLED` → `NOT_CANCELLED`; misti → `PARTIALLY_CANCELLED`; qualunque `UNKNOWN`/`UNCONFIRMED` o una risposta mancante → `UNKNOWN`;
+- per mercato, evento o tutti: `ACCEPTED` solo con un'accettazione esplicita dell'exchange.
+
+La risposta non è mai una prova: si legge ogni ordine fino a `INACTIVE`.
 
 **Rischio residuo accettato dall'owner** (Opzione 1, 12-11-2026): un MCP o un client compromesso può scrivere una richiesta con un comando falsificato. Il rischio è **limitato, non eliminato**, dai controlli del signer:
-- monouso di `command_id` e dell'impronta;
+- monouso dell'**impronta** del comando (l'hash dell'operazione risolta e del testo). Il `command_id` lo genera il MCP a ogni chiamata, quindi contro un MCP compromesso il monouso dell'id non conta: conta solo l'impronta;
 - verifica del testo contro l'ordine sulle letture del signer;
 - limiti firmati dall'owner;
 - kill switch persistente;

@@ -21,6 +21,11 @@ from .client import NO_NETWORK_CODES, SXBetError
 DOCS = ("https://docs.sx.bet/developers/posting-orders", "https://docs.sx.bet/developers/cancelling-orders",
         "https://docs.sx.bet/developers/order-lifecycle")
 TOOL_NAMES = ("sxbet_order_request_place", "sxbet_order_request_cancel", "sxbet_order_request_status")
+# Declared maximum provider GETs per call (each one slot of the shared rate coordinator).
+TOOL_COSTS = {"sxbet_order_request_place": {"max_provider_calls": 1, "basis": "metadata/obv3"},
+              "sxbet_order_request_cancel": {"max_provider_calls": 0, "basis": "none (queue write only)"},
+              "sxbet_order_request_status": {"max_provider_calls": 2, "basis": (
+                  "orders-v3/{orderId} + fills-v3 (only with a known order id and the API key)")}}
 _HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _OWNER_RULE = ("owner_command must be the owner's own message in THIS conversation, copied verbatim and complete "
                "(event, market with line, selection, stake with currency, minimum odds or limit price). Never "
@@ -129,9 +134,22 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                          (not post_only or time_in_force == "GTC", "POST_ONLY_REQUIRES_GTC")):
             if not ok:
                 return invalid(out, code)
+        rid = oreq.request_id_for(settings.network, "PLACE", key)
+
+        async def refused(res: dict[str, Any]) -> dict[str, Any]:
+            # A retry after QUEUE_WRITE_OUTCOME_UNKNOWN can fail here (expiry now too soon, metadata read error)
+            # although the first call was queued: say so instead of letting it read as "not queued" (P3-8).
+            try:
+                exists = await asyncio.to_thread(writer.request, rid) is not None
+            except Exception:
+                exists = None
+            return {**res, "request_id": rid, "request_with_this_key_exists": exists,
+                    "next_step": "If request_with_this_key_exists is true or null, read sxbet_order_request_status "
+                                 "before anything else."}
+
         meta_raw, err = await get(out, "/metadata/obv3", {}, auth=False)
         if err:
-            return {**out, "status": "PROVIDER_ERROR", "error": err}
+            return await refused({**out, "status": "PROVIDER_ERROR", "error": err})
         now = int(clock())
         try:
             meta = sim.parse_metadata(meta_raw, settings.network)
@@ -145,9 +163,9 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                                                command_text=text, now=now)
         except sim.IntentError as exc:
             status = "METADATA_INVALID" if str(exc).startswith("METADATA_") else "INVALID_INPUT"
-            return {**out, "status": status, "error": {"code": str(exc)}}
+            return await refused({**out, "status": status, "error": {"code": str(exc)}})
         except oreq.RequestInvalid as exc:
-            return invalid(out, exc.code)
+            return await refused(invalid(out, exc.code))
         out.update({"kind": "PLACE", "intent_hash": sim.intent_hash(intent), "client_order_id": key,
                     "odds_rounding": {"requested": intent["requested_percentage_odds"],
                                       "rounded_down": intent["percentage_odds"]},
@@ -182,8 +200,10 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         """State of a queued owner request, from evidence only: the signer's append-only events and, when an
         order id is known, a fresh exchange read (GET /orders-v3/{orderId} + GET /fills-v3, API key).
 
-        States: QUEUED, PROCESSING, REFUSED, UNKNOWN, ACCEPTED, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED.
-        UNKNOWN means reconcile before any new command; it is never "not sent". A REFUSED request is final.
+        States: QUEUED, PROCESSING, REFUSED, UNKNOWN, ACCEPTED, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED,
+        SETTLED; cancels also NOT_CANCELLED, PARTIALLY_CANCELLED. `final` says whether it can still change.
+        UNKNOWN means reconcile before any new command; it is never "not sent". ACCEPTED proves no fill;
+        CANCELLED/EXPIRED mean nothing filled; SETTLED reports the matched amount, never "fully filled".
         """
         out = base("sxbet_order_request_status")
         if not oreq.valid_request_id(request_id):
@@ -224,6 +244,9 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     since = max(0, int(clock()) - int(payload.get("created_at")))
                     lookup_state = sim.state_from_lookup(lookup, order_id=oid, total_bet_size=total,
                                                          seconds_since_submit=since)
+                    row = lookup.get("order") if isinstance(lookup.get("order"), dict) else {}
+                    if lookup_state == "CANCELLED" and row.get("inactiveReason") == "EXPIRED":
+                        lookup_state = "EXPIRED"  # inactive, nothing filled, by expiry (review P3-3)
                 except (TypeError, ValueError):
                     lookup_state = None
                 out["exchange_read"] = {"status": lookup["kind"], "order": lookup.get("order"),
@@ -236,4 +259,4 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
     return tuple(names)
 
 
-__all__ = ["TOOL_NAMES", "register_order_request_tools"]
+__all__ = ["TOOL_COSTS", "TOOL_NAMES", "register_order_request_tools"]

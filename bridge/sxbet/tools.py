@@ -304,6 +304,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 **({} if not (ors.enabled or ors.error) else {"order_requests": {
                     "status": "ENABLED" if ors.enabled else "DISABLED_MISCONFIGURED", "error": ors.error,
                     "tools": list(ORDER_REQUEST_TOOLS) if ors.enabled else [],
+                    "tool_cost_catalog": ORDER_REQUEST_TOOL_COSTS if ors.enabled else {},
                     "note": ("The MCP only queues the owner's explicit command for the isolated signer, which "
                              "verifies it, applies the owner-signed limits, the kill switch and its own LIVE "
                              "flag. The MCP never signs or sends.")}})}
@@ -1363,6 +1364,11 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
 
 
 ORDER_REQUEST_TOOLS = ("sxbet_order_request_place", "sxbet_order_request_cancel", "sxbet_order_request_status")
+ORDER_REQUEST_TOOL_COSTS = {
+    "sxbet_order_request_place": {"max_provider_calls": 1, "basis": "metadata/obv3"},
+    "sxbet_order_request_cancel": {"max_provider_calls": 0, "basis": "none (queue write only)"},
+    "sxbet_order_request_status": {"max_provider_calls": 2, "basis": (
+        "orders-v3/{orderId} + fills-v3 (only with a known order id and the API key)")}}
 
 
 def _raise(code: str):
