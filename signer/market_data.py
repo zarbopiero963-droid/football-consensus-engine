@@ -6,10 +6,10 @@ the market row, the event's markets, the events with the same teams, the quote, 
 the exchange metadata used for authorization. Without a configured provider every order is refused
 (`SIGNER_MARKET_READS_UNAVAILABLE`).
 
-There is NO network implementation in this repository yet: the real provider (official REST reads through
-the shared rate coordinator: GET /markets/find, /markets/active?eventId=, /markets/active filtered by
-teams, /orderbook-v3 with showTakerPerspective, /user/balance-v3, /user/fees-v3, /metadata/obv3) comes with
-the sender PR (owner-reserved). Tests configure an in-memory provider that plays the role of the exchange.
+`signer/market_reads.py` implements this protocol (`RestMarketDataProvider`, owner gate P2-B) over an
+INJECTED GET function: every page of /markets/active, canonical team names, fail closed. The transport
+(HTTPS through the shared rate coordinator) is wired by the signer service PR; this package imports no
+network library. Tests also use an in-memory provider that plays the role of the exchange.
 
 `read(...)` returns one plain mapping:
     market:            GET /markets/find row of `market_hash` {marketHash, status, sportXeventId,

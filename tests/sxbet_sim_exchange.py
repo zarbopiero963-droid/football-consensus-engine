@@ -372,6 +372,10 @@ class SimExchange:
             if req.path == "/markets/find":
                 hs = [h.lower() for h in q.get("marketHashes", "").split(",") if h]
                 return ok([self._market_row(self.markets[h]) for h in hs if h in self.markets])
+            if req.path == "/metadata/obv3":
+                return ok(dict(self.meta))
+            if req.path == "/markets/active":
+                return self._markets_active(q)
             if req.path == "/orderbook-v3/snapshot/market":
                 return self._book(q.get("marketHash", "").lower(), q.get("showTakerPerspective") == "true")
         return err(404, "Not Found")  # e.g. there is no cashout route
@@ -684,12 +688,28 @@ class SimExchange:
             data["nextKey"] = str(start + per)  # absent -- not null -- on the last page
         return ok(data)
 
+    def _markets_active(self, q: dict) -> RestResponse:
+        """GET /markets/active: ACTIVE rows, eventId / sportIds filters, pageSize + paginationKey -> nextKey.
+        The final nextKey points at an empty page, as the contract allows."""
+        rows = [self._market_row(m) for m in self.markets.values() if m.status == "ACTIVE"]
+        if q.get("eventId"):
+            rows = [r for r in rows if r["sportXeventId"] == q["eventId"]]
+        if q.get("sportIds"):
+            ids = {int(x) for x in q["sportIds"].split(",") if x}
+            rows = [r for r in rows if r["sportId"] in ids]
+        rows.sort(key=lambda r: r["marketHash"])
+        size = int(q.get("pageSize", 100))
+        start = int(q.get("paginationKey", "0") or 0)
+        page = rows[start:start + size]
+        nxt = str(start + size) if start < len(rows) else None
+        return ok({"markets": page, "nextKey": nxt})
+
     def _market_row(self, m: SimMarket) -> dict:
         # Moneyline-style row (type 52): the team names are the outcome names; sport / league ids are test values.
         return {"marketHash": m.market_hash, "status": m.status, "sportXeventId": m.event_id,
                 "outcomeOneName": m.outcome_one_name, "outcomeTwoName": m.outcome_two_name,
                 "teamOneName": m.outcome_one_name, "teamTwoName": m.outcome_two_name, "sportId": 5,
-                "leagueId": 1236, "gameTime": m.game_time, "type": 52}
+                "leagueId": getattr(m, "league_id", 1236), "gameTime": m.game_time, "type": 52}
 
     def _levels(self, market_hash: str, outcome_one: bool) -> list[tuple[int, int]]:
         acc: dict[int, int] = {}
