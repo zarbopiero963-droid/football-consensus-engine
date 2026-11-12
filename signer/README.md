@@ -124,6 +124,9 @@ Ne seguono queste proprietà:
 - Il signer trasforma ogni eccezione del provider in `SIGNER_MARKET_READS_FAILED`.
 - **Punti aperti (decisioni dell'owner o verifica su Toronto):**
   - **costo per ordine:** una pagina di `/markets/active` ogni 100 mercati attivi di ogni sport, più le pagine dell'evento; condivide il bucket di `/markets/active` con i tool di lettura del bridge. Da misurare su Toronto; possibile cache a TTL breve della scansione o allowlist di sport dell'owner (`scan_sport_ids`);
+  - **budget di pagine:** `max_pages` (200 per scansione = 20.000 mercati attivi) vale per ogni sport; uno sport più grande rende **ogni** ordine `SIGNER_MARKET_READS_FAILED` (fallisce chiuso). Una scansione lunga può anche superare la finestra breve del comando. Da misurare su Toronto e mainnet in sola lettura; rimedi possibili: `max_pages` nella configurazione firmata dall'owner, cache a TTL breve di una scansione completa;
+  - `scan_sport_ids` ristretto riapre l'ambiguità fra sport (omonimi in uno sport non scansionato): nel servizio deve arrivare solo dalla configurazione firmata dall'owner, con questo compromesso dichiarato;
+  - **solo mercati attivi:** `/markets/active` esclude i mercati regolati o refertati; un evento gemello con tutti i mercati temporaneamente non `ACTIVE` non è visibile e il comando può sembrare univoco (rischio residuo, contenuto dai limiti obbligatori);
   - una riga senza nomi delle squadre in uno sport blocca ogni ordine (fallisce chiuso): forma reale delle righe da verificare;
   - un ordine Limit (GTC) su un lato del book vuoto è rifiutato dal risk engine (`QUOTE_PRICE_MISSING`, comportamento preesistente);
   - la liquidità del book include eventuali nostri ordini a riposo (prevenzione del self-match), come nel provider di test.

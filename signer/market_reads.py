@@ -47,6 +47,7 @@ _UINT = re.compile(r"^[0-9]{1,78}$")
 IDENTITY_FIELDS = ("marketHash", "sportXeventId", "teamOneName", "teamTwoName", "outcomeOneName", "outcomeTwoName",
                    "line", "type", "sportId", "leagueId", "gameTime", "status")
 EVENT_FIELDS = ("sportXeventId", "teamOneName", "teamTwoName", "gameTime", "leagueId", "leagueLabel", "sportId")
+CONFLICT_FIELDS = tuple(dict.fromkeys(IDENTITY_FIELDS + EVENT_FIELDS))
 FEE_FIELDS = ("refundFee", "makerPayoutFee", "takerPayoutFee", "makerParlayPayoutFee", "takerParlayPayoutFee")
 
 
@@ -80,8 +81,10 @@ def read_all_active_markets(get: ReadFn, params: Mapping[str, Any], *,
                   and _HASH.fullmatch(m["marketHash"].lower()) is not None, "MARKETS_ROW_MALFORMED")
             h = m["marketHash"].lower()
             prev = rows.get(h)
-            if prev is not None and prev != dict(m):
-                raise MarketReadError("MARKETS_ROW_CONFLICT")  # same market read twice, different content (P3-2)
+            # Same market read twice with different identity / label / event data: refusal (review 98e7525 P3-2).
+            # Other fields (e.g. mainLine moving during a long scan) do not refuse (review 4dc9981 P3-B).
+            if prev is not None and any(prev.get(f) != m.get(f) for f in CONFLICT_FIELDS):
+                raise MarketReadError("MARKETS_ROW_CONFLICT")
             rows[h] = dict(m)
         nxt = data.get("nextKey")
         if nxt is None or nxt == "":

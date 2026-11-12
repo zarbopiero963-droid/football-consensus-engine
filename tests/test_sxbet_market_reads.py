@@ -339,3 +339,14 @@ def test_review_p3_4_a_missing_page_is_a_fixed_signer_refusal(s):
     with pytest.raises(SignerRefused) as e:
         _sign(s, "order-key-S5E07")
     assert e.value.code == "SIGNER_MARKET_READS_FAILED"
+
+
+def test_review_4dc9981_p3_b_non_identity_field_change_between_pages_is_not_a_conflict():
+    page = {"markets": [dict(row(H, "E1", "Home FC", "Away FC"), mainLine=True),
+                        dict(row(H, "E1", "Home FC", "Away FC"), mainLine=False)] + BASE[1:], "nextKey": None}
+    def active(params):
+        if "eventId" in params:
+            return {"markets": [r for r in BASE if r["sportXeventId"] == params["eventId"]], "nextKey": None}
+        return copy.deepcopy(page)
+    ctx = read(Fake(BASE, overrides={"/markets/active": active}))
+    assert ctx["market"]["marketHash"] == H
