@@ -86,7 +86,8 @@ EXCLUDABLE_SCHEMAS = ("_avnadmin_monitor",)
 # row (hence its hash) does not depend on server or role defaults.
 READ_GUCS = ("-c search_path=pg_catalog -c default_transaction_read_only=on -c row_security=off "
              "-c TimeZone=UTC -c DateStyle=ISO,YMD -c IntervalStyle=postgres -c extra_float_digits=1 "
-             "-c bytea_output=hex -c client_encoding=UTF8 -c statement_timeout=0")
+             "-c bytea_output=hex -c client_encoding=UTF8 -c statement_timeout=0 "
+             "-c idle_in_transaction_session_timeout=0 -c transaction_timeout=0")
 DUMP_GUCS = "-c default_transaction_read_only=on"
 PASSWORD_PATTERNS = (
     re.compile(r"\bPASSWORD\b", re.I),
@@ -193,10 +194,40 @@ def child_env(params: dict | None = None, *, options: str = "") -> dict:
     return env
 
 
+# Client/server error text can quote production rows (DETAIL "Key (x)=(...)", CONTEXT "COPY t, line
+# n: ...", "Command was: ..."), role names or settings. It is NEVER printed: a failure is reported
+# as a fixed code plus one of these fixed classes, chosen by the first rule that matches.
+ERROR_CLASSES = (
+    ("AUTHENTICATION_FAILED", re.compile(r"password authentication failed|authentication failed|no pg_hba\.conf entry", re.I)),
+    ("TLS_FAILED", re.compile(r"\bSSL\b|certificate", re.I)),
+    ("CONNECTION_FAILED", re.compile(r"connection to server|could not connect|connection refused|could not translate host|"
+                                     r"server closed the connection|timeout expired", re.I)),
+    ("PERMISSION_DENIED", re.compile(r"permission denied|must be owner|must be superuser|must have admin option", re.I)),
+    ("UNIQUE_VIOLATION", re.compile(r"duplicate key value", re.I)),
+    ("CONSTRAINT_VIOLATION", re.compile(r"violates", re.I)),
+    ("ALREADY_EXISTS", re.compile(r"already exists", re.I)),
+    ("DOES_NOT_EXIST", re.compile(r"does not exist", re.I)),
+    ("TIMEOUT", re.compile(r"canceling statement|lock timeout|statement timeout|transaction timeout", re.I)),
+    ("SYNTAX_ERROR", re.compile(r"syntax error", re.I)),
+    ("INVALID_SETTING", re.compile(r"invalid value for parameter|unrecognized configuration parameter", re.I)),
+    ("RESOURCE_EXHAUSTED", re.compile(r"out of memory|no space left|could not write|could not extend", re.I)),
+)
+
+
+def error_class(stderr: str) -> str:
+    """A fixed class for a client's stderr; never any part of the text itself."""
+    if not (stderr or "").strip():
+        return "NO_MESSAGE"
+    for name, pattern in ERROR_CLASSES:
+        if pattern.search(stderr):
+            return name
+    return "OTHER"
+
+
 def _run(argv: list[str], env: dict, code: str, timeout: int = 3600) -> str:
     proc = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
-        raise BackupError(code, sanitize(proc.stderr or "") or "<no message>")
+        raise BackupError(code, f"class={error_class(proc.stderr)}")
     return proc.stdout
 
 
@@ -912,11 +943,9 @@ def run(args, env=None) -> int:
         facts["encrypted_bytes"] = cipher.stat().st_size
         success = True
     except BackupError as exc:
-        checks.add("error", False, exc.code)
-        if exc.detail:
-            print(f"::error::{exc.code}: {exc.detail}", file=sys.stderr)
-        else:
-            print(f"::error::{exc.code}", file=sys.stderr)
+        # exc.detail is only ever fixed codes/classes (never client or server text).
+        checks.add("error", False, f"{exc.code} {exc.detail}".strip())
+        print(f"::error::{exc.code} {exc.detail}".rstrip(), file=sys.stderr)
     except Exception as exc:  # never print exception text (could carry connection details)
         checks.add("error", False, f"UNEXPECTED_{type(exc).__name__}")
         print(f"::error::UNEXPECTED_{type(exc).__name__}", file=sys.stderr)
@@ -965,7 +994,7 @@ def apply_roles_sql(psql: str, roles_sql: Path, env: dict, bootstrap: str) -> No
     allowed = f'ERROR:  role "{bootstrap}" already exists'
     unexpected = [e for e in errors if not e.endswith(allowed)]
     if proc.returncode != 0 or unexpected or len(errors) > 1:
-        raise BackupError("ROLES_SQL_APPLY_FAILED", sanitize("\n".join(unexpected or errors) or proc.stderr))
+        raise BackupError("ROLES_SQL_APPLY_FAILED", f"class={error_class(chr(10).join(unexpected or errors) or proc.stderr)}")
 
 
 def _db_owner_from(database_sql: Path) -> str | None:
@@ -980,13 +1009,14 @@ def _db_owner_from(database_sql: Path) -> str | None:
 # ------------------------------------------------------------------ leak check
 
 def _secret_values(env) -> list[str]:
+    """Real secrets, matched as substrings anywhere: the full DSN, its host and password, the passphrase."""
     values = []
     raw = env.get(URL_VAR, "")
     if raw:
         values.append(raw)
         try:
             u = urlsplit(raw)
-            for v in (u.hostname, u.username, u.password, u.password and unquote(u.password)):
+            for v in (u.hostname, u.password, u.password and unquote(u.password)):
                 if v and len(v) >= 4:
                     values.append(v)
         except Exception:
@@ -995,6 +1025,19 @@ def _secret_values(env) -> list[str]:
     if secret:
         values.append(secret)
     return values
+
+
+def _identifier_patterns(env) -> list[re.Pattern]:
+    """The DSN user name is an identifier, not a secret: it is a leak only as a whole word. A plain
+    substring test would flag Aiven's `_avnadmin_monitor` schema for the user `avnadmin` (review #202 P1)."""
+    raw = env.get(URL_VAR, "")
+    try:
+        user = unquote(urlsplit(raw).username or "") if raw else ""
+    except Exception:
+        user = ""
+    if len(user) < 4:
+        return []
+    return [re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(user)}(?![A-Za-z0-9_$])")]
 
 
 FORBIDDEN_TEXT = (re.compile(r"postgres(?:ql)?://", re.I), re.compile(r"SCRAM-SHA-256\$", re.I),
@@ -1009,9 +1052,9 @@ def leak_problems(summary: Path | None, artifact_dir: Path | None, env=None) -> 
     problems = []
     if summary is not None and summary.exists():
         text = summary.read_bytes()
-        if any(s in text for s in secrets_):
-            problems.append("SUMMARY_CONTAINS_SECRET")
         decoded = text.decode("utf-8", errors="replace")
+        if any(s in text for s in secrets_) or any(p.search(decoded) for p in _identifier_patterns(env)):
+            problems.append("SUMMARY_CONTAINS_SECRET")
         if any(p.search(decoded) for p in FORBIDDEN_TEXT):
             problems.append("SUMMARY_CONTAINS_FORBIDDEN_TEXT")
     if artifact_dir is None:

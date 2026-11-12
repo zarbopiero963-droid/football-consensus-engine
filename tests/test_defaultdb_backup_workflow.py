@@ -438,3 +438,81 @@ def test_runbook_covers_the_owner_procedure():
                    "_avnadmin_monitor", "retention", "elimin"):
         assert needle in text, needle
     assert "artifact" in text.lower() and "Drive" in text
+
+
+# ------------------------------------------------------------------ review #202 regressions
+
+AIVEN_ENV = {"FCB_DEFAULTDB_URL": "postgresql://avnadmin:Sup3rSecretPw@pg-host.aivencloud.com:14274/defaultdb?sslmode=verify-full",
+             "FCB_BACKUP_PASSPHRASE": "Q" * 48}
+
+
+def test_p1_the_aiven_monitor_schema_name_is_not_a_leak_of_the_avnadmin_user(tmp_path):
+    """RED on f56fcf8: `avnadmin` (the production user) is a substring of `_avnadmin_monitor`."""
+    out, summary = _artifact(tmp_path)
+    summary.write_text("## FCB defaultdb encrypted backup: PASS\n- excluded_schemas: `_avnadmin_monitor`\n"
+                       "| source_guard_catalog_only | PASS | ok |\n")
+    assert _module().leak_problems(summary, out, AIVEN_ENV) == []
+
+
+@pytest.mark.parametrize("text", ["user avnadmin connected", "avnadmin", "role=avnadmin;", "Sup3rSecretPw",
+                                  "pg-host.aivencloud.com", "Q" * 48])
+def test_p1_real_secrets_and_the_bare_username_are_still_leaks(tmp_path, text):
+    out, summary = _artifact(tmp_path)
+    summary.write_text(text + "\n")
+    assert "SUMMARY_CONTAINS_SECRET" in _module().leak_problems(summary, out, AIVEN_ENV)
+
+
+FAKE_ROW = "tok_9f8e7d6c5b4a_SECRET_ROW_VALUE"
+DATA_STDERR = (
+    'pg_restore: error: could not execute query: ERROR:  duplicate key value violates unique constraint "oauth_access_tokens_pkey"\n'
+    f"DETAIL:  Key (token_hash)=({FAKE_ROW}) already exists.\n"
+    f"CONTEXT:  COPY oauth_access_tokens, line 1: \"{FAKE_ROW}\tclient\t2030-01-01\"\n"
+    f"Command was: COPY public.oauth_access_tokens (token_hash) FROM stdin; {FAKE_ROW}\n"
+    f"psql:roles.sql:12: ERROR:  invalid value for parameter \"search_path\": \"{FAKE_ROW}\"\n")
+
+
+def _failing_tool(tmp_path):
+    tool = tmp_path / "pg_restore"
+    (tmp_path / "stderr.txt").write_text(DATA_STDERR)
+    tool.write_text(f"#!/bin/sh\ncat '{tmp_path / 'stderr.txt'}' >&2\nexit 1\n")
+    tool.chmod(0o700)
+    return tool
+
+
+def test_p2_a_failing_client_never_surfaces_detail_context_or_row_values(tmp_path, capsys):
+    """RED on f56fcf8: the DETAIL/CONTEXT/Command was lines reached the job log via exc.detail."""
+    mod = _module()
+    with pytest.raises(mod.BackupError) as exc:
+        mod._run([str(_failing_tool(tmp_path))], mod.child_env(), "PG_RESTORE_FAILED")
+    shown = f"{exc.value} {exc.value.code} {exc.value.detail}"
+    assert FAKE_ROW not in shown and "DETAIL" not in shown and "CONTEXT" not in shown and "COPY" not in shown
+    assert exc.value.code == "PG_RESTORE_FAILED" and exc.value.detail == "class=UNIQUE_VIOLATION"
+
+
+@pytest.mark.parametrize("stderr, cls", [
+    ("ERROR:  permission denied for table x\nDETAIL: secret", "PERMISSION_DENIED"),
+    ('ERROR:  relation "x" already exists', "ALREADY_EXISTS"),
+    ('ERROR:  role "x" does not exist', "DOES_NOT_EXIST"),
+    ("ERROR:  new row for relation \"t\" violates check constraint \"c\"\nDETAIL: Failing row contains (secret).", "CONSTRAINT_VIOLATION"),
+    ("connection to server at \"h\" (1.2.3.4), port 5 failed: FATAL:  password authentication failed for user \"u\"", "AUTHENTICATION_FAILED"),
+    ("connection to server at \"h\", port 5 failed: Connection refused", "CONNECTION_FAILED"),
+    ("ERROR:  canceling statement due to lock timeout", "TIMEOUT"),
+    ("ERROR:  syntax error at or near \"secret\"", "SYNTAX_ERROR"),
+    ("ERROR:  something nobody anticipated: secret", "OTHER"),
+    ("", "NO_MESSAGE"),
+])
+def test_p2_errors_are_reported_as_fixed_classes_only(stderr, cls):
+    assert _module().error_class(stderr) == cls
+
+
+def test_p2_cli_error_lines_print_codes_only(tmp_path, capsys, monkeypatch):
+    mod = _module()
+    monkeypatch.setattr(mod, "passphrase_problem", lambda env=None: None)
+    monkeypatch.setattr(mod, "age_version", lambda: "1.1.1")
+    monkeypatch.setattr(mod, "tool_major", lambda b, t: (_ for _ in ()).throw(mod.BackupError("PG_DUMP_FAILED", "class=OTHER")))
+    args = mod._parser().parse_args(["run", "--workdir", str(tmp_path / "w"), "--outdir", str(tmp_path / "o"),
+                                     "--expected-counts", "x", "--expected-structure", "y", "--source-commit", "c",
+                                     "--run-id", "1", "--summary", str(tmp_path / "s.md")])
+    assert mod.run(args, env={"FCB_BACKUP_PASSPHRASE": "Q" * 48}) == 1
+    err = capsys.readouterr().err
+    assert err.strip() == "::error::PG_DUMP_FAILED class=OTHER"
