@@ -1128,6 +1128,9 @@ A2_TAMPER = {
     "runner_not_plain": ["ALTER ROLE fcb_cert_runner CREATEDB"],
     "runner_member": ["CREATE ROLE fcbpa_group NOLOGIN", "GRANT fcbpa_group TO fcb_cert_runner"],
     "owner_change": ["ALTER TABLE public.api_football_quota_leases OWNER TO fcb_cert_runner"],
+    # review P3 F3: any role able to inherit from / act as the runner
+    "member_inherit": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT fcb_cert_runner TO fcbpa_other WITH INHERIT TRUE, SET FALSE"],
+    "member_set": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT fcb_cert_runner TO fcbpa_other WITH INHERIT FALSE, SET TRUE"],
 }
 
 

@@ -1906,11 +1906,16 @@ def test_a2_status_quo_restore_checks_and_both_wp009_phases_accept_exactly_the_r
     ("GRANT UPDATE (bucket) ON public.api_football_quota_counters TO fcb_cert_runner", "column_grant"),
     ("REVOKE DELETE ON public.api_football_quota_leases FROM fcb_cert_runner", "missing_runtime_grant"),
     ("ALTER ROLE fcb_cert_runner CREATEDB", "unexpected_relation_grant"),
+    # review P3 F3: a role that inherits from / can SET to the runner (dropped with the env)
+    ("GRANT fcb_cert_runner TO {x} WITH INHERIT TRUE, SET FALSE", "unexpected_relation_grant"),
+    ("GRANT fcb_cert_runner TO {x} WITH INHERIT FALSE, SET TRUE", "unexpected_relation_grant"),
 ])
 def test_a2_wp009_verify_still_refuses_anything_beyond_the_exact_runner_grant(fresh, tamper, code):
     _a2_install(fresh)
     rc, _, err = _roles_tx(fresh)
     assert rc == 0, err
+    if "{x}" in tamper:
+        tamper = tamper.format(x=fresh.extra_role())
     fresh.superuser(tamper)
     state = fresh.roles_state()
     assert state.startswith("NOT_HARDENED") and code in state, state

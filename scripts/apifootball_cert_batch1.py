@@ -80,8 +80,26 @@ LEDGER_OWNER_ROLE = "fcb_cert_owner"
 RUNNER_IDENTITY_SQL = (
     "SELECT (CURRENT_USER OPERATOR(pg_catalog.=) SESSION_USER AND NOT r.rolsuper AND NOT r.rolcreaterole "
     "AND NOT r.rolcreatedb AND NOT r.rolbypassrls AND NOT r.rolreplication AND NOT EXISTS ("
-    "SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid)) AS ok "
+    "SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid) "
+    # review P3 F3: nobody may act as / inherit from the runner; only the automatic ADMIN-only grant of
+    # the bootstrap superuser to the creating administrator may exist (admin, no inherit, no set)
+    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid "
+    "AND NOT (m.admin_option AND NOT m.inherit_option AND NOT m.set_option "
+    "AND m.grantor OPERATOR(pg_catalog.=) 10::pg_catalog.oid)) "
+    "AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid) "
+    "OPERATOR(pg_catalog.<=) 1) AS ok "
     "FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER")
+# review P3 F4: each connection must REALLY be on its database (current_database(), not the DSN).
+COORDINATOR_DATABASE = "defaultdb"
+CURRENT_DATABASE_SQL = "SELECT pg_catalog.current_database()::pg_catalog.text AS db"
+# review P2 F1: the 4 ledger functions, pinned to bridge 0010 (tests derive every value from the pinned
+# file): name|identity args|return type|language|SECURITY DEFINER|proconfig|volatility|md5(prosrc).
+LEDGER_FUNCTION_SIGNATURES = ";".join(sorted(
+    f'{name}||trigger|plpgsql|{secdef}|{{"search_path=pg_catalog, pg_temp"}}|v|{md5}' for name, secdef, md5 in (
+        ("api_football_cert_attempt_guard", "true", "49a19e3727b56c804e8f0c3d3b85b7fc"),
+        ("api_football_cert_plan_usage_rule", "false", "7c23be9b71fd513ddaf6fef40437832d"),
+        ("api_football_cert_reject_mutation", "false", "e61761d43ca2caf61cd43e1cb5a33dd4"),
+        ("api_football_cert_stamp", "false", "c5ff7ff31ef4c10ed1b59e4f98678390"))))
 # The ledger as installed: 5 tables owned by the NOLOGIN owner (not the caller), nobody holding SET or
 # INHERIT on the owner, the 12 0010 triggers present and ENABLED, the budget trigger SECURITY DEFINER
 # owned by the owner with its pinned search_path. Catalog only (readable by every role).
@@ -102,7 +120,18 @@ LEDGER_INTEGRITY_SQL = (
     "AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace "
     "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND p.proname OPERATOR(pg_catalog.=) 'api_football_cert_attempt_guard' "
     "AND p.prosecdef AND p.proowner OPERATOR(pg_catalog.=) o.oid "
-    "AND p.proconfig OPERATOR(pg_catalog.=) ARRAY['search_path=pg_catalog, pg_temp']::pg_catalog.text[])) AS ok "
+    "AND p.proconfig OPERATOR(pg_catalog.=) ARRAY['search_path=pg_catalog, pg_temp']::pg_catalog.text[]) "
+    "AND (SELECT pg_catalog.string_agg(p.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) "
+    "pg_catalog.pg_get_function_identity_arguments(p.oid) OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) "
+    "pg_catalog.format_type(p.prorettype, NULL) OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) l.lanname::pg_catalog.text "
+    "OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) p.prosecdef::pg_catalog.text OPERATOR(pg_catalog.||) '|' "
+    "OPERATOR(pg_catalog.||) COALESCE(p.proconfig::pg_catalog.text, '-') OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) "
+    "p.provolatile::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) pg_catalog.md5(p.prosrc), ';' "
+    "ORDER BY p.proname) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace "
+    "JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s "
+    "AND p.proowner OPERATOR(pg_catalog.=) o.oid) OPERATOR(pg_catalog.=) %(functions)s "
+    "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND p.proowner OPERATOR(pg_catalog.<>) o.oid)) AS ok "
     "FROM pg_catalog.pg_roles o WHERE o.rolname OPERATOR(pg_catalog.=) %(owner)s")
 
 
@@ -379,6 +408,7 @@ class PostgresCampaignLedger:
             owner_role = owner_role or LEDGER_OWNER_ROLE
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
             raise ValueError("INVALID_SCHEMA")
+        self._database = LEDGER_DATABASE if owner_role is not None else None  # PATH A2: the real database
         if owner_role is not None and not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", owner_role):
             raise ValueError("INVALID_OWNER_ROLE")
         self._owner_role = owner_role  # PATH A integrity checks (None: offline/legacy tests only)
@@ -406,6 +436,10 @@ class PostgresCampaignLedger:
         return conn
 
     def _require_schema(self, cur) -> None:
+        if self._database is not None:  # review P3 F4: before anything else, on the real connection
+            cur.execute(CURRENT_DATABASE_SQL)
+            if self._one(cur, "db") != self._database:
+                raise LedgerUnavailable("LEDGER_DATABASE_WRONG")
         for table in LEDGER_TABLES:
             cur.execute("SELECT pg_catalog.to_regclass(%s) AS t", (f"{self._schema}.{table}",))
             if self._one(cur, "t") is None:
@@ -415,7 +449,7 @@ class PostgresCampaignLedger:
             if not self._one(cur, "ok"):
                 raise LedgerUnavailable("RUNNER_IDENTITY_NOT_DEDICATED")
             cur.execute(LEDGER_INTEGRITY_SQL, {"schema": self._schema, "tables": list(LEDGER_TABLES),
-                                               "owner": self._owner_role})
+                                               "owner": self._owner_role, "functions": LEDGER_FUNCTION_SIGNATURES})
             if not self._one(cur, "ok"):
                 raise LedgerUnavailable("CAMPAIGN_LEDGER_INTEGRITY_FAILED")
 
@@ -1008,12 +1042,16 @@ def main(argv: list[str] | None = None) -> int:
     try:  # PATH A: the coordinator connection (defaultdb) must be the dedicated runner too
         from app.db import connect as _coordinator_connect
         with _coordinator_connect() as conn:
+            if conn.execute(CURRENT_DATABASE_SQL).fetchone()["db"] != COORDINATOR_DATABASE:
+                raise LookupError("COORDINATOR_DATABASE_WRONG")  # review P3 F4: before any lease
             identity = runner_identity_problem(conn)
             # PATH A2: the ONLY ledger is fcb_cert; a ledger in the coordinator database would be a
             # second, independent budget (legacy bridge 0010 in defaultdb): refused before any request.
             if identity is None and conn.execute(
                     "SELECT pg_catalog.to_regclass('public.api_football_cert_plans') IS NOT NULL AS x").fetchone()["x"]:
                 identity = "SECOND_LEDGER_PRESENT"
+    except LookupError:
+        identity = "COORDINATOR_DATABASE_WRONG"
     except Exception:  # noqa: BLE001 - fixed code only, never the message or the DSN
         identity = "COORDINATOR_DATABASE_UNAVAILABLE"
     if identity:

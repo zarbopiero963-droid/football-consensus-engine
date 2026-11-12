@@ -133,6 +133,13 @@ cert_runner AS (
       AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolbypassrls
       AND NOT r.rolreplication AND NOT r.rolinherit
       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid)
+      -- review P3 F3: no role may act as / inherit from the runner; only the automatic bootstrap
+      -- ADMIN-only grant to the creating administrator (admin, no inherit, no set) may exist
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid
+                      AND NOT (m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+                               AND m.grantor OPERATOR(pg_catalog.=) 10::pg_catalog.oid))
+      AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid)
+          OPERATOR(pg_catalog.<=) 1::pg_catalog.int8
 ),
 cert_runner_grants(relname, priv) AS (VALUES
     ('api_football_quota_counters'::pg_catalog.text, 'SELECT'::pg_catalog.text),

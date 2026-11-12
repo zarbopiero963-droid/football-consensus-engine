@@ -90,3 +90,28 @@ def test_identity_check_refuses_the_administrator_shape():
             return {"ok": self.ok}
     assert batch.runner_identity_problem(Conn(True)) is None
     assert batch.runner_identity_problem(Conn(False)) == "RUNNER_IDENTITY_NOT_DEDICATED"
+
+
+def test_f1_pinned_function_fingerprints_derive_from_the_pinned_0010_file():
+    text = path_a.LEDGER_MIGRATION.read_text(encoding="utf-8")
+    found = re.findall(r"CREATE FUNCTION (\w+)\(\) RETURNS trigger LANGUAGE plpgsql( SECURITY DEFINER)?\s+"
+                       r"SET search_path = pg_catalog, pg_temp AS \$\$(.*?)\$\$;", text, re.S)
+    assert len(found) == 4 and text.count("CREATE FUNCTION") == 4
+    expected = ";".join(sorted(
+        f'{name}||trigger|plpgsql|{"true" if secdef else "false"}|{{"search_path=pg_catalog, pg_temp"}}|v|'
+        f'{hashlib.md5(body.encode()).hexdigest()}' for name, secdef, body in found))
+    assert batch.LEDGER_FUNCTION_SIGNATURES == expected
+    post = _text("apifootball_cert_path_a_ledger_post.sql")
+    for name, _secdef, body in found:  # the installer asserts the same bodies
+        assert f"'{name}|v|{hashlib.md5(body.encode()).hexdigest()}" in post
+
+
+def test_f3_f4_identity_and_database_checks_are_in_every_layer():
+    assert "m.roleid OPERATOR(pg_catalog.=) r.oid" in batch.RUNNER_IDENTITY_SQL
+    assert "10::pg_catalog.oid" in batch.RUNNER_IDENTITY_SQL
+    for name in ("defaultdb_precheck.sql", "defaultdb_restore_guard.sql", "defaultdb_restore_post_guard.sql",
+                 "verify_bridge_roles.sql"):
+        assert "m.roleid OPERATOR(pg_catalog.=) r.oid" in _text(name), name
+    src = (ROOT / "scripts" / "apifootball_cert_batch1.py").read_text(encoding="utf-8")
+    assert '"LEDGER_DATABASE_WRONG"' in src and '"COORDINATOR_DATABASE_WRONG"' in src
+    assert batch.COORDINATOR_DATABASE == "defaultdb" and batch.LEDGER_DATABASE == "fcb_cert"

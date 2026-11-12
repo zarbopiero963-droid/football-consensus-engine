@@ -53,7 +53,7 @@ jobs:
       EXPECTED_FILE_SHA256: |
         sql/aiven/apifootball_cert_path_a_roles.sql=b3f052179b8ad25fa2a10d2cd1998c8538a41dd9c96fa05fc494176ef503dc40
         sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
-        sql/aiven/apifootball_cert_path_a_ledger_post.sql=d2a8d7b8205aa805d9a22b03dadb2604f0fa806a5a959b3ecea8b645a4ecd6fe
+        sql/aiven/apifootball_cert_path_a_ledger_post.sql=8d9bf2565fa11864bb9a0a48a07fbf425111cbfa8077c9ae8048c356072d0fdc
         sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql=64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8
         scripts/apifootball_cert_path_a.py=55684ee8c29c02db695e1c0e871b995dd0ca030cb5835d0874c0c33aa06eb593
         scripts/fcb_db_roles.py=8c52b237162ad3efe14b71555ff39671ae5251bba9b0d7f538fca1d30857b3b6

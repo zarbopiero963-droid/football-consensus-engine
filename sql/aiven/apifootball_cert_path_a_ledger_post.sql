@@ -83,6 +83,19 @@ BEGIN
             RAISE EXCEPTION 'FCB_CERT_PATH_A_FUNCTIONS_UNEXPECTED';
         END IF;
     END LOOP;
+    -- review P2 F1: exactly the 4 bridge-0010 functions, bodies pinned (md5 of prosrc, derived from the
+    -- pinned 0010 file by tests/test_apifootball_cert_path_a.py; the runner checks the same fingerprint)
+    IF (SELECT pg_catalog.string_agg(p.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+               OPERATOR(pg_catalog.||) p.provolatile::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+               OPERATOR(pg_catalog.||) pg_catalog.md5(p.prosrc), ';'::pg_catalog.text ORDER BY p.proname)
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+        WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name)
+       IS DISTINCT FROM ('api_football_cert_attempt_guard|v|49a19e3727b56c804e8f0c3d3b85b7fc;'
+                         'api_football_cert_plan_usage_rule|v|7c23be9b71fd513ddaf6fef40437832d;'
+                         'api_football_cert_reject_mutation|v|e61761d43ca2caf61cd43e1cb5a33dd4;'
+                         'api_football_cert_stamp|v|c5ff7ff31ef4c10ed1b59e4f98678390')::pg_catalog.text THEN
+        RAISE EXCEPTION 'FCB_CERT_PATH_A_FUNCTIONS_UNEXPECTED';
+    END IF;
     -- the counter and the tracking table: nothing for the runner or the administrator
     IF pg_catalog.has_table_privilege('fcb_cert_runner', 'public.api_football_cert_plan_usage', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
        OR pg_catalog.has_any_column_privilege('fcb_cert_runner', 'public.api_football_cert_plan_usage', 'SELECT,INSERT,UPDATE,REFERENCES')

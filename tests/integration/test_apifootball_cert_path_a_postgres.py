@@ -1119,3 +1119,169 @@ def test_a2_evidence_is_catalog_only_stable_and_free_of_secrets(env):
     assert "defaultdb bridge_versions=1,2,3,4,5,6,7,8" in first
     assert sum(line.startswith("grant ") for line in first) == 8 and sum(line.startswith("column_grant ") for line in first) == 1
     assert "ledger triggers_enabled=13 triggers=13" in first
+
+
+# ------------------------------------------------------------------ review of PR #201: F1 / F3 / F4 and the counter reset
+
+LEDGER_FUNCTIONS = ("api_football_cert_attempt_guard", "api_football_cert_plan_usage_rule",
+                    "api_football_cert_reject_mutation", "api_football_cert_stamp")
+
+
+def _function_body(name):
+    import re as _re
+    text = (ROOT / "sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql").read_text(encoding="utf-8")
+    m = _re.search(rf"CREATE FUNCTION {name}\(\) RETURNS trigger LANGUAGE plpgsql( SECURITY DEFINER)?\s+"
+                   r"SET search_path = pg_catalog, pg_temp AS \$\$(.*?)\$\$;", text, _re.S)
+    return bool(m.group(1)), m.group(2)
+
+
+def _as_owner_deliberately(env, *statements):
+    """The deliberate administrator act: self-grant SET on the owner (its automatic ADMIN option allows
+    it), act AS the owner, then revoke, leaving no membership behind (catalog looks clean again)."""
+    with env.admin("fcb_cert") as conn:
+        conn.execute(f"GRANT {OWNER} TO {ADMIN} WITH INHERIT FALSE, SET TRUE")
+        conn.execute(f"SET LOCAL ROLE {OWNER}")
+        for statement in statements:
+            conn.execute(statement)
+        conn.execute("RESET ROLE")
+        conn.execute(f"REVOKE {OWNER} FROM {ADMIN}")
+
+
+def _replace_function(name, body):
+    secdef, _ = _function_body(name)
+    return (f"CREATE OR REPLACE FUNCTION public.{name}() RETURNS trigger LANGUAGE plpgsql"
+            f"{' SECURITY DEFINER' if secdef else ''} SET search_path = pg_catalog, pg_temp AS $fcbf${body}$fcbf$")
+
+
+def _execute_counting(env, ledger, tag, calls=2):
+    text, _sha = _plan_variant(env, 78, tag)
+    events = _Events()
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:calls]
+    try:
+        run = asyncio.run(batch.execute(plan, campaign_id="camp-rev-" + uuid.uuid4().hex[:10], settings=settings(),
+                                        ledger=ledger, inner_transport=transport, quota=_recording_quota(env, events),
+                                        plan_text=text, source_sha="x"))
+        return sent, [c.get("refusal_code") or c["outcome"] for c in run["calls"]]
+    except batch.LedgerUnavailable as exc:
+        return sent, [str(exc)]
+
+
+def test_f1_installed_functions_match_the_pinned_fingerprint(env):
+    with env.su("fcb_cert") as conn:
+        got = conn.execute(
+            "SELECT string_agg(p.proname || '|' || pg_get_function_identity_arguments(p.oid) || '|' || "
+            "format_type(p.prorettype, NULL) || '|' || l.lanname || '|' || p.prosecdef || '|' || COALESCE(p.proconfig::text, '-') "
+            "|| '|' || p.provolatile::text || '|' || md5(p.prosrc), ';' ORDER BY p.proname) AS s FROM pg_proc p "
+            "JOIN pg_language l ON l.oid = p.prolang WHERE p.pronamespace = 'public'::regnamespace").fetchone()["s"]
+    assert got == batch.LEDGER_FUNCTION_SIGNATURES
+
+
+@pytest.mark.parametrize("name", LEDGER_FUNCTIONS)
+def test_f1_a_replaced_function_body_is_refused_before_any_request(env, name):
+    """The owner (deliberate act) replaces the body keeping SECURITY DEFINER, proconfig, owner and the
+    enabled triggers, then revokes: the catalog looks clean, but the pinned fingerprint differs."""
+    secdef, body = _function_body(name)
+    _as_owner_deliberately(env, _replace_function(name, body + "-- tampered\n"))
+    try:
+        with env.su("fcb_cert") as conn:  # everything else is exactly as installed
+            row = conn.execute("SELECT p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner) AS o FROM pg_proc p "
+                               "WHERE p.proname = %s", (name,)).fetchone()
+            assert row == {"prosecdef": secdef, "proconfig": ["search_path=pg_catalog, pg_temp"], "o": OWNER}
+            assert conn.execute("SELECT count(*) AS n FROM pg_trigger WHERE NOT tgisinternal AND tgenabled <> 'O'").fetchone()["n"] == 0
+            assert conn.execute("SELECT count(*) AS n FROM pg_auth_members WHERE roleid = %s::regrole AND (set_option OR inherit_option)",
+                                (OWNER,)).fetchone()["n"] == 0
+        sent, codes = _execute_counting(env, _ledger(env), "f1-" + name)
+        assert sent == [] and codes == ["CAMPAIGN_LEDGER_INTEGRITY_FAILED"], codes
+    finally:
+        _as_owner_deliberately(env, _replace_function(name, body))
+    sent, codes = _execute_counting(env, _ledger(env), "f1-ok-" + name, calls=1)
+    assert len(sent) == 1  # restored: works again
+
+
+@pytest.mark.parametrize("option", ["INHERIT TRUE, SET FALSE", "INHERIT FALSE, SET TRUE"])
+def test_f3_any_member_of_the_runner_is_refused_before_any_request(env, option, monkeypatch, capsys):
+    with env.su("postgres") as su:
+        su.execute("CREATE ROLE fcbpa_member NOLOGIN")
+        su.execute(f"GRANT {RUNNER} TO fcbpa_member WITH {option}")
+    try:
+        sent, codes = _execute_counting(env, _ledger(env), "f3-" + option[:7])
+        assert sent == [] and codes == ["RUNNER_IDENTITY_NOT_DEDICATED"], codes
+        monkeypatch.setenv("DATABASE_URL", env.runner_dsn("defaultdb"))
+        monkeypatch.setenv("APIFOOTBALL_ENABLED", "true")
+        monkeypatch.setenv("APIFOOTBALL_LIVE_AUTHORIZED", "true")
+        monkeypatch.setenv("APIFOOTBALL_API_KEY", KEY)
+        assert batch.main(["--execute", "--authorize-live-campaign", "--campaign-id", "camp-f3-00001", "--out", "/tmp/pa-f3"]) == 2
+        assert "CAMPAIGN_REFUSED RUNNER_IDENTITY_NOT_DEDICATED" in capsys.readouterr().out
+    finally:
+        with env.su("postgres") as su:
+            su.execute("DROP ROLE fcbpa_member")
+    sent, _codes = _execute_counting(env, _ledger(env), "f3-ok-" + option[:7], calls=1)
+    assert len(sent) == 1
+
+
+def test_f4_each_connection_must_really_be_on_its_database(env, monkeypatch, capsys):
+    # the ledger on the coordinator database (a DSN pointing elsewhere): refused before any lease or call
+    wrong = batch.PostgresCampaignLedger(lambda: env.runner("defaultdb"), schema="public", owner_role=OWNER)
+    sent, codes = _execute_counting(env, wrong, "f4-ledger")
+    assert sent == [] and codes == ["LEDGER_DATABASE_WRONG"], codes
+    # the coordinator on the ledger database: refused by the runner before any lease
+    monkeypatch.setenv("DATABASE_URL", env.runner_dsn("fcb_cert"))
+    monkeypatch.setenv("APIFOOTBALL_ENABLED", "true")
+    monkeypatch.setenv("APIFOOTBALL_LIVE_AUTHORIZED", "true")
+    monkeypatch.setenv("APIFOOTBALL_API_KEY", KEY)
+    import httpx
+    hits = []
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda *a, **k: httpx.MockTransport(lambda r: hits.append(r)))
+    assert batch.main(["--execute", "--authorize-live-campaign", "--campaign-id", "camp-f4-00001", "--out", "/tmp/pa-f4"]) == 2
+    assert "CAMPAIGN_REFUSED COORDINATOR_DATABASE_WRONG" in capsys.readouterr().out and hits == []
+    with env.su("defaultdb") as su:
+        assert su.execute("SELECT count(*) AS n FROM api_football_quota_leases WHERE api_key_hash IS NOT NULL "
+                          "AND expires_at > now() + interval '170 seconds'").fetchone()["n"] == 0  # no fresh lease
+
+
+def test_counter_reset_evaluation_deliberate_owner_act_exceeds_the_plan_budget_in_a_new_campaign(env):
+    """EVALUATION (owner request, no code change): what a counter reset can do.
+    * the runner cannot reset (no privilege on the counter); the owner cannot either while the guard is
+      on (`used` only ever +1, even for the owner);
+    * ONLY a deliberate privileged act works: the administrator self-grants SET on fcb_cert_owner
+      (automatic ADMIN option) and, AS the owner, DISABLE TRIGGER + UPDATE used = 0 + ENABLE, then revokes;
+    * effect: the campaign already holding seqs 1..n cannot reuse them (primary key), but a NEW
+      campaign_id of the same plan passes `open` (seqs still 1..n, no duplicate yet) and reserves AND
+      SENDS again: committed attempts of the plan exceed the plan budget. The runner detects it only at
+      the next `open` (duplicate seqs), i.e. AFTER provider requests. Asserted as the current behaviour."""
+    budget = 3
+    text, sha = _plan_variant(env, budget, "reset-" + uuid.uuid4().hex[:6])
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:budget]
+
+    def run(campaign):
+        events = _Events()
+        transport, sent = _recording_provider(events)
+        try:
+            asyncio.run(batch.execute(plan, campaign_id=campaign, settings=settings(), ledger=_ledger(env),
+                                      inner_transport=transport, quota=_recording_quota(env, events),
+                                      plan_text=text, source_sha="x"))
+            return len(sent), None
+        except batch.LedgerUnavailable as exc:
+            return len(sent), str(exc)
+    assert run("camp-reset-a-01") == (budget, None)
+    assert run("camp-reset-b-01") == (0, None)  # budget spent: a new campaign gets nothing
+    _counter_matches(env, sha, budget)
+    for statement in ("UPDATE public.api_football_cert_plan_usage SET used = 0",):  # not by ordinary means
+        with pytest.raises(psycopg.Error):
+            with env.runner() as conn:
+                conn.execute(statement)
+        with pytest.raises(psycopg.errors.RaiseException):
+            _as_owner_deliberately(env, statement)  # even the owner, with the guard on
+    _as_owner_deliberately(env,  # the deliberate privileged act
+                           "ALTER TABLE public.api_football_cert_plan_usage DISABLE TRIGGER api_football_cert_plan_usage_monotonic",
+                           f"UPDATE public.api_football_cert_plan_usage SET used = 0 WHERE plan_sha256 = '{sha}'",
+                           "ALTER TABLE public.api_football_cert_plan_usage ENABLE TRIGGER api_football_cert_plan_usage_monotonic")
+    assert run("camp-reset-c-01") == (budget, None)  # BYPASS: a new campaign sends `budget` more requests
+    with env.su("fcb_cert") as conn:
+        total = conn.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts a JOIN api_football_cert_campaigns c "
+                             "USING (campaign_id) WHERE c.plan_sha256 = %s", (sha,)).fetchone()["n"]
+    assert total == 2 * budget  # committed attempts of the plan above its budget
+    assert run("camp-reset-d-01") == (0, "CAMPAIGN_LEDGER_INTEGRITY_FAILED")  # detected at the next open only
