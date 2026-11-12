@@ -387,3 +387,29 @@ def test_review_67e80eb_p2_b_recover_never_reports_another_requests_order(s):
 def test_review_67e80eb_p3_3_two_service_objects_share_one_lock(s):
     q = MemoryQueue()
     assert service(s, q)._lock is service(s, q)._lock
+
+
+# ---------------------------------------------------------------- P3 from the review of 6c74d55
+def test_review_6c74d55_p3_1_malformed_command_id_does_not_stop_recovery(s):
+    q = MemoryQueue()
+    enqueue_place(s, q, "order-key-R8001")
+    service(s, q).process_once()
+    i2, ctx2 = _fresh(s, "order-key-R8001")
+    bad = place_request(i2, s.command(i2, ctx2), created_at=int(s.clock()))
+    bad["command"]["command_id"] = ["x"]
+    q.insert(bad)
+    assert q.claim(bad["request_id"], SIGNER_ID)
+    out = service(s, q).recover()
+    assert out and out[0]["event"] == "REFUSED"
+
+
+def test_review_6c74d55_p3_4_a_failing_claim_never_blocks_the_next_requests(s, monkeypatch):
+    q = MemoryQueue()
+    a = enqueue_place(s, q, "order-key-R8002")
+    b = enqueue_place(s, q, "order-key-R8003")
+    real = q.claim
+    monkeypatch.setattr(q, "claim", lambda rid, sid: (_ for _ in ()).throw(RuntimeError("lock timeout"))
+                        if rid == a["request_id"] else real(rid, sid))
+    out = service(s, q).process_once()
+    assert [r["detail"].get("code") for r in out][0] == "CLAIM_FAILED"
+    assert q.states(b["request_id"])[-1] == "SUBMITTED"

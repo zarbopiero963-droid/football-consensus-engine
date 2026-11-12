@@ -58,8 +58,13 @@ class SignerService:
         with self._lock:
             out = []
             for req in self._q.pending(self._network, limit):
-                if not self._q.claim(req["request_id"], self._signer_id):
-                    continue  # another instance or an earlier run owns it
+                try:
+                    if not self._q.claim(req["request_id"], self._signer_id):
+                        continue  # another instance or an earlier run owns it
+                except Exception:
+                    # e.g. a stalled per-request lock: skip it, never block the requests behind it (P3-4).
+                    out.append({"request_id": req["request_id"], "event": None, "detail": {"code": "CLAIM_FAILED"}})
+                    continue
                 out.append(self._handle(req))
             return out
 
@@ -175,7 +180,8 @@ class SignerService:
             cid = (p.get("intent") or {}).get("idempotency_key") if isinstance(p.get("intent"), Mapping) else None
             o = self._signer._ledger.get(cid) if (p.get("kind") == "PLACE" and isinstance(cid, str)) else None
             command_id = (p.get("command") or {}).get("command_id") if isinstance(p.get("command"), Mapping) else None
-            ours = o is not None and self._signer._ledger.order_of_command(command_id) == cid
+            ours = (o is not None and isinstance(command_id, str)
+                    and self._signer._ledger.order_of_command(command_id) == cid)  # review 6c74d55 P3-1
             if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
             elif o is not None and not ours:
@@ -186,6 +192,9 @@ class SignerService:
             elif o is not None and o.state == AUTHORIZED:
                 self._signer.abandon_unsigned(cid)  # ours, no signature ever left: release the reservation
                 out.append(self._refuse(rid, "INTERRUPTED_BEFORE_SIGNATURE", client_order_id=cid))
+            elif o is not None and o.state == "REJECTED" and not o.signature_released:
+                # Never signed (e.g. SIGNING_FAILED) and the refusal was not recorded: final (review 6c74d55 P3-3).
+                out.append(self._refuse(rid, "REFUSED_BEFORE_SIGNATURE", client_order_id=cid))
             elif o is not None and o.state == SIGNED:
                 out.append(self._event(rid, "DONE", client_order_id=cid, order_id=o.order_id, sent=False,
                                        code="INTERRUPTED_AFTER_SIGNATURE",
