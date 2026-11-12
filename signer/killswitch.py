@@ -139,7 +139,7 @@ class KillSwitch:
             trigger = ledger.kill_switch_state()["trigger"] or ("KILL_SWITCH_UNRECORDED_ENGAGEMENT"
                                                                 if ledger.kill_marker_status == "UNRECORDED"
                                                                 else "KILL_SWITCH_MARKER_INVALID")
-            self._log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
+            self._safe_log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
             with ledger.kill_lock:  # recovery engage and flag drop under ONE hold (review f667594 P3-1)
                 self.recovery = self._engage(trigger, source="AUTOMATIC", triggers=())
                 if self.recovery["persisted"]:
@@ -159,6 +159,14 @@ class KillSwitch:
         st["volatile_trigger"] = self._volatile
         st["engaged"] = self.engaged
         return st
+
+    def _safe_log(self, decision: str, **kw: Any) -> bool:
+        """Audit that can never stop an engagement (review f1e8cb8 P1): False when the audit write failed."""
+        try:
+            self._log(decision, **kw)
+            return True
+        except Exception:
+            return False
 
     def _log(self, decision: str, *, reason: str | None = None, order_id: str | None = None,
              bucket: str | None = None) -> None:
@@ -184,32 +192,49 @@ class KillSwitch:
             return self._engage(trigger, source=source, triggers=triggers)
 
     def _engage(self, trigger: str, *, source: str, triggers: Sequence[str]) -> dict[str, Any]:
+        """Order (review f1e8cb8 P1): (1) in-memory engagement FIRST, so nothing can sign from here on;
+        (2) marker; (3) ENGAGE line; (4) quarantine with the inode witness if nothing durable was written;
+        (5) audit LAST, each record guarded: a failed audit write (e.g. full disk) never stops steps 1-4."""
         all_triggers = sorted({trigger, *triggers})
-        marked = self._ledger.write_kill_marker(trigger=trigger, source=source)  # P2-A: before the ENGAGE line
-        if not marked:
-            self._log("KILL_SWITCH_MARKER_WRITE_FAILED", reason=trigger)
-        quarantined = None
+        previous_volatile = self._ledger.volatile_kill
+        self._ledger.engage_volatile_kill(trigger)
+        logs: list[tuple[str, dict[str, Any]]] = []
+        marked = quarantined = witness = None
+        persisted = False
+        intents: list[str] = []
         try:
-            # ENGAGE and the intent snapshot under one hold of the ledger lock (review P2-1).
-            intents = self._ledger.engage_kill_switch(trigger=trigger, source=source, triggers=all_triggers,
-                                                      intents=self._intents)
-            persisted = True
-        except (LedgerError, OrderStateError) as exc:
-            intents = self.cancel_intents()
-            self._volatile = trigger
-            self._ledger.engage_volatile_kill(trigger)
-            self._log("KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE", reason=getattr(exc, "code", "LEDGER_ERROR"))
-            persisted = False
-            if not marked:  # nothing durable recorded the engagement: a restart must not find a usable ledger
-                quarantined = self._ledger.quarantine_for_kill_switch()
-                self._log("KILL_SWITCH_LEDGER_QUARANTINED" if quarantined else "KILL_SWITCH_NOT_PERSISTED",
-                          reason=trigger)
-        self._log("KILL_SWITCH_ENGAGED", reason=trigger, bucket=source)
-        for oid in intents:
-            self._log("KILL_SWITCH_CANCEL_INTENT", reason=trigger, order_id=oid, bucket="NOT_SENT_NO_SENDER")
+            marked = self._ledger.write_kill_marker(trigger=trigger, source=source)  # P2-A: before ENGAGE
+            if not marked:
+                logs.append(("KILL_SWITCH_MARKER_WRITE_FAILED", {"reason": trigger}))
+            try:
+                # ENGAGE and the intent snapshot under one hold of the ledger lock (review P2-1).
+                intents = self._ledger.engage_kill_switch(trigger=trigger, source=source, triggers=all_triggers,
+                                                          intents=self._intents)
+                persisted = True
+            except (LedgerError, OrderStateError) as exc:
+                intents = self.cancel_intents()
+                logs.append(("KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE",
+                             {"reason": getattr(exc, "code", "LEDGER_ERROR")}))
+                if not marked:  # nothing durable recorded it: a restart must not find a usable ledger
+                    quarantined, witness = self._ledger.quarantine_for_kill_switch_detailed()
+                    if not witness:
+                        logs.append(("KILL_SWITCH_INODE_WITNESS_FAILED", {"reason": trigger}))
+                    logs.append(("KILL_SWITCH_LEDGER_QUARANTINED" if quarantined else "KILL_SWITCH_NOT_PERSISTED",
+                                 {"reason": trigger}))
+        finally:
+            if persisted:
+                # Recorded on the ledger: the in-memory engagement of step 1 is no longer needed.
+                self._ledger.restore_volatile_kill(previous_volatile)
+            else:
+                self._volatile = trigger  # stays engaged in memory (already set on the ledger in step 1)
+        logs.append(("KILL_SWITCH_ENGAGED", {"reason": trigger, "bucket": source}))
+        logs += [("KILL_SWITCH_CANCEL_INTENT", {"reason": trigger, "order_id": oid, "bucket": "NOT_SENT_NO_SENDER"})
+                 for oid in intents]
+        audit_ok = all([self._safe_log(d, **kw) for d, kw in logs])
         return {"engaged": True, "trigger": trigger, "triggers": all_triggers, "source": source,
                 "persisted": persisted, "marker_written": marked, "ledger_quarantined": quarantined,
-                "survives_restart": persisted or marked or bool(quarantined),
+                "inode_witness_set": witness, "audit_written": audit_ok,
+                "survives_restart": persisted or bool(marked) or bool(quarantined and witness),
                 "cancel_intents": intents, "cancels_sent": False,
                 "note": "CANCEL_INTENTS_RECORDED_SENDING_REQUIRES_THE_SENDER_PR"}
 

@@ -315,6 +315,8 @@ def test_review_c139822_p2a_real_quarantine_case_is_missing_ledger_and_documente
     with pytest.raises(od.LedgerError) as e:
         od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
     assert e.value.code == "LEDGER_MISSING"
+    readme = (pathlib.Path(__file__).parents[1] / "signer/README.md").read_text()
+    assert "Rischi residui dichiarati" in readme and "rimettere a mano il file in quarantena" in readme
 
 
 @pytest.mark.parametrize("restore", ["mv", "cp -p"])
@@ -402,3 +404,60 @@ def test_review_c139822_p3_2_unremovable_marker_is_reported_and_stays_blocked(s)
     assert "KILL_SWITCH_MARKER_KEPT_LATER_ENGAGEMENT" not in [r["decision"] for r in ks_audit(s)]
     s.restart()
     assert s.ledger.kill_switch_engaged                    # fail closed until the owner clears it by hand
+
+
+# ---------------------------------------------------------------- fixes from the independent review of f1e8cb8
+def _audit_full(monkeypatch):
+    from signer.audit import AuditLog
+
+    def enospc(self, **kw):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(AuditLog, "append", enospc)
+
+
+def test_review_f1e8cb8_p1_audit_failure_never_stops_the_engagement_marker_failing(s, monkeypatch):
+    """RED on f1e8cb8: the audit write raised before anything was engaged and the signer kept signing."""
+    k = make_ks(s)
+    _audit_full(monkeypatch)
+    real_open = os.open
+    monkeypatch.setattr(os, "open", lambda p, *a, **kw: (_ for _ in ()).throw(OSError(28, "ENOSPC"))
+                        if str(p).startswith(s.ledger.kill_marker_path) else real_open(p, *a, **kw))
+    rep = k.engage("DAILY_LOSS_LIMIT_BREACHED", source="AUTOMATIC")
+    monkeypatch.undo()
+    assert rep["persisted"] is True and rep["audit_written"] is False and k.engaged
+    assert refused(lambda: s.sign(s.intent("order-key-P1A01"))) == "KILL_SWITCH_ENGAGED"
+    s.restart()
+    assert s.ledger.kill_switch_engaged  # the ENGAGE line made it
+
+
+def test_review_f1e8cb8_p1_audit_failure_never_stops_the_quarantine(s, monkeypatch):
+    k = make_ks(s)
+    _audit_full(monkeypatch)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    path = s.ledger._path
+    rep = k.engage("EXPOSURE_ABOVE_LIMIT", source="AUTOMATIC")
+    monkeypatch.undo()
+    assert rep["ledger_quarantined"] is True and rep["inode_witness_set"] is True and rep["audit_written"] is False
+    assert rep["survives_restart"] is True and k.engaged and not os.path.exists(path)
+
+
+def test_review_f1e8cb8_p2_witness_that_cannot_be_set_is_reported(s, monkeypatch):
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    monkeypatch.setattr(os, "fchmod", lambda fd, mode: None)  # the kernel silently drops S_ISGID
+    rep = k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.undo()
+    assert rep["ledger_quarantined"] is True and rep["inode_witness_set"] is False
+    assert rep["survives_restart"] is False
+    assert "KILL_SWITCH_INODE_WITNESS_FAILED" in [r["decision"] for r in ks_audit(s)]
+
+
+def test_review_f1e8cb8_p2_ledger_whose_witness_can_never_be_set_does_not_open(s, monkeypatch):
+    path = s.ledger._path
+    s.ledger.close()
+    monkeypatch.setattr(os, "geteuid", lambda: 4242)  # not root, not the file owner
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
+    assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE"

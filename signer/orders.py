@@ -922,8 +922,17 @@ class OrderLedger:
         JSON marker cannot be written; it is also created before a quarantine (review 30f5a96 P2-2)."""
         return self.kill_marker_path + ".flag"
 
+    def _witness_capable(self) -> bool:
+        """The set-group-ID witness can be set only by root, or by the file's owner when the file's group is
+        one of the process's groups (otherwise the kernel drops the bit silently, review f1e8cb8 P2)."""
+        st = os.fstat(self._fd)
+        euid = os.geteuid()
+        return euid == 0 or (st.st_uid == euid and st.st_gid in {os.getegid(), *os.getgroups()})
+
     def _check_kill_marker(self) -> None:
         """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
+        if not self._witness_capable():
+            raise LedgerError("LEDGER_INODE_WITNESS_UNAVAILABLE")  # fail closed: fix ownership / group first
         flag = os.path.lexists(self.kill_flag_path) or self.inode_witness_set()
         try:
             with open(self.kill_marker_path, "rb") as fh:
@@ -1020,7 +1029,12 @@ class OrderLedger:
             try:
                 mode = stat.S_IMODE(os.fstat(self._fd).st_mode)
                 os.fchmod(self._fd, (mode & ~stat.S_IXGRP) | KILL_INODE_WITNESS)
-                return self.inode_witness_set()
+                try:
+                    os.fsync(self._fd)  # review f1e8cb8 P3: the mode change is durable before the rename
+                except OSError:
+                    pass
+                # The kernel drops S_ISGID silently when the file's group is not the caller's: verify.
+                return bool(os.fstat(self._fd).st_mode & KILL_INODE_WITNESS)
             except (OSError, TypeError):
                 return False
 
@@ -1074,6 +1088,9 @@ class OrderLedger:
             return "REMOVED" if ok else "UNREMOVABLE"
 
     def quarantine_for_kill_switch(self) -> bool:
+        return self.quarantine_for_kill_switch_detailed()[0]
+
+    def quarantine_for_kill_switch_detailed(self) -> tuple[bool, bool]:
         """Last resort when neither the marker nor the ENGAGE line could be written: the empty flag is tried
         once more, then the ledger file is renamed (a metadata operation that works when writes fail), the
         instance is poisoned, and a restart finds no ledger (LEDGER_MISSING): nothing resumes without the
@@ -1081,26 +1098,35 @@ class OrderLedger:
         signer/README.md (record the engagement, then the owner-signed release)."""
         with self._lock:
             self._poisoned = True
-            self.set_inode_witness()  # survives mv / cp -p of the quarantined file (review f667594 P2-1)
+            witness = self.set_inode_witness()  # survives mv / cp -p of the quarantined file (review f667594 P2-1)
             self._create_kill_flag()
             target = f"{self._path}{KILL_QUARANTINE_SUFFIX}-{int(self._clock())}-{os.urandom(4).hex()}"
             try:
                 if os.path.lexists(target):
-                    return False
+                    return False, witness
                 os.rename(self._path, target)
             except OSError:
-                return False
+                return False, witness
             try:
                 _fsync_dir(self._path)
             except OSError:
                 pass  # renamed; the directory entry may need the next sync, reported as quarantined
-            return True
+            return True, witness
 
     @property
     def kill_switch_engaged(self) -> bool:
         """Engaged on the ledger OR engaged in memory because the ledger could not record it (review P3)."""
         with self._lock:
             return bool(self._kill["engaged"]) or self._volatile_kill is not None
+
+    @property
+    def volatile_kill(self) -> str | None:
+        with self._lock:
+            return self._volatile_kill
+
+    def restore_volatile_kill(self, value: str | None) -> None:
+        with self._lock:
+            self._volatile_kill = value
 
     def engage_volatile_kill(self, trigger: str) -> None:
         with self._lock:
