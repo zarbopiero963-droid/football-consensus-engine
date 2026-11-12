@@ -27,7 +27,7 @@ def test_d7_every_official_status_is_decoded(code, label, phase, final, sweeps):
     assert d["final_basis"] == {7: "OFFICIAL", 3: "INFERRED_FROM_LABEL", 4: "INFERRED_FROM_LABEL"}.get(code)
 
 
-@pytest.mark.parametrize("code", [0, 10, "2", 2.0, None, True])
+@pytest.mark.parametrize("code", [0, 10, "2", 2.0, True])
 def test_d7_unknown_status_is_never_guessed(code):
     assert sx.decode_fixture_status(code) == {"code": code, "label": None, "phase": "UNDOCUMENTED_STATUS"}
 
@@ -41,8 +41,8 @@ def test_d7_fixtures_active_flags_final_and_overdue_rows_and_keeps_raw():
     out = run(t["sxbet_fixtures_active"](league_id=1))
     v = out["fixture_status_view"]
     assert out["data"] == rows and len(calls) == 1
-    assert [x["eventId"] for x in v["final_status_listed_as_active"]] == ["L1"]
-    assert [x["eventId"] for x in v["not_started_but_start_long_past"]] == ["L2"]
+    assert [x["eventId"] for x in v["final_status_listed_as_active"]["items"]] == ["L1"]
+    assert [x["eventId"] for x in v["not_started_but_start_long_past"]["items"]] == ["L2"]
     assert v["counts_by_status"] == {"3": 1, "1": 2, "2": 1} and "upcoming" not in out and "decoded" not in v
 
 
@@ -62,7 +62,7 @@ def test_d7_markets_active_flags_stale_active_rows_on_the_page():
     t, _, _ = make(universal(overrides={"/markets/active": lambda r: _ok(page)}))
     out = run(t["sxbet_markets_active"](live_only=True))
     v = out["stale_active_view"]
-    assert [x["marketHash"] for x in v["rows"]] == ["0x" + "aa" * 32] and v["scope"] == "THIS_PAGE_ONLY"
+    assert [x["marketHash"] for x in v["rows"]["items"]] == ["0x" + "aa" * 32] and v["scope"] == "THIS_PAGE_ONLY"
     assert out["data"] == page  # nothing removed
 
 
@@ -89,7 +89,7 @@ def test_review_af9d5e9_p2_2_missing_and_duplicate_event_ids_are_reported_not_co
             {"eventId": "A", "status": 1, "startDate": "2096-01-01T00:00:00Z"},
             {"status": 1}, {"eventId": None, "status": 1}, {"eventId": "None", "status": 1}, "junk"]
     v = sx.fixtures_view(rows, now_unix=NOW)["fixture_status_view"]
-    assert v["duplicate_event_ids"] == ["A"] and v["rows_without_event_id"] == 3 and v["rows"] == 6
+    assert v["duplicate_event_ids"]["items"] == ["A"] and v["rows_without_event_id"] == 3 and v["rows"] == 6
 
 
 def test_review_af9d5e9_p2_3_view_is_compact_for_large_leagues():
@@ -104,8 +104,8 @@ def test_review_af9d5e9_p2_3_view_is_compact_for_large_leagues():
 def test_review_af9d5e9_p3_2_unjudgeable_rows_are_counted():
     v = sx.fixtures_view([{"eventId": "N", "status": 1, "startDate": "2020-01-01T00:00:00"}],
                          now_unix=NOW)["fixture_status_view"]
-    assert v["start_unresolved"] == [{"eventId": "N", "reason": "TIMEZONE_UNRESOLVED"}]
-    assert v["not_started_but_start_long_past"] == []  # a naive time is never treated as UTC
+    assert v["start_unresolved"]["items"] == [{"eventId": "N", "reason": "TIMEZONE_UNRESOLVED"}]
+    assert v["not_started_but_start_long_past"]["total"] == 0  # a naive time is never treated as UTC
     s = sx.stale_active_markets({"markets": [{"status": "ACTIVE", "gameTime": None}, "x"]}, now_unix=NOW)
     assert s["stale_active_view"]["rows_without_int_game_time"] == 2
 
@@ -113,4 +113,32 @@ def test_review_af9d5e9_p3_2_unjudgeable_rows_are_counted():
 def test_review_af9d5e9_p3_5_status_9_overdue_is_flagged():
     v = sx.fixtures_view([{"eventId": "S", "status": 9, "startDate": "2024-01-01T00:00:00Z"}],
                          now_unix=NOW)["fixture_status_view"]
-    assert [x["eventId"] for x in v["not_started_but_start_long_past"]] == ["S"]
+    assert [x["eventId"] for x in v["not_started_but_start_long_past"]["items"]] == ["S"]
+
+
+def test_review_52fcee6_p2a_a_league_full_of_stale_rows_is_not_made_unreadable_by_the_view():
+    rows = [{"eventId": f"L{i}", "status": 1, "startDate": "2024-01-01T00:00:00Z", "leagueId": 1,
+             "participantOneName": "Team A", "participantTwoName": "Team B", "sportId": 5, "leagueLabel": "League X"}
+            for i in range(800)]
+    t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(rows)}))
+    out = run(t["sxbet_fixtures_active"](league_id=1))
+    assert out["status"] == "REAL_API_RESPONSE"  # through call(): raw + view stay under the cap
+    lst = out["fixture_status_view"]["not_started_but_start_long_past"]
+    assert lst["total"] == 800 and len(lst["items"]) == 50 and lst["omitted"] == 750
+
+
+def test_review_52fcee6_p3_missing_status_int_vs_str_and_zero_game_time():
+    assert sx.decode_fixture_status(None)["phase"] == "STATUS_MISSING"
+    v = sx.fixtures_view([{"eventId": "A", "status": 1}, {"eventId": "B", "status": "1"}],
+                         now_unix=NOW)["fixture_status_view"]
+    assert v["counts_by_status"] == {"1": 1, "non_int:'1'": 1}
+    s = sx.stale_active_markets({"markets": [{"status": "ACTIVE", "gameTime": 0}]}, now_unix=NOW)["stale_active_view"]
+    assert s["count"] == 0 and s["rows_without_int_game_time"] == 1
+
+
+def test_review_52fcee6_p3_4_no_pagination_hint_for_fixture_active():
+    big = [{"eventId": f"L{i}", "status": 1, "startDate": "2096-01-01T00:00:00Z", "pad": "x" * 400}
+           for i in range(800)]
+    t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(big)}))
+    out = run(t["sxbet_fixtures_active"](league_id=1))
+    assert out["status"] == "PAYLOAD_TOO_LARGE" and "no pagination" in out["error"]["hint"]

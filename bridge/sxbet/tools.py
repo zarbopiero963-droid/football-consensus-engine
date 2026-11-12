@@ -212,10 +212,19 @@ FIXTURE_STATUS_SOURCE = "https://docs.sx.bet/api-reference/fixture-statuses"
 PHASE_NOTE = "phase is local vocabulary grouping the official labels (1 and 9 are both NOT_STARTED); label is official"
 # Local heuristic (DERIVED, not a provider rule): an ACTIVE market whose gameTime is more than this in the past.
 STALE_ACTIVE_AFTER_SECONDS = 24 * 3600
+NO_PAGINATION_HINT = {"/fixture/active": "This route has no pagination in the contract (leagueId only): the league is "
+                                         "too large for one MCP response."}  # review 52fcee6 P3-4
+VIEW_LIST_MAX = 50  # each flagged list is capped, the rest counted (review 52fcee6 P2-A: the view never decides the cap)
+
+
+def _capped(items: list) -> dict[str, Any]:
+    return {"items": items[:VIEW_LIST_MAX], "total": len(items), "omitted": max(0, len(items) - VIEW_LIST_MAX)}
 
 
 def decode_fixture_status(code: Any) -> dict[str, Any]:
     """Official label and phase of a fixture status code; an unknown code is never guessed."""
+    if code is None:
+        return {"code": None, "label": None, "phase": "STATUS_MISSING"}  # missing, not undocumented (P3-2)
     if type(code) is not int or code not in FIXTURE_STATUSES:
         return {"code": code, "label": None, "phase": "UNDOCUMENTED_STATUS"}
     label, phase = FIXTURE_STATUSES[code]
@@ -251,8 +260,9 @@ def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
         else:
             seen.add(eid)
         d = decode_fixture_status(code)
-        counts[str(code)] = counts.get(str(code), 0) + 1
-        if d["phase"] == "UNDOCUMENTED_STATUS":
+        key = str(code) if type(code) is int else f"non_int:{code!r}"  # 1 and "1" never merge (review 52fcee6 P3-1)
+        counts[key] = counts.get(key, 0) + 1
+        if d["phase"] in ("UNDOCUMENTED_STATUS", "STATUS_MISSING"):
             undocumented.append({"eventId": eid, "provider_status": code})
         if d.get("final"):
             final.append({"eventId": eid, "provider_status": code, "label": d["label"],
@@ -265,9 +275,10 @@ def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
     return {"fixture_status_view": {
         "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "status_table": _status_table(), "phase_note": PHASE_NOTE,
         "rows": len(data), "counts_by_status": counts,
-        "final_status_listed_as_active": final, "not_started_but_start_long_past": overdue,
-        "undocumented_status": undocumented, "start_unresolved": unresolved,
-        "rows_without_event_id": no_id, "duplicate_event_ids": duplicates,
+        "final_status_listed_as_active": _capped(final), "not_started_but_start_long_past": _capped(overdue),
+        "undocumented_status": _capped(undocumented), "start_unresolved": _capped(unresolved),
+        "rows_without_event_id": no_id, "duplicate_event_ids": _capped(duplicates),
+        "list_cap": f"each list shows at most {VIEW_LIST_MAX} items; total and omitted are exact",
         "heuristic": f"not started with startDate older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
         "note": "Raw rows stay in data; nothing is removed or re-labelled."}}
 
@@ -281,10 +292,11 @@ def stale_active_markets(data: Any, *, now_unix: int | None = None) -> dict[str,
         return {"stale_active_view": {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}}
     stale = [{"marketHash": r.get("marketHash"), "gameTime": r.get("gameTime"), "provider_status": r.get("status")}
              for r in rows if isinstance(r, dict) and r.get("status") == "ACTIVE" and type(r.get("gameTime")) is int
-             and r["gameTime"] < now - STALE_ACTIVE_AFTER_SECONDS]
-    unjudged = sum(1 for r in rows if not isinstance(r, dict) or type(r.get("gameTime")) is not int)
+             and 0 < r["gameTime"] < now - STALE_ACTIVE_AFTER_SECONDS]
+    unjudged = sum(1 for r in rows if not isinstance(r, dict) or type(r.get("gameTime")) is not int
+                   or r["gameTime"] <= 0)  # 0 / negative is unparseable, never a 1970 event (P3-3)
     return {"stale_active_view": {
-        "label": "DERIVED", "scope": "THIS_PAGE_ONLY", "rows": stale, "count": len(stale),
+        "label": "DERIVED", "scope": "THIS_PAGE_ONLY", "rows": _capped(stale), "count": len(stale),
         "rows_without_int_game_time": unjudged,
         "heuristic": f"status ACTIVE and gameTime older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
         "note": "Possibly stale provider rows; raw rows stay in data. Not proof the market is closed."}}
@@ -380,7 +392,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             return {**base, "status": "PAYLOAD_TOO_LARGE", "parameters": params, "network_calls_made": 1,
                     "http_status": reply["http_status"],
                     "error": {"code": "SXBET_RESPONSE_EXCEEDS_MCP_SIZE_LIMIT",
-                              "hint": "Use a smaller page_size/per_page or narrower filters."}}
+                              "hint": NO_PAGINATION_HINT.get(path, "Use a smaller page_size/per_page or narrower filters.")}}
         return result
 
     @add
@@ -441,7 +453,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                               ids, list(data) if isinstance(data, dict) else None, case_insensitive=False),
                               "status_decoded": {
                                   "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "phase_note": PHASE_NOTE,
-                                  "by_event": {k: decode_fixture_status(v.get("status") if isinstance(v, dict) else None)
+                                  "by_event": {k: (decode_fixture_status(v.get("status")) if isinstance(v, dict) else
+                                                   {"code": None, "label": None, "phase": "ROW_MALFORMED",
+                                                    "provider_raw": v})
                                                for k, v in data.items()}} if isinstance(data, dict) else None})
 
     @add
