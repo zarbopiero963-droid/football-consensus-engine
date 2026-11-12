@@ -255,9 +255,14 @@ Ogni risposta riporta anche `final`, vero solo quando lo stato non può più cam
 
 `fill_evidence` dice da dove viene uno stato `ACCEPTED`, `PARTIALLY_FILLED`, `CANCELLED` o `EXPIRED`:
 - `EXCHANGE_READ_NOW`: lettura conclusiva dell'exchange fatta adesso;
+- `EXCHANGE_ORDER_ROW_ONLY`: lettura conclusiva della riga dell'ordine, ma i fill non sono stati letti per intero (errore o altre pagine);
 - `SIGNER_EVENT_SNAPSHOT_ONLY`: ultimo evento registrato dal signer, per esempio senza chiave API o con una lettura fallita.
 
-Righe di fill sull'exchange per un ordine che le evidenze danno senza esecuzioni (per esempio un fill tardivo dopo che la riga dell'ordine è stata rimossa) danno `UNKNOWN` / `FILLS_SEEN_ON_EXCHANGE` (review indipendente di `8396424`, P2-A). Uno stato `UNKNOWN` / `SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING` non diventa mai finale, nemmeno dopo la scadenza, perché l'evento `DONE` del signer è già terminale: è una scelta prudente, si chiarisce leggendo l'ordine.
+`fill_evidence` riguarda solo gli ordini: per una cancellazione `ACCEPTED` non dice nulla sui fill. `filled_base_units` è l'istantanea del ledger del signer (`filled_source: SIGNER_LEDGER_SNAPSHOT`); la lettura riporta a parte `exchange_read.filled_base_units_from_order_row`. `FILLED` è finale per l'importo eseguito, ma nel ledger può ancora diventare `SETTLED`.
+
+Se l'exchange mostra righe di fill per l'ordine e il risultato, **dopo** la combinazione con la lettura, direbbe "nessuna esecuzione" (`ACCEPTED`, `CANCELLED`, `EXPIRED`), lo stato è `UNKNOWN` / `FILLS_SEEN_ON_EXCHANGE`, qualunque fosse lo stato della coda. Vale anche per un fill tardivo dopo che la riga dell'ordine è stata rimossa (review indipendenti di `8396424`, P2-A, e di `c9c32e7`, P2-1).
+
+Uno stato `UNKNOWN` / `SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING` non diventa mai finale, nemmeno dopo la scadenza, perché l'evento `DONE` del signer è già terminale: è una scelta prudente, si chiarisce leggendo l'ordine.
 
 Il signer riporta nell'evento finale l'importo abbinato dal ledger (`filled`, unità base). `CANCELLED`, `EXPIRED` e `SETTLED` possono infatti seguire un'esecuzione parziale (review indipendente di `ce4a702`, P1-1).
 

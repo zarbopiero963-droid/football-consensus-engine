@@ -203,9 +203,11 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         States: QUEUED, PROCESSING, REFUSED, UNKNOWN, ACCEPTED, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED,
         SETTLED; cancels also NOT_CANCELLED, PARTIALLY_CANCELLED. `final` says whether it can still change.
         UNKNOWN means reconcile before any new command; it is never "not sent". ACCEPTED / CANCELLED / EXPIRED
-        mean no fill was seen in the evidence read: a snapshot, see `fill_evidence` (SIGNER_EVENT_SNAPSHOT_ONLY
-        when the exchange was not read now, e.g. no API key); CANCELLED / EXPIRED can still gain a late fill
-        until settlement. SETTLED reports the matched amount, never "fully filled".
+        mean no fill was seen in the evidence read: a snapshot, see `fill_evidence` (EXCHANGE_READ_NOW = order
+        row and complete fills read now; EXCHANGE_ORDER_ROW_ONLY = fills not (fully) read; SIGNER_EVENT_SNAPSHOT_ONLY
+        = exchange not read now, e.g. no API key); CANCELLED / EXPIRED can still gain a late fill until settlement.
+        SETTLED reports the matched amount, never "fully filled"; `filled_base_units` is the signer's ledger
+        snapshot. For a CANCEL request, ACCEPTED is about the cancel only and says nothing about fills.
         """
         out = base("sxbet_order_request_status")
         if not oreq.valid_request_id(request_id):
@@ -251,16 +253,28 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                         lookup_state = "EXPIRED"  # inactive, nothing filled, by expiry (review P3-3)
                 except (TypeError, ValueError):
                     lookup_state = None
+                fills_complete = not ferr and complete_fills
+                row = lookup.get("order") if isinstance(lookup.get("order"), dict) else {}
+                try:
+                    ex_filled = int(row["totalBetSize"]) - int(row["remainingSize"])
+                except (KeyError, TypeError, ValueError):
+                    ex_filled = None
                 out["exchange_read"] = {"status": lookup["kind"], "order": lookup.get("order"),
+                                        "fills_complete": fills_complete,
+                                        "filled_base_units_from_order_row": (None if ex_filled is None or ex_filled < 0
+                                                                             else str(ex_filled)),
                                         "fills_count": len(rows) if isinstance(rows, list) else None,
                                         "fills_more_pages": bool(isinstance(fills, dict) and fills.get("nextKey")),
                                         "errors": [e for e in (oerr, ferr) if e and e.get("http_status") != 404]}
-        fills_seen = isinstance(out.get("exchange_read"), dict) and bool(out["exchange_read"].get("fills_count"))
+        read = out.get("exchange_read") if isinstance(out.get("exchange_read"), dict) else {}
+        fills_seen = bool(read.get("fills_count"))
         result = oreq.merge_exchange(view, lookup_state, fills_seen=fills_seen)
-        if result["state"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
-            # Without a conclusive read made now, the state is the signer's last recorded snapshot (review P2-B).
-            result["fill_evidence"] = ("EXCHANGE_READ_NOW" if lookup_state is not None
-                                       else "SIGNER_EVENT_SNAPSHOT_ONLY")
+        if kind == "PLACE" and result["state"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
+            # Where the state comes from (reviews 8396424 P2-B, c9c32e7 P3-1/P3-2): a fresh conclusive order read
+            # with a COMPLETE fills read; the order row alone; or only the signer's last recorded event.
+            result["fill_evidence"] = ("SIGNER_EVENT_SNAPSHOT_ONLY" if lookup_state is None else
+                                       "EXCHANGE_READ_NOW" if read.get("fills_complete") else
+                                       "EXCHANGE_ORDER_ROW_ONLY")
         return {**out, "status": "OK", **result}
 
     return tuple(names)

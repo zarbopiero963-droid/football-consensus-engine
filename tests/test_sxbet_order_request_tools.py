@@ -374,7 +374,8 @@ def test_inconsistent_or_duplicate_terminal_evidence_is_unknown_never_a_false_su
     assert v["state"] == "UNKNOWN" and v["code"] == code
 
 
-# Rewritten by the review of ce4a702 (new `final` / `ledger_final` fields, P3-2 rule): declared behaviour change.
+# Rewritten twice, both declared behaviour changes: review of ce4a702 (`final` field, P3-2 rule) and review of
+# 8396424 P2-A (`ledger_final` used for conflicts, c9c32e7).
 @pytest.mark.parametrize("queue, final, lookup, state", [
     ("UNKNOWN", False, "SUBMITTED", "ACCEPTED"),
     ("UNKNOWN", False, "NOT_ON_EXCHANGE", "UNKNOWN"),          # a 404 is never promoted to "not sent"
@@ -629,3 +630,70 @@ def test_review_8396424_p2_b_without_a_read_accepted_is_labelled_a_snapshot(s):
 def test_review_8396424_p3_3_one_cost_catalog():
     from bridge.sxbet import order_request_tools as ort, tools as tl
     assert tl.ORDER_REQUEST_TOOL_COSTS is ort.TOOL_COSTS and tl.ORDER_REQUEST_TOOLS is ort.TOOL_NAMES
+
+
+# ---------------------------------------------------------------- review of c9c32e7 (NOT SAFE): regressions
+@pytest.mark.parametrize("queue_state", ["PROCESSING", "UNKNOWN", "ACCEPTED", "QUEUED_BUT_SIGNED"])
+def test_review_c9c32e7_p2_1_fill_rows_never_coexist_with_a_no_fill_result(queue_state):
+    view = {"state": "PROCESSING" if queue_state == "QUEUED_BUT_SIGNED" else queue_state, "final": False,
+            "evidence": "QUEUE_EVENTS"}
+    out = oreq.merge_exchange(view, "SUBMITTED", fills_seen=True)      # ACTIVE row, nothing filled, but fill rows
+    assert out["state"] == "UNKNOWN" and out["code"] == "FILLS_SEEN_ON_EXCHANGE"
+    assert oreq.merge_exchange(view, "PARTIALLY_FILLED", fills_seen=True)["state"] == "PARTIALLY_FILLED"
+    assert oreq.merge_exchange(view, "SUBMITTED", fills_seen=False)["state"] == "ACCEPTED"
+
+
+def test_review_c9c32e7_p2_1_end_to_end_timeout_then_fill_rows_is_not_accepted(s, monkeypatch):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7301")
+    res = place(t, s, "order-key-S7301", text)
+    s.sim.inject("POST", "/orders-v3", "timeout_after")
+    signer_service(s, q).process_once()
+    v = status(t, res["request_id"])
+    assert v["last_event"] == "UNKNOWN"
+    import bridge.sxbet.order_request_tools as ort
+    real = SimClient.get
+
+    async def fills_but_unfilled_row(self, path, params, *, auth):
+        r = await real(self, path, params, auth=auth)
+        if path.startswith("/orders-v3/"):
+            r["data"]["order"]["remainingSize"] = r["data"]["order"]["totalBetSize"]
+        if path == "/fills-v3":
+            r["data"] = {"fills": [{"orderId": params["orderId"], "fillAmount": "1000000", "status": "MATCHED"}]}
+        return r
+    monkeypatch.setattr(SimClient, "get", fills_but_unfilled_row)
+    st = status(t, res["request_id"])
+    assert st["state"] == "UNKNOWN" and st["code"] == "FILLS_SEEN_ON_EXCHANGE"
+    assert ort  # module imported for the monkeypatch scope only
+
+
+def test_review_c9c32e7_p3_1_and_p3_2_fill_evidence_labels(s, monkeypatch):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7302")
+    res = place(t, s, "order-key-S7302", text)
+    signer_service(s, q).process_once()
+    assert status(t, res["request_id"])["fill_evidence"] == "EXCHANGE_READ_NOW"
+    real = SimClient.get
+
+    async def fills_error(self, path, params, *, auth):
+        if path == "/fills-v3":
+            raise SXBetError("SXBET_HTTP_ERROR", http_status=500)
+        return await real(self, path, params, auth=auth)
+    monkeypatch.setattr(SimClient, "get", fills_error)
+    st = status(t, res["request_id"])
+    assert st["state"] == "ACCEPTED" and st["fill_evidence"] == "EXCHANGE_ORDER_ROW_ONLY"
+    monkeypatch.undo()
+    oid = st["order_id"]
+    c = run(t["sxbet_order_request_cancel"](owner_command=f"Cancella l'ordine {oid}", scope="ORDER_IDS",
+                                            idempotency_key="cancel-key-S7302", order_ids=[oid]))
+    signer_service(s, q).process_once()
+    cs = status(t, c["request_id"])
+    assert cs["state"] == "ACCEPTED" and "fill_evidence" not in cs
+
+
+def test_review_c9c32e7_p3_3_filled_amount_is_labelled_a_ledger_snapshot():
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+                                    ("DONE", {"state": "CANCELLED", "filled": "2000000"})))
+    assert v["filled_source"] == "SIGNER_LEDGER_SNAPSHOT"

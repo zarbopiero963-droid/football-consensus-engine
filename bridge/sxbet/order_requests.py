@@ -20,7 +20,8 @@ same situations again on its own ledger.
 States (owner requirements 1, 2, 4): the status reported to the model is a pure function of the append-only
 signer events (written from the signer's ledger, i.e. from exchange replies and reconciliation reads) and,
 when an order id is known, of a fresh exchange read (GET /orders-v3/{orderId} + GET /fills-v3). It is never
-deduced by the model. Every view carries `final` (True only when nothing can change any more):
+deduced by the model. Every view carries `final` (True only when the outcome can no longer change: FILLED is
+final for the fill amount, it can still become SETTLED in the ledger):
     QUEUED            no signer event yet (the request may still expire unprocessed)
     PROCESSING        claimed / signed, outcome of the send not recorded yet: never "not sent"
     REFUSED           refused by the signer BEFORE any signature (final); for a cancel, also "nothing sent"
@@ -231,6 +232,7 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dic
     ledger, filled = d.get("state"), _units(d.get("filled"))
     if filled is not None:
         out["filled_base_units"] = str(filled)
+        out["filled_source"] = "SIGNER_LEDGER_SNAPSHOT"  # as of the signer's event, not a fresh read (P3-3)
     if ev == "SUBMITTED":
         if d.get("sent") is False:  # e.g. a duplicate the gateway did not send: not proof of anything here
             return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
@@ -328,7 +330,7 @@ def queue_view(kind: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]
 _NO_FILL_CLAIMED = frozenset({"ACCEPTED", "CANCELLED", "EXPIRED"})
 
 
-def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False) -> dict[str, Any]:
+def _merge(view: Mapping[str, Any], lookup_state: str | None, fills_seen: bool) -> dict[str, Any]:
     """Combine the queue view with a fresh exchange reconciliation. Deterministic precedence:
     - REFUSED / QUEUED / SETTLED are never changed by an order read (SETTLED comes after the order lifecycle);
     - fill rows on the exchange against a state that claims nothing filled: UNKNOWN (conflict);
@@ -341,11 +343,6 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
     out["exchange_state"] = lookup_state
     q = view["state"]
     ex = _LOOKUP_TO_MCP.get(lookup_state) if lookup_state is not None else None
-    if fills_seen and q in _NO_FILL_CLAIMED and ex not in ("PARTIALLY_FILLED", "FILLED"):
-        # The exchange shows fill rows for this order while the evidence so far says nothing filled (e.g. a late
-        # fill after the order row was purged): never report "nothing filled" (review of 8396424, P2-A).
-        out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="FILLS_SEEN_ON_EXCHANGE", queue_state=q)
-        return out
     if q in ("REFUSED", "QUEUED", "SETTLED") or ex is None:
         return out
     if view.get("ledger_final"):
@@ -363,6 +360,17 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
         out.update(state=ex, evidence="EXCHANGE_READ")
     elif q in _RANK:     # the queue proves a fill, the read says nothing filled: never pick one silently
         out.update(state="UNKNOWN", evidence="CONFLICT", code="QUEUE_AND_EXCHANGE_DISAGREE", queue_state=q)
+    return out
+
+
+def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False) -> dict[str, Any]:
+    out = _merge(view, lookup_state, fills_seen)
+    # Checked on the MERGED result, whatever the queue state was: fill rows on the exchange for this order and a
+    # result that claims nothing filled (ACCEPTED / CANCELLED / EXPIRED) is a conflict, never "no fill seen"
+    # (reviews of 8396424 P2-A and c9c32e7 P2-1: e.g. PROCESSING / UNKNOWN + ACTIVE unfilled row + fill rows).
+    if fills_seen and out["state"] in _NO_FILL_CLAIMED and lookup_state not in ("PARTIALLY_FILLED", "FILLED"):
+        out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="FILLS_SEEN_ON_EXCHANGE",
+                   queue_state=view["state"])
     return out
 
 
