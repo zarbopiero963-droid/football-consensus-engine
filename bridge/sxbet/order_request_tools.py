@@ -243,16 +243,12 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     lookup = {"kind": "FOUND", "order": order_data.get("order"), "fills": rows}
                 else:
                     lookup = {"kind": "ERROR"}
-                try:
-                    total = int(intent.get("total_bet_size"))
-                    since = max(0, int(clock()) - int(payload.get("created_at")))
-                    lookup_state = sim.state_from_lookup(lookup, order_id=oid, total_bet_size=total,
-                                                         seconds_since_submit=since)
-                    row = lookup.get("order") if isinstance(lookup.get("order"), dict) else {}
-                    if lookup_state == "CANCELLED" and row.get("inactiveReason") == "EXPIRED":
-                        lookup_state = "EXPIRED"  # inactive, nothing filled, by expiry (review P3-3)
-                except (TypeError, ValueError):
-                    lookup_state = None
+                # Same fail-closed rules as the signer's evidence_from_exchange (review of 21082c0, P2-1): a row
+                # the signer would refuse as evidence is never promoted here either.
+                ex = oreq.exchange_row_state(lookup.get("order"), order_id=oid,
+                                             intent_total=intent.get("total_bet_size")) \
+                    if lookup["kind"] == "FOUND" else {"state": None, "reason": "EVIDENCE_" + lookup["kind"]}
+                lookup_state = ex["state"]
                 fills_complete = not ferr and complete_fills
                 row = lookup.get("order") if isinstance(lookup.get("order"), dict) else {}
                 try:
@@ -260,6 +256,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 except (KeyError, TypeError, ValueError):
                     ex_filled = None
                 out["exchange_read"] = {"status": lookup["kind"], "order": lookup.get("order"),
+                                        "row_evidence": ex["reason"], "resting": ex.get("resting"),
                                         "fills_complete": fills_complete,
                                         "filled_base_units_from_order_row": (None if ex_filled is None or ex_filled < 0
                                                                              else str(ex_filled)),
@@ -268,13 +265,16 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                                         "errors": [e for e in (oerr, ferr) if e and e.get("http_status") != 404]}
         read = out.get("exchange_read") if isinstance(out.get("exchange_read"), dict) else {}
         fills_seen = bool(read.get("fills_count"))
-        result = oreq.merge_exchange(view, lookup_state, fills_seen=fills_seen)
+        result = oreq.merge_exchange(view, lookup_state, fills_seen=fills_seen, ex_resting=read.get("resting"))
         if kind == "PLACE" and result["state"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
-            # Where the state comes from (reviews 8396424 P2-B, c9c32e7 P3-1/P3-2): a fresh conclusive order read
-            # with a COMPLETE fills read; the order row alone; or only the signer's last recorded event.
-            result["fill_evidence"] = ("SIGNER_EVENT_SNAPSHOT_ONLY" if lookup_state is None else
-                                       "EXCHANGE_READ_NOW" if read.get("fills_complete") else
-                                       "EXCHANGE_ORDER_ROW_ONLY")
+            # Where the state comes from (reviews 8396424 P2-B, c9c32e7 P3-1/P3-2, 21082c0 P3-1/P3-4): a fresh
+            # conclusive order ROW with a COMPLETE fills read; the order row alone; an inconclusive read (404,
+            # error, row refused as evidence); or no read at all (only the signer's last recorded event).
+            result["fill_evidence"] = (
+                "EXCHANGE_READ_NOW" if lookup_state is not None and read.get("fills_complete") else
+                "EXCHANGE_ORDER_ROW_ONLY" if lookup_state is not None else
+                "EXCHANGE_READ_INCONCLUSIVE" if read.get("status") in ("FOUND", "NOT_FOUND", "ERROR") else
+                "SIGNER_EVENT_SNAPSHOT_ONLY")
         return {**out, "status": "OK", **result}
 
     return tuple(names)

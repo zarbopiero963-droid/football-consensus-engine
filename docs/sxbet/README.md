@@ -256,7 +256,17 @@ Ogni risposta riporta anche `final`, vero solo quando lo stato non può più cam
 `fill_evidence` dice da dove viene uno stato `ACCEPTED`, `PARTIALLY_FILLED`, `CANCELLED` o `EXPIRED`:
 - `EXCHANGE_READ_NOW`: lettura conclusiva dell'exchange fatta adesso;
 - `EXCHANGE_ORDER_ROW_ONLY`: lettura conclusiva della riga dell'ordine, ma i fill non sono stati letti per intero (errore o altre pagine);
-- `SIGNER_EVENT_SNAPSHOT_ONLY`: ultimo evento registrato dal signer, per esempio senza chiave API o con una lettura fallita.
+- `EXCHANGE_READ_INCONCLUSIVE`: l'exchange è stato letto ma la lettura non prova nulla (404, errore, riga rifiutata come evidenza): lo stato è l'ultimo evento del signer;
+- `SIGNER_EVENT_SNAPSHOT_ONLY`: exchange non letto (per esempio senza chiave API): lo stato è l'ultimo evento del signer.
+
+La riga dell'ordine segue le **stesse regole fail-closed del signer** (`evidence_from_exchange`, review indipendente di `21082c0`, P2-1). Una riga non diventa mai evidenza (`exchange_read.row_evidence` ne dice il motivo) se:
+- appartiene a un altro ordine;
+- ha un `totalBetSize` diverso dalla puntata firmata;
+- ha un `remainingSize` fuori da 0..totale;
+- è `FILLED` senza nulla eseguito;
+- ha uno `status` o un `inactiveReason` non documentato.
+
+Quando decide la lettura, i codici e le note della sola coda (per esempio "firmato ma non inviato") passano in `queue_code` / `queue_note`, e `resting` viene dalla riga. Un parziale "non più attivo" per il ledger contro una riga attiva è un conflitto.
 
 `fill_evidence` riguarda solo gli ordini: per una cancellazione `ACCEPTED` non dice nulla sui fill. `filled_base_units` è l'istantanea del ledger del signer (`filled_source: SIGNER_LEDGER_SNAPSHOT`); la lettura riporta a parte `exchange_read.filled_base_units_from_order_row`. `FILLED` è finale per l'importo eseguito, ma nel ledger può ancora diventare `SETTLED`.
 

@@ -328,6 +328,41 @@ def queue_view(kind: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]
 
 
 _NO_FILL_CLAIMED = frozenset({"ACCEPTED", "CANCELLED", "EXPIRED"})
+# Documented inactiveReason values (docs/sxbet/magic_and_proxy_wallet.md; same set as signer/orders.py).
+_CANCEL_REASONS = frozenset({"USER_REQUESTED", "NO_LIQUIDITY", "INSUFFICIENT_BALANCE", "EVENT_LIFECYCLE",
+                             "MARKET_HALTED", "HEARTBEAT_TIMEOUT", "POST_ONLY_WOULD_CROSS", "SYSTEM"})
+
+
+def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[str, Any]:
+    """One GET /orders-v3/{orderId} row -> lookup state, with the signer's fail-closed guards (evidence_from_exchange,
+    review of 21082c0 P2-1): another order, a size that is not the signed stake, remaining outside 0..total, FILLED
+    without a fill, an unknown status or inactiveReason -> state None (never promoted). Returned states use the
+    lookup vocabulary of merge_exchange: SUBMITTED, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED."""
+    def none(reason: str) -> dict[str, Any]:
+        return {"state": None, "reason": reason, "resting": None}
+    if not isinstance(row, Mapping) or not isinstance(row.get("id"), str) or row["id"].lower() != order_id.lower():
+        return none("EVIDENCE_OTHER_ORDER")
+    total, remaining, stake = _units(row.get("totalBetSize")), _units(row.get("remainingSize")), _units(intent_total)
+    if total is None or remaining is None or stake is None or total != stake or remaining > total:
+        return none("EVIDENCE_SIZE_MISMATCH")
+    filled = total - remaining
+    status, reason = row.get("status"), row.get("inactiveReason")
+    if status in ("PENDING", "ACTIVE"):
+        return {"state": "PARTIALLY_FILLED" if filled else "SUBMITTED", "reason": "EXCHANGE_ORDER_" + status,
+                "resting": True}
+    if status != "INACTIVE":
+        return none("EVIDENCE_STATUS_UNKNOWN")
+    if reason == "FILLED":
+        if not filled:
+            return none("EVIDENCE_FILLED_WITHOUT_FILL")
+        st = "FILLED" if filled == total else "PARTIALLY_FILLED"
+    elif reason == "EXPIRED":
+        st = "PARTIALLY_FILLED" if filled else "EXPIRED"
+    elif reason in _CANCEL_REASONS:
+        st = "PARTIALLY_FILLED" if filled else "CANCELLED"
+    else:
+        return none("EVIDENCE_INACTIVE_REASON_UNKNOWN")
+    return {"state": st, "reason": "EXCHANGE_ORDER_INACTIVE_" + str(reason), "resting": False}
 
 
 def _merge(view: Mapping[str, Any], lookup_state: str | None, fills_seen: bool) -> dict[str, Any]:
@@ -363,8 +398,29 @@ def _merge(view: Mapping[str, Any], lookup_state: str | None, fills_seen: bool) 
     return out
 
 
-def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False) -> dict[str, Any]:
+def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False,
+                   ex_resting: bool | None = None) -> dict[str, Any]:
+    if (view.get("ledger_final") and view["state"] == "PARTIALLY_FILLED" and lookup_state == "PARTIALLY_FILLED"
+            and ex_resting is True):
+        # The ledger says the remainder is no longer resting, the row shows it resting (review 21082c0 P3-2).
+        out = dict(view)
+        out.update(exchange_state=lookup_state, state="UNKNOWN", final=False, evidence="CONFLICT",
+                   code="QUEUE_AND_EXCHANGE_DISAGREE", queue_state=view["state"])
+        out.pop("resting", None)
+        return out
     out = _merge(view, lookup_state, fills_seen)
+    if out.get("evidence") == "EXCHANGE_READ":
+        # The exchange row now decides the state: queue-only codes and notes (e.g. "signed but not sent") move
+        # under queue_* so they are never read as describing the new state (review 21082c0 P3-3).
+        if out["state"] != view["state"]:
+            out["queue_state"] = view["state"]
+            for k in ("code", "note", "warning"):
+                if out.get(k) is not None:
+                    out["queue_" + k] = out.pop(k)
+        if ex_resting is not None:
+            out["resting"] = ex_resting
+    elif out.get("evidence") == "CONFLICT":
+        out.pop("resting", None)
     # Checked on the MERGED result, whatever the queue state was: fill rows on the exchange for this order and a
     # result that claims nothing filled (ACCEPTED / CANCELLED / EXPIRED) is a conflict, never "no fill seen"
     # (reviews of 8396424 P2-A and c9c32e7 P2-1: e.g. PROCESSING / UNKNOWN + ACTIVE unfilled row + fill rows).

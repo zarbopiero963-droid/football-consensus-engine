@@ -697,3 +697,106 @@ def test_review_c9c32e7_p3_3_filled_amount_is_labelled_a_ledger_snapshot():
     v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
                                     ("DONE", {"state": "CANCELLED", "filled": "2000000"})))
     assert v["filled_source"] == "SIGNER_LEDGER_SNAPSHOT"
+
+
+# ---------------------------------------------------------------- review of 21082c0 (NOT SAFE): regressions
+OID = "0x" + "c" * 64
+
+
+def row(**kw):
+    r = {"id": OID, "totalBetSize": "5000000", "remainingSize": "5000000", "status": "ACTIVE",
+         "inactiveReason": None}
+    r.update(kw)
+    return r
+
+
+@pytest.mark.parametrize("r, state, reason", [
+    (row(status="INACTIVE", inactiveReason="FILLED"), None, "EVIDENCE_FILLED_WITHOUT_FILL"),
+    (row(totalBetSize="3000000", remainingSize="3000000"), None, "EVIDENCE_SIZE_MISMATCH"),
+    (row(remainingSize="6000000"), None, "EVIDENCE_SIZE_MISMATCH"),
+    (row(remainingSize="-1"), None, "EVIDENCE_SIZE_MISMATCH"),
+    (row(status="INACTIVE", inactiveReason="SOMETHING_NEW"), None, "EVIDENCE_INACTIVE_REASON_UNKNOWN"),
+    (row(status="INACTIVE", inactiveReason=None), None, "EVIDENCE_INACTIVE_REASON_UNKNOWN"),
+    (row(status="WEIRD"), None, "EVIDENCE_STATUS_UNKNOWN"),
+    (row(id="0x" + "d" * 64), None, "EVIDENCE_OTHER_ORDER"),
+    (row(), "SUBMITTED", "EXCHANGE_ORDER_ACTIVE"),
+    (row(remainingSize="3000000"), "PARTIALLY_FILLED", "EXCHANGE_ORDER_ACTIVE"),
+    (row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0"), "FILLED", "EXCHANGE_ORDER_INACTIVE_FILLED"),
+    (row(status="INACTIVE", inactiveReason="FILLED", remainingSize="1"), "PARTIALLY_FILLED",
+     "EXCHANGE_ORDER_INACTIVE_FILLED"),
+    (row(status="INACTIVE", inactiveReason="EXPIRED"), "EXPIRED", "EXCHANGE_ORDER_INACTIVE_EXPIRED"),
+    (row(status="INACTIVE", inactiveReason="USER_REQUESTED"), "CANCELLED", "EXCHANGE_ORDER_INACTIVE_USER_REQUESTED"),
+    (row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2000000"), "PARTIALLY_FILLED",
+     "EXCHANGE_ORDER_INACTIVE_USER_REQUESTED"),
+])
+def test_review_21082c0_p2_1_row_evidence_has_the_signer_guards(r, state, reason):
+    out = oreq.exchange_row_state(r, order_id=OID, intent_total="5000000")
+    assert out["state"] == state and out["reason"] == reason
+
+
+def _status_with_row(s, monkeypatch, key, mutate_row, *, fills=None, timeout=True):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, key)
+    res = place(t, s, key, text)
+    if timeout:
+        s.sim.inject("POST", "/orders-v3", "timeout_after")
+    signer_service(s, q).process_once()
+    real = SimClient.get
+
+    async def altered(self, path, params, *, auth):
+        r = await real(self, path, params, auth=auth)
+        if path.startswith("/orders-v3/") and mutate_row is not None:
+            r["data"]["order"].update(mutate_row)
+        if path == "/fills-v3" and fills is not None:
+            r["data"] = {"fills": fills}
+        return r
+    monkeypatch.setattr(SimClient, "get", altered)
+    return status(t, res["request_id"])
+
+
+def test_review_21082c0_p2_1_filled_without_fill_is_never_reported_filled(s, monkeypatch):
+    st = _status_with_row(s, monkeypatch, "order-key-S7401", {"status": "INACTIVE", "inactiveReason": "FILLED"})
+    assert st["state"] == "UNKNOWN" and st["exchange_read"]["row_evidence"] == "EVIDENCE_FILLED_WITHOUT_FILL"
+
+
+def test_review_21082c0_p2_1_size_mismatch_is_never_a_partial_fill(s, monkeypatch):
+    st = _status_with_row(s, monkeypatch, "order-key-S7402",
+                          {"totalBetSize": "3000000", "remainingSize": "3000000"})
+    assert st["state"] == "UNKNOWN" and st["exchange_read"]["row_evidence"] == "EVIDENCE_SIZE_MISMATCH"
+
+
+def test_review_21082c0_p3_1_404_is_labelled_inconclusive_not_a_fresh_read(s, monkeypatch):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7403")
+    res = place(t, s, "order-key-S7403", text)
+    signer_service(s, q).process_once()
+    real = SimClient.get
+
+    async def gone(self, path, params, *, auth):
+        if path.startswith("/orders-v3/"):
+            raise SXBetError("SXBET_NOT_FOUND", http_status=404)
+        return await real(self, path, params, auth=auth)
+    monkeypatch.setattr(SimClient, "get", gone)
+    st = status(t, res["request_id"])
+    assert st["state"] == "ACCEPTED" and st["fill_evidence"] == "EXCHANGE_READ_INCONCLUSIVE"
+    assert st["exchange_read"]["status"] == "NOT_FOUND"
+
+
+def test_review_21082c0_p3_2_ledger_not_resting_against_a_resting_row_is_a_conflict():
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+                                    ("DONE", {"state": "CANCELLED", "filled": "2000000"})))
+    assert v["resting"] is False
+    out = oreq.merge_exchange(v, "PARTIALLY_FILLED", ex_resting=True)
+    assert out["state"] == "UNKNOWN" and "resting" not in out
+    assert oreq.merge_exchange(v, "PARTIALLY_FILLED", ex_resting=False)["resting"] is False
+
+
+def test_review_21082c0_p3_3_queue_only_code_moves_when_the_exchange_decides():
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}),
+                                    ("DONE", {"sent": False, "code": "INTERRUPTED_AFTER_SIGNATURE"})))
+    out = oreq.merge_exchange(v, "SUBMITTED", ex_resting=True)
+    assert out["state"] == "ACCEPTED" and out.get("code") is None and out.get("note") is None
+    assert out["queue_code"] == "SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING" and out["queue_state"] == "UNKNOWN"
+    assert out["resting"] is True
