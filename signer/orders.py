@@ -490,6 +490,8 @@ class OrderLedger:
         # The ONE send/reconcile lock of this ledger, shared by every gateway, cancellation service and monitor
         # built on it (review P2-4): the monitor no longer needs a submittable gateway to get it.
         self.send_lock = threading.Lock()
+        # Serialises kill-switch engage (marker + ENGAGE) and release (RELEASE + marker removal): review 30f5a96 P2-1.
+        self.kill_lock = threading.RLock()
         self.genesis_sha256: str | None = None  # identity of this ledger file (bound into the LIVE flag)
         self._kill: dict[str, Any] = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
@@ -834,6 +836,8 @@ class OrderLedger:
         if action == "ENGAGE":
             if not isinstance(rec["trigger"], str) or type(seq) is not int:
                 raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
+            for e in self._kill_engagements:  # a new ENGAGE supersedes an open one (review 30f5a96 P3-5)
+                e[1] = True
             self._kill = {"engaged": True, "engage_seq": seq, "trigger": rec["trigger"], "intent_ids": ()}
             self._kill_engagements.append([seq, False])
         elif action == "CANCEL_INTENT":
@@ -905,42 +909,63 @@ class OrderLedger:
             return fingerprint in self._command_texts
 
     # ---- persistent kill-switch marker (owner gate P2-A) ----
+    @property
+    def kill_flag_path(self) -> str:
+        """Zero-byte fallback marker: creating an empty file needs no data block, so it can succeed when the
+        JSON marker cannot be written; it is also created before a quarantine (review 30f5a96 P2-2)."""
+        return self.kill_marker_path + ".flag"
+
     def _check_kill_marker(self) -> None:
         """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
+        flag = os.path.lexists(self.kill_flag_path)
         try:
             with open(self.kill_marker_path, "rb") as fh:
                 raw = fh.read(4097)
         except FileNotFoundError:
-            self.kill_marker_status = None
-            return
+            raw = b"" if flag else None
         except OSError:
             raw = None
-        marker = _parse_kill_marker(raw, self.ledger_id)
-        if marker is None:  # unreadable, malformed or foreign: fail closed, never ignored
+            flag = True  # unreadable marker: fail closed below
+        if raw == b"" and flag and not os.path.lexists(self.kill_marker_path):
+            # Only the empty flag: it carries no seq, so it holds until an owner-signed release removes it.
+            if self._kill["engaged"]:
+                self.kill_marker_status = "CONSISTENT"
+            else:
+                self.kill_marker_status = "UNRECORDED"
+                self._volatile_kill = KILL_MARKER_UNRECORDED
+            return
+        if raw is None and not flag:
+            self.kill_marker_status = None
+            return
+        marker = _parse_kill_marker(raw, self.ledger_id, self.genesis_sha256)
+        if marker is None:  # unreadable, malformed, foreign or of another ledger file: fail closed
             self.kill_marker_status = "INVALID"
             self._volatile_kill = KILL_MARKER_INVALID
             return
         after = [e for e in self._kill_engagements if e[0] > marker["ledger_seq"]]
         if self._kill["engaged"] and after:
             self.kill_marker_status = "CONSISTENT"  # recorded and still engaged: the normal release applies
-        elif after and all(e[1] for e in after):
-            # Recorded after the marker and released by an owner-signed RELEASE: the marker is stale.
-            self._remove_kill_marker()
+        elif after and all(e[1] for e in after) and not flag:
+            # Recorded after the marker and closed by an owner-signed RELEASE: the marker is stale.
+            self._unlink(self.kill_marker_path)
             self.kill_marker_status = "STALE_REMOVED"
         else:
             self.kill_marker_status = "UNRECORDED"
             self._volatile_kill = KILL_MARKER_UNRECORDED
 
     def write_kill_marker(self, *, trigger: str, source: str) -> bool:
-        """Atomic, fsync'd marker written BEFORE the ENGAGE line. Returns False if it could not be written."""
+        """Atomic, fsync'd marker written BEFORE the ENGAGE line (falls back to the empty flag). False = neither."""
         with self._lock:
-            body = json.dumps({"schema": KILL_MARKER_SCHEMA, "ledger_id": self.ledger_id, "ledger_seq": self._seq,
+            body = json.dumps({"schema": KILL_MARKER_SCHEMA, "ledger_id": self.ledger_id,
+                               "genesis_sha256": self.genesis_sha256, "ledger_seq": self._seq,
                                "trigger": trigger, "source": source, "marked_at": int(self._clock()),
                                "marker_id": os.urandom(16).hex()},
                               sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-            tmp = self.kill_marker_path + ".tmp"
+            # Random temp name, never following a symlink nor reusing a file (review 30f5a96 P3-1).
+            tmp = f"{self.kill_marker_path}.tmp-{os.urandom(8).hex()}"
             try:
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0), 0o600)
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_CLOEXEC", 0), 0o600)
                 try:
                     os.write(fd, body)
                     os.fsync(fd)
@@ -950,41 +975,75 @@ class OrderLedger:
                 _fsync_dir(self.kill_marker_path)
                 return True
             except OSError:
-                return False
+                self._unlink(tmp)
+                return self._create_kill_flag()
 
-    def _remove_kill_marker(self) -> bool:
+    def _create_kill_flag(self) -> bool:
         try:
-            os.unlink(self.kill_marker_path)
+            fd = os.open(self.kill_flag_path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_CLOEXEC", 0), 0o600)
+            os.close(fd)
+            _fsync_dir(self.kill_flag_path)
+            return True
+        except OSError:
+            return os.path.lexists(self.kill_flag_path)
+
+    @staticmethod
+    def _unlink(path: str) -> bool:
+        try:
+            os.unlink(path)
         except FileNotFoundError:
             return True
         except OSError:
             return False
         try:
-            _fsync_dir(self.kill_marker_path)
+            _fsync_dir(path)
         except OSError:
             pass
         return True
 
-    def remove_kill_marker_after_release(self) -> bool:
-        """Only after an owner-signed RELEASE line: the marker is removed if no engagement is still open."""
+    def remove_kill_marker_after_release(self, released_engage_seq: int) -> bool:
+        """After an owner-signed RELEASE only. Removes the marker only if it predates the released engagement
+        (a marker written by a later engagement is never removed, review 30f5a96 P2-1), and the empty flag."""
         with self._lock:
             if self._kill["engaged"]:
                 raise OrderStateError("KILL_SWITCH_NOT_RELEASED")
-            return self._remove_kill_marker()
-
-    def quarantine_for_kill_switch(self) -> bool:
-        """Last resort when neither the marker nor the ENGAGE line could be written: the ledger file is renamed
-        (a metadata operation that works when writes fail), the instance is poisoned, and a restart finds no
-        ledger (LEDGER_MISSING): nothing resumes without the owner. The file content is never modified."""
-        with self._lock:
-            self._poisoned = True
-            target = f"{self._path}{KILL_QUARANTINE_SUFFIX}-{int(self._clock())}"
             try:
-                os.rename(self._path, target)
-                _fsync_dir(self._path)
-                return True
+                with open(self.kill_marker_path, "rb") as fh:
+                    raw = fh.read(4097)
+            except FileNotFoundError:
+                raw = None
             except OSError:
                 return False
+            if raw is not None:
+                marker = _parse_kill_marker(raw, self.ledger_id, self.genesis_sha256)
+                if marker is not None and marker["ledger_seq"] >= released_engage_seq:
+                    return False  # belongs to a later engagement: kept
+                if not self._unlink(self.kill_marker_path):
+                    return False
+            return self._unlink(self.kill_flag_path)
+
+    def quarantine_for_kill_switch(self) -> bool:
+        """Last resort when neither the marker nor the ENGAGE line could be written: the empty flag is tried
+        once more, then the ledger file is renamed (a metadata operation that works when writes fail), the
+        instance is poisoned, and a restart finds no ledger (LEDGER_MISSING): nothing resumes without the
+        owner. The file content is never modified. Restoring the file requires the owner procedure in
+        signer/README.md (record the engagement, then the owner-signed release)."""
+        with self._lock:
+            self._poisoned = True
+            self._create_kill_flag()
+            target = f"{self._path}{KILL_QUARANTINE_SUFFIX}-{int(self._clock())}-{os.urandom(4).hex()}"
+            try:
+                if os.path.lexists(target):
+                    return False
+                os.rename(self._path, target)
+            except OSError:
+                return False
+            try:
+                _fsync_dir(self._path)
+            except OSError:
+                pass  # renamed; the directory entry may need the next sync, reported as quarantined
+            return True
 
     @property
     def kill_switch_engaged(self) -> bool:
@@ -1208,7 +1267,7 @@ def _fsync_dir(path: str) -> None:
         os.close(fd)
 
 
-def _parse_kill_marker(raw: bytes | None, ledger_id: str) -> dict[str, Any] | None:
+def _parse_kill_marker(raw: bytes | None, ledger_id: str, genesis_sha256: str | None) -> dict[str, Any] | None:
     if raw is None or len(raw) > 4096:
         return None
     try:
@@ -1218,5 +1277,8 @@ def _parse_kill_marker(raw: bytes | None, ledger_id: str) -> dict[str, Any] | No
     if not isinstance(doc, dict) or doc.get("schema") != KILL_MARKER_SCHEMA or doc.get("ledger_id") != ledger_id:
         return None
     if type(doc.get("ledger_seq")) is not int or doc["ledger_seq"] < 0:
+        return None
+    # Bound to this ledger FILE, not only to signer_id:address shared by recreated ledgers (review 30f5a96 P3-2).
+    if genesis_sha256 is None or doc.get("genesis_sha256") != genesis_sha256:
         return None
     return doc

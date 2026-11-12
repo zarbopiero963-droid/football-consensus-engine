@@ -141,6 +141,8 @@ class KillSwitch:
                                                                 else "KILL_SWITCH_MARKER_INVALID")
             self._log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
             self.recovery = self.engage(trigger, source="AUTOMATIC")
+            if self.recovery["persisted"]:
+                ledger.kill_marker_status = "CONSISTENT"  # recorded: later KillSwitch objects do not re-engage
 
     # ---- state ----
     @property
@@ -175,6 +177,10 @@ class KillSwitch:
     def engage(self, trigger: str, *, source: str = "MANUAL", triggers: Sequence[str] = ()) -> dict[str, Any]:
         if not isinstance(trigger, str) or not _TRIGGER.fullmatch(trigger) or source not in ("MANUAL", "AUTOMATIC"):
             raise KillSwitchError("KILL_SWITCH_TRIGGER_INVALID")
+        with self._ledger.kill_lock:  # marker + ENGAGE never interleave with a release (review 30f5a96 P2-1)
+            return self._engage(trigger, source=source, triggers=triggers)
+
+    def _engage(self, trigger: str, *, source: str, triggers: Sequence[str]) -> dict[str, Any]:
         all_triggers = sorted({trigger, *triggers})
         marked = self._ledger.write_kill_marker(trigger=trigger, source=source)  # P2-A: before the ENGAGE line
         if not marked:
@@ -244,6 +250,10 @@ class KillSwitch:
 
     # ---- release: owner-signed, outside the MCP ----
     def release(self, rel: Any) -> dict[str, Any]:
+        with self._ledger.kill_lock:  # RELEASE + marker removal never interleave with an engage (P2-1)
+            return self._release(rel)
+
+    def _release(self, rel: Any) -> dict[str, Any]:
         st = self._ledger.kill_switch_state()
         if not st["engaged"]:  # a volatile-only engagement needs a restart on a sound ledger, then a release
             raise KillSwitchError("KILL_SWITCH_NOT_ENGAGED")
@@ -262,7 +272,10 @@ class KillSwitch:
             raise KillSwitchError(exc.code) from None
         self._volatile = None
         self._ledger.clear_volatile_kill()
-        marker_removed = self._ledger.remove_kill_marker_after_release()
+        try:
+            marker_removed = self._ledger.remove_kill_marker_after_release(rel.engage_seq)
+        except OrderStateError:  # engaged again meanwhile: marker kept (review 30f5a96 P3-3)
+            marker_removed = False
         if not marker_removed:  # the next open finds it stale (recorded and released) and removes it then
             self._log("KILL_SWITCH_MARKER_REMOVE_FAILED", reason="OWNER_SIGNED_RELEASE")
         self._log("KILL_SWITCH_RELEASED", reason="OWNER_SIGNED_RELEASE")
