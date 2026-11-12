@@ -115,6 +115,33 @@ Ne seguono queste proprietà:
 - **P2-5 identità del ledger:** la riga `GENESIS` contiene un nonce casuale e il flag `LIVE_TRADING` firmato dall'owner contiene `ledger_genesis_sha256`: un nuovo file di ledger (id consumati, kill switch e contatori azzerati) non è mai live senza un nuovo flag (`LIVE_TRADING_FLAG_NOT_FOR_THIS_LEDGER`). Modifica intenzionale del formato del flag.
 - **P3:** solo cifre ASCII (`COMMAND_NON_ASCII_DIGITS`); ogni numero con esattamente tre decimali è ambiguo (`COMMAND_AMBIGUOUS_STAKE` / `_ODDS` / `_LINE`; si scrive «2,0000»); la finestra della `CancellationService` viene dalla configurazione di rischio firmata (`risk_limits=`); l'ingaggio volatile del kill switch è visto da signer e gateway; l'orologio dell'host è una radice di fiducia: con l'orologio reale uno scarto oltre 120 s rispetto all'orologio monotono blocca la firma (`SIGNER_CLOCK_JUMP_DETECTED`).
 
+## Servizio signer e coda persistente (`signer/service.py`, `signer/request_queue.py`, issue #187 S6)
+
+Il MCP non chiama mai il signer: scrive **una riga** per richiesta dell'owner in `signer_order_requests` (append-only) e legge gli esiti da `signer_order_request_events` (append-only, scritti solo dal signer). Schema: bozza `sql/drafts/signer/0002_signer_order_requests.sql`. Non è ancora nella serie `signer`: promuoverla e creare i ruoli a privilegio minimo (MCP: `INSERT` sulle richieste, `SELECT` sugli eventi; signer: `SELECT` sulle richieste, `INSERT` sugli eventi) è un passo coordinato con WP-009 e con l'owner, in un database dedicato al signer e **mai** nel database del bridge (i guard WP-009 rifiutano lo schema `signer_*` lì). Nessuna migration o grant in produzione.
+
+`SignerService.process_once()` per ogni richiesta della propria rete esegue questi passi:
+1. presa in carico: un solo `CLAIMED` per richiesta, garantito dal database; due istanze o un riavvio non processano mai due volte;
+2. validazione della forma (contratto `sxbet.order_request.v1`, nessun campo in più: nessuna chiave, firma, limite o modalità può viaggiare in una richiesta);
+3. ricalcolo dello sha256 del payload e controllo della rete;
+4. freschezza (≤ 120 s);
+5. per un ordine già noto al ledger, esito `DUPLICATE_OF_EXISTING_ORDER` senza firma né invio;
+6. `Signer.sign_order`: verifica deterministica del comando dell'owner sulle **letture del signer**, monouso, finestra breve, limiti firmati dall'owner, kill switch;
+7. `SubmissionGateway.submit`: flag `LIVE_TRADING` firmato dall'owner; in questo repository nessun trasporto reale;
+8. eventi `SIGNED`, `SUBMITTED`, `UNKNOWN` (mai ritentato: riconciliare prima), `DONE`, `REFUSED` con codici fissi e identificativi.
+
+Gli eventi non contengono mai una firma, una chiave o il testo del comando. `recover()` risolve dal ledger le richieste interrotte: firma mai uscita → rilascio; firma uscita ma mai inviata → `DONE` con esposizione riservata fino alla scadenza; nessuna riga → elaborazione ripresa, perché il comando non era stato consumato. Non re-invia mai alla cieca. `sync_outcomes()` riporta gli esiti finali appresi dalle letture.
+
+**Scenario di scrittore compromesso** (MCP o client ChatGPT/Claude compromesso): la presenza nel database non prova nulla. Sono rifiutati senza firma:
+- un testo alterato con l'hash vecchio (`COMMAND_TEXT_HASH_MISMATCH`);
+- un comando che non corrisponde all'ordine (`COMMAND_MISMATCH_*`);
+- un comando riusato (`COMMAND_ID_ALREADY_CONSUMED`);
+- un messaggio vecchio (`COMMAND_EXPIRED`);
+- un payload modificato dopo la scrittura (`REQUEST_HASH_MISMATCH`);
+- campi estranei (`REQUEST_UNEXPECTED_FIELD`);
+- un duplicato dello stesso ordine (`DUPLICATE_OF_EXISTING_ORDER`, nessun secondo invio).
+
+**Rischio residuo accettato dall'owner (§2.6):** un comando forgiato in modo coerente da chi controlla il testo della chat non è distinguibile crittograficamente da quello dell'owner. Lo limitano i limiti obbligatori firmati dall'owner (test: oltre il limite per ordine è rifiutato) e il kill switch. Il servizio è indipendente dal trasporto: la certificazione Toronto (S8) e un futuro worker privato permanente usano lo stesso ciclo. Test: `tests/test_sxbet_signer_service.py` e `tests/integration/test_signer_request_queue_postgres.py` (PostgreSQL usa e getta: append-only, una sola presa in carico con 8 istanze concorrenti, percorso completo).
+
 ## Kill switch (`signer/killswitch.py`, decisione D7 / #187 decisione 3)
 
 - **Attivazione** manuale (`engage`, non serve firma: riduce solo il rischio) o **automatica** (`evaluate_automatic`) solo a condizioni deterministiche: `DAILY_LOSS_LIMIT_BREACHED` (perdita realizzata del giorno UTC > 0 e ≥ `max_daily_loss_base_units`), `EXPOSURE_ABOVE_LIMIT` (esposizione del ledger oltre `max_total_exposure_base_units`, per esempio per fill tardivi), `RECONCILIATION_MISMATCH` (ordini nostri sconosciuti al ledger o evidenze in conflitto, per esempio gli alert `EVIDENCE_CONFLICT` del monitor), `LEDGER_ANCHOR_FORK` (fork, fencing, testa diversa, ledger avvelenato). Stessi input, stessa decisione.
