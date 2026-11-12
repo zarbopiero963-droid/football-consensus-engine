@@ -8,7 +8,10 @@ Contract (fetched 01-11-2026 from https://docs.sx.bet/<path>.md):
   inactiveReason USER_REQUESTED".
 - api-reference/delete-orders-v3: DELETE /orders-v3, body {"orders": [{"orderId"}]}, "At most
   `limits.maxCancelOrders` unique items (100 today)"; 200 data {cancelled, notCancelled, unconfirmed}
-  of {orderId, commandId?, reason?}; notCancelled reason NOT_FOUND | CANCEL_PENDING | NOT_ACTIVE;
+  of {orderId, commandId?, reason?}; notCancelled reason NOT_FOUND | CANCEL_PENDING | NOT_ACTIVE |
+  CANCEL_AFTER_MATCH (changelog 09-11-2026, openapi.json: "the cancel takes effect after the order matches at
+  the end of its betting delay. You do not need to repeat the request"): the order WILL match, so its
+  exposure stays reserved and the fill is learnt from reads; the cancel is never repeated;
   unconfirmed: "NOT a failure -- the cancel may still land. Re-read GET /orders-v3 rather than
   retrying blindly."
 - api-reference/delete-orders-v3-market (?marketHash=), -event (?eventId=), -all (no body, no params):
@@ -61,7 +64,15 @@ CANCEL_BINDING_SCHEMA = "sxbet.cancel_binding.v1"
 SCOPE_ORDER_IDS, SCOPE_MARKET, SCOPE_EVENT, SCOPE_ALL = "ORDER_IDS", "MARKET", "EVENT", "ALL"
 SCOPES = frozenset({SCOPE_ORDER_IDS, SCOPE_MARKET, SCOPE_EVENT, SCOPE_ALL})
 CANCELLED, NOT_CANCELLED, UNCONFIRMED, UNKNOWN = "CANCELLED", "NOT_CANCELLED", "UNCONFIRMED", "UNKNOWN"
-NOT_CANCELLED_REASONS = frozenset({"NOT_FOUND", "CANCEL_PENDING", "NOT_ACTIVE"})
+NOT_CANCELLED_REASONS = frozenset({"NOT_FOUND", "CANCEL_PENDING", "NOT_ACTIVE", "CANCEL_AFTER_MATCH"})
+# What each documented reason means for the caller (report only; ledger state changes come from reads).
+NOT_CANCELLED_MEANING = {
+    "NOT_FOUND": "NOT_ON_THE_BOOK_PER_ENGINE_RECONCILE_FROM_READS",
+    "CANCEL_PENDING": "CANCEL_ALREADY_PENDING_DO_NOT_REPEAT",
+    "NOT_ACTIVE": "ALREADY_INACTIVE_RECONCILE_FROM_READS",
+    "CANCEL_AFTER_MATCH": "WILL_MATCH_AT_END_OF_BETTING_DELAY_THEN_CANCEL_DO_NOT_REPEAT_EXPOSURE_STAYS_RESERVED",
+    "UNDOCUMENTED_REASON": "UNKNOWN_RECONCILE_FROM_READS",
+}
 BINDING_KEYS = frozenset({"schema", "account_id", "maker", "network", "scope", "order_ids", "market_hash",
                           "event_id"})
 # Orders that may be on the book: the only ones a cancel can affect.
@@ -324,7 +335,9 @@ class CancellationService:
             for oid in to_send:
                 r = parsed[oid]
                 state = self._reconcile(report[oid]["client_order_id"])
-                report[oid].update(bucket=r.bucket, reason=r.reason, command_id=r.command_id, state=state)
+                report[oid].update(bucket=r.bucket, reason=r.reason, command_id=r.command_id, state=state,
+                                   reason_meaning=NOT_CANCELLED_MEANING.get(r.reason) if r.reason else None,
+                                   will_match=r.reason == "CANCEL_AFTER_MATCH")
                 self._log("CANCEL_RESULT_" + r.bucket, SCOPE_ORDER_IDS, reason=r.reason, order_id=oid,
                           bucket=r.bucket)
             return {"scope": SCOPE_ORDER_IDS, "sent": True, "orders": report}

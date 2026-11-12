@@ -144,3 +144,29 @@ def test_simulated_heartbeat_lapse_cancels_all_and_reads_confirm(tmp_path):
     for k in ("order-key-X001", "order-key-X002"):
         assert s.gw.reconcile(k)["state"] == od.CANCELLED
     assert s.exposure().total == 0
+
+
+# ---------------------------------------------------------------- S3: CANCEL_AFTER_MATCH (changelog 09-11-2026)
+def test_parse_cancel_after_match_is_a_documented_reason():
+    from signer import rest_adapter as ra
+    oid = "0x" + "ab" * 32
+    resp = ra.RestResponse(200, {"status": "success", "data": {"cancelled": [], "unconfirmed": [], "notCancelled": [
+        {"orderId": oid, "reason": "CANCEL_AFTER_MATCH", "commandId": "c-1"}]}})
+    r = cx.parse_cancel_by_ids(resp, [oid])[oid]
+    assert (r.bucket, r.reason, r.command_id) == (cx.NOT_CANCELLED, "CANCEL_AFTER_MATCH", "c-1")
+
+
+def test_simulated_cancel_after_match_keeps_the_matched_part_and_is_not_repeated(tmp_path):
+    """RED on main: the reason was UNDOCUMENTED_REASON. The match is learnt from reads, never assumed."""
+    s = Stack(tmp_path)
+    (oid, key), _ = two_open(s)
+    s.sim.inject("DELETE", "/orders-v3", "cancel_after_match", taker_stake=1_500_000)
+    sent_before = len([r for r in s.sim.requests if r.method == "DELETE"]) if hasattr(s.sim, "requests") else None
+    rep = s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    row = rep["orders"][oid]
+    assert row["bucket"] == cx.NOT_CANCELLED and row["reason"] == "CANCEL_AFTER_MATCH" and row["will_match"] is True
+    assert row["reason_meaning"].startswith("WILL_MATCH") and row["command_id"]
+    o = s.ledger.get(key)
+    assert o.filled == 1 * USDC and s.exposure().matched == 1 * USDC
+    if sent_before is not None:
+        assert len([r for r in s.sim.requests if r.method == "DELETE"]) == sent_before + 1  # sent once

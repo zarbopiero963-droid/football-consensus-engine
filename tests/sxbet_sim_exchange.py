@@ -600,6 +600,13 @@ class SimExchange:
                       max_taker_odds=ODDS - o.odds)
         if o.status not in ("PENDING", "ACTIVE"):
             return "NOT_ACTIVE"
+        if fault.get("kind") == "cancel_after_match":
+            # A taker order is inside its betting delay against ours: it matches first, the cancel lands after.
+            self.take(o.market_hash, outcome_one=not o.outcome_one, taker_stake=fault["taker_stake"],
+                      max_taker_odds=ODDS - o.odds)
+            if o.status in ("PENDING", "ACTIVE"):
+                self._inactivate(o, "USER_REQUESTED")
+            return "CANCEL_AFTER_MATCH"
         if fault.get("kind") == "unconfirmed":
             delay = fault.get("land_after")
             o.pending_cancel_at = None if delay is None else int(self.clock()) + delay
@@ -626,6 +633,8 @@ class SimExchange:
                 out["cancelled"].append({"orderId": oid, "commandId": cmd})
             elif r == "UNCONFIRMED":
                 out["unconfirmed"].append({"orderId": oid, "commandId": cmd})
+            elif r == "CANCEL_AFTER_MATCH":  # openapi.json: commandId present on notCancelled for this reason
+                out["notCancelled"].append({"orderId": oid, "reason": r, "commandId": cmd})
             else:
                 out["notCancelled"].append({"orderId": oid, "reason": r})
         return ok(out)
