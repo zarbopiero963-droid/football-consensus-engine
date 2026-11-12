@@ -1674,6 +1674,38 @@ def test_each_model_check_catches_its_planted_violation(hardened, code, plant):
     assert hardened.roles_state() == state  # nothing committed
 
 
+# G2 (owner Q3, prerequisite of phase 2): a WITH GRANT OPTION on a privilege the model ALLOWS must be
+# refused. Before G2 the model compared only (relation, grantee, privilege): these plants were
+# HARDENED (RED, run against the previous verify_bridge_roles.sql); now they are NOT_HARDENED:grant_option.
+G2_PLANTS = [
+    _mig("GRANT SELECT ON public.schema_migrations TO fcb_app WITH GRANT OPTION"),
+    _mig("GRANT UPDATE ON public.api_football_quota_counters TO fcb_app WITH GRANT OPTION"),
+    _mig("GRANT DELETE ON public.sxbet_rate_cooldowns TO fcb_app WITH GRANT OPTION"),
+    _su("GRANT USAGE ON SCHEMA public TO fcb_app WITH GRANT OPTION"),
+    _su("GRANT USAGE, CREATE ON SCHEMA public TO fcb_migrator WITH GRANT OPTION"),
+]
+
+
+@pytest.mark.parametrize("plant", G2_PLANTS, ids=[f"g2-{i}" for i in range(len(G2_PLANTS))])
+def test_g2_grant_option_on_an_allowed_privilege_is_refused(hardened, plant):
+    assert hardened.roles_state() == "HARDENED"
+    plant(hardened)
+    state = hardened.roles_state()
+    assert state.startswith("NOT_HARDENED:") and "grant_option" in state.split(":", 1)[1].split(","), state
+    rc, _, err = _enable_tx(hardened)  # a phase-2 re-run refuses it too, before any change
+    assert rc != 0 and "FCB_ROLES_PHASE2_STATE_REFUSED" in err and "grant_option" in err, err
+
+
+def test_g2_grant_option_is_refused_in_phase1_too(phase1):
+    assert phase1.roles_state() == "HARDENED_PHASE1"
+    phase1.superuser("GRANT SELECT ON public.schema_migrations TO fcb_app WITH GRANT OPTION", as_role=phase1.admin_role)
+    state = phase1.roles_state()
+    assert state.startswith("NOT_HARDENED:") and "grant_option" in state, state
+    rc, _, err = _roles_tx(phase1)  # a phase-1 re-run refuses a drifted model before writing
+    assert rc != 0
+    assert phase1.roles_state() == state
+
+
 @pytest.mark.parametrize("code,plant", [
     ("owner_model", lambda e: e.superuser(
         SQL("ALTER TABLE public.runtime_state OWNER TO {}").format(Identifier("fcb_migrator")))),
