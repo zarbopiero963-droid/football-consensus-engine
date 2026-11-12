@@ -1710,6 +1710,8 @@ def _localize(script):
     script = script.replace(" --require-tls", "")
     if _server_major_raw() != 18:  # the pinned full fingerprint is the PG18 value
         script = script.replace('test "$full_before" = "$EXPECTED_FINGERPRINT" ||', "true ||")
+        # WP-009 compatibility: the pinned per-state structure fingerprints are PG18 values too
+        script = script.replace('test "$structure_before" = "$(structure_for "$bridge")" ||', "true ||")
     return script
 
 
@@ -1724,6 +1726,9 @@ def _run_step(env, prefix, tmp_path, passwords=None, mode="apply"):
     run_env.update({
         "PATH": f"{bindir}:{os.environ['PATH']}", "FCB_DEFAULTDB_URL": env.uri(), "EXPECTED_DB": env.dbname,
         "EXPECTED_COUNTS": env.counts, "EXPECTED_FINGERPRINT": RESTORE_PINNED_FINGERPRINT,
+        # WP-009 compatibility (declared intentional change): the per-state pins of the workflow
+        **{k: v for k, v in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["roles"]["env"].items()
+           if k.startswith(("EXPECTED_COUNTS_00", "EXPECTED_STRUCTURE_00"))},
         "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_WORKSPACE": str(ROOT), "PGSSLMODE": "disable",
         "FCB_DB_URL_VAR": "FCB_DEFAULTDB_URL", "MODE": mode, "OBSERVE_SECONDS": "1",
         "PGOPTIONS": (step.get("env") or {}).get("PGOPTIONS", "") + " " + AIVEN_SELF_GRANT,

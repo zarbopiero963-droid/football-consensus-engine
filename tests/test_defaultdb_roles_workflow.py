@@ -472,3 +472,69 @@ def test_model_pins_the_same_routines_and_triggers_as_the_restore_precheck():
         assert f"'{code}'" in verify
 
 
+
+
+# ---------------------------------------------------------------- WP-009 compatibility (owner GO): 0008 / 0009 / 0010
+# Declared intentional change: the workflow admits EXACTLY three bridge states instead of one.
+
+def _helper_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fcb_db_roles_states", ROOT / "scripts" / "fcb_db_roles.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_workflow_pins_counts_and_structure_for_each_admitted_state():
+    env = JOB["env"]
+    assert env["EXPECTED_COUNTS"].endswith("schema_migrations_rows=8")  # unchanged (restore state)
+    assert env["EXPECTED_COUNTS_0009"].endswith("schema_migrations_rows=9")
+    assert env["EXPECTED_COUNTS_0010"].endswith("schema_migrations_rows=10")
+    for n in ("0008", "0009", "0010"):
+        assert re.fullmatch(r"[0-9a-f]{32}", env[f"EXPECTED_STRUCTURE_{n}"]), n
+    assert len({env[f"EXPECTED_STRUCTURE_{n}"] for n in ("0008", "0009", "0010")}) == 3
+
+
+def test_both_phases_resolve_the_bridge_state_from_rows_catalog_counts_and_structure():
+    for step in (PHASE1, "Phase 2 -"):
+        run = _step(step)["run"]
+        assert "000[1-8]" not in run and "schema_migrations_rows=8" not in run
+        assert "scripts/fcb_db_roles.py bridge-state" in run and "scripts/fcb_db_roles.py expected-migrations" in run
+        assert 'test "$(catalog_state)" = "BRIDGE_0001_$(printf \'%04d\' "$bridge")"' in run
+        assert 'test "$structure_before" = "$(structure_for "$bridge")"' in run
+        assert "\\echo :fcb_bridge_state" in run
+    assert '-v expected_counts="$bridge_counts"' in _step(PHASE1)["run"]
+    assert "bridge=8  # first phase 1" in _step(PHASE1)["run"]
+
+
+def test_helper_admits_exactly_the_three_bridge_states():
+    mod = _helper_module()
+    for n in (8, 9, 10):
+        assert mod.bridge_state(mod.expected_evidence(n)) == n
+        assert mod.bridge_state(mod.expected_evidence(n) + "\n") == n
+    ten = mod.expected_migrations(10)
+    for bad in ([*ten[:8], ten[9]], ten[:7], [*ten[:9], ten[9][:-1] + "0"]):
+        assert mod.bridge_state("\n".join([f"schema_migrations_rows={len(bad)}", *bad])) is None
+    assert mod.bridge_state(mod.expected_evidence(10).replace("schema_migrations_rows=10", "schema_migrations_rows=9")) is None
+
+
+def test_model_knows_exactly_the_0009_and_0010_objects_and_refuses_anything_else():
+    verify = (AIVEN / "verify_bridge_roles.sql").read_text()
+    migration = (ROOT / "sql" / "migrations" / "bridge" / "0010_apifootball_cert_campaign_ledger.sql").read_text()
+    functions = set(re.findall(r"CREATE FUNCTION (\w+)\(", migration))
+    triggers = set(re.findall(r"CREATE TRIGGER (\w+) ", migration))
+    block_f = verify[verify.index("bridge_functions_0010(sig) AS (VALUES"):verify.index("bridge_triggers_0010(sig)")]
+    block_t = verify[verify.index("bridge_triggers_0010(sig) AS (VALUES"):verify.index("bridge_triggers(sig) AS (VALUES")]
+    assert set(re.findall(r"\('(\w+)\|\|trigger", block_f)) == functions and len(functions) == 4
+    assert set(re.findall(r"\('\w+\|(\w+)\|", block_t)) == triggers and len(triggers) == 12
+    assert block_f.count("|true|") == 1  # only the budget trigger is SECURITY DEFINER
+    assert "'bridge_state', ((SELECT b.v FROM bridge_state b) OPERATOR(pg_catalog.=) 0)" in verify
+    assert "OR p.prosecdef OR p.proconfig IS NOT NULL" not in verify  # now part of the pinned signature
+    # least privilege unchanged: the plan counter gets nothing; ledger INSERT only per column
+    by_state = verify[verify.index("runtime_tables_by_state"):verify.index("expected_column_grants")]
+    assert "('api_football_cert_plan_usage'" not in by_state  # the counter: no runtime privilege
+    assert "('oauth_throttle_buckets'::pg_catalog.text, ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']" in by_state
+    assert by_state.count("ARRAY['SELECT'], 10)") == 4
+    cols = verify[verify.index("expected_column_grants"):verify.index("column_grants AS (")]
+    assert cols.count("'INSERT'") == 8 and "plan_usage" not in cols
+    assert "('api_football_cert_campaign_attempts', 'seq'" not in cols

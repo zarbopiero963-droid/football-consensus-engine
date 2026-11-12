@@ -189,9 +189,9 @@ def test_wp009_grant_files_carry_the_same_conditional_select_insert_ledger_grant
     assert _grants(_code(block)) == EXPECTED_GRANTS
     for word in ("UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "ALL ", *AUDIT_COLUMNS):
         assert all(word.upper() not in g.upper() for g in _grants(_code(block))), word
-    for path in WP009_FILES:  # review #199 P3-5: the comment states the roles workflow limit
+    for path in WP009_FILES:  # intentional change (WP-009 compatibility): the limit is lifted, the comment says so
         text = " ".join(path.read_text(encoding="utf-8").split())
-        assert "is NOT reached through that workflow on a 0009/0010 database" in text
+        assert "The roles workflow admits the 0001-0009 and 0001-0010" in text
     roles = (ROOT / ".github" / "workflows" / "fcb-aiven-defaultdb-roles.yml").read_text(encoding="utf-8")
     for path in WP009_FILES:
         assert f"{path.relative_to(ROOT)}={hashlib.sha256(path.read_bytes()).hexdigest()}" in roles

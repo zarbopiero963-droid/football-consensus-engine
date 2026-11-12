@@ -116,10 +116,8 @@ END $throttle$;
 -- by the plan approval workflow as fcb_migrator), granted only where 0010 is already applied, so on
 -- a 0001-0009 database this block changes nothing. Never UPDATE, DELETE, TRUNCATE, REFERENCES or
 -- TRIGGER (the 0010 triggers also refuse UPDATE, DELETE and TRUNCATE for every role). Same grant as
--- apifootball_cert_ledger_0010_grant.sql. NOTE: the WP-009 roles workflow today refuses any database
--- whose schema_migrations differs from 0001-0008 (pinned counts, rows and verify model), so this
--- block is NOT reached through that workflow on a 0009/0010 database until the WP-009 verify model
--- is updated (dedicated PR, owner decision); it keeps a manual or future re-run consistent.
+-- apifootball_cert_ledger_0010_grant.sql. The roles workflow admits the 0001-0009 and 0001-0010
+-- states exactly (WP-009 compatibility): its re-runs keep these grants, verified by the model.
 --   api_football_cert_plans              S                                              scripts/apifootball_cert_batch1.py PostgresCampaignLedger.open / reserve
 --   api_football_cert_campaigns          S, I(campaign_id, plan_sha256)                 PostgresCampaignLedger.open
 --   api_football_cert_plan_usage         none (counter written only by the SECURITY DEFINER budget trigger)
