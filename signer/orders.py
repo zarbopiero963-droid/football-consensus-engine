@@ -529,6 +529,16 @@ class OrderLedger:
             # cannot let two instances on one host write the same file); the lease guards across hosts.
             self._fd = self._open_locked(path, create=_create)
             self._flocked = True
+            # Re-check on the OPENED file (review 7ea81ac P3-A/P3-B): a file swapped between the pre-open stat and
+            # the open, or a group the pre-open prediction got wrong, is refused before GENESIS or any anchor use.
+            if not _fd_witness_capable(self._fd):
+                if _create:
+                    try:  # remove the empty file this instance just created (O_EXCL), never anything else
+                        if os.path.samestat(os.fstat(self._fd), os.stat(path)) and os.fstat(self._fd).st_size == 0:
+                            os.unlink(path)
+                    except OSError:
+                        pass
+                raise LedgerError("LEDGER_INODE_WITNESS_UNAVAILABLE")
             if _create:
                 # Random nonce: a new ledger file never has the identity of an old one (review P2-5).
                 self._append({"kind": "GENESIS", "schema": LEDGER_SCHEMA, "signer_id": signer_id,
@@ -1394,3 +1404,14 @@ def _quarantine_siblings(path: str) -> bool:
         return any(n.startswith(base) for n in os.listdir(os.path.dirname(os.path.abspath(path)) or "."))
     except OSError:
         return True  # cannot tell: fail closed
+
+
+def _fd_witness_capable(fd: int) -> bool:
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        return False
+    euid = os.geteuid()
+    if euid != 0 and st.st_uid != euid:
+        return False
+    return st.st_gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()

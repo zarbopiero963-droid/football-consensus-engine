@@ -530,3 +530,21 @@ def test_review_63d14d3_p3_6_create_refuses_while_a_quarantined_ledger_exists(s,
     with pytest.raises(od.LedgerError) as e:
         od.OrderLedger.create(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
     assert e.value.code == "LEDGER_QUARANTINE_PENDING"
+
+
+def test_review_7ea81ac_p3_a_file_swapped_after_the_pre_open_check_is_refused(s, monkeypatch):
+    path = s.ledger._path
+    s.ledger.close()
+    monkeypatch.setattr(od.OrderLedger, "_witness_capable", staticmethod(lambda p, c: True))  # pre-open passes
+    monkeypatch.setattr(od, "_fd_witness_capable", lambda fd: False)                          # opened file fails
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
+    assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE" and os.path.exists(path)  # never removed on open
+
+
+def test_review_7ea81ac_p3_b_refused_create_after_open_leaves_no_file(tmp_path, monkeypatch):
+    path = str(tmp_path / "fresh2.jsonl")
+    monkeypatch.setattr(od, "_fd_witness_capable", lambda fd: False)
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.create(path, signer_id="sig-1", signer_address="0x" + "11" * 20)
+    assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE" and not os.path.exists(path)
