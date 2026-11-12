@@ -213,8 +213,10 @@ PHASE_NOTE = "phase is local vocabulary grouping the official labels (1 and 9 ar
 # Local heuristic (DERIVED, not a provider rule): an ACTIVE market whose gameTime is more than this in the past.
 STALE_ACTIVE_AFTER_SECONDS = 24 * 3600
 NO_PAGINATION_HINT = {"/fixture/active": "This route has no pagination in the contract (leagueId only): the league is "
-                                         "too large for one MCP response."}  # review 52fcee6 P3-4
-VIEW_LIST_MAX = 50  # each flagged list is capped, the rest counted (review 52fcee6 P2-A: the view never decides the cap)
+                                         "too large for one MCP response; with upcoming_only=true retry without it "
+                                         "(the upcoming view repeats rows)."}  # reviews 52fcee6 / d7f186b P3-4
+VIEW_LIST_MAX = 50  # each flagged list is capped, the rest counted (review 52fcee6 P2-A); call() also omits a view
+# rather than turning data that fits into PAYLOAD_TOO_LARGE (review d7f186b P2-1)
 
 
 def _capped(items: list) -> dict[str, Any]:
@@ -244,7 +246,7 @@ def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
     if not isinstance(data, list):
         return {"fixture_status_view": {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}}
     counts: dict[str, int] = {}
-    final, overdue, undocumented, unresolved = [], [], [], []
+    final, overdue, undocumented, unresolved, missing = [], [], [], [], []
     seen: set[str] = set()
     duplicates: list[str] = []
     no_id = 0
@@ -260,10 +262,14 @@ def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
         else:
             seen.add(eid)
         d = decode_fixture_status(code)
-        key = str(code) if type(code) is int else f"non_int:{code!r}"  # 1 and "1" never merge (review 52fcee6 P3-1)
+        # 1 and "1" never merge (review 52fcee6 P3-1); bounded keys (review d7f186b P3-2): type name, not the value
+        key = str(code) if type(code) is int else ("missing" if code is None else f"non_int:{type(code).__name__}")
         counts[key] = counts.get(key, 0) + 1
-        if d["phase"] in ("UNDOCUMENTED_STATUS", "STATUS_MISSING"):
-            undocumented.append({"eventId": eid, "provider_status": code})
+        if d["phase"] == "STATUS_MISSING":
+            missing.append({"eventId": eid})  # kept apart from undocumented codes (review d7f186b P3-3)
+        elif d["phase"] == "UNDOCUMENTED_STATUS":
+            undocumented.append({"eventId": eid, "provider_status": code if type(code) in (int, str) else
+                                 f"<{type(code).__name__}>"})
         if d.get("final"):
             final.append({"eventId": eid, "provider_status": code, "label": d["label"],
                           "final_basis": d["final_basis"]})
@@ -276,7 +282,8 @@ def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
         "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "status_table": _status_table(), "phase_note": PHASE_NOTE,
         "rows": len(data), "counts_by_status": counts,
         "final_status_listed_as_active": _capped(final), "not_started_but_start_long_past": _capped(overdue),
-        "undocumented_status": _capped(undocumented), "start_unresolved": _capped(unresolved),
+        "undocumented_status": _capped(undocumented), "status_missing": _capped(missing),
+        "start_unresolved": _capped(unresolved),
         "rows_without_event_id": no_id, "duplicate_event_ids": _capped(duplicates),
         "list_cap": f"each list shows at most {VIEW_LIST_MAX} items; total and omitted are exact",
         "heuristic": f"not started with startDate older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
@@ -385,9 +392,20 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                   "network_calls_made": 1, "rate_limit_remaining": reply["rate_limit_remaining"],
                   "next_key": data.get("nextKey") if isinstance(data, dict) else None,
                   "data": data, "warnings": [_UNITS]}
+        def size(obj):
+            return len(json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         if derive is not None:
-            result.update(derive(data))
-        if len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > _MAX_MCP_BYTES:
+            derived = derive(data)
+            with_views = {**result, **derived}
+            if size(with_views) <= _MAX_MCP_BYTES or size(result) > _MAX_MCP_BYTES:
+                result = with_views
+            else:
+                # The raw provider answer fits, the DERIVED views do not: the views are omitted explicitly, the data is
+                # returned (review d7f186b P2-1: a derived view never makes readable provider data unreadable).
+                result = {**result, **{k: {"label": "DERIVED", "status": "VIEW_OMITTED_FOR_SIZE",
+                                           "note": "Provider data fits the MCP cap only without this view."}
+                                       for k in derived}}
+        if size(result) > _MAX_MCP_BYTES:
             # Never truncate silently: ask for a smaller page instead.
             return {**base, "status": "PAYLOAD_TOO_LARGE", "parameters": params, "network_calls_made": 1,
                     "http_status": reply["http_status"],

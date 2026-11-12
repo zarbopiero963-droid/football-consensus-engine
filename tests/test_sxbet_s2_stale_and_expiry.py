@@ -131,7 +131,7 @@ def test_review_52fcee6_p3_missing_status_int_vs_str_and_zero_game_time():
     assert sx.decode_fixture_status(None)["phase"] == "STATUS_MISSING"
     v = sx.fixtures_view([{"eventId": "A", "status": 1}, {"eventId": "B", "status": "1"}],
                          now_unix=NOW)["fixture_status_view"]
-    assert v["counts_by_status"] == {"1": 1, "non_int:'1'": 1}
+    assert v["counts_by_status"] == {"1": 1, "non_int:str": 1}
     s = sx.stale_active_markets({"markets": [{"status": "ACTIVE", "gameTime": 0}]}, now_unix=NOW)["stale_active_view"]
     assert s["count"] == 0 and s["rows_without_int_game_time"] == 1
 
@@ -142,3 +142,33 @@ def test_review_52fcee6_p3_4_no_pagination_hint_for_fixture_active():
     t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(big)}))
     out = run(t["sxbet_fixtures_active"](league_id=1))
     assert out["status"] == "PAYLOAD_TOO_LARGE" and "no pagination" in out["error"]["hint"]
+
+
+def _rows(n, status=3, pad=180):
+    return [{"eventId": f"L{i:05d}", "status": status, "startDate": "2024-01-01T00:00:00Z", "leagueId": 1,
+             "sportId": 5, "leagueLabel": "League " + "x" * pad} for i in range(n)]
+
+
+def test_review_d7f186b_p2_1_view_is_omitted_never_the_data_at_the_cap_boundary(monkeypatch):
+    """Cap set between the raw answer and raw + view (RED on d7f186b: PAYLOAD_TOO_LARGE)."""
+    import json
+    rows = _rows(300)
+    t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(rows)}))
+    full = run(t["sxbet_fixtures_active"](league_id=1))
+    with_view = len(json.dumps(full, separators=(",", ":"), ensure_ascii=False).encode())
+    raw_only = len(json.dumps({k: v for k, v in full.items() if k != "fixture_status_view"},
+                              separators=(",", ":"), ensure_ascii=False).encode())
+    monkeypatch.setattr(sx, "_MAX_MCP_BYTES", (raw_only + with_view) // 2)
+    out = run(t["sxbet_fixtures_active"](league_id=1))
+    assert out["status"] == "REAL_API_RESPONSE" and out["data"] == rows
+    assert out["fixture_status_view"]["status"] == "VIEW_OMITTED_FOR_SIZE"
+    monkeypatch.setattr(sx, "_MAX_MCP_BYTES", raw_only - 10)  # the data itself does not fit: explicit error
+    assert run(t["sxbet_fixtures_active"](league_id=1))["status"] == "PAYLOAD_TOO_LARGE"
+
+
+def test_review_d7f186b_p3_bounded_count_keys_and_missing_status_apart():
+    rows = [{"eventId": "A", "status": {"big": "x" * 500}}, {"eventId": "B"}, {"eventId": "C", "status": None}]
+    v = sx.fixtures_view(rows, now_unix=NOW)["fixture_status_view"]
+    assert v["counts_by_status"] == {"non_int:dict": 1, "missing": 2}
+    assert v["status_missing"]["total"] == 2 and v["undocumented_status"]["items"] == [
+        {"eventId": "A", "provider_status": "<dict>"}]
