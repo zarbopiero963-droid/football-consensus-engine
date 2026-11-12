@@ -140,10 +140,12 @@ class KillSwitch:
                                                                 if ledger.kill_marker_status == "UNRECORDED"
                                                                 else "KILL_SWITCH_MARKER_INVALID")
             self._log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
-            self.recovery = self.engage(trigger, source="AUTOMATIC")
-            if self.recovery["persisted"] and self.recovery["marker_written"]:
-                ledger.drop_kill_flag_after_recorded_engagement()  # the JSON marker now witnesses it
-                ledger.kill_marker_status = "CONSISTENT"  # recorded: later KillSwitch objects do not re-engage
+            with ledger.kill_lock:  # recovery engage and flag drop under ONE hold (review f667594 P3-1)
+                self.recovery = self._engage(trigger, source="AUTOMATIC", triggers=())
+                if self.recovery["persisted"]:
+                    # Drops flag / inode witness only if a JSON marker was written just before this ENGAGE.
+                    ledger.drop_kill_flag_after_recorded_engagement()
+                    ledger.kill_marker_status = "CONSISTENT"  # recorded: later KillSwitch objects do not re-engage
 
     # ---- state ----
     @property
@@ -274,13 +276,14 @@ class KillSwitch:
         self._volatile = None
         self._ledger.clear_volatile_kill()
         try:
-            marker_removed = self._ledger.remove_kill_marker_after_release(rel.engage_seq)
+            outcome = self._ledger.remove_kill_marker_after_release(rel.engage_seq)
         except OrderStateError:  # engaged again meanwhile: marker kept (review 30f5a96 P3-3)
-            marker_removed = False
+            outcome = "KEPT_LATER_ENGAGEMENT"
+        marker_removed = outcome == "REMOVED"
         if not marker_removed:
-            # Kept on purpose (a later engagement) or not removable (e.g. a directory, unreadable): the next open
-            # stays blocked until the owner clears it manually (README procedure). Explicit fixed code.
-            self._log("KILL_SWITCH_MARKER_UNREMOVABLE", reason="OWNER_SIGNED_RELEASE")
+            # KEPT_LATER_ENGAGEMENT: a later engagement needs its own release. UNREMOVABLE (a directory, unreadable,
+            # mode not clearable): the next open stays blocked until the owner clears it by hand (README).
+            self._log("KILL_SWITCH_MARKER_" + outcome, reason="OWNER_SIGNED_RELEASE")
         self._log("KILL_SWITCH_RELEASED", reason="OWNER_SIGNED_RELEASE")
         return {"engaged": False, "released_engage_seq": rel.engage_seq, "marker_removed": marker_removed}
 

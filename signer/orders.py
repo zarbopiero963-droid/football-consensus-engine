@@ -117,6 +117,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -164,14 +165,20 @@ TERMINAL = frozenset({SETTLED, REJECTED})
 CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
 KILL_SWITCH_ACTIONS = frozenset({"ENGAGE", "CANCEL_INTENT", "CANCEL_VERIFIED", "RELEASE"})
 # Persistent kill-switch marker OUTSIDE the ledger (owner gate P2-A, issue #187): written before every ENGAGE
-# line, checked on every open/create, removed only after an owner-signed RELEASE of an engagement recorded
-# after it. An engagement the ledger could not record therefore survives a restart and keeps the signer
+# line, checked on every open/create. The JSON marker is removed only after an owner-signed RELEASE of an
+# engagement recorded after it; the empty flag and the inode witness are also cleared once a recovery has
+# recorded the engagement with a JSON marker just before it (signer/killswitch.py). An engagement the ledger could not record therefore survives a restart and keeps the signer
 # blocked until it is recorded (risk-reducing) and then released by the owner. Never resumes on its own.
 KILL_MARKER_SCHEMA = "sxbet.kill_switch_marker.v1"
 KILL_MARKER_SUFFIX = ".killswitch.json"
 KILL_MARKER_UNRECORDED = "KILL_SWITCH_UNRECORDED_ENGAGEMENT"
 KILL_MARKER_INVALID = "KILL_SWITCH_MARKER_INVALID"
 KILL_QUARANTINE_SUFFIX = ".killswitch-quarantine"
+# Inode witness (review f667594 P2-1): the set-group-ID mode bit on the LEDGER FILE itself, set with fchmod
+# (an inode metadata update: no data or directory block, so it works when writes fail) BEFORE a quarantine.
+# mv / cp -p keep it, so a ledger restored by hand still opens blocked. Without group-execute the kernel does
+# not clear it on write. Cleared only after the owner-signed release.
+KILL_INODE_WITNESS = stat.S_ISGID
 COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_fingerprint_sha256", "client_ref_sha256",
                             "command_received_at"})
 
@@ -917,7 +924,7 @@ class OrderLedger:
 
     def _check_kill_marker(self) -> None:
         """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
-        flag = os.path.lexists(self.kill_flag_path)
+        flag = os.path.lexists(self.kill_flag_path) or self.inode_witness_set()
         try:
             with open(self.kill_marker_path, "rb") as fh:
                 raw = fh.read(4097)
@@ -927,6 +934,7 @@ class OrderLedger:
             raw = None
             flag = True  # unreadable marker: fail closed below
         if raw == b"" and flag and not os.path.lexists(self.kill_marker_path):
+            # (the flag here may also be the inode witness of a quarantined-and-restored ledger)
             # Only the empty flag: it carries no seq, so it may belong to a LATER engagement than the one on the
             # ledger (review c139822 P3-1). Always UNRECORDED: the KillSwitch records a new ENGAGE that
             # supersedes the old one, and the owner signs the release of THAT engagement.
@@ -1001,23 +1009,51 @@ class OrderLedger:
             pass
         return True
 
-    def drop_kill_flag_after_recorded_engagement(self) -> bool:
-        """The flag is superseded once a JSON marker AND an ENGAGE line after it are both on disk."""
+    def inode_witness_set(self) -> bool:
+        try:
+            return self._fd is not None and bool(os.fstat(self._fd).st_mode & KILL_INODE_WITNESS)
+        except OSError:
+            return True  # cannot tell: fail closed
+
+    def set_inode_witness(self) -> bool:
         with self._lock:
-            if not self._kill["engaged"]:
+            try:
+                mode = stat.S_IMODE(os.fstat(self._fd).st_mode)
+                os.fchmod(self._fd, (mode & ~stat.S_IXGRP) | KILL_INODE_WITNESS)
+                return self.inode_witness_set()
+            except (OSError, TypeError):
+                return False
+
+    def _clear_inode_witness(self) -> bool:
+        try:
+            mode = stat.S_IMODE(os.fstat(self._fd).st_mode)
+            if mode & KILL_INODE_WITNESS:
+                os.fchmod(self._fd, mode & ~KILL_INODE_WITNESS)
+            return not self.inode_witness_set()
+        except (OSError, TypeError):
+            return False
+
+    def drop_kill_flag_after_recorded_engagement(self) -> bool:
+        """Flag and inode witness are superseded once the JSON marker written JUST before the current ENGAGE
+        line is on disk (marker seq == engage seq - 1), on a sound ledger with no other volatile engagement
+        (review f667594 P3-1). The caller holds `kill_lock`."""
+        with self._lock:
+            if not self._kill["engaged"] or self._poisoned or self._volatile_kill not in (None, KILL_MARKER_UNRECORDED,
+                                                                                          KILL_MARKER_INVALID):
                 return False
             try:
                 with open(self.kill_marker_path, "rb") as fh:
                     marker = _parse_kill_marker(fh.read(4097), self.ledger_id, self.genesis_sha256)
             except OSError:
                 return False
-            if marker is None or not marker["ledger_seq"] < self._kill["engage_seq"]:
+            if marker is None or marker["ledger_seq"] != self._kill["engage_seq"] - 1:
                 return False
-            return self._unlink(self.kill_flag_path)
+            return self._unlink(self.kill_flag_path) and self._clear_inode_witness()
 
-    def remove_kill_marker_after_release(self, released_engage_seq: int) -> bool:
+    def remove_kill_marker_after_release(self, released_engage_seq: int) -> str:
         """After an owner-signed RELEASE only. Removes the marker only if it predates the released engagement
-        (a marker written by a later engagement is never removed, review 30f5a96 P2-1), and the empty flag."""
+        (a marker written by a later engagement is never removed, review 30f5a96 P2-1), the empty flag and the
+        inode witness. Returns REMOVED, KEPT_LATER_ENGAGEMENT or UNREMOVABLE."""
         with self._lock:
             if self._kill["engaged"]:
                 raise OrderStateError("KILL_SWITCH_NOT_RELEASED")
@@ -1027,14 +1063,15 @@ class OrderLedger:
             except FileNotFoundError:
                 raw = None
             except OSError:
-                return False
+                return "UNREMOVABLE"
             if raw is not None:
                 marker = _parse_kill_marker(raw, self.ledger_id, self.genesis_sha256)
                 if marker is not None and marker["ledger_seq"] >= released_engage_seq:
-                    return False  # belongs to a later engagement: kept
+                    return "KEPT_LATER_ENGAGEMENT"
                 if not self._unlink(self.kill_marker_path):
-                    return False
-            return self._unlink(self.kill_flag_path)
+                    return "UNREMOVABLE"
+            ok = self._unlink(self.kill_flag_path) and self._clear_inode_witness()
+            return "REMOVED" if ok else "UNREMOVABLE"
 
     def quarantine_for_kill_switch(self) -> bool:
         """Last resort when neither the marker nor the ENGAGE line could be written: the empty flag is tried
@@ -1044,6 +1081,7 @@ class OrderLedger:
         signer/README.md (record the engagement, then the owner-signed release)."""
         with self._lock:
             self._poisoned = True
+            self.set_inode_witness()  # survives mv / cp -p of the quarantined file (review f667594 P2-1)
             self._create_kill_flag()
             target = f"{self._path}{KILL_QUARANTINE_SUFFIX}-{int(self._clock())}-{os.urandom(4).hex()}"
             try:

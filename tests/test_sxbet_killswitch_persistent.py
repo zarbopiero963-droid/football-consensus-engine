@@ -94,7 +94,7 @@ def test_marker_never_removed_without_a_release_of_a_later_engagement(s, monkeyp
 def test_stale_marker_after_release_is_removed_on_next_open(s, monkeypatch):
     k = make_ks(s)
     k.engage("OWNER_MANUAL_STOP")
-    monkeypatch.setattr(s.ledger, "remove_kill_marker_after_release", lambda seq: False)
+    monkeypatch.setattr(s.ledger, "remove_kill_marker_after_release", lambda seq: "UNREMOVABLE")
     out = k.release(release(s, k))
     assert out["marker_removed"] is False and marker(s).exists()
     monkeypatch.undo()
@@ -283,7 +283,7 @@ def test_review_p3_5_superseded_engagement_needs_one_release_only(s, monkeypatch
     k = make_ks(s)
     k.engage("OWNER_MANUAL_STOP")
     k.engage("EXPOSURE_ABOVE_LIMIT")                  # engaged again while engaged
-    monkeypatch.setattr(s.ledger, "remove_kill_marker_after_release", lambda seq: False)
+    monkeypatch.setattr(s.ledger, "remove_kill_marker_after_release", lambda seq: "UNREMOVABLE")
     k.release(release(s, k))
     monkeypatch.undo()
     s.restart()
@@ -302,8 +302,7 @@ def _all_marker_writes_fail(monkeypatch, s):
 
 
 def test_review_c139822_p2a_real_quarantine_case_is_missing_ledger_and_documented(s, monkeypatch):
-    """When quarantine happens the flag has ALREADY failed: no file witnesses the engagement. The restart path
-    (open) finds no ledger; a manual restore without the owner procedure is a declared residual risk."""
+    """When quarantine happens the flag has ALREADY failed. The restart path (open) finds no ledger."""
     k = make_ks(s)
     _ledger_write_fails(monkeypatch, s)
     _all_marker_writes_fail(monkeypatch, s)
@@ -316,8 +315,53 @@ def test_review_c139822_p2a_real_quarantine_case_is_missing_ledger_and_documente
     with pytest.raises(od.LedgerError) as e:
         od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
     assert e.value.code == "LEDGER_MISSING"
-    readme = (pathlib.Path(__file__).parents[1] / "signer/README.md").read_text()
-    assert "Rischi residui dichiarati" in readme and "rimettere a mano il file in quarantena" in readme
+
+
+@pytest.mark.parametrize("restore", ["mv", "cp -p"])
+def test_review_f667594_p2_1_restored_quarantine_stays_blocked_by_the_inode_witness(s, monkeypatch, restore):
+    """RED on f667594: a quarantined ledger put back by hand signed again. The set-group-ID witness on the
+    inode (fchmod: no data block) survives mv and cp -p, so it opens blocked until the owner procedure."""
+    import shutil
+    import stat
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    path = s.ledger._path
+    assert k.engage("OWNER_MANUAL_STOP")["ledger_quarantined"] is True
+    monkeypatch.undo()
+    (q,) = [p for p in pathlib.Path(path).parent.iterdir() if od.KILL_QUARANTINE_SUFFIX in p.name]
+    assert os.stat(q).st_mode & stat.S_ISGID
+    s.ledger.close()
+    if restore == "mv":
+        os.rename(q, path)
+    else:
+        shutil.copy2(q, path)
+    s.restart()
+    assert s.ledger.kill_marker_status == "UNRECORDED" and s.ledger.kill_switch_engaged
+    assert refused(lambda: s.sign(s.intent("order-key-P2A20"))) == "KILL_SWITCH_ENGAGED"
+    k2 = make_ks(s)                                        # owner procedure: record ...
+    assert k2.recovery["persisted"] and not s.ledger.inode_witness_set()
+    assert k2.release(release(s, k2))["marker_removed"] is True  # ... then the owner-signed release
+    s.restart()
+    assert not s.ledger.kill_switch_engaged and not os.stat(path).st_mode & stat.S_ISGID
+
+
+def test_review_f667594_p3_1_flag_not_dropped_while_another_engagement_is_volatile(s, monkeypatch):
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    real_open = os.open
+    monkeypatch.setattr(os, "open", lambda p, *a, **kw: (_ for _ in ()).throw(OSError(28, "ENOSPC"))
+                        if ".tmp-" in str(p) else real_open(p, *a, **kw))
+    k.engage("OWNER_MANUAL_STOP")                          # flag only
+    monkeypatch.undo()
+    s.restart()
+    k2 = make_ks(s)
+    assert k2.recovery["persisted"] and not os.path.exists(s.ledger.kill_flag_path)
+    s.ledger.engage_volatile_kill("DAILY_LOSS_LIMIT_BREACHED")  # another engagement, not recorded
+    s.ledger._create_kill_flag()
+    with s.ledger.kill_lock:
+        assert s.ledger.drop_kill_flag_after_recorded_engagement() is False
+    assert os.path.exists(s.ledger.kill_flag_path)
 
 
 def test_review_c139822_p3_1_flag_of_a_later_engagement_needs_its_own_release(s, monkeypatch):
@@ -355,5 +399,6 @@ def test_review_c139822_p3_2_unremovable_marker_is_reported_and_stays_blocked(s)
     out = k.release(release(s, k))
     assert out["marker_removed"] is False
     assert "KILL_SWITCH_MARKER_UNREMOVABLE" in [r["decision"] for r in ks_audit(s)]
+    assert "KILL_SWITCH_MARKER_KEPT_LATER_ENGAGEMENT" not in [r["decision"] for r in ks_audit(s)]
     s.restart()
     assert s.ledger.kill_switch_engaged                    # fail closed until the owner clears it by hand
