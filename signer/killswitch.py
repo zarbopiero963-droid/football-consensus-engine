@@ -24,9 +24,14 @@ Effects (all recorded in the append-only ledger, so they survive a restart, and 
    KILL_SWITCH CANCEL_VERIFIED line, per intended order, whether it is now off the book (CONFIRMED: CANCELLED,
    FILLED, EXPIRED, SETTLED, or a REJECTED without hold) or STILL_OPEN. A cancel reply is never trusted.
 
-If the ledger cannot be written (anomaly / poisoned), the kill switch is engaged in memory and audited; the
-signer already refuses everything on a poisoned ledger, and a restart on a forked ledger is refused until
-the owner decides (signer/anchor.py).
+Persistence (owner gate P2-A, issue #187): before every ENGAGE line a marker is written OUTSIDE the ledger
+(`OrderLedger.kill_marker_path`, atomic and fsync'd). Every open/create of the ledger checks it: a marker
+whose engagement the ledger does not hold (lost write, truncated tail, recreated file, unreadable marker)
+keeps the ledger engaged in memory, so the Signer and the gateway refuse from the first instruction, with
+or without a KillSwitch object. Constructing the KillSwitch then RECORDS that engagement on the ledger
+(risk-reducing, no signature needed), after which only the owner-signed release resumes signing. If neither
+the marker nor the ENGAGE line can be written, the ledger file is quarantined (renamed, content untouched)
+so a restart finds no ledger and nothing resumes without the owner. The signer never resumes by itself.
 
 Release: ONLY by an owner-authenticated act outside the MCP: a `KillSwitchRelease` signed with the owner's
 Ed25519 key (domain `sxbet.kill_switch_release.v1`) over {ledger_id, engage_seq, release_id, issued_at,
@@ -128,6 +133,14 @@ class KillSwitch:
         self._network = network
         self._clock = clock
         self._volatile: str | None = None  # engaged while the ledger could not record it
+        self.recovery: dict[str, Any] | None = None
+        if ledger.kill_marker_status in ("UNRECORDED", "INVALID"):
+            # P2-A: an engagement that did not reach the ledger is recorded now; never silently dropped.
+            trigger = ledger.kill_switch_state()["trigger"] or ("KILL_SWITCH_UNRECORDED_ENGAGEMENT"
+                                                                if ledger.kill_marker_status == "UNRECORDED"
+                                                                else "KILL_SWITCH_MARKER_INVALID")
+            self._log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
+            self.recovery = self.engage(trigger, source="AUTOMATIC")
 
     # ---- state ----
     @property
@@ -163,6 +176,10 @@ class KillSwitch:
         if not isinstance(trigger, str) or not _TRIGGER.fullmatch(trigger) or source not in ("MANUAL", "AUTOMATIC"):
             raise KillSwitchError("KILL_SWITCH_TRIGGER_INVALID")
         all_triggers = sorted({trigger, *triggers})
+        marked = self._ledger.write_kill_marker(trigger=trigger, source=source)  # P2-A: before the ENGAGE line
+        if not marked:
+            self._log("KILL_SWITCH_MARKER_WRITE_FAILED", reason=trigger)
+        quarantined = None
         try:
             # ENGAGE and the intent snapshot under one hold of the ledger lock (review P2-1).
             intents = self._ledger.engage_kill_switch(trigger=trigger, source=source, triggers=all_triggers,
@@ -174,11 +191,17 @@ class KillSwitch:
             self._ledger.engage_volatile_kill(trigger)
             self._log("KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE", reason=getattr(exc, "code", "LEDGER_ERROR"))
             persisted = False
+            if not marked:  # nothing durable recorded the engagement: a restart must not find a usable ledger
+                quarantined = self._ledger.quarantine_for_kill_switch()
+                self._log("KILL_SWITCH_LEDGER_QUARANTINED" if quarantined else "KILL_SWITCH_NOT_PERSISTED",
+                          reason=trigger)
         self._log("KILL_SWITCH_ENGAGED", reason=trigger, bucket=source)
         for oid in intents:
             self._log("KILL_SWITCH_CANCEL_INTENT", reason=trigger, order_id=oid, bucket="NOT_SENT_NO_SENDER")
         return {"engaged": True, "trigger": trigger, "triggers": all_triggers, "source": source,
-                "persisted": persisted, "cancel_intents": intents, "cancels_sent": False,
+                "persisted": persisted, "marker_written": marked, "ledger_quarantined": quarantined,
+                "survives_restart": persisted or marked or bool(quarantined),
+                "cancel_intents": intents, "cancels_sent": False,
                 "note": "CANCEL_INTENTS_RECORDED_SENDING_REQUIRES_THE_SENDER_PR"}
 
     def evaluate_automatic(self, limits: Any, *, findings: ReconciliationFindings | None = None,
@@ -239,8 +262,11 @@ class KillSwitch:
             raise KillSwitchError(exc.code) from None
         self._volatile = None
         self._ledger.clear_volatile_kill()
+        marker_removed = self._ledger.remove_kill_marker_after_release()
+        if not marker_removed:  # the next open finds it stale (recorded and released) and removes it then
+            self._log("KILL_SWITCH_MARKER_REMOVE_FAILED", reason="OWNER_SIGNED_RELEASE")
         self._log("KILL_SWITCH_RELEASED", reason="OWNER_SIGNED_RELEASE")
-        return {"engaged": False, "released_engage_seq": rel.engage_seq}
+        return {"engaged": False, "released_engage_seq": rel.engage_seq, "marker_removed": marker_removed}
 
     def _verify_release(self, rel: KillSwitchRelease, st: Mapping[str, Any], now: int) -> None:
         if not (isinstance(rel.ledger_id, str) and type(rel.engage_seq) is int and isinstance(rel.release_id, str)

@@ -231,7 +231,8 @@ def test_release_unblocks_is_single_use_and_bound_to_the_engagement(s):
     k.engage("OWNER_MANUAL_STOP")
     first_seq = k.state()["engage_seq"]
     rel = release(s, k)
-    assert k.release(rel) == {"engaged": False, "released_engage_seq": first_seq}
+    # P2-A (intentional): release also reports whether the persistent marker was removed.
+    assert k.release(rel) == {"engaged": False, "released_engage_seq": first_seq, "marker_removed": True}
     assert not s.ledger.kill_switch_engaged
     assert s.sign(s.intent("order-key-R010"))["cached"] is False      # new orders allowed again
     assert refused(lambda: k.release(rel), ks.KillSwitchError) == "KILL_SWITCH_NOT_ENGAGED"

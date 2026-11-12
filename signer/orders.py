@@ -163,6 +163,15 @@ OPEN_ORDER_STATES = RESERVING
 TERMINAL = frozenset({SETTLED, REJECTED})
 CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
 KILL_SWITCH_ACTIONS = frozenset({"ENGAGE", "CANCEL_INTENT", "CANCEL_VERIFIED", "RELEASE"})
+# Persistent kill-switch marker OUTSIDE the ledger (owner gate P2-A, issue #187): written before every ENGAGE
+# line, checked on every open/create, removed only after an owner-signed RELEASE of an engagement recorded
+# after it. An engagement the ledger could not record therefore survives a restart and keeps the signer
+# blocked until it is recorded (risk-reducing) and then released by the owner. Never resumes on its own.
+KILL_MARKER_SCHEMA = "sxbet.kill_switch_marker.v1"
+KILL_MARKER_SUFFIX = ".killswitch.json"
+KILL_MARKER_UNRECORDED = "KILL_SWITCH_UNRECORDED_ENGAGEMENT"
+KILL_MARKER_INVALID = "KILL_SWITCH_MARKER_INVALID"
+KILL_QUARANTINE_SUFFIX = ".killswitch-quarantine"
 COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_fingerprint_sha256", "client_ref_sha256",
                             "command_received_at"})
 
@@ -457,7 +466,8 @@ def _settlement_pnl(order: Order, rows: list, filled: int) -> int | None:
 class OrderLedger:
     def __init__(self, path: str, *, signer_id: str, signer_address: str, clock: Callable[[], float],
                  _create: bool = False, anchor: "an.AnchorStore | None" = None,
-                 owner_ack: "an.LedgerHeadAck | None" = None, owner_public_key: Any = None):
+                 owner_ack: "an.LedgerHeadAck | None" = None, owner_public_key: Any = None,
+                 kill_marker_path: str | None = None):
         if not isinstance(signer_address, str) or not _ADDRESS.fullmatch(signer_address.lower()):
             raise LedgerError("LEDGER_SIGNER_ADDRESS_INVALID")
         self._path = path
@@ -474,6 +484,9 @@ class OrderLedger:
         self._nonces: set[str] = set()          # consumed single-use ids: approval nonces and owner command ids
         self._command_texts: set[str] = set()   # consumed owner-command fingerprints
         self._volatile_kill: str | None = None  # kill switch engaged while the ledger could not record it
+        self.kill_marker_path = kill_marker_path or path + KILL_MARKER_SUFFIX
+        self.kill_marker_status: str | None = None  # None | CONSISTENT | UNRECORDED | INVALID | STALE_REMOVED
+        self._kill_engagements: list[list] = []  # [engage_seq, released] in ledger order (marker checks)
         # The ONE send/reconcile lock of this ledger, shared by every gateway, cancellation service and monitor
         # built on it (review P2-4): the monitor no longer needs a submittable gateway to get it.
         self.send_lock = threading.Lock()
@@ -511,6 +524,7 @@ class OrderLedger:
                 hashes = self._replay()
                 if anchor is not None:
                     self._verify_anchor(hashes, owner_ack, owner_public_key)
+            self._check_kill_marker()
         except BaseException:
             self.close()
             raise
@@ -518,20 +532,22 @@ class OrderLedger:
     # ---- construction (explicit: a missing ledger never means "start from zero") ----
     @classmethod
     def create(cls, path: str, *, signer_id: str, signer_address: str,
-               clock: Callable[[], float] = time.time, anchor: "an.AnchorStore | None" = None) -> "OrderLedger":
+               clock: Callable[[], float] = time.time, anchor: "an.AnchorStore | None" = None,
+               kill_marker_path: str | None = None) -> "OrderLedger":
         return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock, _create=True,
-                   anchor=anchor)
+                   anchor=anchor, kill_marker_path=kill_marker_path)
 
     @classmethod
     def open(cls, path: str, *, signer_id: str, signer_address: str,
              clock: Callable[[], float] = time.time, anchor: "an.AnchorStore | None" = None,
-             owner_ack: "an.LedgerHeadAck | None" = None, owner_public_key: Any = None) -> "OrderLedger":
+             owner_ack: "an.LedgerHeadAck | None" = None, owner_public_key: Any = None,
+             kill_marker_path: str | None = None) -> "OrderLedger":
         """`owner_ack`: only for an owner who reviewed the local lines beyond the anchored head (or a ledger
         never anchored before): an `anchor.LedgerHeadAck` signed with the owner's Ed25519 key over exactly
         (ledger_id, anchored head, local head), short TTL, verified with `owner_public_key` (the signer's own
         configuration, never the ack). A bare hash string or anything else is refused."""
         return cls(path, signer_id=signer_id, signer_address=signer_address, clock=clock, anchor=anchor,
-                   owner_ack=owner_ack, owner_public_key=owner_public_key)
+                   owner_ack=owner_ack, owner_public_key=owner_public_key, kill_marker_path=kill_marker_path)
 
     # ---- external anchor ----
     @property
@@ -819,6 +835,7 @@ class OrderLedger:
             if not isinstance(rec["trigger"], str) or type(seq) is not int:
                 raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
             self._kill = {"engaged": True, "engage_seq": seq, "trigger": rec["trigger"], "intent_ids": ()}
+            self._kill_engagements.append([seq, False])
         elif action == "CANCEL_INTENT":
             if not self._kill["engaged"] or not isinstance(rec["order_ids"], list):
                 raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
@@ -832,6 +849,9 @@ class OrderLedger:
                 raise OrderStateError("LEDGER_KILL_SWITCH_RELEASE_INVALID")
             self._nonces.add(rec["release_id"])
             self._kill = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
+            for e in self._kill_engagements:
+                if e[0] == rec["engage_seq"]:
+                    e[1] = True
 
     @staticmethod
     def _next(o: Order, to: str, *, filled: Any, pnl: Any) -> Order:
@@ -883,6 +903,88 @@ class OrderLedger:
     def command_fingerprint_consumed(self, fingerprint: str) -> bool:
         with self._lock:
             return fingerprint in self._command_texts
+
+    # ---- persistent kill-switch marker (owner gate P2-A) ----
+    def _check_kill_marker(self) -> None:
+        """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
+        try:
+            with open(self.kill_marker_path, "rb") as fh:
+                raw = fh.read(4097)
+        except FileNotFoundError:
+            self.kill_marker_status = None
+            return
+        except OSError:
+            raw = None
+        marker = _parse_kill_marker(raw, self.ledger_id)
+        if marker is None:  # unreadable, malformed or foreign: fail closed, never ignored
+            self.kill_marker_status = "INVALID"
+            self._volatile_kill = KILL_MARKER_INVALID
+            return
+        after = [e for e in self._kill_engagements if e[0] > marker["ledger_seq"]]
+        if self._kill["engaged"] and after:
+            self.kill_marker_status = "CONSISTENT"  # recorded and still engaged: the normal release applies
+        elif after and all(e[1] for e in after):
+            # Recorded after the marker and released by an owner-signed RELEASE: the marker is stale.
+            self._remove_kill_marker()
+            self.kill_marker_status = "STALE_REMOVED"
+        else:
+            self.kill_marker_status = "UNRECORDED"
+            self._volatile_kill = KILL_MARKER_UNRECORDED
+
+    def write_kill_marker(self, *, trigger: str, source: str) -> bool:
+        """Atomic, fsync'd marker written BEFORE the ENGAGE line. Returns False if it could not be written."""
+        with self._lock:
+            body = json.dumps({"schema": KILL_MARKER_SCHEMA, "ledger_id": self.ledger_id, "ledger_seq": self._seq,
+                               "trigger": trigger, "source": source, "marked_at": int(self._clock()),
+                               "marker_id": os.urandom(16).hex()},
+                              sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+            tmp = self.kill_marker_path + ".tmp"
+            try:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0), 0o600)
+                try:
+                    os.write(fd, body)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.replace(tmp, self.kill_marker_path)
+                _fsync_dir(self.kill_marker_path)
+                return True
+            except OSError:
+                return False
+
+    def _remove_kill_marker(self) -> bool:
+        try:
+            os.unlink(self.kill_marker_path)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        try:
+            _fsync_dir(self.kill_marker_path)
+        except OSError:
+            pass
+        return True
+
+    def remove_kill_marker_after_release(self) -> bool:
+        """Only after an owner-signed RELEASE line: the marker is removed if no engagement is still open."""
+        with self._lock:
+            if self._kill["engaged"]:
+                raise OrderStateError("KILL_SWITCH_NOT_RELEASED")
+            return self._remove_kill_marker()
+
+    def quarantine_for_kill_switch(self) -> bool:
+        """Last resort when neither the marker nor the ENGAGE line could be written: the ledger file is renamed
+        (a metadata operation that works when writes fail), the instance is poisoned, and a restart finds no
+        ledger (LEDGER_MISSING): nothing resumes without the owner. The file content is never modified."""
+        with self._lock:
+            self._poisoned = True
+            target = f"{self._path}{KILL_QUARANTINE_SUFFIX}-{int(self._clock())}"
+            try:
+                os.rename(self._path, target)
+                _fsync_dir(self._path)
+                return True
+            except OSError:
+                return False
 
     @property
     def kill_switch_engaged(self) -> bool:
@@ -1096,3 +1198,25 @@ class OrderLedger:
 def utc_day_start(now: int) -> int:
     d = datetime.fromtimestamp(now, tz=timezone.utc)
     return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+
+
+def _fsync_dir(path: str) -> None:
+    fd = os.open(os.path.dirname(os.path.abspath(path)) or ".", os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _parse_kill_marker(raw: bytes | None, ledger_id: str) -> dict[str, Any] | None:
+    if raw is None or len(raw) > 4096:
+        return None
+    try:
+        doc = json.loads(raw.decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("schema") != KILL_MARKER_SCHEMA or doc.get("ledger_id") != ledger_id:
+        return None
+    if type(doc.get("ledger_seq")) is not int or doc["ledger_seq"] < 0:
+        return None
+    return doc
