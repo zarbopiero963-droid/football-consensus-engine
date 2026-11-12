@@ -19,7 +19,9 @@ signer/rest_adapter.py, signer/cancellation.py, bridge/sxbet/positions.py, bridg
 - lifecycle PENDING -> ACTIVE -> INACTIVE with inactiveReason FILLED / USER_REQUESTED / EXPIRED / NO_LIQUIDITY /
   INSUFFICIENT_BALANCE / EVENT_LIFECYCLE / HEARTBEAT_TIMEOUT / POST_ONLY_WOULD_CROSS; an INACTIVE row is
   returned for a while (purge_after_seconds, docs: ~10-20 min) then 404;
-- DELETE /orders-v3 (by id: cancelled / notCancelled{NOT_FOUND|NOT_ACTIVE|CANCEL_PENDING} / unconfirmed),
+- DELETE /orders-v3 (by id: cancelled / notCancelled{NOT_FOUND|NOT_ACTIVE|CANCEL_PENDING|CANCEL_AFTER_MATCH} /
+  unconfirmed; faults cancel_after_match (match then cancel before the reply) and cancel_after_match_deferred
+  (contract shape: reply first, the order matches at the end of its betting delay, then the cancel lands)),
   DELETE /orders-v3/market|event|all (cancelledSubmitted only, never proof);
 - GET /orders-v3/{id}, /orders-v3/client/{cid}, /orders-v3 (open orders), /fills-v3 with nextKey pagination
   ("absent -- not null -- on the last page"), /user/balance-v3, /user/fees-v3, /markets/find,
@@ -422,6 +424,15 @@ class SimExchange:
 
     def _tick(self) -> None:
         now = int(self.clock())
+        for at, oid, stake in list(getattr(self, "deferred_matches", [])):
+            if now >= at:
+                self.deferred_matches.remove((at, oid, stake))
+                o = self.orders[oid]
+                if o.status in ("PENDING", "ACTIVE"):
+                    self.take(o.market_hash, outcome_one=not o.outcome_one, taker_stake=stake,
+                              max_taker_odds=ODDS - o.odds)
+                if o.status in ("PENDING", "ACTIVE"):
+                    self._inactivate(o, "USER_REQUESTED")
         for o in list(self.orders.values()):
             if o.status == "PENDING" and now >= o.visible_from:
                 self._activate(o)
@@ -600,6 +611,11 @@ class SimExchange:
                       max_taker_odds=ODDS - o.odds)
         if o.status not in ("PENDING", "ACTIVE"):
             return "NOT_ACTIVE"
+        if fault.get("kind") == "cancel_after_match_deferred":
+            # Contract shape: the reply comes first; the match and then the cancel land after the delay.
+            self.deferred_matches = getattr(self, "deferred_matches", [])
+            self.deferred_matches.append((int(self.clock()) + fault["land_after"], o.id, fault["taker_stake"]))
+            return "CANCEL_AFTER_MATCH"
         if fault.get("kind") == "cancel_after_match":
             # A taker order is inside its betting delay against ours: it matches first, the cancel lands after.
             self.take(o.market_hash, outcome_one=not o.outcome_one, taker_stake=fault["taker_stake"],

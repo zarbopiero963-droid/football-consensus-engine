@@ -160,13 +160,37 @@ def test_simulated_cancel_after_match_keeps_the_matched_part_and_is_not_repeated
     """RED on main: the reason was UNDOCUMENTED_REASON. The match is learnt from reads, never assumed."""
     s = Stack(tmp_path)
     (oid, key), _ = two_open(s)
+    deletes = len([r for r in s.sim.writes() if r.method == "DELETE"])
     s.sim.inject("DELETE", "/orders-v3", "cancel_after_match", taker_stake=1_500_000)
-    sent_before = len([r for r in s.sim.requests if r.method == "DELETE"]) if hasattr(s.sim, "requests") else None
     rep = s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
     row = rep["orders"][oid]
     assert row["bucket"] == cx.NOT_CANCELLED and row["reason"] == "CANCEL_AFTER_MATCH" and row["will_match"] is True
     assert row["reason_meaning"].startswith("WILL_MATCH") and row["command_id"]
     o = s.ledger.get(key)
-    assert o.filled == 1 * USDC and s.exposure().matched == 1 * USDC
-    if sent_before is not None:
-        assert len([r for r in s.sim.requests if r.method == "DELETE"]) == sent_before + 1  # sent once
+    assert o.state == od.CANCELLED and o.filled == 1 * USDC
+    assert s.exposure().matched == 1 * USDC and s.exposure().total == 3 * USDC
+    assert len([r for r in s.sim.writes() if r.method == "DELETE"]) == deletes + 1  # sent once, never repeated
+
+
+def test_simulated_cancel_after_match_full_fill_ends_filled(tmp_path):
+    s = Stack(tmp_path)
+    (oid, key), _ = two_open(s)
+    s.sim.inject("DELETE", "/orders-v3", "cancel_after_match", taker_stake=3 * USDC)
+    rep = s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    assert rep["orders"][oid]["reason"] == "CANCEL_AFTER_MATCH"
+    assert s.state(key) == od.FILLED and s.exposure().matched == 2 * USDC
+
+
+def test_simulated_cancel_after_match_deferred_keeps_exposure_reserved_until_reads(tmp_path):
+    """Contract shape (review 6b556f1 P2): reply first, match and cancel after the betting delay."""
+    s = Stack(tmp_path)
+    (oid, key), _ = two_open(s)
+    before = s.exposure().total
+    s.sim.inject("DELETE", "/orders-v3", "cancel_after_match_deferred", taker_stake=1_500_000, land_after=8)
+    rep = s.cx.cancel_orders([oid], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid]))
+    assert rep["orders"][oid]["reason"] == "CANCEL_AFTER_MATCH"
+    assert s.state(key) == od.OPEN and s.exposure().total == before  # nothing released on the reply
+    s.sim.advance(9)
+    assert s.gw.reconcile(key)["state"] == od.CANCELLED
+    o = s.ledger.get(key)
+    assert o.filled == 1 * USDC and s.exposure().total == before - 1 * USDC and s.exposure().matched == 1 * USDC

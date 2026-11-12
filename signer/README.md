@@ -117,7 +117,7 @@ Ne seguono queste proprietà:
 
 ## `CANCEL_AFTER_MATCH` (changelog SX Bet del 09-11-2026, issue #187 S3)
 
-`DELETE /orders-v3` può ora restituire in `notCancelled` il motivo `CANCEL_AFTER_MATCH` (openapi.json: "the cancel takes effect after the order matches at the end of its betting delay. You do not need to repeat the request"). Il parser lo riconosce come motivo documentato (prima `UNDOCUMENTED_REASON`); il report del cancel aggiunge `reason_meaning` e `will_match: true`. Il cancel non viene ripetuto, l'esposizione resta riservata e il match si apprende solo dalle letture dell'exchange (nessuna transizione dedotta dalla risposta del cancel). Test: `tests/test_sxbet_e2e_simulated_cancel.py` (l'exchange simulato ha il guasto `cancel_after_match`).
+`DELETE /orders-v3` può ora restituire in `notCancelled` il motivo `CANCEL_AFTER_MATCH` (openapi.json: "the cancel takes effect after the order matches at the end of its betting delay. You do not need to repeat the request"). Il parser lo riconosce come motivo documentato (prima `UNDOCUMENTED_REASON`); il report del cancel aggiunge `reason_meaning` e `will_match: true`. Il cancel non viene ripetuto, l'esposizione resta riservata e il match si apprende solo dalle letture dell'exchange (nessuna transizione dedotta dalla risposta del cancel). Test: `tests/test_sxbet_e2e_simulated_cancel.py` (l'exchange simulato ha i guasti `cancel_after_match` e `cancel_after_match_deferred`: quest'ultimo segue il contratto, risposta prima e match a fine betting delay, ed è il caso in cui l'esposizione resta riservata finché le letture non confermano).
 
 ## Kill switch (`signer/killswitch.py`, decisione D7 / #187 decisione 3)
 
