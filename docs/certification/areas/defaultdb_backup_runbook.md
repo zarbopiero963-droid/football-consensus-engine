@@ -35,7 +35,10 @@ Prima di leggere una sola riga, una guardia sul solo catalogo rifiuta il backup 
 - un oggetto di `public` non appartiene all'identità che fa il backup;
 - un altro ruolo non superuser può agire come quell'identità;
 - ci sono large object;
-- c'è un `FORCE ROW LEVEL SECURITY`.
+- c'è un `FORCE ROW LEVEL SECURITY`;
+- c'è un'estensione (diversa da `plpgsql`) fuori da `public`, compreso `_avnadmin_monitor` (`EXTENSION_OUTSIDE_PUBLIC`). `pg_dump --exclude-schema` emetterebbe comunque `CREATE EXTENSION … WITH SCHEMA <schema escluso>` e il restore fallirebbe più tardi.
+
+La transazione dello snapshot è aperta in modo esplicito (connessione in autocommit, poi `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`). `statement_timeout`, `idle_in_transaction_session_timeout` e `transaction_timeout` sono azzerati sia all'avvio della sessione sia con `SET LOCAL`, così la sessione che esporta lo snapshot sopravvive a un dump lungo.
 
 È la stessa regola del runbook WP-009: l'amministratore legge righe solo quando è dimostrato che possiede tutto.
 
@@ -44,7 +47,11 @@ Prima di leggere una sola riga, una guardia sul solo catalogo rifiuta il backup 
 ### Ruoli
 `pg_dumpall --roles-only --no-role-passwords` esporta ruoli, attributi, membership e impostazioni `ALTER ROLE … SET`, **senza password né hash**. Se nel file compare `PASSWORD`, un verifier `SCRAM-SHA-256$…` o un hash `md5…`, il job fallisce.
 
-Le proprietà del database (`CREATE DATABASE … LOCALE`, `ALTER DATABASE … SET`, ACL del database) vanno in `database.sql`, prodotto con `pg_dump --create --schema-only --exclude-schema=*`.
+Le proprietà del database vanno in `database.sql`, prodotto con `pg_dump --create --schema-only --exclude-schema=*`:
+- `CREATE DATABASE … LOCALE` e owner;
+- `ALTER DATABASE … SET …`;
+- `ALTER ROLE … IN DATABASE … SET …`;
+- `GRANT`/`REVOKE … ON DATABASE …` (ACL del database).
 
 ### Restore-test isolato
 Il restore-test gira in un cluster PostgreSQL 18 **isolato sul runner**:
@@ -55,8 +62,9 @@ Il restore-test gira in un cluster PostgreSQL 18 **isolato sul runner**:
 
 I passi sono:
 1. `roles.sql` viene applicato. L'unico errore ammesso è `role "<bootstrap>" already exists`.
-2. Si crea il database `defaultdb`.
-3. `pg_restore --exit-on-error --single-transaction`.
+2. Si crea il database `defaultdb` con l'owner sorgente.
+3. Le istruzioni a livello di database di `database.sql` (`ALTER DATABASE … SET`, `ALTER ROLE … IN DATABASE … SET`, `GRANT`/`REVOKE … ON DATABASE`) vengono rieseguite sul database ripristinato, con `ON_ERROR_STOP`. `CREATE DATABASE` e `CREATE`/`COMMENT ON EXTENSION` non vengono rieseguiti; qualunque altra istruzione inattesa fa fallire il job (`DATABASE_SQL_UNEXPECTED_STATEMENT`).
+4. `pg_restore --exit-on-error --single-transaction`.
 
 Un exit code 0 di `pg_restore` **non basta**. Il job fallisce, prima di cifrare, se anche una sola di queste verifiche differisce tra snapshot sorgente e restore:
 - conteggi oggetti e fingerprint di struttura, uguali anche ai valori fissati per 0001-0008;
@@ -64,7 +72,8 @@ Un exit code 0 di `pg_restore` **non basta**. Il job fallisce, prima di cifrare,
 - funzioni (firma e md5 della definizione);
 - sequenze (`last_value` e `is_called`). Le sequenze non devono muoversi durante il dump;
 - owner di ogni tabella, sequenza e funzione;
-- ACL normalizzate (`relacl`, ACL di colonna, `proacl`, ACL dello schema `public`);
+- ACL normalizzate (`relacl`, ACL di colonna, `proacl`, ACL dei tipi, owner e ACL dello schema `public`, default privileges `pg_default_acl`);
+- database: owner, ACL e tutte le impostazioni `pg_db_role_setting` (`ALTER DATABASE … SET` e `ALTER ROLE … IN DATABASE … SET`);
 - ruoli (nomi e attributi `LOGIN`, `CREATEROLE`, …) e membership, confrontati con il catalogo sorgente;
 - per ogni tabella: `SELECT` reale, numero di righe e hash del contenuto (SHA-256 delle righe ordinate).
 
@@ -126,10 +135,12 @@ Gli altri segreti sono quelli già usati dai workflow di `defaultdb`: `FCB_DEFAU
   - `roles_sql_without_passwords`, `roles_names_attributes_match_source`, `role_memberships_match_source`;
   - `pg_restore_exit_on_error`, `restore_catalog_counts`, `restore_structure`, `restore_schema_migrations_1_8`;
   - `restore_functions`, `restore_sequences_last_value_is_called`, `restore_owners`, `restore_acls_normalized`;
-  - `rows <tabella>` e `content <tabella>` per ogni tabella, `restore_content_sha256`;
+  - `database_sql_applied`, `restore_database_owner_acl_settings`;
+  - `restore_rows_per_table` (numero di tabelle, totale righe, hash dei conteggi) e `restore_content_per_table`, `restore_content_sha256`;
   - `decrypt_roundtrip_plaintext_sha256`, `tampered_ciphertext_rejected`;
   - `plaintext_deleted_before_upload`, `artifact_dir_only_ciphertext_and_sha256`;
-- in fondo: `encrypted_file`, `encrypted_sha256`, `encrypted_bytes`, `plaintext_sha256`, `plaintext_bytes`, `excluded_schemas`, versioni, `source_commit`, `created_at_utc`;
+- in fondo: `encrypted_file`, `encrypted_sha256`, `encrypted_bytes`, `plaintext_sha256`, `plaintext_bytes`, `excluded_schemas` (un numero), `extensions` (un numero), versioni, `source_commit`, `created_at_utc`;
+- il summary non contiene conteggi per tabella né nomi di schema o di ruolo: i conteggi e gli hash per tabella stanno solo nel `manifest.json` cifrato. In caso di differenza il summary riporta solo i **nomi** delle tabelle (`mismatched=…`);
 - lo step "Leak check" stampa `leak check: PASS (summary and artifact directory)`;
 - un artifact `fcb-defaultdb-backup-<run_id>-<attempt>` con esattamente due file.
 
@@ -142,8 +153,11 @@ Qualunque `FAIL` significa nessun artifact e plaintext già eliminato. Il summar
 - `PUBLIC_OBJECT_NOT_OWNED_BY_SESSION_USER`;
 - `UNEXPECTED_SCHEMA`;
 - `SEQUENCE_MOVED_DURING_DUMP`: rilancia in un momento senza scritture;
-- `ROLES_SQL_APPLY_FAILED`;
-- `rows <tabella>`.
+- `ROLES_SQL_APPLY_FAILED class=…`;
+- `EXTENSION_OUTSIDE_PUBLIC`;
+- `restore_rows_per_table … mismatched=<tabella>`.
+
+Gli errori di `pg_dump`, `pg_dumpall`, `pg_restore` e `psql` non vengono **mai** stampati: possono citare righe di produzione (`DETAIL`, `CONTEXT`, `Command was`). Il log mostra solo il codice e una classe fissa, per esempio `PG_RESTORE_FAILED class=ALREADY_EXISTS`, `class=PERMISSION_DENIED`, `class=UNIQUE_VIOLATION`, `class=OTHER`. Per la diagnosi serve un'indagine dell'owner fuori dal workflow.
 
 Non aggirare un FAIL: documentalo sulla #130.
 
@@ -194,23 +208,27 @@ pg_ctl -D ./pgdata -o "-c listen_addresses='' -c unix_socket_directories=$PWD" s
 psql -h "$PWD" -U postgres -X -f restore/roles.sql
 #    unico errore atteso: role "postgres" already exists
 createdb -h "$PWD" -U postgres -T template0 -E UTF8 -O avnadmin defaultdb
+# istruzioni a livello di database (vedi sotto), poi gli oggetti
+grep -E '^(ALTER DATABASE |ALTER ROLE [^ ]+ IN DATABASE |GRANT |REVOKE |COMMENT ON DATABASE )' restore/database.sql > restore/database_replay.sql
+psql -h "$PWD" -U postgres -X -v ON_ERROR_STOP=1 -1 -f restore/database_replay.sql
 pg_restore --exit-on-error --single-transaction --no-statistics -h "$PWD" -U postgres -d defaultdb restore/defaultdb.dump
 ```
 
-`-O avnadmin` indica l'owner del database sorgente. Lo trovi in `database.sql` (`ALTER DATABASE … OWNER TO …`).
+`-O avnadmin` indica l'owner del database sorgente. Lo trovi in `database.sql` (`ALTER DATABASE … OWNER TO …`). Se ripristini con un nome di database diverso da `defaultdb`, sostituisci il nome in `database_replay.sql`.
 
 **B. Restore su un nuovo servizio Aiven** (`avnadmin` non è superuser; ASSUMED, non testato su Aiven):
 1. Come `avnadmin` crea solo i ruoli applicativi che il dump referenzia e che non esistono, per esempio `fcb_app`, `fcb_migrator` e `fcb_signer`, con gli attributi indicati in `roles.sql`. Non eseguire `roles.sql` per intero: i ruoli gestiti da Aiven esistono già o non sono creabili.
-2. Lancia `pg_restore --exit-on-error --single-transaction --no-statistics -d defaultdb restore/defaultdb.dump` come `avnadmin`, con `PGSSLMODE=verify-full` e la CA del nuovo servizio.
-3. Imposta **nuove password** con il workflow dei ruoli WP-009 (fase 1 o rotazione), mai a mano in chat.
-4. Il cambio di `DATABASE_URL` su Render è un atto dell'owner.
+2. Applica `database_replay.sql` (come in A) per le istruzioni che `avnadmin` può eseguire: `ALTER DATABASE … SET`, `GRANT`/`REVOKE … ON DATABASE`, `ALTER ROLE … IN DATABASE … SET` sui ruoli che amministra.
+3. Lancia `pg_restore --exit-on-error --single-transaction --no-statistics -d defaultdb restore/defaultdb.dump` come `avnadmin`, con `PGSSLMODE=verify-full` e la CA del nuovo servizio.
+4. Imposta **nuove password** con il workflow dei ruoli WP-009 (fase 1 o rotazione), mai a mano in chat.
+5. Il cambio di `DATABASE_URL` su Render è un atto dell'owner.
 
 **Verifica dopo il restore** (A o B):
 - `psql -X -A -t -f sql/aiven/count_bridge_catalog.sql`, uguale a `catalog_counts` del manifest;
 - `psql -X -A -t -f sql/aiven/fingerprint_bridge_structure.sql`, uguale a `structure_fingerprint`;
 - il numero di righe per tabella uguale a `tables.<nome>.rows` del manifest.
 
-`database.sql` è un riferimento: applica a mano solo le righe `ALTER DATABASE … SET …` e `GRANT … ON DATABASE …` pertinenti, non il `CREATE DATABASE`.
+`database.sql`: si rieseguono **tutte** le righe `ALTER DATABASE …`, `ALTER ROLE … IN DATABASE …`, `GRANT`/`REVOKE … ON DATABASE …` e `COMMENT ON DATABASE …` (è ciò che fa il restore-test del workflow). Non si riesegue il `CREATE DATABASE`, né un eventuale `CREATE`/`COMMENT ON EXTENSION`.
 
 Alla fine **elimina** tar, cartella `restore/` e cluster locale. Il `.tar.age` su Drive resta l'unica copia.
 
@@ -222,9 +240,8 @@ Alla fine **elimina** tar, cartella `restore/` e cluster locale. Il `.tar.age` s
   - su Aiven non si ricreano né si modificano;
   - lo schema `_avnadmin_monitor` è escluso dal dump.
 - **Cosa non è catturato:**
-  - impostazioni `ALTER ROLE … IN DATABASE …`;
   - stato del servizio Aiven (piano, `ip_filter`, termination protection, utenti del pannello);
-  - estensioni installate fuori dal dump;
+  - estensioni fuori da `public`: il backup le rifiuta (`EXTENSION_OUTSIDE_PUBLIC`); un'estensione in `public` è nel dump ma deve essere disponibile sul server di destinazione;
   - statistiche (`--no-statistics`).
 - **Punto nel tempo.** Il dump è lo stato dello snapshot. Tutte le scritture successive (token OAuth, lease, contatori di quota) **vanno perse** con un restore. Il runtime va fermato o messo in manutenzione prima del ripristino, per evitare stati misti.
 - **Piano developer di Aiven senza fork né PITR** (`DOCS_UNVERIFIED`): non va dato per scontato che Aiven offra un ripristino a un istante arbitrario o un fork del servizio. Questo backup logico è l'unica copia sotto controllo dell'owner. Verifica il piano sulla documentazione ufficiale Aiven prima di fare affidamento su altro.

@@ -93,12 +93,41 @@ def _seed(env):
         "INSERT INTO public.ingest_runs (source, source_sha256, rows_seen, rows_inserted) "
         "SELECT 'src' || g, pg_catalog.md5(g::text), g, g FROM pg_catalog.generate_series(1, 25) g",
         as_role=env.admin_role)
+    # Database-level properties that live in database.sql, and default privileges (review #202).
+    env.superuser(
+        f'ALTER DATABASE "{env.dbname}" SET work_mem TO \'8MB\'',
+        f'ALTER ROLE "{env.admin_role}" IN DATABASE "{env.dbname}" SET statement_timeout TO \'5min\'',
+        f'REVOKE TEMPORARY ON DATABASE "{env.dbname}" FROM PUBLIC',
+        f'ALTER DEFAULT PRIVILEGES FOR ROLE "{env.admin_role}" IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM PUBLIC')
 
 
-@pytest.fixture(params=["fresh", "phase1"])
-def source(request):
+class AivenEnv(rr.Env):
+    """The production shape: the administrator is called `avnadmin` (review #202 P1)."""
+
+    def __init__(self):
+        super().__init__()
+        self.admin_role = "avnadmin"
+        self.admin_dsn = rr._dsn_for(self.dbname, user=self.admin_role, password=self.admin_password)
+
+
+def _aiven_monitor_schema(env):
+    """Aiven's `_avnadmin_monitor`: owned by another role, unreadable by the administrator."""
+    monitor = env.extra_role()
+    env.superuser(f'CREATE SCHEMA _avnadmin_monitor AUTHORIZATION "{monitor}"',
+                  "CREATE TABLE _avnadmin_monitor.probe (x int)", "INSERT INTO _avnadmin_monitor.probe VALUES (1)",
+                  f'ALTER TABLE _avnadmin_monitor.probe OWNER TO "{monitor}"',
+                  "REVOKE ALL ON SCHEMA _avnadmin_monitor FROM PUBLIC")
+
+
+@pytest.fixture(params=["fresh", "phase1", "aiven"])
+def source(request, monkeypatch):
+    if request.param == "aiven":
+        monkeypatch.setattr(rr, "Env", AivenEnv)
     env = rr._create_env()
+    monkeypatch.undo()
     try:
+        if request.param == "aiven":
+            _aiven_monitor_schema(env)
         if request.param == "phase1":
             rc, _, err = rr._roles_tx(env)
             assert rc == 0, err
@@ -125,7 +154,8 @@ def _args(env, tmp, **over):
     ns = argparse.Namespace(
         workdir=str(tmp / "work"), outdir=str(tmp / "out"), bindir=str(BINDIR), expected_db=env.dbname,
         expected_counts=wf["EXPECTED_COUNTS"], expected_structure=wf["EXPECTED_STRUCTURE_0008"],
-        source_commit="0" * 40, run_id="4242", summary=str(tmp / "summary.md"), restore_port=54329,
+        source_commit="0" * 40, run_id="4242", summary=str(tmp / "summary.md"), publish_to=str(tmp / "public.md"),
+        restore_port=54329,
         require_tls=False)
     for k, v in over.items():
         setattr(ns, k, v)
@@ -196,11 +226,16 @@ def test_backup_restore_verify_encrypt_roundtrip(source, short_tmp, capsys, monk
                   "roles_names_attributes_match_source", "role_memberships_match_source", "pg_restore_exit_on_error",
                   "restore_catalog_counts", "restore_structure", "restore_schema_migrations_1_8", "restore_functions",
                   "restore_sequences_last_value_is_called", "restore_owners", "restore_acls_normalized",
-                  "rows ingest_runs", "content ingest_runs", "rows runtime_state", "restore_content_sha256",
+                  "restore_rows_per_table", "restore_content_per_table", "restore_content_sha256",
+                  "database_sql_applied", "restore_database_owner_acl_settings",
                   "decrypt_roundtrip_plaintext_sha256", "tampered_ciphertext_rejected",
                   "plaintext_deleted_before_upload", "artifact_dir_only_ciphertext_and_sha256"):
         assert f"| {check} | PASS |" in summary, check
-    assert "source=25 restore=25" in summary
+    # No per-table counts and no schema/role names in the public summary (review #202).
+    assert "rows ingest_runs" not in summary and "| 25 " not in summary and "_avnadmin_monitor" not in summary
+    assert f"- excluded_schemas: `{1 if source.kind == 'aiven' else 0}`" in summary
+    # The summary passes its own leak check and is published (P1: user avnadmin vs _avnadmin_monitor).
+    assert (short_tmp / "public.md").read_text() == summary
 
     # Only the ciphertext and its SHA-256; nothing else was produced or left behind.
     out_dir = short_tmp / "out"
@@ -265,11 +300,22 @@ def test_restore_of_the_package_by_hand_follows_the_runbook(source, short_tmp, c
         subprocess.run([str(BINDIR / "psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
                         f'CREATE DATABASE defaultdb TEMPLATE template0 OWNER "{source.admin_role}"'],
                        env=env, check=True, capture_output=True)
+        # The runbook's grep of database.sql, renamed to defaultdb (the test source has another name).
+        import re as _re
+        replay = "\n".join(l.replace(f"DATABASE {source.dbname}", "DATABASE defaultdb")
+                            for l in (unpack / "database.sql").read_text().splitlines()
+                            if _re.match(r"^(ALTER DATABASE |ALTER ROLE [^ ]+ IN DATABASE |GRANT |REVOKE |COMMENT ON DATABASE )", l))
+        assert "work_mem" in replay and "IN DATABASE defaultdb" in replay
+        (unpack / "database_replay.sql").write_text(replay + "\n")
+        subprocess.run([str(BINDIR / "psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-f", str(unpack / "database_replay.sql")],
+                       env=env, check=True, capture_output=True)
         subprocess.run([str(BINDIR / "pg_restore"), "--exit-on-error", "--single-transaction", "--no-statistics",
                         "--dbname", "defaultdb", str(unpack / "defaultdb.dump")],
                        env=mod.child_env(cluster.params("defaultdb")), check=True, capture_output=True)
         with cluster.connect("defaultdb") as conn:
             assert conn.execute("SELECT count(*) FROM public.ingest_runs").fetchone()[0] == 25
+            assert conn.execute("SELECT count(*) FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase "
+                                "WHERE d.datname = 'defaultdb'").fetchone()[0] == 2
     finally:
         cluster.stop()
         cluster.cleanup()
@@ -331,15 +377,18 @@ def _assert_failed_clean(rc, out, summary, short_tmp, *expected_fail):
 
 
 @pytest.mark.parametrize("statements, failing", [
-    (("DROP TABLE public.runtime_state",), ("restore_table_set", "rows runtime_state", "restore_catalog_counts")),
-    (("DELETE FROM public.ingest_runs WHERE id = 3",), ("rows ingest_runs", "content ingest_runs")),
+    (("DROP TABLE public.runtime_state",), ("restore_table_set", "restore_rows_per_table", "restore_catalog_counts")),
+    (("DELETE FROM public.ingest_runs WHERE id = 3",), ("restore_rows_per_table", "restore_content_per_table")),
     (("UPDATE public.oauth_claude_dcr_clients SET redirect_uri = 'https://example.invalid/z' WHERE client_id_hash = 'h1'",),
-     ("content oauth_claude_dcr_clients", "restore_content_sha256")),
+     ("restore_content_per_table", "restore_content_sha256")),
     (("SELECT pg_catalog.setval('public.ingest_runs_id_seq', 99)",), ("restore_sequences_last_value_is_called",)),
     (("CREATE ROLE fcb_backup_intruder", "ALTER TABLE public.runtime_state OWNER TO fcb_backup_intruder"),
      ("restore_owners",)),
     (("GRANT SELECT ON public.runtime_state TO PUBLIC",), ("restore_acls_normalized",)),
-], ids=["missing-table", "row-count", "content", "sequence", "owner", "acl"])
+    (("ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO PUBLIC",), ("restore_acls_normalized",)),
+    (("ALTER DATABASE defaultdb SET work_mem TO '16MB'",), ("restore_database_owner_acl_settings",)),
+    (("GRANT TEMPORARY ON DATABASE defaultdb TO PUBLIC",), ("restore_database_owner_acl_settings",)),
+], ids=["missing-table", "row-count", "content", "sequence", "owner", "acl", "default-acl", "db-setting", "db-acl"])
 def test_incomplete_or_different_restore_fails_the_job(source, short_tmp, capsys, monkeypatch, statements, failing):
     mod = _module()
     _tamper_restore(mod, monkeypatch, short_tmp, *statements)
@@ -418,3 +467,42 @@ def test_missing_or_short_passphrase_fails_before_connecting(source, short_tmp, 
         (short_tmp / "summary.md").unlink()
     assert rec.calls == []
     capsys.readouterr()
+
+
+def test_mismatch_lines_name_tables_but_never_print_counts_or_rows(source, short_tmp, capsys, monkeypatch):
+    if source.kind != "fresh":
+        pytest.skip("one state is enough")
+    mod = _module()
+    _tamper_restore(mod, monkeypatch, short_tmp, "DELETE FROM public.ingest_runs WHERE id = 3")
+    rc, out, summary = _run(mod, source, short_tmp, capsys)
+    assert rc == 1 and "mismatched=ingest_runs" in summary and "source=25" not in summary and "src3" not in summary
+
+
+def test_p2_a_real_restore_failure_prints_a_code_and_class_only(source, short_tmp, capsys, monkeypatch):
+    """pg_restore fails on the restored database; only `CODE class=CLASS` reaches the output."""
+    if source.kind != "fresh":
+        pytest.skip("one state is enough")
+    mod = _module()
+    real = mod._run
+
+    def run(argv, env, code, timeout=3600):
+        if argv[0].endswith("pg_restore") and "--exit-on-error" in argv:
+            subprocess.run([str(BINDIR / "psql"), "-X", "-q", "-c",
+                            "CREATE TABLE public.runtime_state (secret_marker_col text)"], env=env, check=True,
+                           capture_output=True)
+        return real(argv, env, code, timeout)
+    monkeypatch.setattr(mod, "_run", run)
+    rc, out, summary = _run(mod, source, short_tmp, capsys)
+    assert rc == 1
+    assert out.strip() == "::error::PG_RESTORE_FAILED class=ALREADY_EXISTS", out
+    assert "secret_marker_col" not in out + summary and "runtime_state" not in out
+    assert "| error | FAIL | PG_RESTORE_FAILED class=ALREADY_EXISTS |" in summary
+
+
+def test_extension_outside_public_is_refused_by_the_guard(source, short_tmp, capsys):
+    if source.kind != "aiven":
+        pytest.skip("the Aiven shape only")
+    source.superuser("CREATE EXTENSION pgcrypto SCHEMA _avnadmin_monitor")
+    rc, out, summary = _run(_module(), source, short_tmp, capsys)
+    _assert_failed_clean(rc, out, summary, short_tmp, "source_guard_catalog_only")
+    assert "EXTENSION_OUTSIDE_PUBLIC" in summary

@@ -148,7 +148,11 @@ def test_the_source_section_opens_a_read_only_snapshot_and_runs_no_write():
     assert 'conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")' in source
     assert "pg_export_snapshot()" in source and "--snapshot={snapshot}" in source
     assert source.index("GUARD_SQL") < source.index("read_sequences(conn)") < source.index('bin_("pg_dump")')
-    assert "conn.rollback()" in source and "conn.commit()" not in source
+    assert 'conn.execute("ROLLBACK")' in source and "COMMIT" not in source and ".commit()" not in source
+    # Explicit transaction: autocommit connection, then the BEGIN ... READ ONLY (no implicit BEGIN).
+    assert "autocommit=True" in source and "autocommit=False" not in source
+    assert 'for guc in ("statement_timeout", "idle_in_transaction_session_timeout", "transaction_timeout"):' in source
+    assert 'conn.execute(f"SET LOCAL {guc} = 0")' in source
     for literal in re.findall(r'conn\.execute\(("[^"]*")', source):
         assert not WRITE_SQL.search(literal), literal
     assert "--no-role-passwords" in source or "--no-role-passwords" in src
@@ -516,3 +520,74 @@ def test_p2_cli_error_lines_print_codes_only(tmp_path, capsys, monkeypatch):
     assert mod.run(args, env={"FCB_BACKUP_PASSPHRASE": "Q" * 48}) == 1
     err = capsys.readouterr().err
     assert err.strip() == "::error::PG_DUMP_FAILED class=OTHER"
+
+
+def test_p3_snapshot_session_zeroes_every_timeout_at_startup_too():
+    gucs = _module().READ_GUCS
+    for g in ("statement_timeout=0", "idle_in_transaction_session_timeout=0", "transaction_timeout=0",
+              "default_transaction_read_only=on", "row_security=off"):
+        assert f"-c {g}" in gucs, g
+
+
+def test_p3_extensions_outside_public_are_refused_deterministically():
+    problems, _ = _module().check_guard(_guard_row(extensions_outside_public=1, other_schemas=["_avnadmin_monitor"]),
+                                        expected_db="defaultdb", require_tls=True)
+    assert problems == ["EXTENSION_OUTSIDE_PUBLIC"]
+    assert "pg_catalog.pg_extension" in _module().GUARD_SQL
+
+
+DB_SQL = """--
+-- PostgreSQL database dump
+--
+\\restrict abc
+SET statement_timeout = 0;
+SELECT pg_catalog.set_config('search_path', '', false);
+CREATE DATABASE wp009_x WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'C.UTF-8';
+ALTER DATABASE wp009_x OWNER TO adm;
+\\unrestrict abc
+\\connect wp009_x
+\\restrict abc
+ALTER DATABASE wp009_x SET work_mem TO '8MB';
+ALTER ROLE adm IN DATABASE wp009_x SET statement_timeout TO '5min';
+REVOKE TEMPORARY ON DATABASE wp009_x FROM PUBLIC;
+GRANT CONNECT ON DATABASE wp009_x TO fcb_app;
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA _avnadmin_monitor;
+COMMENT ON EXTENSION pgcrypto IS 'x';
+\\unrestrict abc
+"""
+
+
+def test_p3_database_sql_replay_is_retargeted_and_complete():
+    out = _module().database_replay_sql(DB_SQL, "wp009_x", "defaultdb")
+    assert out.splitlines() == [
+        "ALTER DATABASE defaultdb OWNER TO adm;",
+        "ALTER DATABASE defaultdb SET work_mem TO '8MB';",
+        "ALTER ROLE adm IN DATABASE defaultdb SET statement_timeout TO '5min';",
+        "REVOKE TEMPORARY ON DATABASE defaultdb FROM PUBLIC;",
+        "GRANT CONNECT ON DATABASE defaultdb TO fcb_app;"]
+    assert "EXTENSION" not in out and "CREATE DATABASE" not in out
+
+
+@pytest.mark.parametrize("line", ["DROP TABLE x;", "ALTER DATABASE other SET a TO 'b';", "CREATE ROLE x;",
+                                  "GRANT SELECT ON TABLE t TO x;", "ALTER DATABASE wp009_x SET a TO 'multi"])
+def test_p3_database_sql_replay_refuses_anything_unexpected(line):
+    mod = _module()
+    with pytest.raises(mod.BackupError, match="DATABASE_SQL_UNEXPECTED_STATEMENT"):
+        mod.database_replay_sql(DB_SQL + line + "\n", "wp009_x", "defaultdb")
+
+
+def test_p3_public_summary_has_no_per_table_counts_and_no_schema_names():
+    mod = _module()
+    checks = mod.Checks()
+    src = {"catalog_counts": "c", "structure": "s", "migrations": ["1"], "functions": [], "functions_sha256": "f",
+           "sequences": {}, "owners": [], "owners_sha256": "o", "acls": [], "acls_sha256": "a",
+           "tables": {"oauth_access_tokens": {"rows": 1234, "sha256": "h1"}, "t2": {"rows": 7, "sha256": "h2"}},
+           "content_sha256": "x"}
+    dst = {**src, "tables": {"oauth_access_tokens": {"rows": 1234, "sha256": "h1"}, "t2": {"rows": 6, "sha256": "h3"}}}
+    mod._compare(checks, src, dst, "c", "s", ["1"])
+    text = " ".join(f"{n} {i}" for n, _, i in checks.items)
+    assert "1234" not in text and "rows oauth_access_tokens" not in text
+    assert "rows_total=1240" in text and "mismatched=t2" in text
+    names = [n for n, ok, _ in checks.items if not ok]
+    assert names == ["restore_rows_per_table", "restore_content_per_table", "restore_content_sha256"] or \
+        set(names) >= {"restore_rows_per_table", "restore_content_per_table"}

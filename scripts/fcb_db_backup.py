@@ -297,7 +297,12 @@ SELECT pg_catalog.current_database()::pg_catalog.text AS db,
            AND NOT r.rolsuper) AS acting_members,
        (SELECT pg_catalog.count(*) FROM pg_catalog.pg_largeobject_metadata) AS large_objects,
        (SELECT pg_catalog.count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
-         WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND c.relforcerowsecurity) AS forced_rls
+         WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND c.relforcerowsecurity) AS forced_rls,
+       (SELECT pg_catalog.count(*) FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) e.extnamespace
+         WHERE e.extname OPERATOR(pg_catalog.<>) 'plpgsql'::pg_catalog.name
+           AND n.nspname OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name) AS extensions_outside_public,
+       (SELECT pg_catalog.count(*) FROM pg_catalog.pg_extension e
+         WHERE e.extname OPERATOR(pg_catalog.<>) 'plpgsql'::pg_catalog.name) AS extensions
 """
 
 TABLES_SQL = """
@@ -391,6 +396,23 @@ WITH obj(k, acl, owner) AS (
   UNION ALL
   SELECT 'schema public'::pg_catalog.text, COALESCE(n.nspacl, pg_catalog.acldefault('n'::pg_catalog."char", n.nspowner)), n.nspowner
     FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
+  UNION ALL
+  SELECT 'schema-owner public '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_userbyid(n.nspowner)::pg_catalog.text,
+         NULL::pg_catalog.aclitem[], n.nspowner
+    FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
+  UNION ALL
+  SELECT 'type '::pg_catalog.text OPERATOR(pg_catalog.||) t.typname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+         OPERATOR(pg_catalog.||) pg_catalog.pg_get_userbyid(t.typowner)::pg_catalog.text,
+         COALESCE(t.typacl, pg_catalog.acldefault('T'::pg_catalog."char", t.typowner)), t.typowner
+    FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) t.typnamespace
+   WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
+     AND t.typtype OPERATOR(pg_catalog.=) ANY (ARRAY['e', 'd', 'r', 'm']::pg_catalog."char"[])
+  UNION ALL
+  SELECT 'defacl '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_userbyid(d.defaclrole)::pg_catalog.text
+         OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(n.nspname::pg_catalog.text, '*'::pg_catalog.text)
+         OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) d.defaclobjtype::pg_catalog.text,
+         d.defaclacl, d.defaclrole
+    FROM pg_catalog.pg_default_acl d LEFT JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) d.defaclnamespace
 )
 SELECT obj.k,
        CASE WHEN e.grantor IS NULL THEN NULL
@@ -448,6 +470,68 @@ SELECT pg_catalog.pg_get_userbyid(m.roleid)::pg_catalog.text OPERATOR(pg_catalog
             AND pg_catalog.pg_get_userbyid(m.roleid) OPERATOR(pg_catalog.~) '^pg_'::pg_catalog.text)
  ORDER BY 1
 """
+
+
+# The database itself: owner, normalized ACL, and every pg_db_role_setting row for it
+# (ALTER DATABASE ... SET and ALTER ROLE ... IN DATABASE ... SET).
+DATABASE_SQL = """
+SELECT 'owner '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_userbyid(d.datdba)::pg_catalog.text
+  FROM pg_catalog.pg_database d WHERE d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()
+UNION ALL
+SELECT 'acl '::pg_catalog.text OPERATOR(pg_catalog.||)
+       CASE WHEN e.grantor OPERATOR(pg_catalog.=) 0::pg_catalog.oid THEN 'PUBLIC'::pg_catalog.text
+            ELSE pg_catalog.pg_get_userbyid(e.grantor)::pg_catalog.text END
+       OPERATOR(pg_catalog.||) '>'::pg_catalog.text OPERATOR(pg_catalog.||)
+       CASE WHEN e.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid THEN 'PUBLIC'::pg_catalog.text
+            ELSE pg_catalog.pg_get_userbyid(e.grantee)::pg_catalog.text END
+       OPERATOR(pg_catalog.||) ':'::pg_catalog.text OPERATOR(pg_catalog.||) e.privilege_type
+       OPERATOR(pg_catalog.||) CASE WHEN e.is_grantable THEN '*'::pg_catalog.text ELSE ''::pg_catalog.text END
+  FROM pg_catalog.pg_database d,
+       LATERAL pg_catalog.aclexplode(COALESCE(d.datacl, pg_catalog.acldefault('d'::pg_catalog."char", d.datdba))) e
+ WHERE d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()
+UNION ALL
+SELECT 'setting '::pg_catalog.text OPERATOR(pg_catalog.||)
+       CASE WHEN s.setrole OPERATOR(pg_catalog.=) 0::pg_catalog.oid THEN '*'::pg_catalog.text
+            ELSE pg_catalog.pg_get_userbyid(s.setrole)::pg_catalog.text END
+       OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) x.c
+  FROM pg_catalog.pg_db_role_setting s
+  JOIN pg_catalog.pg_database d ON d.oid OPERATOR(pg_catalog.=) s.setdatabase,
+       LATERAL pg_catalog.unnest(s.setconfig) x(c)
+ WHERE d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()
+"""
+
+
+def read_database(conn) -> list[str]:
+    return sorted(r[0] for r in conn.execute(DATABASE_SQL).fetchall())
+
+
+# database.sql statements the restore test replays on the restored database (the rest of the
+# file, CREATE DATABASE and any CREATE/COMMENT ON EXTENSION, is not replayed). Any other statement
+# is refused rather than silently skipped.
+DATABASE_SQL_REPLAY = re.compile(r"^(ALTER DATABASE |ALTER ROLE \S+ IN DATABASE |GRANT |REVOKE |COMMENT ON DATABASE )")
+DATABASE_SQL_SKIP = re.compile(r"^(--|SET |SELECT pg_catalog\.set_config\(|\\connect |\\restrict |\\unrestrict |"
+                               r"CREATE DATABASE |CREATE EXTENSION |COMMENT ON EXTENSION )")
+
+
+def _quote_ident(name: str) -> str:
+    return name if re.fullmatch(r"[a-z_][a-z0-9_]*", name) else '"' + name.replace('"', '""') + '"'
+
+
+def database_replay_sql(text: str, source_db: str, target_db: str) -> str:
+    """The database-level statements of database.sql, retargeted from the source database name to
+    the restored one. Raises BackupError on any statement it does not know."""
+    src, dst = _quote_ident(source_db), _quote_ident(target_db)
+    out = []
+    for line in text.splitlines():
+        if not line.strip() or DATABASE_SQL_SKIP.match(line):
+            continue
+        if not DATABASE_SQL_REPLAY.match(line) or not line.rstrip().endswith(";"):
+            raise BackupError("DATABASE_SQL_UNEXPECTED_STATEMENT")
+        retargeted = re.sub(rf"(DATABASE ){re.escape(src)}(?=[ ;])", lambda m: m.group(1) + dst, line)
+        if f"DATABASE {dst}" not in retargeted:
+            raise BackupError("DATABASE_SQL_UNEXPECTED_STATEMENT")
+        out.append(retargeted)
+    return "\n".join(out) + "\n"
 
 
 def read_globals(conn, exclude: str = "") -> dict:
@@ -539,6 +623,10 @@ def check_guard(row: dict, *, expected_db: str, require_tls: bool) -> tuple[list
         problems.append("LARGE_OBJECTS_PRESENT")
     if row["forced_rls"]:
         problems.append("FORCED_ROW_LEVEL_SECURITY")
+    if row.get("extensions_outside_public"):
+        # pg_dump --exclude-schema still emits CREATE EXTENSION ... WITH SCHEMA <excluded>: refuse
+        # deterministically here instead of failing later in the restore (review #202).
+        problems.append("EXTENSION_OUTSIDE_PUBLIC")
     return problems, excluded
 
 
@@ -723,11 +811,19 @@ def _compare(checks: Checks, src: dict, dst: dict, expected_catalog: str, expect
                f"objects={len(dst['acls'])} sha256={dst['acls_sha256']}")
     checks.add("restore_table_set", sorted(dst["tables"]) == sorted(src["tables"]),
                f"tables={len(dst['tables'])}")
-    for table in sorted(set(src["tables"]) | set(dst["tables"])):
-        s, d = src["tables"].get(table), dst["tables"].get(table)
-        checks.add(f"rows {table}", s is not None and d is not None and s["rows"] == d["rows"],
-                   f"source={s['rows'] if s else 'missing'} restore={d['rows'] if d else 'missing'}")
-        checks.add(f"content {table}", s is not None and d is not None and s["sha256"] == d["sha256"])
+    # Per-table row counts and hashes stay in the encrypted manifest; the public summary shows
+    # totals, a hash of the counts and the NAMES of mismatching tables only (review #202).
+    tables = sorted(set(src["tables"]) | set(dst["tables"]))
+    bad_rows = [t for t in tables if (src["tables"].get(t) or {}).get("rows", -1) != (dst["tables"].get(t) or {}).get("rows", -2)]
+    bad_content = [t for t in tables if (src["tables"].get(t) or {}).get("sha256") is None
+                   or (src["tables"].get(t) or {}).get("sha256") != (dst["tables"].get(t) or {}).get("sha256")]
+    counts = json.dumps({t: v["rows"] for t, v in sorted(dst["tables"].items())}, sort_keys=True)
+    checks.add("restore_rows_per_table", not bad_rows,
+               f"tables={len(dst['tables'])} rows_total={sum(v['rows'] for v in dst['tables'].values())} "
+               f"counts_sha256={hashlib.sha256(counts.encode()).hexdigest()}"
+               + (f" mismatched={','.join(bad_rows)}" if bad_rows else ""))
+    checks.add("restore_content_per_table", not bad_content,
+               f"tables={len(dst['tables'])}" + (f" mismatched={','.join(bad_content)}" if bad_content else ""))
     checks.add("restore_content_sha256", dst["content_sha256"] == src["content_sha256"], dst["content_sha256"])
 
 
@@ -749,7 +845,7 @@ def _write_summary(path: str | None, checks: Checks, facts: dict) -> None:
         lines.append(f"| {name} | {'PASS' if ok else 'FAIL'} | {info} |")
     lines.append("")
     for key in ("encrypted_file", "encrypted_sha256", "encrypted_bytes", "plaintext_sha256", "plaintext_bytes",
-                "excluded_schemas", "pg_dump", "server_version_num", "age", "source_commit", "created_at_utc"):
+                "excluded_schemas", "extensions", "pg_dump", "server_version_num", "age", "source_commit", "created_at_utc"):
         if key in facts:
             lines.append(f"- {key}: `{facts[key]}`")
     text = "\n".join(lines) + "\n"
@@ -799,22 +895,28 @@ def run(args, env=None) -> int:
 
         # ---- 1. source: one READ ONLY snapshot transaction, guard first, dump inside it.
         try:
-            conn = psycopg.connect(**params, options=READ_GUCS, row_factory=dict_row, autocommit=False,
+            # autocommit: psycopg opens no implicit transaction; the snapshot transaction below is
+            # the explicit BEGIN ... READ ONLY (review #202).
+            conn = psycopg.connect(**params, options=READ_GUCS, row_factory=dict_row, autocommit=True,
                                    application_name="fcb-backup")
         except psycopg.Error:
             raise BackupError("SOURCE_CONNECT_FAILED") from None
         try:
             conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            for guc in ("statement_timeout", "idle_in_transaction_session_timeout", "transaction_timeout"):
+                conn.execute(f"SET LOCAL {guc} = 0")  # the exporting session must outlive the dump
             snapshot = conn.execute("SELECT pg_catalog.pg_export_snapshot() AS s").fetchone()["s"]
             guard = conn.execute(GUARD_SQL).fetchone()
             problems, excluded = check_guard(guard, expected_db=args.expected_db, require_tls=args.require_tls)
             facts["server_version_num"] = guard["ver"]
-            facts["excluded_schemas"] = ",".join(excluded) or "none"
+            facts["excluded_schemas"] = len(excluded)  # a count: schema names are not published
+            facts["extensions"] = guard.get("extensions", 0)
             if not checks.add("source_guard_catalog_only", not problems, ",".join(problems) or "ok"):
                 raise BackupError("SOURCE_GUARD_FAILED", ",".join(problems))
             conn.row_factory = tuple_row
             referenced_roles = [r[0] for r in conn.execute(REFERENCED_ROLES_SQL).fetchall()]
             src_globals = read_globals(conn)
+            src_database = read_database(conn)
             bootstrap = conn.execute(BOOTSTRAP_SQL).fetchone()[0]
             seq_before = read_sequences(conn)
             # The whole database (public's ACL relative to the default, as pg_dump does), minus the
@@ -832,7 +934,7 @@ def run(args, env=None) -> int:
             _run([bin_("pg_dump"), "--create", "--schema-only", "--exclude-schema=*", "--no-statistics",
                   f"--snapshot={snapshot}", "--no-password", "--file", str(database_sql)], dump_env,
                  "PG_DUMP_DATABASE_FAILED")
-            conn.rollback()
+            conn.execute("ROLLBACK")
         finally:
             conn.close()
         _run([bin_("pg_dumpall"), "--roles-only", "--no-role-passwords", "-l", args.expected_db, "--no-password",
@@ -872,6 +974,14 @@ def run(args, env=None) -> int:
             if db_owner and db_owner in present:  # the source database owner (public: pg_database_owner)
                 stmt = stmt + sql.SQL(" OWNER {}").format(sql.Identifier(db_owner))
             lc.execute(stmt)
+        # Database-level settings, ACL and per-role settings from database.sql, retargeted to the
+        # restored database (review #202): replayed before the objects, as a real recovery would.
+        replay = workdir / "database_replay.sql"
+        replay.write_text(database_replay_sql(database_sql.read_text(encoding="utf-8"), args.expected_db, RESTORE_DB),
+                          encoding="utf-8")
+        _run([bin_("psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-f", str(replay)],
+             child_env(cluster.params("postgres")), "DATABASE_SQL_APPLY_FAILED")
+        checks.add("database_sql_applied", True)
         _run([bin_("pg_restore"), "--exit-on-error", "--single-transaction", "--no-statistics",
               "--dbname", RESTORE_DB, str(dump)], child_env(cluster.params(RESTORE_DB)), "PG_RESTORE_FAILED")
         checks.add("pg_restore_exit_on_error", True)
@@ -879,7 +989,10 @@ def run(args, env=None) -> int:
         # ---- 4. verification.
         with cluster.connect(RESTORE_DB) as rc:
             dst = read_evidence(rc)
+            dst_database = read_database(rc)
         _compare(checks, src, dst, expected_catalog, args.expected_structure, expected_rows)
+        checks.add("restore_database_owner_acl_settings", dst_database == src_database,
+                   f"entries={len(dst_database)} sha256={hashlib.sha256(chr(10).join(dst_database).encode()).hexdigest()}")
         if not checks.ok:
             raise BackupError("RESTORE_VERIFICATION_FAILED")
         cluster.stop()
@@ -899,6 +1012,8 @@ def run(args, env=None) -> int:
             "pg_dump": facts["pg_dump"],
             "age": facts["age"],
             "excluded_schemas": excluded,
+            "extensions": guard.get("extensions", 0),
+            "database_properties": src_database,
             "files": {"defaultdb.dump": sha256_file(dump), "roles.sql": sha256_file(roles_sql),
                       "database.sql": sha256_file(database_sql)},
             "catalog_counts": src["catalog_counts"],
