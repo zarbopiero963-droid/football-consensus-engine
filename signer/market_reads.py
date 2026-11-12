@@ -23,7 +23,8 @@ Owner gate P2-B: the provider reads EVERY page (`nextKey` -> `paginationKey` unt
 contract says "a short page is not the last page, and the final nextKey can point at an empty page"),
 normalises team names canonically (Unicode NFKD, accents and case folded, whitespace collapsed: the same
 `canonical_label` the command verifier uses), and refuses on ANY missing page, repeated cursor, page
-budget exhausted, malformed row, a market hash read twice with different content, inconsistent rows of one
+budget exhausted, malformed row, a market hash read twice with different identity/label/event fields
+(CONFLICT_FIELDS), inconsistent rows of one
 event, a /markets/find row that differs from the /markets/active row of the same hash, or a scan that does
 not contain the order's own market or event. Nothing is fuzzy: equal canonical names or nothing (§2.3bis).
 Every sport is scanned by default (`scan_sport_ids="ALL"`, review 98e7525 P2-1: the command names no
