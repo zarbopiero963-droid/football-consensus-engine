@@ -1110,9 +1110,10 @@ class OrderLedger:
                     src = os.path.join(d, n)
                     target = os.path.join(d, base + KILL_RELEASED_SUFFIX + n[len(base + KILL_QUARANTINE_SUFFIX):])
                     if os.path.lexists(target):  # never overwrite: a fresh random suffix (review 2f3a0a4 P3-a)
-                        target += "-" + os.urandom(4).hex()
+                        target += "-" + os.urandom(8).hex()
                     digest = _file_sha256(src)
-                    os.rename(src, target)
+                    os.link(src, target)  # fails if target exists: strictly never overwrites (review a679b5b nit)
+                    os.unlink(src)
                     self.archived_quarantine.append((n, digest))
             _fsync_dir(self._path)
             return True
@@ -1120,6 +1121,10 @@ class OrderLedger:
             return False
 
     def remove_kill_marker_after_release(self, released_engage_seq: int) -> str:
+        self.archived_quarantine = []  # only what THIS release archives is audited (review a679b5b P3-1)
+        return self._remove_kill_marker_after_release(released_engage_seq)
+
+    def _remove_kill_marker_after_release(self, released_engage_seq: int) -> str:
         """After an owner-signed RELEASE only. Removes the marker only if it predates the released engagement
         (a marker written by a later engagement is never removed, review 30f5a96 P2-1), the empty flag and the
         inode witness. Returns REMOVED, KEPT_LATER_ENGAGEMENT or UNREMOVABLE."""
@@ -1449,11 +1454,19 @@ def _fd_witness_capable(fd: int) -> bool:
 
 
 def _file_sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
+    """Regular files only, never following a link nor blocking on a FIFO (review a679b5b P3-2): anything else
+    raises OSError, so the archive fails closed (QUARANTINE_UNARCHIVABLE) instead of hanging under the locks."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("QUARANTINE_ENTRY_NOT_A_REGULAR_FILE")
+        h = hashlib.sha256()
+        while chunk := os.read(fd, 1 << 16):
             h.update(chunk)
-    return "sha256:" + h.hexdigest()
+        return "sha256:" + h.hexdigest()
+    finally:
+        os.close(fd)
 
 
 def _filesystem_keeps_setgid(directory: str, gid: int | None = None) -> bool:

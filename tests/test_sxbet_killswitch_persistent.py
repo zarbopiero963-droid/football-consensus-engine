@@ -670,3 +670,31 @@ def test_review_2f3a0a4_p3_c_probe_uses_the_ledger_group_on_open(s, monkeypatch)
     monkeypatch.setattr(od, "_filesystem_keeps_setgid", spy)
     s.restart()
     assert seen["gid"] == os.stat(s.ledger._path).st_gid
+
+
+# ---------------------------------------------------------------- fixes from the review of a679b5b
+def test_review_a679b5b_p3_1_a_later_release_does_not_re_audit_old_archives(s, monkeypatch):
+    _quarantined_then_restored(s, monkeypatch)
+    k = make_ks(s)
+    k.release(release(s, k))
+    k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.setattr(s.ledger, "_clear_inode_witness", lambda: False)
+    k.release(release(s, k))
+    assert [r["decision"] for r in ks_audit(s)].count("KILL_SWITCH_QUARANTINE_ARCHIVED") == 1
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "dir"])
+def test_review_a679b5b_p3_2_non_regular_quarantine_entries_fail_closed_without_hanging(s, monkeypatch, kind):
+    q = _quarantined_then_restored(s, monkeypatch)
+    odd = q.parent / (pathlib.Path(s.ledger._path).name + od.KILL_QUARANTINE_SUFFIX + "-odd")
+    if kind == "fifo":
+        os.mkfifo(odd)
+    elif kind == "symlink":
+        os.symlink("/dev/zero", odd)
+    else:
+        os.mkdir(odd)
+    k = make_ks(s)
+    assert k.release(release(s, k))["marker_removed"] is False   # returns: no hang under the locks
+    assert "KILL_SWITCH_MARKER_QUARANTINE_UNARCHIVABLE" in [r["decision"] for r in ks_audit(s)]
+    s.restart()
+    assert s.ledger.kill_switch_engaged
