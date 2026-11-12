@@ -461,3 +461,72 @@ def test_review_f1e8cb8_p2_ledger_whose_witness_can_never_be_set_does_not_open(s
     with pytest.raises(od.LedgerError) as e:
         od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
     assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------- fixes from the independent review of 63d14d3
+def test_review_63d14d3_p3_1_refused_create_leaves_no_file(tmp_path, monkeypatch):
+    path = str(tmp_path / "fresh.jsonl")
+    monkeypatch.setattr(od.OrderLedger, "_witness_capable", staticmethod(lambda p, c: False))
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.create(path, signer_id="sig-1", signer_address="0x" + "11" * 20)
+    assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE" and not os.path.exists(path)
+
+
+def test_review_63d14d3_p3_2_root_without_cap_fsetid_and_foreign_group_is_not_capable(tmp_path, monkeypatch):
+    p = tmp_path / "l.jsonl"
+    p.write_bytes(b"")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(os, "getegid", lambda: 999_001)
+    monkeypatch.setattr(os, "getgroups", lambda: [999_002])
+    monkeypatch.setattr(od, "_has_cap_fsetid", lambda: False)
+    assert od.OrderLedger._witness_capable(str(p), False) is False
+    monkeypatch.setattr(od, "_has_cap_fsetid", lambda: True)
+    assert od.OrderLedger._witness_capable(str(p), False) is True
+
+
+def test_review_63d14d3_p3_3_recovery_reports_a_failed_first_audit(s, monkeypatch):
+    marker(s).write_bytes(b"{not json")
+    s.restart()
+    from signer.audit import AuditLog
+    real = AuditLog.append
+
+    def first_fails(self, **kw):
+        if kw.get("decision", "").startswith("KILL_SWITCH_MARKER_"):
+            raise OSError(28, "ENOSPC")
+        return real(self, **kw)
+    monkeypatch.setattr(AuditLog, "append", first_fails)
+    k = make_ks(s)
+    assert k.recovery["persisted"] is True and k.recovery["audit_written"] is False
+
+
+def test_review_63d14d3_p3_4_programming_errors_in_audit_are_not_swallowed(s, monkeypatch):
+    from signer.audit import AuditLog
+    monkeypatch.setattr(AuditLog, "append", lambda self, **kw: (_ for _ in ()).throw(ValueError("AUDIT_FIELD_NOT_ALLOWED")))
+    k = make_ks(s)
+    with pytest.raises(ValueError):
+        k.engage("OWNER_MANUAL_STOP")
+    assert s.ledger.kill_switch_engaged  # engaged before the audit, even when the audit is broken
+
+
+def test_review_63d14d3_p3_5_quarantine_happens_even_if_cancel_intents_fail(s, monkeypatch):
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    monkeypatch.setattr(k, "cancel_intents", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    path = s.ledger._path
+    rep = k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.undo()
+    assert rep["ledger_quarantined"] is True and not os.path.exists(path) and rep["cancel_intents"] == []
+
+
+def test_review_63d14d3_p3_6_create_refuses_while_a_quarantined_ledger_exists(s, monkeypatch):
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    path = s.ledger._path
+    k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.undo()
+    s.ledger.close()
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.create(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
+    assert e.value.code == "LEDGER_QUARANTINE_PENDING"

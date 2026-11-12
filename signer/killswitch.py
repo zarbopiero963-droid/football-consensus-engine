@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import re
 import time
 from dataclasses import dataclass
@@ -139,9 +140,10 @@ class KillSwitch:
             trigger = ledger.kill_switch_state()["trigger"] or ("KILL_SWITCH_UNRECORDED_ENGAGEMENT"
                                                                 if ledger.kill_marker_status == "UNRECORDED"
                                                                 else "KILL_SWITCH_MARKER_INVALID")
-            self._safe_log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
+            first_audit = self._safe_log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
             with ledger.kill_lock:  # recovery engage and flag drop under ONE hold (review f667594 P3-1)
                 self.recovery = self._engage(trigger, source="AUTOMATIC", triggers=())
+                self.recovery["audit_written"] = self.recovery["audit_written"] and first_audit  # P3-3
                 if self.recovery["persisted"]:
                     # Drops flag / inode witness only if a JSON marker was written just before this ENGAGE.
                     ledger.drop_kill_flag_after_recorded_engagement()
@@ -165,7 +167,11 @@ class KillSwitch:
         try:
             self._log(decision, **kw)
             return True
-        except Exception:
+        except OSError:  # only I/O failures are swallowed; a programming error still raises (review 63d14d3 P3-4)
+            try:
+                sys.stderr.write(f"SXBET_SIGNER_AUDIT_WRITE_FAILED decision={decision}\n")
+            except Exception:
+                pass
             return False
 
     def _log(self, decision: str, *, reason: str | None = None, order_id: str | None = None,
@@ -211,16 +217,20 @@ class KillSwitch:
                 intents = self._ledger.engage_kill_switch(trigger=trigger, source=source, triggers=all_triggers,
                                                           intents=self._intents)
                 persisted = True
-            except (LedgerError, OrderStateError) as exc:
-                intents = self.cancel_intents()
+            except Exception as exc:  # any failure of the ENGAGE line (review 63d14d3 P3-5)
                 logs.append(("KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE",
                              {"reason": getattr(exc, "code", "LEDGER_ERROR")}))
-                if not marked:  # nothing durable recorded it: a restart must not find a usable ledger
+                if not marked:  # nothing durable recorded it: quarantine FIRST, then everything else
                     quarantined, witness = self._ledger.quarantine_for_kill_switch_detailed()
                     if not witness:
                         logs.append(("KILL_SWITCH_INODE_WITNESS_FAILED", {"reason": trigger}))
                     logs.append(("KILL_SWITCH_LEDGER_QUARANTINED" if quarantined else "KILL_SWITCH_NOT_PERSISTED",
                                  {"reason": trigger}))
+                try:
+                    intents = self.cancel_intents()
+                except Exception:
+                    intents = []
+                    logs.append(("KILL_SWITCH_CANCEL_INTENTS_UNAVAILABLE", {"reason": trigger}))
         finally:
             if persisted:
                 # Recorded on the ledger: the in-memory engagement of step 1 is no longer needed.

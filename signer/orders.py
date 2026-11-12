@@ -477,6 +477,11 @@ class OrderLedger:
                  kill_marker_path: str | None = None):
         if not isinstance(signer_address, str) or not _ADDRESS.fullmatch(signer_address.lower()):
             raise LedgerError("LEDGER_SIGNER_ADDRESS_INVALID")
+        if not OrderLedger._witness_capable(path, _create):
+            raise LedgerError("LEDGER_INODE_WITNESS_UNAVAILABLE")  # fail closed before any side effect
+        if _create and _quarantine_siblings(path):
+            # A quarantined ledger of this path exists: a new ledger never replaces it silently (P3-6).
+            raise LedgerError("LEDGER_QUARANTINE_PENDING")
         self._path = path
         self.signer_id = signer_id
         self.signer_address = signer_address.lower()
@@ -922,17 +927,27 @@ class OrderLedger:
         JSON marker cannot be written; it is also created before a quarantine (review 30f5a96 P2-2)."""
         return self.kill_marker_path + ".flag"
 
-    def _witness_capable(self) -> bool:
-        """The set-group-ID witness can be set only by root, or by the file's owner when the file's group is
-        one of the process's groups (otherwise the kernel drops the bit silently, review f1e8cb8 P2)."""
-        st = os.fstat(self._fd)
-        euid = os.geteuid()
-        return euid == 0 or (st.st_uid == euid and st.st_gid in {os.getegid(), *os.getgroups()})
+    @staticmethod
+    def _witness_capable(path: str, create: bool) -> bool:
+        """Checked BEFORE any side effect (no GENESIS, no anchor move, review 63d14d3 P3-1). The kernel keeps
+        S_ISGID set by fchmod only if the file's group is one of the caller's groups or the caller has
+        CAP_FSETID (root without it, e.g. in a container, is not enough: review 63d14d3 P3-2); a non-root
+        caller must also own the file."""
+        try:
+            if create:
+                d = os.stat(os.path.dirname(os.path.abspath(path)) or ".")
+                uid, gid = os.geteuid(), (d.st_gid if d.st_mode & stat.S_ISGID else os.getegid())
+            else:
+                st = os.stat(path)
+                uid, gid = st.st_uid, st.st_gid
+        except OSError:
+            return True  # missing / unreadable: the open itself reports it with its own fixed code
+        if os.geteuid() != 0 and uid != os.geteuid():
+            return False
+        return gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()
 
     def _check_kill_marker(self) -> None:
         """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
-        if not self._witness_capable():
-            raise LedgerError("LEDGER_INODE_WITNESS_UNAVAILABLE")  # fail closed: fix ownership / group first
         flag = os.path.lexists(self.kill_flag_path) or self.inode_witness_set()
         try:
             with open(self.kill_marker_path, "rb") as fh:
@@ -1359,3 +1374,23 @@ def _parse_kill_marker(raw: bytes | None, ledger_id: str, genesis_sha256: str | 
     if genesis_sha256 is None or doc.get("genesis_sha256") != genesis_sha256:
         return None
     return doc
+
+
+def _has_cap_fsetid() -> bool:
+    """CAP_FSETID (bit 4) in the effective capability set; False when it cannot be read (fail closed)."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("CapEff:"):
+                    return bool(int(line.split()[1], 16) & (1 << 4))
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _quarantine_siblings(path: str) -> bool:
+    base = os.path.basename(path) + KILL_QUARANTINE_SUFFIX
+    try:
+        return any(n.startswith(base) for n in os.listdir(os.path.dirname(os.path.abspath(path)) or "."))
+    except OSError:
+        return True  # cannot tell: fail closed
