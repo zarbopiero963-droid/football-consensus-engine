@@ -137,8 +137,10 @@ class PostgresRequestQueue:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute("SET LOCAL statement_timeout = '2500ms'")
-                    if lock_request is not None:  # serialises seq allocation per request (review P3)
-                        cur.execute("SELECT 1 FROM signer_order_requests WHERE request_id = %s FOR UPDATE",
+                    if lock_request is not None:
+                        # Serialises seq allocation per request without any table privilege (a row lock needs
+                        # UPDATE, which the least-privilege signer role does not have: review 67e80eb P2-A).
+                        cur.execute("SELECT pg_advisory_xact_lock(hashtext('signer_order_request:' || %s))",
                                     (lock_request,))
                     cur.execute(sql, params)
                     return list(cur.fetchall()) if fetch else []
@@ -153,10 +155,15 @@ class PostgresRequestQueue:
         return [{"request_id": r[0], "kind": r[1], "payload": json.loads(r[2]), "payload_sha256": r[3]} for r in rows]
 
     def claim(self, request_id: str, signer_id: str) -> bool:
-        rows = self._run(
-            "INSERT INTO signer_order_request_events (request_id, seq, state, detail, signer_id) "
-            "VALUES (%s, 1, 'CLAIMED', '{}'::jsonb, %s) ON CONFLICT DO NOTHING RETURNING request_id",
-            (request_id, signer_id))
+        try:
+            rows = self._run(
+                "INSERT INTO signer_order_request_events (request_id, seq, state, detail, signer_id) "
+                "VALUES (%s, 1, 'CLAIMED', '{}'::jsonb, %s) ON CONFLICT DO NOTHING RETURNING request_id",
+                (request_id, signer_id), lock_request=request_id)
+        except Exception as exc:  # the guard trigger refuses a late claim on a finished request (review P3-1)
+            if "SIGNER_ORDER_REQUEST_ALREADY_TERMINAL" in str(exc):
+                return False
+            raise
         return bool(rows)
 
     def append_event(self, request_id: str, state: str, detail: Mapping[str, Any], signer_id: str) -> int:

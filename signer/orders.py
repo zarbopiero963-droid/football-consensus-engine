@@ -473,10 +473,13 @@ class OrderLedger:
         self._by_order_id: dict[str, str] = {}
         self._nonces: set[str] = set()          # consumed single-use ids: approval nonces and owner command ids
         self._command_texts: set[str] = set()   # consumed owner-command fingerprints
+        self._command_orders: dict[str, str] = {}  # owner command id -> client_order_id it authorized
         self._volatile_kill: str | None = None  # kill switch engaged while the ledger could not record it
         # The ONE send/reconcile lock of this ledger, shared by every gateway, cancellation service and monitor
         # built on it (review P2-4): the monitor no longer needs a submittable gateway to get it.
         self.send_lock = threading.Lock()
+        # Serialises the signer service (process / recover / sync) across service objects on this ledger (S6).
+        self.service_lock = threading.Lock()
         self.genesis_sha256: str | None = None  # identity of this ledger file (bound into the LIVE flag)
         self._kill: dict[str, Any] = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
@@ -771,6 +774,8 @@ class OrderLedger:
                 raise OrderStateError(code)
             self._nonces.add(rec["command_id"])
             self._command_texts.add(rec["command_fingerprint_sha256"])
+            if isinstance(rec.get("client_order_id"), str):  # read-only index, rebuilt on replay (S6 review P2-B)
+                self._command_orders[rec["command_id"]] = rec["client_order_id"]
         else:
             if rec["approval_nonce"] in self._nonces:
                 raise OrderStateError(code)
@@ -874,6 +879,11 @@ class OrderLedger:
     def nonce_consumed(self, nonce: str) -> bool:
         with self._lock:
             return nonce in self._nonces
+
+    def order_of_command(self, command_id: str) -> str | None:
+        """The client_order_id an owner command authorized (None if it authorized no order)."""
+        with self._lock:
+            return self._command_orders.get(command_id)
 
     def command_consumed(self, command_id: str) -> bool:
         """An owner command id (or any single-use id) already consumed: refused for ever."""

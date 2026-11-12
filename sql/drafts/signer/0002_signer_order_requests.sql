@@ -44,6 +44,8 @@ CREATE OR REPLACE TRIGGER signer_order_request_events_no_truncate
     BEFORE TRUNCATE ON signer_order_request_events
     FOR EACH STATEMENT EXECUTE FUNCTION signer_order_requests_append_only();
 -- No event after a terminal one (review 1a9e09e P2-3): REFUSED and DONE close a request for good.
+-- These guards hold for writers that take the per-request advisory lock (PostgresRequestQueue does); two
+-- concurrent writers that skip it can race past them: defence in depth only, the grants are the control.
 CREATE OR REPLACE FUNCTION signer_order_request_events_guard_insert() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
     IF EXISTS (SELECT 1 FROM signer_order_request_events e WHERE e.request_id = NEW.request_id

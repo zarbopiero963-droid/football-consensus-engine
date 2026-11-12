@@ -24,7 +24,7 @@ class MemoryQueue:
 
     def claim(self, request_id, signer_id):
         evs = self.events.setdefault(request_id, [])
-        if any(e["state"] == "CLAIMED" for e in evs):
+        if any(e["state"] in ("CLAIMED", *TERMINAL_STATES) for e in evs):
             return False
         evs.append({"seq": len(evs) + 1, "state": "CLAIMED", "detail": {}, "signer_id": signer_id})
         return True

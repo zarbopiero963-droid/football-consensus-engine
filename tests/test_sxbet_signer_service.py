@@ -367,3 +367,23 @@ def test_review_p3_cancel_failure_after_send_is_unknown(s, monkeypatch):
     q.insert(cancel_request(auth, scope="ORDER_IDS", order_ids=[sg["order_id"]], created_at=int(s.clock())))
     (res,) = service(s, q).process_once()
     assert res["event"] == "UNKNOWN" and res["detail"]["note"].startswith("CANCEL_MAY_HAVE_BEEN_SENT")
+
+
+# ---------------------------------------------------------------- fixes from the independent review of 67e80eb
+def test_review_67e80eb_p2_b_recover_never_reports_another_requests_order(s):
+    q = MemoryQueue()
+    a = enqueue_place(s, q, "order-key-R7001")
+    svc = service(s, q)
+    svc.process_once()                                       # A placed
+    i2, ctx2 = _fresh(s, "order-key-R7001", stake=7 * USDC)  # B: same key, different intent
+    b = place_request(i2, s.command(i2, ctx2), created_at=int(s.clock()))
+    q.insert(b)
+    assert q.claim(b["request_id"], SIGNER_ID)              # claimed, then the process died
+    (res,) = service(s, q).recover()
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
+    assert "order_id" not in res["detail"] and q.states(a["request_id"])[-1] == "SUBMITTED"
+
+
+def test_review_67e80eb_p3_3_two_service_objects_share_one_lock(s):
+    q = MemoryQueue()
+    assert service(s, q)._lock is service(s, q)._lock

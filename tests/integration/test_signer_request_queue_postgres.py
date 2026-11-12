@@ -164,3 +164,47 @@ def test_review_least_privilege_roles_on_a_throwaway_database():
             for role in ("fce_it_mcp_queue", "fce_it_signer_queue"):
                 conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
                 conn.execute(f"DROP ROLE {role}")
+
+
+def test_review_67e80eb_p2_a_queue_works_under_the_least_privilege_roles():
+    """Positive path as the real roles: MCP inserts and reads events; signer claims, appends, lists, reads."""
+    import psycopg
+    mcp, sig = "fce_it_mcp_q2", "fce_it_signer_q2"
+    with _connect(autocommit=True) as conn:
+        for role in (mcp, sig):
+            conn.execute(f"DROP ROLE IF EXISTS {role}")
+            conn.execute(f"CREATE ROLE {role} NOLOGIN")
+        conn.execute(f"GRANT INSERT ON signer_order_requests TO {mcp}")
+        conn.execute(f"GRANT SELECT ON signer_order_request_events TO {mcp}")
+        conn.execute(f"GRANT SELECT ON signer_order_requests TO {sig}")
+        conn.execute(f"GRANT SELECT, INSERT ON signer_order_request_events TO {sig}")
+
+    def as_role(role):
+        def connect(**kw):
+            conn = _connect(**kw)
+            conn.execute(f"SET ROLE {role}")
+            conn.commit()
+            return conn
+        return connect
+    try:
+        rid = "7" * 32
+        p = _payload(rid)
+        with as_role(mcp)() as conn:
+            conn.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
+                         "VALUES (%s, %s, %s::jsonb, %s, %s)", (rid, p["kind"], json.dumps(p), canonical_sha256(p),
+                                                                p["network"]))
+        q = PostgresRequestQueue(as_role(sig))
+        assert rid in [r["request_id"] for r in q.pending("testnet", 100)]
+        assert q.claim(rid, "sig-roles")
+        assert q.append_event(rid, "UNKNOWN", {"code": "X"}, "sig-roles") == 2
+        assert [r["request_id"] for r in q.unfinished("testnet", "sig-roles") if r["request_id"] == rid] == [rid]
+        assert q.append_event(rid, "DONE", {"code": "Y"}, "sig-roles") == 3
+        assert q.claim(rid, "sig-other") is False              # late claim on a finished request: False, no raise
+        with as_role(mcp)() as conn, conn.cursor() as cur:
+            cur.execute("SELECT state FROM signer_order_request_events WHERE request_id = %s ORDER BY seq", (rid,))
+            assert [r[0] for r in cur.fetchall()] == ["CLAIMED", "UNKNOWN", "DONE"]
+    finally:
+        with _connect(autocommit=True) as conn:
+            for role in (mcp, sig):
+                conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
+                conn.execute(f"DROP ROLE {role}")

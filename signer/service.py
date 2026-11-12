@@ -17,7 +17,6 @@ permanent private worker (owner decision) can run the same loop later without re
 """
 from __future__ import annotations
 
-import threading
 import time
 from typing import Any, Callable, Mapping
 
@@ -50,8 +49,9 @@ class SignerService:
         self._signer_id = signer_id
         self._clock = clock
         self._max_age = max_request_age_seconds
-        # One process per signer_id; inside it, processing, recovery and sync never run concurrently (review P2-3).
-        self._lock = threading.Lock()
+        # One process per signer_id; processing, recovery and sync never run concurrently, also across several
+        # service objects built on the same signer (lock shared per Signer: review 67e80eb P3-3).
+        self._lock = signer._ledger.service_lock
 
     # ---------------------------------------------------------------- loop
     def process_once(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -174,18 +174,27 @@ class SignerService:
                 continue  # already recorded as SUBMITTED / UNKNOWN: nothing new to append
             cid = (p.get("intent") or {}).get("idempotency_key") if isinstance(p.get("intent"), Mapping) else None
             o = self._signer._ledger.get(cid) if (p.get("kind") == "PLACE" and isinstance(cid, str)) else None
+            command_id = (p.get("command") or {}).get("command_id") if isinstance(p.get("command"), Mapping) else None
+            ours = o is not None and self._signer._ledger.order_of_command(command_id) == cid
             if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
+            elif o is not None and not ours:
+                # The ledger order belongs to ANOTHER request with the same key (a duplicate claimed before a
+                # crash): never reported as this request's outcome (review 67e80eb P2-B).
+                out.append(self._handle(req) if last == "CLAIMED" else
+                           self._refuse(rid, "DUPLICATE_REQUEST", client_order_id=cid))
             elif o is not None and o.state == AUTHORIZED:
-                self._signer.abandon_unsigned(cid)  # no signature ever left: release the reservation
+                self._signer.abandon_unsigned(cid)  # ours, no signature ever left: release the reservation
                 out.append(self._refuse(rid, "INTERRUPTED_BEFORE_SIGNATURE", client_order_id=cid))
             elif o is not None and o.state == SIGNED:
                 out.append(self._event(rid, "DONE", client_order_id=cid, order_id=o.order_id, sent=False,
                                        code="INTERRUPTED_AFTER_SIGNATURE",
                                        note="SIGNED_NOT_SENT_RESERVED_UNTIL_EXPIRY"))
             elif o is not None:
-                out.append(self._event(rid, "UNKNOWN" if o.state == UNKNOWN else "SUBMITTED", client_order_id=cid,
-                                       order_id=o.order_id, state=o.state, note="RECOVERED_FROM_LEDGER"))
+                # Ours and past the send write-ahead: UNKNOWN unless the ledger shows it reached the exchange.
+                ev = "SUBMITTED" if o.state in ("SUBMITTED", "OPEN", "PARTIALLY_FILLED", "FILLED") else "UNKNOWN"
+                out.append(self._event(rid, ev, client_order_id=cid, order_id=o.order_id, state=o.state,
+                                       note="RECOVERED_FROM_LEDGER"))
             elif p.get("kind") == "CANCEL" and last == "CLAIMED":
                 out.append(self._event(rid, "UNKNOWN", scope=p.get("scope"),
                                        note="CANCEL_INTERRUPTED_RECONCILE_FROM_READS_BEFORE_A_NEW_COMMAND"))
