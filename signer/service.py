@@ -17,6 +17,7 @@ permanent private worker (owner decision) can run the same loop later without re
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable, Mapping
 
@@ -31,6 +32,16 @@ from .request_queue import QueueError, RequestQueue, canonical_sha256, event_det
 DEFAULT_MAX_REQUEST_AGE_SECONDS = 120   # never above the owner-signed command window (checked again by the signer)
 # REJECTED is not final: a rejected order whose signature left can still turn out executed (signer/orders.py H3).
 _FINAL_ORDER_STATES = frozenset({"FILLED", "CANCELLED", "EXPIRED", "SETTLED"})
+_log = logging.getLogger(__name__)
+
+
+class QueueClaimUnavailable(RuntimeError):
+    """Every claim of a non-empty batch failed: surfaced, never a silent loop of CLAIM_FAILED (review 20970af P3-A)."""
+
+    code = "QUEUE_CLAIM_UNAVAILABLE"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
 
 
 class SignerService:
@@ -57,15 +68,24 @@ class SignerService:
     def process_once(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
             out = []
-            for req in self._q.pending(self._network, limit):
+            batch = self._q.pending(self._network, limit)
+            failed = 0
+            for req in batch:
                 try:
                     if not self._q.claim(req["request_id"], self._signer_id):
                         continue  # another instance or an earlier run owns it
-                except Exception:
-                    # e.g. a stalled per-request lock: skip it, never block the requests behind it (P3-4).
-                    out.append({"request_id": req["request_id"], "event": None, "detail": {"code": "CLAIM_FAILED"}})
+                except Exception as exc:
+                    # e.g. a stalled per-request lock: skip it, never block the requests behind it (6c74d55 P3-4).
+                    # Logged with the exception class only, never its message (governance 2.1). A claim that was
+                    # committed before the error is resumed by recover(), which must also run periodically.
+                    failed += 1
+                    _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
+                    out.append({"request_id": req["request_id"], "event": "CLAIM_FAILED",
+                                "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
                     continue
                 out.append(self._handle(req))
+            if batch and failed == len(batch):
+                raise QueueClaimUnavailable()  # nothing could be claimed: the queue is unusable, say so
             return out
 
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
@@ -227,4 +247,4 @@ class SignerService:
         return out
 
 
-__all__ = ["DEFAULT_MAX_REQUEST_AGE_SECONDS", "SignerService"]
+__all__ = ["DEFAULT_MAX_REQUEST_AGE_SECONDS", "QueueClaimUnavailable", "SignerService"]

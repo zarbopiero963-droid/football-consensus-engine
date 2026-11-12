@@ -411,5 +411,100 @@ def test_review_6c74d55_p3_4_a_failing_claim_never_blocks_the_next_requests(s, m
     monkeypatch.setattr(q, "claim", lambda rid, sid: (_ for _ in ()).throw(RuntimeError("lock timeout"))
                         if rid == a["request_id"] else real(rid, sid))
     out = service(s, q).process_once()
-    assert [r["detail"].get("code") for r in out][0] == "CLAIM_FAILED"
+    assert out[0]["event"] == "CLAIM_FAILED" and out[0]["detail"] == {"code": "CLAIM_FAILED",
+                                                                        "error_type": "RuntimeError"}
+    assert "lock timeout" not in json.dumps(out)              # exception class only, never the message
     assert q.states(b["request_id"])[-1] == "SUBMITTED"
+
+
+# ---------------------------------------------------------------- P3 from the review of 20970af
+def test_review_20970af_p3_a_every_claim_failing_is_surfaced_not_silent(s, monkeypatch, caplog):
+    from signer.service import QueueClaimUnavailable
+    q = MemoryQueue()
+    a = enqueue_place(s, q, "order-key-R9001")
+    monkeypatch.setattr(q, "claim", lambda rid, sid: (_ for _ in ()).throw(PermissionError("secret dsn")))
+    with caplog.at_level("WARNING"), pytest.raises(QueueClaimUnavailable):
+        service(s, q).process_once()
+    assert "PermissionError" in caplog.text and "secret dsn" not in caplog.text
+    assert q.states(a["request_id"]) == [] and [r for r in s.sim.writes() if r.method == "POST"] == []
+    assert service(s, MemoryQueue()).process_once() == []   # an empty queue is not a failure
+
+
+def test_review_20970af_p3_d_claim_committed_then_raised_is_resumed_once_by_recover(s, monkeypatch):
+    q = MemoryQueue()
+    a = enqueue_place(s, q, "order-key-R9002")
+    b = enqueue_place(s, q, "order-key-R9003")
+    real = q.claim
+
+    def committed_then_dropped(rid, sid):
+        ok = real(rid, sid)
+        if rid == a["request_id"]:
+            raise ConnectionError("dropped after commit")
+        return ok
+    monkeypatch.setattr(q, "claim", committed_then_dropped)
+    out = service(s, q).process_once()
+    assert out[0]["event"] == "CLAIM_FAILED" and q.states(a["request_id"]) == ["CLAIMED"]
+    monkeypatch.undo()
+    assert [r["request_id"] for r in service(s, q).process_once()] == []  # no longer pending: not taken twice
+    (res,) = service(s, q).recover()
+    assert res["event"] == "SUBMITTED" and service(s, q).recover() == []
+    posts = [r for r in s.sim.writes() if r.method == "POST"]
+    assert len(posts) == 2                                       # one per request, never a second for A
+    assert q.states(b["request_id"])[-1] == "SUBMITTED"
+
+
+def _crash_on_refusal_event(q, monkeypatch):
+    real = q.append_event
+
+    def append(rid, state, detail, sid):
+        if state == "REFUSED":
+            raise SystemExit("crash before the refusal was recorded")
+        return real(rid, state, detail, sid)
+    monkeypatch.setattr(q, "append_event", append)
+
+
+def test_review_20970af_p3_d_signing_failed_then_crash_is_refused_before_signature(s, monkeypatch):
+    q = MemoryQueue()
+    p = enqueue_place(s, q, "order-key-R9004")
+    monkeypatch.setattr(s.signer, "_produce_signature", lambda msg: (_ for _ in ()).throw(RuntimeError("hsm")))
+    _crash_on_refusal_event(q, monkeypatch)
+    with pytest.raises(SystemExit):
+        service(s, q).process_once()
+    monkeypatch.undo()
+    o = s.ledger.get("order-key-R9004")
+    assert o.state == od.REJECTED and not o.signature_released and q.states(p["request_id"]) == ["CLAIMED"]
+    (res,) = service(s, q).recover()
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "REFUSED_BEFORE_SIGNATURE"
+    assert [r for r in s.sim.writes() if r.method == "POST"] == []
+
+
+def test_review_20970af_p3_d_abandon_then_crash_then_restart_is_refused_before_signature(s, monkeypatch):
+    q = MemoryQueue()
+    p = enqueue_place(s, q, "order-key-R9005")
+    monkeypatch.setattr(s.signer, "_produce_signature", lambda msg: (_ for _ in ()).throw(SystemExit("crash")))
+    with pytest.raises(SystemExit):
+        service(s, q).process_once()
+    monkeypatch.undo()
+    _crash_on_refusal_event(q, monkeypatch)                     # recover abandons, then dies before the event
+    with pytest.raises(SystemExit):
+        service(s, q).recover()
+    monkeypatch.undo()
+    assert s.ledger.get("order-key-R9005").state == od.REJECTED
+    (res,) = service(s, q).recover()
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "REFUSED_BEFORE_SIGNATURE"
+    assert q.states(p["request_id"]) == ["CLAIMED", "REFUSED"]
+
+
+def test_review_20970af_p3_d_rejected_after_the_signature_left_is_never_refused(s, monkeypatch):
+    q = MemoryQueue()
+    p = enqueue_place(s, q, "order-key-R9006")
+    monkeypatch.setattr(s.gw, "submit", lambda *a, **k: (_ for _ in ()).throw(SystemExit("crash")))
+    with pytest.raises(SystemExit):
+        service(s, q).process_once()
+    monkeypatch.undo()
+    s.ledger.transition("order-key-R9006", od.REJECTED, reason="TEST_REJECTED_AFTER_SIGNATURE")
+    o = s.ledger.get("order-key-R9006")
+    assert o.state == od.REJECTED and o.signature_released
+    (res,) = service(s, q).recover()
+    assert res["event"] == "UNKNOWN" and res["detail"].get("code") != "REFUSED_BEFORE_SIGNATURE"
+    assert q.states(p["request_id"]) == ["CLAIMED", "SIGNED", "UNKNOWN"]
