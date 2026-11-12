@@ -204,8 +204,12 @@ FIXTURE_STATUSES: dict[int, tuple[str, str]] = {
     7: ("Abandoned", "ABANDONED"), 8: ("Coverage lost", "COVERAGE_LOST"), 9: ("About to start", "NOT_STARTED"),
 }
 FINAL_FIXTURE_STATUSES = frozenset({3, 4, 7})
+# Only 7 ("Abandoned") is called "a final status" by the official page; 3 (Finished) and 4 (Cancelled) are final
+# by our reading of their labels: INFERRED, declared as such (review af9d5e9 P2-1).
+FINAL_BASIS = {7: "OFFICIAL", 3: "INFERRED_FROM_LABEL", 4: "INFERRED_FROM_LABEL"}
 SWEEPING_FIXTURE_STATUSES = frozenset({2, 3, 4})
 FIXTURE_STATUS_SOURCE = "https://docs.sx.bet/api-reference/fixture-statuses"
+PHASE_NOTE = "phase is local vocabulary grouping the official labels (1 and 9 are both NOT_STARTED); label is official"
 # Local heuristic (DERIVED, not a provider rule): an ACTIVE market whose gameTime is more than this in the past.
 STALE_ACTIVE_AFTER_SECONDS = 24 * 3600
 
@@ -216,30 +220,54 @@ def decode_fixture_status(code: Any) -> dict[str, Any]:
         return {"code": code, "label": None, "phase": "UNDOCUMENTED_STATUS"}
     label, phase = FIXTURE_STATUSES[code]
     return {"code": code, "label": label, "phase": phase, "final": code in FINAL_FIXTURE_STATUSES,
-            "sweeps_resting_orders": code in SWEEPING_FIXTURE_STATUSES}
+            "final_basis": FINAL_BASIS.get(code), "sweeps_resting_orders": code in SWEEPING_FIXTURE_STATUSES}
+
+
+def _status_table() -> dict[str, Any]:
+    return {str(c): decode_fixture_status(c) for c in sorted(FIXTURE_STATUSES)}
 
 
 def fixtures_view(data: Any, *, now_unix: int | None = None) -> dict[str, Any]:
-    """Issue #187 D7 for GET /fixture/active: decoded statuses plus fixtures the provider lists as active
-    although their status is final, or not started with a start time already past. Rows are never removed."""
+    """Issue #187 D7 for GET /fixture/active: compact view (review af9d5e9 P2-3: never a per-row map) with the status
+    table once, counts per code, and only the rows worth attention: final status listed as active, not started with
+    a start long past, undocumented status, missing/duplicate event id, unresolved start. Rows are never removed."""
     now = int(time.time()) if now_unix is None else now_unix
     if not isinstance(data, list):
         return {"fixture_status_view": {"label": "DERIVED", "status": "UNEXPECTED_SHAPE"}}
-    decoded, final, overdue = {}, [], []
+    counts: dict[str, int] = {}
+    final, overdue, undocumented, unresolved = [], [], [], []
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    no_id = 0
     for row in data:
         if not isinstance(row, dict):
+            no_id += 1
             continue
         eid, code = row.get("eventId"), row.get("status")
+        if not isinstance(eid, str) or not eid:
+            no_id += 1  # never collapsed onto a "None" key (review af9d5e9 P2-2)
+        elif eid in seen:
+            duplicates.append(eid)
+        else:
+            seen.add(eid)
         d = decode_fixture_status(code)
-        decoded[str(eid)] = d
+        counts[str(code)] = counts.get(str(code), 0) + 1
+        if d["phase"] == "UNDOCUMENTED_STATUS":
+            undocumented.append({"eventId": eid, "provider_status": code})
         if d.get("final"):
-            final.append({"eventId": eid, "provider_status": code, "label": d["label"]})
-        start, _ = _start_unix(row.get("startDate"), "fixtures")
-        if d["phase"] == "NOT_STARTED" and start is not None and start < now - STALE_ACTIVE_AFTER_SECONDS:
+            final.append({"eventId": eid, "provider_status": code, "label": d["label"],
+                          "final_basis": d["final_basis"]})
+        start, reason = _start_unix(row.get("startDate"), "fixtures")
+        if start is None:
+            unresolved.append({"eventId": eid, "reason": reason})
+        elif d["phase"] == "NOT_STARTED" and start < now - STALE_ACTIVE_AFTER_SECONDS:
             overdue.append({"eventId": eid, "provider_status": code, "start_unix": start})
     return {"fixture_status_view": {
-        "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "decoded": decoded,
+        "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "status_table": _status_table(), "phase_note": PHASE_NOTE,
+        "rows": len(data), "counts_by_status": counts,
         "final_status_listed_as_active": final, "not_started_but_start_long_past": overdue,
+        "undocumented_status": undocumented, "start_unresolved": unresolved,
+        "rows_without_event_id": no_id, "duplicate_event_ids": duplicates,
         "heuristic": f"not started with startDate older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
         "note": "Raw rows stay in data; nothing is removed or re-labelled."}}
 
@@ -254,8 +282,10 @@ def stale_active_markets(data: Any, *, now_unix: int | None = None) -> dict[str,
     stale = [{"marketHash": r.get("marketHash"), "gameTime": r.get("gameTime"), "provider_status": r.get("status")}
              for r in rows if isinstance(r, dict) and r.get("status") == "ACTIVE" and type(r.get("gameTime")) is int
              and r["gameTime"] < now - STALE_ACTIVE_AFTER_SECONDS]
+    unjudged = sum(1 for r in rows if not isinstance(r, dict) or type(r.get("gameTime")) is not int)
     return {"stale_active_view": {
         "label": "DERIVED", "scope": "THIS_PAGE_ONLY", "rows": stale, "count": len(stale),
+        "rows_without_int_game_time": unjudged,
         "heuristic": f"status ACTIVE and gameTime older than {STALE_ACTIVE_AFTER_SECONDS} s (local policy)",
         "note": "Possibly stale provider rows; raw rows stay in data. Not proof the market is closed."}}
 
@@ -409,10 +439,10 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                           lambda: {"sportXEventIds": _events(sportx_event_ids)}, auth=False,
                           derive=lambda data: {**requested_vs_returned(
                               ids, list(data) if isinstance(data, dict) else None, case_insensitive=False),
-                              "status_decoded": {k: decode_fixture_status(v.get("status") if isinstance(v, dict)
-                                                                          else None)
-                                                 for k, v in data.items()} if isinstance(data, dict) else None,
-                              "status_source": FIXTURE_STATUS_SOURCE})
+                              "status_decoded": {
+                                  "label": "DERIVED", "source": FIXTURE_STATUS_SOURCE, "phase_note": PHASE_NOTE,
+                                  "by_event": {k: decode_fixture_status(v.get("status") if isinstance(v, dict) else None)
+                                               for k, v in data.items()}} if isinstance(data, dict) else None})
 
     @add
     async def sxbet_live_scores(sportx_event_ids: list[str]) -> dict[str, Any]:

@@ -24,6 +24,7 @@ NOW = int(time.time())
 def test_d7_every_official_status_is_decoded(code, label, phase, final, sweeps):
     d = sx.decode_fixture_status(code)
     assert (d["label"], d["phase"], d["final"], d["sweeps_resting_orders"]) == (label, phase, final, sweeps)
+    assert d["final_basis"] == {7: "OFFICIAL", 3: "INFERRED_FROM_LABEL", 4: "INFERRED_FROM_LABEL"}.get(code)
 
 
 @pytest.mark.parametrize("code", [0, 10, "2", 2.0, None, True])
@@ -42,14 +43,15 @@ def test_d7_fixtures_active_flags_final_and_overdue_rows_and_keeps_raw():
     assert out["data"] == rows and len(calls) == 1
     assert [x["eventId"] for x in v["final_status_listed_as_active"]] == ["L1"]
     assert [x["eventId"] for x in v["not_started_but_start_long_past"]] == ["L2"]
-    assert v["decoded"]["L4"]["phase"] == "LIVE" and "upcoming" not in out
+    assert v["counts_by_status"] == {"3": 1, "1": 2, "2": 1} and "upcoming" not in out and "decoded" not in v
 
 
 def test_d7_fixture_status_decodes_each_event():
     t, _, _ = make(universal(overrides={"/fixture/status": lambda r: _ok({"L1": {"status": 4}, "L2": {"status": 42}})}))
     out = run(t["sxbet_fixture_status"](sportx_event_ids=["L1", "L2"]))
-    assert out["status_decoded"]["L1"]["label"] == "Cancelled"
-    assert out["status_decoded"]["L2"]["phase"] == "UNDOCUMENTED_STATUS" and out["data"]["L2"] == {"status": 42}
+    sd = out["status_decoded"]
+    assert sd["label"] == "DERIVED" and sd["by_event"]["L1"]["label"] == "Cancelled"
+    assert sd["by_event"]["L2"]["phase"] == "UNDOCUMENTED_STATUS" and out["data"]["L2"] == {"status": 42}
 
 
 def test_d7_markets_active_flags_stale_active_rows_on_the_page():
@@ -80,3 +82,35 @@ def test_d4_early_expiry_refusal_declares_a_lower_bound_never_an_exact_minimum()
     assert diag["min_is_lower_bound_only"] is True
     assert diag["components"]["max_betting_delay_ms"] is None              # unknown, never 0
     assert "LOWER BOUND" in sx.sim.expiry_bounds.__doc__
+
+
+def test_review_af9d5e9_p2_2_missing_and_duplicate_event_ids_are_reported_not_collapsed():
+    rows = [{"eventId": "A", "status": 3, "startDate": "2096-01-01T00:00:00Z"},
+            {"eventId": "A", "status": 1, "startDate": "2096-01-01T00:00:00Z"},
+            {"status": 1}, {"eventId": None, "status": 1}, {"eventId": "None", "status": 1}, "junk"]
+    v = sx.fixtures_view(rows, now_unix=NOW)["fixture_status_view"]
+    assert v["duplicate_event_ids"] == ["A"] and v["rows_without_event_id"] == 3 and v["rows"] == 6
+
+
+def test_review_af9d5e9_p2_3_view_is_compact_for_large_leagues():
+    import json
+    rows = [{"eventId": f"L{i}", "status": 1, "startDate": "2096-10-01T18:00:00Z", "leagueId": 1,
+             "participantOneName": "Team A", "participantTwoName": "Team B", "sportId": 5, "leagueLabel": "X"}
+            for i in range(1200)]
+    view = sx.fixtures_view(rows, now_unix=NOW)
+    assert len(json.dumps(view)) < 8_000  # independent of the number of ordinary rows
+
+
+def test_review_af9d5e9_p3_2_unjudgeable_rows_are_counted():
+    v = sx.fixtures_view([{"eventId": "N", "status": 1, "startDate": "2020-01-01T00:00:00"}],
+                         now_unix=NOW)["fixture_status_view"]
+    assert v["start_unresolved"] == [{"eventId": "N", "reason": "TIMEZONE_UNRESOLVED"}]
+    assert v["not_started_but_start_long_past"] == []  # a naive time is never treated as UTC
+    s = sx.stale_active_markets({"markets": [{"status": "ACTIVE", "gameTime": None}, "x"]}, now_unix=NOW)
+    assert s["stale_active_view"]["rows_without_int_game_time"] == 2
+
+
+def test_review_af9d5e9_p3_5_status_9_overdue_is_flagged():
+    v = sx.fixtures_view([{"eventId": "S", "status": 9, "startDate": "2024-01-01T00:00:00Z"}],
+                         now_unix=NOW)["fixture_status_view"]
+    assert [x["eventId"] for x in v["not_started_but_start_long_past"]] == ["S"]
