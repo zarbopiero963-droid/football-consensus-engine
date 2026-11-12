@@ -691,16 +691,17 @@ def test_a_deliberate_admin_act_is_needed_to_bypass_and_the_runner_detects_it_wh
         finally:
             with env.su("fcb_cert") as conn:
                 conn.execute(restore)
-    # a counter reset (owner, guard disabled) leaves duplicate seqs: the next open of the plan refuses
+    # a counter reset (owner, guard disabled): review #201 option A refuses the very next reservation
+    # in its own transaction (rolled back), before any request
     with env.su("fcb_cert") as conn:
         with conn.transaction():
             conn.execute("ALTER TABLE api_football_cert_plan_usage DISABLE TRIGGER api_football_cert_plan_usage_monotonic")
             conn.execute("UPDATE api_football_cert_plan_usage SET used = 0 WHERE plan_sha256 = %s", (plan,))
             conn.execute("ALTER TABLE api_football_cert_plan_usage ENABLE TRIGGER api_football_cert_plan_usage_monotonic")
     asyncio.run(ledger.open("camp-delib-0002", 78, plan))
-    assert asyncio.run(ledger.reserve("camp-delib-0002", "C1")) == 1  # the reset counter numbers again from 1
-    with pytest.raises(batch.LedgerUnavailable, match="CAMPAIGN_LEDGER_INTEGRITY_FAILED"):
-        asyncio.run(ledger.open("camp-delib-0003", 78, plan))
+    with pytest.raises(batch.LedgerUnavailable, match="CAMPAIGN_LEDGER_COUNTER_MISMATCH"):
+        asyncio.run(ledger.reserve("camp-delib-0002", "C1"))
+    assert _committed_attempts(env, "camp-delib-0002") == 0
 
 
 def test_why_not_defaultdb_public_its_owner_can_drop_another_roles_table_without_any_grant(env):
@@ -1089,6 +1090,12 @@ def test_a2_process_killed_between_insert_and_commit_sends_nothing_and_consumes_
     _counter_matches(env, sha, before)  # ...with its counter increment: nothing consumed
     with env.su("defaultdb") as su:  # the lease WAS committed before (orphan, expires after 180 s)
         assert su.execute("SELECT count(*) AS n FROM api_football_quota_leases").fetchone()["n"] == leases_before + 1
+    # MANDATORY 6: rollback + retry, no regression: the next legitimate reservation passes the check
+    ledger = _ledger(env)
+    asyncio.run(ledger.open(campaign, 78, sha))
+    seq = asyncio.run(ledger.reserve(campaign, "RETRY"))
+    assert seq == before + 1
+    _counter_matches(env, sha, before + 1)
 
 
 def test_a2_a_second_ledger_in_defaultdb_is_refused_before_any_request(env, monkeypatch, capsys):
@@ -1241,47 +1248,138 @@ def test_f4_each_connection_must_really_be_on_its_database(env, monkeypatch, cap
                           "AND expires_at > now() + interval '170 seconds'").fetchone()["n"] == 0  # no fresh lease
 
 
-def test_counter_reset_evaluation_deliberate_owner_act_exceeds_the_plan_budget_in_a_new_campaign(env):
-    """EVALUATION (owner request, no code change): what a counter reset can do.
-    * the runner cannot reset (no privilege on the counter); the owner cannot either while the guard is
-      on (`used` only ever +1, even for the owner);
-    * ONLY a deliberate privileged act works: the administrator self-grants SET on fcb_cert_owner
-      (automatic ADMIN option) and, AS the owner, DISABLE TRIGGER + UPDATE used = 0 + ENABLE, then revokes;
-    * effect: the campaign already holding seqs 1..n cannot reuse them (primary key), but a NEW
-      campaign_id of the same plan passes `open` (seqs still 1..n, no duplicate yet) and reserves AND
-      SENDS again: committed attempts of the plan exceed the plan budget. The runner detects it only at
-      the next `open` (duplicate seqs), i.e. AFTER provider requests. Asserted as the current behaviour."""
+def _set_counter_deliberately(env, sha, value):
+    """The deliberate privileged act: admin self-grants SET on the owner, disables the monotonic guard,
+    writes the counter, re-enables the guard and revokes (the catalog looks clean afterwards)."""
+    _as_owner_deliberately(env,
+                           "ALTER TABLE public.api_football_cert_plan_usage DISABLE TRIGGER api_football_cert_plan_usage_monotonic",
+                           f"UPDATE public.api_football_cert_plan_usage SET used = {int(value)} WHERE plan_sha256 = '{sha}'",
+                           "ALTER TABLE public.api_football_cert_plan_usage ENABLE TRIGGER api_football_cert_plan_usage_monotonic")
+
+
+def _plan_run(env, text, calls, campaign):
+    events = _Events()
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:calls]
+    try:
+        run = asyncio.run(batch.execute(plan, campaign_id=campaign, settings=settings(), ledger=_ledger(env),
+                                        inner_transport=transport, quota=_recording_quota(env, events),
+                                        plan_text=text, source_sha="x"))
+        return len(sent), [c.get("refusal_code") or c["outcome"] for c in run["calls"]]
+    except batch.LedgerUnavailable as exc:
+        return len(sent), [str(exc)]
+
+
+def _counter_value(env, sha):
+    with env.su("fcb_cert") as conn:
+        return conn.execute("SELECT used FROM api_football_cert_plan_usage WHERE plan_sha256 = %s", (sha,)).fetchone()["used"]
+
+
+def test_review201_counter_reset_by_a_deliberate_owner_act_is_refused_before_any_request(env):
+    """MANDATORY 1 + 3. The previous bypass, reproduced exactly (reset to 0 through SET on
+    fcb_cert_owner + trigger disable/enable, new campaign_id of the same plan): now refused in the
+    reservation's own transaction, rolled back, MockTransport 0 requests. Not by ordinary means at all."""
     budget = 3
     text, sha = _plan_variant(env, budget, "reset-" + uuid.uuid4().hex[:6])
-    plan = json.loads(text)
-    plan["calls"] = plan["calls"][:budget]
-
-    def run(campaign):
-        events = _Events()
-        transport, sent = _recording_provider(events)
-        try:
-            asyncio.run(batch.execute(plan, campaign_id=campaign, settings=settings(), ledger=_ledger(env),
-                                      inner_transport=transport, quota=_recording_quota(env, events),
-                                      plan_text=text, source_sha="x"))
-            return len(sent), None
-        except batch.LedgerUnavailable as exc:
-            return len(sent), str(exc)
-    assert run("camp-reset-a-01") == (budget, None)
-    assert run("camp-reset-b-01") == (0, None)  # budget spent: a new campaign gets nothing
+    assert _plan_run(env, text, budget, "camp-reset-a-01") == (budget, ["ATTEMPTED"] * budget)
     _counter_matches(env, sha, budget)
-    for statement in ("UPDATE public.api_football_cert_plan_usage SET used = 0",):  # not by ordinary means
-        with pytest.raises(psycopg.Error):
-            with env.runner() as conn:
-                conn.execute(statement)
-        with pytest.raises(psycopg.errors.RaiseException):
-            _as_owner_deliberately(env, statement)  # even the owner, with the guard on
-    _as_owner_deliberately(env,  # the deliberate privileged act
-                           "ALTER TABLE public.api_football_cert_plan_usage DISABLE TRIGGER api_football_cert_plan_usage_monotonic",
-                           f"UPDATE public.api_football_cert_plan_usage SET used = 0 WHERE plan_sha256 = '{sha}'",
-                           "ALTER TABLE public.api_football_cert_plan_usage ENABLE TRIGGER api_football_cert_plan_usage_monotonic")
-    assert run("camp-reset-c-01") == (budget, None)  # BYPASS: a new campaign sends `budget` more requests
-    with env.su("fcb_cert") as conn:
-        total = conn.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts a JOIN api_football_cert_campaigns c "
-                             "USING (campaign_id) WHERE c.plan_sha256 = %s", (sha,)).fetchone()["n"]
-    assert total == 2 * budget  # committed attempts of the plan above its budget
-    assert run("camp-reset-d-01") == (0, "CAMPAIGN_LEDGER_INTEGRITY_FAILED")  # detected at the next open only
+    assert _plan_run(env, text, budget, "camp-reset-b-01")[0] == 0  # budget spent: nothing for a new campaign
+    _counter_matches(env, sha, budget)
+    with pytest.raises(psycopg.Error):  # not by ordinary means: the runner has no privilege on the counter...
+        with env.runner() as conn:
+            conn.execute("UPDATE public.api_football_cert_plan_usage SET used = 0")
+    with pytest.raises(psycopg.errors.RaiseException):  # ...and the owner cannot while the guard is on
+        _as_owner_deliberately(env, "UPDATE public.api_football_cert_plan_usage SET used = 0")
+    _set_counter_deliberately(env, sha, 0)
+    sent, codes = _plan_run(env, text, budget, "camp-reset-c-01")
+    assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_COUNTER_MISMATCH", codes
+    assert set(codes) <= {"CAMPAIGN_LEDGER_COUNTER_MISMATCH", "CIRCUIT_OPEN"}, codes
+    assert _committed_attempts(env, "camp-reset-c-01") == 0 and _counter_value(env, sha) == 0  # rolled back
+    _set_counter_deliberately(env, sha, budget)  # put back: counter == committed again
+    _counter_matches(env, sha, budget)
+
+
+@pytest.mark.parametrize("delta", [-2, -1, +1])
+def test_review201_counter_tampered_to_an_inconsistent_value_is_refused(env, delta):
+    """MANDATORY 2 + 3: a non-zero counter lower (or higher) than the committed attempts."""
+    budget = 6
+    text, sha = _plan_variant(env, budget, f"tamper{delta}-" + uuid.uuid4().hex[:6])
+    assert _plan_run(env, text, 3, "camp-tamp-a-" + uuid.uuid4().hex[:6])[0] == 3
+    _counter_matches(env, sha, 3)
+    _set_counter_deliberately(env, sha, 3 + delta)
+    sent, codes = _plan_run(env, text, 2, "camp-tamp-b-" + uuid.uuid4().hex[:6])
+    assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_COUNTER_MISMATCH", codes
+    assert _counter_value(env, sha) == 3 + delta  # the refused increment was rolled back
+    _set_counter_deliberately(env, sha, 3)
+    _counter_matches(env, sha, 3)
+    assert _plan_run(env, text, 2, "camp-tamp-c-" + uuid.uuid4().hex[:6])[0] == 2  # consistent again: legit passes
+    _counter_matches(env, sha, 5)
+
+
+@pytest.mark.parametrize("sql,label", [
+    ("SELECT pg_catalog.count(*) AS n FROM {attempts} a WHERE a.no_such_column = %s", "query_error"),
+    ("SELECT NULL::bigint AS n, NULL::bigint AS d, NULL::int AS m WHERE %s::text IS NOT NULL", "null"),
+    ("SELECT 1 AS n, 1 AS d, 1 AS m FROM {campaigns} k WHERE false AND k.campaign_id = %s::text", "no_row"),
+])
+def test_review201_the_check_itself_failing_refuses_fail_closed(env, monkeypatch, sql, label):
+    """MANDATORY 7: an error, NULL or missing row of the check refuses (fixed code), rolls back, 0 requests."""
+    text, sha = _plan_variant(env, 78, "checkfail-" + label + uuid.uuid4().hex[:6])
+    before = _counter_value(env, sha)
+    monkeypatch.setattr(batch, "COUNTER_CHECK_SQL", sql)
+    campaign = "camp-chk-" + uuid.uuid4().hex[:8]
+    sent, codes = _plan_run(env, text, 2, campaign)
+    assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED", codes
+    assert _committed_attempts(env, campaign) == 0 and _counter_value(env, sha) == before
+    _counter_matches(env, sha, before)
+
+
+def _iso_runner_worker(dsn, campaign, plan, level, out):
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "tests"))
+    from apifootball_campaign_kit import load as _load
+    mod = _load("apifootball_cert_batch1_pa_iso_runner", "apifootball_cert_batch1.py")
+    os.environ[mod.AUTH_VAR] = "true"
+
+    class Ledger(mod.PostgresCampaignLedger):
+        @staticmethod
+        def _read_committed(conn):  # the reservation path at the requested isolation level (test only)
+            conn.isolation_level = getattr(psycopg.IsolationLevel, level.replace(" ", "_"))
+            return conn
+    connect = lambda: psycopg.connect(dsn, row_factory=dict_row)  # noqa: E731
+    # the campaign is opened as the runner does (READ COMMITTED); the RESERVATIONS run at `level`
+    asyncio.run(mod.PostgresCampaignLedger(connect, schema="public", owner_role="fcb_cert_owner").open(campaign, 78, plan))
+    ledger = Ledger(connect, schema="public", owner_role="fcb_cert_owner")
+    granted = conflicts = false_refusals = 0
+    for i in range(40):
+        try:
+            asyncio.run(ledger.reserve(campaign, f"Q{i}"))
+            granted += 1
+        except mod.SerializationRefused:
+            conflicts += 1  # retried 3 times in new transactions, still conflicting: fine, not a refusal
+        except mod.BudgetExhausted:
+            break
+        except mod.LedgerUnavailable:
+            false_refusals += 1
+    out.put((granted, conflicts, false_refusals))
+
+
+@pytest.mark.parametrize("level", ["READ COMMITTED", "REPEATABLE READ", "SERIALIZABLE"])
+def test_review201_nine_processes_each_isolation_no_overrun_no_false_refusal(env, level):
+    """MANDATORY 4 + 5: 9 real processes (spawn), one plan with budget 7, the full reservation path
+    (budget trigger + the same-transaction counter check) at each isolation level."""
+    plan = _approve(env, 7, "rev201-" + level)
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    tag = uuid.uuid4().hex[:8]
+    procs = [ctx.Process(target=_iso_runner_worker, args=(env.runner_dsn(), f"camp-r201-{tag}-{i}", plan, level, out))
+             for i in range(9)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(240)
+    assert [p.exitcode for p in procs] == [0] * 9
+    results = [out.get(timeout=5) for _ in procs]
+    assert sum(r[0] for r in results) == 7, results  # no overrun, no lost legitimate reservation
+    assert sum(r[2] for r in results) == 0, results  # no false positive of the counter check
+    _counter_matches(env, plan, 7)

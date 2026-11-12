@@ -343,3 +343,15 @@ Fuori scope: raccolta continuativa delle quote, storico, calcolo del drop.
 
 - **Lunghezza minima di `search`.** Lo snapshot indica 3 caratteri per `countries`, `bets`, `bookmakers`, `coaches` e `venues`; il contratto ne ammette 1. La chiamata `C08` del lotto serve a decidere.
 - **Tipo di `odds/bets.id`.** La documentazione lo dà come `string`, il contratto come `integer`.
+
+## PATH A2: ledger nel database dedicato `fcb_cert` (owner GO, PR #201)
+
+Il ledger è la 0010 byte per byte nel database `fcb_cert` dello stesso servizio Aiven. Database e oggetti appartengono a `fcb_cert_owner` (NOLOGIN). Il runner `fcb_cert_runner` ha SELECT e INSERT di colonna sul ledger; su `defaultdb` ha solo i 9 privilegi approvati del coordinatore. I workflow legacy 0010 e plan-approve sono disabilitati (`LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2`); installazione e approvazione passano dai workflow `fcb-aiven-apifootball-cert-a2-*`.
+
+**Controllo contatore = tentativi (review #201, opzione A).** Nella stessa transazione della prenotazione, dopo l'INSERT e prima del COMMIT, il runner esige che il numero dei tentativi del piano, i seq distinti e il seq massimo siano tutti uguali al `seq` appena assegnato. Il `seq` è il valore del contatore dopo l'incremento del trigger.
+- Il lock di riga sul contatore serializza le prenotazioni del piano.
+- In READ COMMITTED lo snapshot della query di controllo è preso dopo il lock.
+- In REPEATABLE READ e SERIALIZABLE un aggiornamento concorrente produce 40001, che viene ritentato.
+- Un'incoerenza produce `CAMPAIGN_LEDGER_COUNTER_MISMATCH`; un errore o un NULL del controllo stesso produce `CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED`. In entrambi i casi la transazione viene annullata e non parte nessuna richiesta.
+
+**Limite accettato e dichiarato.** Il ledger è protetto dal runner, dalle modifiche ordinarie e dalle incoerenze rilevabili (contatore azzerato o alterato, funzioni sostituite, ruoli o membership anomali, database sbagliato). Non è protetto da un amministratore intenzionalmente malevolo, né da un runtime compromesso con credenziali admin, che modifichi in modo coerente contatore, tentativi ed evidenze. Su Aiven avnadmin può sempre concedersi `fcb_cert_owner`. I controlli falliscono chiusi quando rilevano una violazione, ma non impediscono un attacco amministrativo successivo alla verifica. Il ledger non va presentato come resistente a qualunque attacco admin.

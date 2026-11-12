@@ -24,6 +24,9 @@ coordinator, the same credentials with dbname fcb_cert for the ledger. Before an
 an identity that is not a plain dedicated role (RUNNER_IDENTITY_NOT_DEDICATED, e.g. the administrator)
 and a ledger whose owner, guards or counter evidence are not intact (CAMPAIGN_LEDGER_INTEGRITY_FAILED).
 Where 0010 is not installed, PostgresCampaignLedger refuses with CAMPAIGN_LEDGER_MIGRATION_REQUIRED.
+Each reservation also checks, in its own transaction, that the plan counter equals the plan's committed
+attempts (CAMPAIGN_LEDGER_COUNTER_MISMATCH otherwise). Accepted limit: an intentionally malicious
+administrator who rewrites counter, attempts and evidence CONSISTENTLY is outside the protection model.
 
 Usage:
   python scripts/apifootball_cert_batch1.py --write-plan
@@ -133,6 +136,15 @@ LEDGER_INTEGRITY_SQL = (
     "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace "
     "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND p.proowner OPERATOR(pg_catalog.<>) o.oid)) AS ok "
     "FROM pg_catalog.pg_roles o WHERE o.rolname OPERATOR(pg_catalog.=) %(owner)s")
+
+
+# Review #201 (option A): attempts of the plan of `campaign_id` (count, distinct seqs, max seq), read in
+# the reservation's own transaction; see PostgresCampaignLedger._counter_matches_committed.
+COUNTER_CHECK_SQL = (
+    "SELECT pg_catalog.count(*) AS n, pg_catalog.count(DISTINCT a.seq) AS d, pg_catalog.max(a.seq) AS m "
+    "FROM {attempts} a JOIN {campaigns} c ON c.campaign_id OPERATOR(pg_catalog.=) a.campaign_id "
+    "WHERE c.plan_sha256 OPERATOR(pg_catalog.=) (SELECT k.plan_sha256 FROM {campaigns} k "
+    "WHERE k.campaign_id OPERATOR(pg_catalog.=) %s)")
 
 
 def runner_identity_problem(conn) -> str | None:
@@ -511,7 +523,42 @@ class PostgresCampaignLedger:
                 raise LedgerUnavailable("PLAN_NOT_APPROVED")
             cur.execute(f"INSERT INTO {self._attempts} (campaign_id, call_id) VALUES (%s, %s) RETURNING seq",
                         (campaign_id, call_id))
-            return int(self._one(cur, "seq"))  # committed on leaving the block
+            seq = int(self._one(cur, "seq"))
+            self._counter_matches_committed(cur, campaign_id, seq)  # SAME transaction, before COMMIT
+            return seq  # committed on leaving the block
+
+    def _counter_matches_committed(self, cur, campaign_id: str, seq: int) -> None:
+        """Review #201 (owner decision, option A): the plan counter must equal the plan's attempts.
+
+        `seq` IS the plan counter after this reservation's increment: the SECURITY DEFINER 0010 trigger
+        assigns it from `UPDATE plan_usage SET used = used + 1 ... RETURNING used`, and that UPDATE keeps
+        the counter row LOCKED until this transaction ends, so every other reservation of the plan waits.
+        The check runs in the SAME transaction, after the INSERT and before the COMMIT:
+          * READ COMMITTED: this statement takes a NEW snapshot after the lock was granted; every other
+            reservation of the plan either committed before it (visible) or is blocked on the lock (it
+            has no row yet): it sees exactly the committed attempts plus this one;
+          * REPEATABLE READ / SERIALIZABLE: the snapshot is the transaction's; a reservation committed
+            after it updated the counter row, so the UPDATE above already failed with 40001 (retried in
+            a new transaction as SERIALIZATION_FAILURE); otherwise the snapshot holds them all.
+        Consistent ledger: attempts of the plan == distinct seqs == max(seq) == seq. A counter reset or
+        lowered/raised out of band (only possible as a deliberate owner act) breaks it: the reservation
+        is refused and ROLLED BACK before any request. Any error or NULL of the check itself refuses too
+        (fail closed). This does not make the ledger resist an intentionally malicious administrator
+        who rewrites counter, attempts and evidence CONSISTENTLY: that stays outside the model."""
+        try:
+            cur.execute(COUNTER_CHECK_SQL.format(attempts=self._attempts, campaigns=self._campaigns), (campaign_id,))
+            row = cur.fetchone()
+        except Exception as exc:  # noqa: BLE001 - a conflict stays a conflict; anything else refuses
+            if getattr(exc, "sqlstate", None) in ("40001", "40P01"):
+                raise
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED") from None
+        if row is None:
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED")
+        n, d, m = (row["n"], row["d"], row["m"]) if isinstance(row, dict) else tuple(row)[:3]
+        if n is None or d is None or m is None:
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED")
+        if not (int(n) == int(d) == int(m) == seq):
+            raise LedgerUnavailable("CAMPAIGN_LEDGER_COUNTER_MISMATCH")
 
     def _reserve_with_retry(self, campaign_id: str, call_id: str) -> int:
         """A serialization conflict (40001/40P01) is retried in a NEW transaction: the owner
