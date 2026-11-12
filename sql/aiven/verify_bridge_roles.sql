@@ -21,6 +21,7 @@
 --   tables     the only non-owner privileges in public are the runtime allowlist of fcb_app
 --              and (PATH A2) the exact quota-coordinator grant of a plain fcb_cert_runner;
 --              (finalize_bridge_privileges.sql); no column privilege; no PUBLIC or signer grant;
+--   grants     (G2) no non-owner privilege is held WITH GRANT OPTION, even an allowed one;
 --   routines   no non-owner EXECUTE (PUBLIC revoked);
 --   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, nothing for PUBLIC/fcb_signer
 --              (grants held by the schema owner or the session identity are not judged);
@@ -52,7 +53,7 @@ owner_oid AS (SELECT CASE WHEN (SELECT phase.two FROM phase) THEN (SELECT mig.oi
 ns AS (SELECT n.oid, n.nspowner, n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name),
 rels AS (SELECT c.oid, c.relname, c.relkind, c.relowner, c.relacl FROM pg_catalog.pg_class c JOIN ns ON ns.oid OPERATOR(pg_catalog.=) c.relnamespace),
 rel_grants AS (
-    SELECT c.relname::pg_catalog.text AS relname, a.grantee, a.privilege_type::pg_catalog.text AS priv
+    SELECT c.relname::pg_catalog.text AS relname, a.grantee, a.privilege_type::pg_catalog.text AS priv, a.is_grantable AS grantable
     FROM rels c, LATERAL pg_catalog.aclexplode(COALESCE(c.relacl, pg_catalog.acldefault(
         CASE WHEN c.relkind OPERATOR(pg_catalog.=) 'S'::pg_catalog."char" THEN 's'::pg_catalog."char" ELSE 'r'::pg_catalog."char" END,
         c.relowner))) a
@@ -102,7 +103,7 @@ expected_column_grants(relname, attname, priv, since) AS (VALUES
 ),
 column_grants AS (
     SELECT c.relname::pg_catalog.text AS relname, a.attname::pg_catalog.text AS attname, x.grantee,
-           x.privilege_type::pg_catalog.text AS priv
+           x.privilege_type::pg_catalog.text AS priv, x.is_grantable AS grantable
     FROM rels c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid,
          LATERAL pg_catalog.aclexplode(a.attacl) x
     WHERE a.attacl IS NOT NULL
@@ -160,7 +161,7 @@ expected_grants AS (
     UNION ALL SELECT g.relname, w.oid, g.priv FROM cert_runner_grants g, cert_runner w
 ),
 schema_grants AS (
-    SELECT a.grantee, a.privilege_type::pg_catalog.text AS priv
+    SELECT a.grantee, a.privilege_type::pg_catalog.text AS priv, a.is_grantable AS grantable
     FROM ns, LATERAL pg_catalog.aclexplode(COALESCE(ns.nspacl, pg_catalog.acldefault('n'::pg_catalog."char", ns.nspowner))) a
     WHERE a.grantee OPERATOR(pg_catalog.<>) ns.nspowner AND a.grantee OPERATOR(pg_catalog.<>) (SELECT sess.oid FROM sess)
 ),
@@ -334,6 +335,16 @@ checks(code, bad) AS (
         WHERE e.since OPERATOR(pg_catalog.<=) b.v
         UNION ALL SELECT g.relname, g.attname, w.oid, g.priv FROM cert_runner_column_grants g, cert_runner w
         EXCEPT SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g))
+    -- G2 (owner Q3): no non-owner privilege WITH GRANT OPTION, even on a privilege the model allows
+    -- (relations, columns, schema public, and any database ACL of a bridge or certification role).
+    UNION ALL SELECT 'grant_option', (EXISTS (SELECT 1 FROM rel_grants g WHERE g.grantable)
+        OR EXISTS (SELECT 1 FROM column_grants g WHERE g.grantable)
+        OR EXISTS (SELECT 1 FROM schema_grants g WHERE g.grantable)
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_database d, LATERAL pg_catalog.aclexplode(d.datacl) a
+            JOIN pg_catalog.pg_roles r ON r.oid OPERATOR(pg_catalog.=) a.grantee
+            WHERE a.is_grantable AND a.grantee OPERATOR(pg_catalog.<>) d.datdba
+              AND r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_migrator', 'fcb_app', 'fcb_signer', 'fcb_cert_owner',
+                                                              'fcb_cert_runner']::pg_catalog.name[])))
     UNION ALL SELECT 'bridge_state', ((SELECT b.v FROM bridge_state b) OPERATOR(pg_catalog.=) 0)
     UNION ALL SELECT 'routine_grant', (EXISTS (
         SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace,
