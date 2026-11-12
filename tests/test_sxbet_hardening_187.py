@@ -651,8 +651,12 @@ def test_review_p2_hedge_rounding_rule_declares_exact_unrounded_fees():
     assert "DOCS_UNVERIFIED" in rule["exchange_rounding"]
 
 
-def test_review_p2_fee_rate_scale_is_declared_unverified():
-    """Review P2-b: the fraction scale of the provider fee rate is an assumption, declared as such."""
+def test_review_p2_fee_rate_scale_is_declared_verified_from_official_contract():
+    """Review P2-b, updated INTENTIONALLY (issue #187 D9, 12-11-2026): the fraction scale was DOCS_UNVERIFIED;
+    api-reference/get-user-fees-v3 now states "Every rate is a decimal fraction string, so "0.05" is 5%".
+    The scale moves from the unverified list to a verified statement citing that page; nothing else changes."""
     from bridge.sxbet import positions
-    assert any(item.startswith("FEE_RATE_SCALE:") for item in positions.COMMISSION_DOCS_UNVERIFIED)
+    assert not any(item.startswith("FEE_RATE_SCALE:") for item in positions.COMMISSION_DOCS_UNVERIFIED)
+    assert "VERIFIED" in positions.FEE_RATE_SCALE_VERIFIED
+    assert "api-reference/get-user-fees-v3" in positions.FEE_RATE_SCALE_VERIFIED
     assert "per fill" in positions.ROUNDING_RULE["conservative_fields"]

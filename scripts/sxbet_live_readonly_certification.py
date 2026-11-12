@@ -206,7 +206,7 @@ def run_mcp(rec: Recorder, api_key: str) -> dict[str, Any]:
             info["data_shape"] = shape(data)
         code = (out.get("error") or {}).get("code")
         outcome = "PASS" if status == expect else ("FAIL" if status in ("PROVIDER_ERROR", "UNPARSEABLE", "INVALID_INPUT") else "PARTIAL")
-        if expect_not_found and status == "PROVIDER_ERROR" and out.get("http_status") == 404:
+        if expect_not_found and status in ("NOT_FOUND", "PROVIDER_ERROR") and out.get("http_status") == 404:
             outcome = "PASS"  # documented: a missing or foreign id returns 404
         elif status == "PROVIDER_ERROR" and code == "SXBET_UNAUTHORIZED" and scope_sensitive:
             outcome = "BLOCKED_EXTERNAL"  # the key lacks the documented scope; owner decision, not a code failure

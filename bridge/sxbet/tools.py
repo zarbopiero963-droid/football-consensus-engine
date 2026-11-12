@@ -21,6 +21,7 @@ import re
 import secrets
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from . import hedging as hedge_mod
@@ -256,9 +257,14 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         try:
             reply = await client.get(path, params, auth=auth)
         except SXBetError as exc:
-            out = {**base, "status": "PROVIDER_ERROR", "parameters": params,
+            not_found = exc.code == "SXBET_HTTP_ERROR" and exc.http_status == 404
+            out = {**base, "status": "NOT_FOUND" if not_found else "PROVIDER_ERROR", "parameters": params,
                    "network_calls_made": 0 if exc.code in NO_NETWORK_CODES else 1,
-                   "http_status": exc.http_status, "error": {"code": exc.code}}
+                   "http_status": exc.http_status,
+                   "error": {"code": "SXBET_NOT_FOUND" if not_found else exc.code}}
+            if not_found:  # issue #187 D3: a documented 404 is an answer, not a failure; nothing is invented
+                out["not_found"] = {"meaning": "The provider has no object for these parameters (HTTP 404).",
+                                    "proof_of_absence": False}
             if exc.retry_after is not None:
                 out["error"]["retry_after_seconds"] = exc.retry_after
             return out
@@ -283,7 +289,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         return {"provider": "SX_BET", "enabled": True, "network": settings.network,
                 "api_key_present": bool(settings.api_key), "mode": "READ_ONLY",
                 "available_modes": {"READ_ONLY": "AVAILABLE", "SIMULATION": "AVAILABLE", "LIVE_TRADING": "UNAVAILABLE"},
-                "live_trading": "UNAVAILABLE: no isolated signer with signer-verified per-order confirmation (governance 2.6)",
+                "live_trading": "UNAVAILABLE: isolated signer not deployed, not testnet-certified, no owner GO (governance 2.6)",
                 "write_tools": [], "simulation_tools": ["sxbet_simulate_order", "sxbet_hedge_simulation",
                                                          "sxbet_close_position_preview", "sxbet_rules_evaluate"],
                 "derived_read_tools": ["sxbet_order_status", "sxbet_positions_summary", "sxbet_exposure_pnl",
@@ -327,8 +333,11 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
     @add
     async def sxbet_fixture_status(sportx_event_ids: list[str]) -> dict[str, Any]:
         """Status of up to 30 events (GET /fixture/status)."""
+        ids = sportx_event_ids if isinstance(sportx_event_ids, list) else []
         return await call("sxbet_fixture_status", "/fixture/status",
-                          lambda: {"sportXEventIds": _events(sportx_event_ids)}, auth=False)
+                          lambda: {"sportXEventIds": _events(sportx_event_ids)}, auth=False,
+                          derive=lambda data: requested_vs_returned(
+                              ids, list(data) if isinstance(data, dict) else None, case_insensitive=False))
 
     @add
     async def sxbet_live_scores(sportx_event_ids: list[str]) -> dict[str, Any]:
@@ -369,9 +378,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
 
     @add
     async def sxbet_markets_find(market_hashes: list[str]) -> dict[str, Any]:
-        """Markets by hash, up to 30 (GET /markets/find); unmatched hashes are skipped by the provider."""
+        """Markets by hash, up to 30 (GET /markets/find); hashes the provider skips are listed in `not_found`."""
+        hashes = market_hashes if isinstance(market_hashes, list) else []
         return await call("sxbet_markets_find", "/markets/find",
-                          lambda: {"marketHashes": _hashes(market_hashes)}, auth=False)
+                          lambda: {"marketHashes": _hashes(market_hashes)}, auth=False,
+                          derive=lambda data: requested_vs_returned(
+                              hashes, [m.get("marketHash") for m in data if isinstance(m, dict)]
+                              if isinstance(data, list) else None, case_insensitive=True))
 
     @add
     async def sxbet_markets_popular() -> dict[str, Any]:
@@ -447,7 +460,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
     @add
     async def sxbet_fees() -> dict[str, Any]:
         """Account fee schedule (GET /user/fees-v3). Requires API key."""
-        return await call("sxbet_fees", "/user/fees-v3", lambda: {}, auth=True)
+        return await call("sxbet_fees", "/user/fees-v3", lambda: {}, auth=True,
+                          derive=lambda data: {"fee_rates": fee_rates_view(data)})
 
     @add
     async def sxbet_positions(status: list[str], event_id: str | None = None, sort_by: str | None = None,
@@ -570,7 +584,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         it is rounded DOWN onto the odds ladder and the raw value is kept. stake_base_units: USDC
         base units (1000000 = 1 USDC). time_in_force: GTC, IOC or FOK. expiry: unix seconds.
         idempotency_key: 8-64 chars [A-Za-z0-9_-]. maker_address: optional; with it the intent gets a
-        fresh salt and its intent_hash is the exact value an out-of-band owner approval must bind to.
+        fresh salt and is complete for the isolated signer (signing_ready); the bridge itself never signs.
         Reads GET /metadata/obv3, /markets/find and (API key) /orderbook-v3/snapshot/market with
         showTakerPerspective=true; check_balance=true also reads /user/balance-v3; include_fees=true also
         reads /user/fees-v3 and adds `net_pnl`: gross and net P&L with the payout fee charged on the profit of
@@ -646,11 +660,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         market = sim.check_market(markets, intent["market_hash"])
         out["market"] = market
         if market["status"] != "MARKET_ACTIVE":
-            return {**out, "status": "REFUSED", "error": {"code": market["status"]},
-                    "fill": {"status": "NOT_SIMULATABLE", "reason": market["status"]}}
+            return _refused_without_intent(out, market["status"])
         if (missing := sim.check_outcomes(market.get("market"))):
-            return {**out, "status": "REFUSED", "error": {"code": missing},
-                    "fill": {"status": "NOT_SIMULATABLE", "reason": missing}}
+            return _refused_without_intent(out, missing)
         if not settings.api_key:
             out["fill"] = {"status": "NOT_SIMULATABLE", "reason": "SXBET_KEY_NOT_CONFIGURED"}
         else:
@@ -686,6 +698,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         out = await call(tool, path, params, auth=True)
         out["endpoint"] = template
         out["api_key_scope"] = scope
+        out["path_parameters"] = _path_parameters(template, path)  # issue #187 D8
         return out
 
     @add
@@ -1286,8 +1299,10 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         limits = sim.ExposureLimits()
         return {"provider": "SX_BET", "tool": "sxbet_risk_status", "network": settings.network, "mode": "READ_ONLY",
                 "network_calls_made": 0, "live_trading": "UNAVAILABLE",
-                "live_trading_reason": "Governance 2.6: no isolated signer with signer-verified per-order confirmation "
-                                       "is reachable from this process; no tool argument can enable it.",
+                "live_trading_reason": ("Governance 2.6: the isolated signer (explicit, complete owner command verified "
+                                        "by the signer, owner-signed limits, kill switch) is not deployed, not "
+                                        "testnet-certified and has no owner GO; it is never reachable from this "
+                                        "process and no tool argument can enable it."),
                 "signer_reachable_from_mcp": False, "write_tools": [], "write_capability": "NONE",
                 "http_methods_available": ["GET"],
                 "rate_coordinator": getattr(getattr(client, "_limiter", None), "kind", "CUSTOM"),
@@ -1350,3 +1365,59 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
 
 def _raise(code: str):
     raise InvalidInput(code)
+
+
+_INTENT_KEYS = ("intent", "intent_hash", "signing_ready", "live_eligibility")
+
+
+def _refused_without_intent(out: dict[str, Any], code: str) -> dict[str, Any]:
+    """Issue #187 D5: a market that cannot be traded never yields an intent or an intent hash.
+
+    The requested values stay visible (`requested`), labelled as the caller's input, never as an order.
+    """
+    intent = out.get("intent") or {}
+    requested = {k: intent.get(k) for k in ("market_hash", "betting_outcome_one", "total_bet_size",
+                                            "requested_percentage_odds", "time_in_force", "expiry")}
+    refused = {k: v for k, v in out.items() if k not in _INTENT_KEYS}
+    return {**refused, "status": "REFUSED", "error": {"code": code}, "requested": requested,
+            "intent": None, "intent_hash": None, "signing_ready": False,
+            "fill": {"status": "NOT_SIMULATABLE", "reason": code}}
+
+
+def requested_vs_returned(requested: list, returned: list | None, *, case_insensitive: bool) -> dict[str, Any]:
+    """Issue #187 D6: ids the provider silently skipped are listed, never dropped (no object is invented)."""
+    if returned is None:
+        return {"not_found": None, "lookup_complete": False, "lookup_note": "UNEXPECTED_SHAPE"}
+    norm = (lambda v: v.lower() if isinstance(v, str) else v) if case_insensitive else (lambda v: v)
+    got = {norm(v) for v in returned if isinstance(v, str)}
+    missing = [v for v in requested if isinstance(v, str) and norm(v) not in got]
+    return {"not_found": missing, "lookup_complete": True,
+            "lookup_note": "Ids absent from the provider answer: unknown, inactive or not offered (not proof of absence)."}
+
+
+def _path_parameters(template: str, path: str) -> dict[str, str]:
+    """Issue #187 D8: the values substituted into the path, keyed by the official parameter name."""
+    names = re.findall(r"\{([A-Za-z]+)\}", template)
+    pattern = "^" + re.sub(r"\\\{[A-Za-z]+\\\}", "([^/]+)", re.escape(template)) + "$"
+    m = re.match(pattern, path)
+    return dict(zip(names, m.groups())) if m else {}
+
+
+def fee_rates_view(data: Any) -> dict[str, Any]:
+    """Issue #187 D9: the official scale of /user/fees-v3 rates, the raw values kept untouched.
+
+    api-reference/get-user-fees-v3: "Every rate is a decimal fraction string, so "0.05" is 5%. null means the
+    rate is unset and nothing is charged." A missing or malformed field is never turned into 0.
+    """
+    info = pos_mod.parse_fees(data)
+    percent = None
+    if info["derived_rates"] is not None:
+        percent = {k: (None if (info["raw"] or {}).get(k) is None else pos_mod.dstr(Decimal(v) * 100))
+                   for k, v in info["derived_rates"].items()}
+    return {"label": "DERIVED", "scale": "DECIMAL_FRACTION (\"0.01\" = 1%)", "scale_source": FEES_SCALE_SOURCE,
+            "fee_status": info["status"], "provider_raw": info.get("raw"), "percent": percent,
+            "null_rate_notes": info.get("null_rate_notes"),
+            "basis": "Payout fees are charged on the profit of a winning bet, at settlement (developers/fees)."}
+
+
+FEES_SCALE_SOURCE = "https://docs.sx.bet/api-reference/get-user-fees-v3"

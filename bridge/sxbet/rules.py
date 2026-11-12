@@ -2,9 +2,9 @@
 
 Pure and deterministic. The only outputs are NO_ACTION, ALERT and ORDER_PROPOSAL.
 An ORDER_PROPOSAL is a description for the owner: ``executable``, ``signed`` and
-``submitted`` are always False and it needs an out-of-band, signer-verified
-approval of its exact parameters before anything real can happen (governance
-§2.6). Rules arrive with each call; nothing is persisted and every rule is
+``submitted`` are always False: a proposal never becomes an order by itself.
+Only a new explicit and complete owner command, verified by the isolated
+signer, could ever lead to a real order (governance §2.6). Rules arrive with each call; nothing is persisted and every rule is
 disabled unless the call enables it. Thresholds are the caller's, not limits of
 the exchange or of the owner's signer risk config (which the MCP cannot see).
 
@@ -39,6 +39,7 @@ RULES: dict[str, dict[str, str]] = {
     "block_on_stale_data": {"max_data_age_seconds": "pos_int"},
 }
 BLOCKERS = ("block_on_suspended_market", "block_on_stale_data")
+POSITION_RULES = ("stop_loss", "take_profit", "trailing_stop")  # meaningless without a matched position
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {name: {"enabled": False} for name in RULES}
 
 
@@ -106,6 +107,8 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
         results.append({"rule": name, "enabled": cfg[name]["enabled"], "result": result, "reason": reason,
                         "inputs": inputs})
 
+    # Issue #187 D1: a matched stake read as exactly 0 is "no open position", not a position inside its thresholds.
+    no_position = type(open_stake) is int and open_stake == 0 and not liability
     for name in RULES:
         r = cfg[name]
         if not r["enabled"]:
@@ -114,6 +117,9 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
         if mp.get("data_conflict") and name not in BLOCKERS:
             # Conflicting or incomplete position data: no position rule is evaluated on it, never as zero.
             res(name, ALERT, "POSITION_DATA_CONFLICT_CANNOT_EVALUATE")
+            continue
+        if no_position and name in POSITION_RULES:
+            res(name, NO_ACTION, "NO_OPEN_POSITION")
             continue
         if name == "stop_loss":
             if mtm is None:
@@ -203,9 +209,9 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
                     "market_hash": mp.get("market_hash"), "hedge_status": hstat,
                     "order_parameters": {k: v for k, v in params.items() if k != "note"}}
             proposal = {**body, "proposal_hash": proposal_hash(body), "executable": False, "signed": False,
-                        "submitted": False, "requires_owner_out_of_band_approval": True,
-                        "note": "A proposal is not an order. Only an owner-approved, signer-verified order with these "
-                                "exact parameters could ever be sent; any change needs a new approval."}
+                        "submitted": False, "requires_explicit_owner_command": True,
+                        "note": "A proposal is not an order and never becomes one by itself. Only a new explicit and "
+                                "complete owner command, verified by the isolated signer, could lead to an order."}
     decision = ORDER_PROPOSAL if proposal else (ALERT if any(x["result"] == ALERT for x in results) else NO_ACTION)
     return {"schema": SCHEMA, "label": "DERIVED", "decision": decision, "results": results,
             "proposal": proposal, "blocked_by": blocked,

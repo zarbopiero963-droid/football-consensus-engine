@@ -166,9 +166,11 @@ COMMISSION_DOCS_UNVERIFIED = (
     "REFUND_FEE_SEMANTICS: refundFee is in the schema but its base is not documented; a void is computed only "
     "when the provider rate is null (nothing charged)",
     "EXCHANGE_FEE_ROUNDING: see ROUNDING_RULE.exchange_rounding",
-    "FEE_RATE_SCALE: rates are read as fractions (\"0.01\" = 1%) and a rate >= 1 is refused as malformed; the "
-    "fraction scale is consistent with the user guide's 1% but is not stated in the developer docs",
 )
+# Issue #187 D9: the fraction scale is now stated by the official contract (was DOCS_UNVERIFIED until 12-11-2026):
+# api-reference/get-user-fees-v3 and openapi.json: "Every rate is a decimal fraction string, so "0.05" is 5%."
+FEE_RATE_SCALE_VERIFIED = ("FEE_RATE_SCALE: rates are decimal fraction strings (\"0.01\" = 1%), VERIFIED on "
+                           "https://docs.sx.bet/api-reference/get-user-fees-v3; a rate >= 1 is refused as malformed")
 
 HEDGE_ROUNDING_RULE = {
     "arithmetic": "Python int on USDC base units (1 USDC = 10^6) and decimal.Decimal for fee rates; never float",
@@ -215,7 +217,7 @@ def commission_breakdown(*, stake_base_units: int, return_base_units: int | None
         "rate_note": (info.get("null_rate_notes") or {}).get(field),
         "stake_base_units": stake_base_units, "stake_usdc": usdc(stake_base_units),
         "rounding_rule": ROUNDING_RULE, "sources": list(COMMISSION_SOURCES),
-        "docs_unverified": list(COMMISSION_DOCS_UNVERIFIED),
+        "docs_unverified": list(COMMISSION_DOCS_UNVERIFIED), "verified_contract": [FEE_RATE_SCALE_VERIFIED],
         "odds_note": "Market prices, not model probabilities (HYBRID_MARKET_AWARE when used for decisions).",
     }
     if return_base_units is None:

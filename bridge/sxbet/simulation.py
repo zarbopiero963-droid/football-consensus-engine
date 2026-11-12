@@ -1,8 +1,8 @@
 """SX Bet SIMULATION: pure order-intent validation, fill simulation and reconciliation.
 
 Nothing in this module signs, holds a key or talks to the network. It turns a
-requested order into a validated, canonical *intent* (whose sha256 is what an
-out-of-band owner approval binds to), simulates the fill against an order-book
+requested order into a validated, canonical *intent* (whose sha256 identifies it
+in the audit; the owner's explicit command is verified by the isolated signer), simulates the fill against an order-book
 snapshot the caller already read, and models the reconciliation that a future
 submission path must perform. LIVE_TRADING stays UNAVAILABLE (governance §2.6).
 

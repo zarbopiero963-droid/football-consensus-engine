@@ -49,8 +49,8 @@ SOURCES = ("https://docs.sx.bet/developers/order-book", "https://docs.sx.bet/dev
            "https://docs.sx.bet/api-reference/get-fills-v3")
 WARNING = ("NOT A GUARANTEED CASHOUT. A simulation on a snapshot: the book can move or be withdrawn before any "
            "order arrives, betting delay and self-match prevention apply, MATCHED is not LOCKED, fee rounding is "
-           "not documented, and nothing here is signed or submitted. An owner-approved, signer-verified order "
-           "is required for any real hedge (governance 2.6).")
+           "not documented, and nothing here is signed or submitted. A real hedge needs an explicit and complete "
+           "owner command, verified by the isolated signer against its own reads and limits (governance 2.6).")
 MAX_SLIPPAGE = 50 * 10 ** 18  # 50 implied-probability points: input sanity bound, not a provider rule
 
 
@@ -150,6 +150,10 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
             return {**out, "status": UNCERTAIN, "reason": "POSITION_PNL_MISSING",
                     "uncertain_reasons": ["CONFLICTING_POSITION_DATA"]}
         return unavailable("POSITION_PNL_MISSING")
+    matched = (market_position.get("matched_stake_base_units") or {}).get("total")
+    if type(matched) is int and matched == 0 and p1 == 0 and p2 == 0:
+        # Issue #187 D1: no matched bet on this market is not a "balanced" position: nothing to hedge.
+        return {**unavailable("NO_OPEN_POSITION"), "position_status": "NO_OPEN_POSITION", "legs": []}
     h = pm._lower(market_position.get("market_hash"))
     if not isinstance(market, Mapping):
         return unavailable("MARKET_STATUS_UNKNOWN")
@@ -280,7 +284,7 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
         "liquidity": liquidity,
         "order_parameters_for_owner_review": {
             "executable": False, "signed": False, "submitted": False,
-            "requires_owner_out_of_band_approval": True,
+            "requires_explicit_owner_command": True,
             "market_hash": h, "betting_outcome_one": hedge_one, "stake_base_units": str(spent),
             "percentage_odds_limit": str(worst),
             "note": "Taker frame: highest implied probability accepted. Validate with sxbet_simulate_order."},

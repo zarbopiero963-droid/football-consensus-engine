@@ -7,7 +7,7 @@ M = "0x" + "11" * 32
 NOW = 1_800_000_000
 P = 10 ** 18
 HEDGE_OK = {"status": "HEDGE_AVAILABLE", "order_parameters_for_owner_review": {
-    "executable": False, "signed": False, "submitted": False, "requires_owner_out_of_band_approval": True,
+    "executable": False, "signed": False, "submitted": False, "requires_explicit_owner_command": True,
     "market_hash": M, "betting_outcome_one": False, "stake_base_units": "212", "percentage_odds_limit": str(45 * P),
     "note": "x"}}
 
@@ -37,7 +37,9 @@ def test_stop_loss_produces_a_non_executable_proposal():
     assert out["decision"] == "ORDER_PROPOSAL"
     p = out["proposal"]
     assert p["executable"] is False and p["signed"] is False and p["submitted"] is False
-    assert p["requires_owner_out_of_band_approval"] is True and p["triggered_by"] == ["stop_loss"]
+    # Issue #187 D2 (intentional): the key follows governance 2.6 (explicit owner command, no out-of-band approval).
+    assert p["requires_explicit_owner_command"] is True and "requires_owner_out_of_band_approval" not in p
+    assert p["triggered_by"] == ["stop_loss"]
     assert p["order_parameters"]["stake_base_units"] == "212" and p["proposal_hash"].startswith("sha256:")
     assert ev({"stop_loss": {"enabled": True, "max_loss_base_units": 600}})["decision"] == "NO_ACTION"
 
