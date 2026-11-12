@@ -115,3 +115,59 @@ def test_f3_f4_identity_and_database_checks_are_in_every_layer():
     src = (ROOT / "scripts" / "apifootball_cert_batch1.py").read_text(encoding="utf-8")
     assert '"LEDGER_DATABASE_WRONG"' in src and '"COORDINATOR_DATABASE_WRONG"' in src
     assert batch.COORDINATOR_DATABASE == "defaultdb" and batch.LEDGER_DATABASE == "fcb_cert"
+
+
+def test_p1_pinned_plans_are_the_committed_plan_files_and_their_budgets():
+    import json
+    batch1 = ROOT / "docs" / "certification" / "apifootball" / "batch1_plan.json"
+    snapshot = ROOT / "docs" / "certification" / "apifootball" / "live_snapshot_plan.json"
+    expected = {hashlib.sha256(batch1.read_bytes()).hexdigest(): ("BATCH1", json.loads(batch1.read_text())["max_attempts_total"]),
+                hashlib.sha256(snapshot.read_bytes()).hexdigest(): ("LIVE_FULL_MATCH_SNAPSHOT", batch.SNAPSHOT_CAP)}
+    assert batch.PINNED_PLANS == expected
+    assert expected[batch.plan_sha256(batch.render_plan(batch.build_plan()))] == ("BATCH1", 78)
+    assert expected[batch.plan_sha256(batch.render_snapshot_plan())] == ("LIVE_FULL_MATCH_SNAPSHOT", 8)
+
+
+def test_p2a_pinned_triggers_derive_from_the_pinned_0010_file():
+    text = path_a.LEDGER_MIGRATION.read_text(encoding="utf-8")
+    bits = {"ROW": 1, "BEFORE": 2, "INSERT": 4, "DELETE": 8, "UPDATE": 16, "TRUNCATE": 32}
+    found = re.findall(r"CREATE TRIGGER (\w+) (BEFORE|AFTER) ([A-Z ]+?)\s+ON (\w+)\s+FOR EACH (ROW|STATEMENT) "
+                       r"EXECUTE FUNCTION (\w+)\(\);", text)
+    assert len(found) == 12 == text.count("CREATE TRIGGER")
+    expected = []
+    for name, when, events, table, level, function in found:
+        tgtype = (bits["ROW"] if level == "ROW" else 0) + (bits["BEFORE"] if when == "BEFORE" else 0)
+        tgtype += sum(bits[e] for e in events.split(" OR "))
+        expected.append(f"{table}|{name}|{function}()|true|{tgtype}|O|0|true|")
+    assert batch.LEDGER_TRIGGER_SIGNATURES == ";".join(sorted(expected))
+
+
+def test_p1_pinned_checks_derive_from_the_pinned_0010_file():
+    """Names: PostgreSQL's generated names for the 0010 CHECKs (column-level <table>_<column>_check,
+    table-level <table>_check); literals: every bound, pattern and value of the file's expressions. The
+    exact pg_get_constraintdef text is asserted on the installed ledger by the integration tests."""
+    text = path_a.LEDGER_MIGRATION.read_text(encoding="utf-8")
+    names, literals = set(), {}
+    for table, body in re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", text, re.S):
+        table_checks = 0
+        for line in body.splitlines():
+            line = line.strip()
+            m = re.match(r"(\w+) [A-Z]+.*?CHECK \((.*)\),?$", line)
+            if m and not line.startswith("CHECK"):
+                name = f"{table}_{m.group(1)}_check"
+            elif line.startswith("CHECK"):
+                name = f"{table}_check" + (str(table_checks) if table_checks else "")
+                table_checks += 1
+            else:
+                continue
+            names.add((table, name))
+            literals[name] = set(re.findall(r"'[^']*'|\b\d+\b", line.split("CHECK", 1)[1]))
+    pinned = {}
+    for sig in batch.LEDGER_CHECK_SIGNATURES.split(";"):
+        table, name, definition, validated = sig.split("|", 3) if sig.count("|") == 3 else sig.rsplit("|", 1)[0].split("|", 2) + [sig.rsplit("|", 1)[1]]
+        pinned[name] = (table, definition, validated)
+    assert {(t, n) for n, (t, _d, _v) in pinned.items()} == names and len(names) == 13
+    for name, (_t, definition, validated) in pinned.items():
+        assert validated == "true"
+        for lit in literals[name]:
+            assert lit in definition, (name, lit)

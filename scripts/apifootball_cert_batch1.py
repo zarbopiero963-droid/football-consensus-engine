@@ -95,6 +95,61 @@ RUNNER_IDENTITY_SQL = (
 # review P3 F4: each connection must REALLY be on its database (current_database(), not the DSN).
 COORDINATOR_DATABASE = "defaultdb"
 CURRENT_DATABASE_SQL = "SELECT pg_catalog.current_database()::pg_catalog.text AS db"
+# Review #201 P1 (owner decision, option A): the APPROVED plans and their budgets, pinned and versioned
+# here (tests/test_apifootball_cert_path_a.py derives them from the committed plan files). The runner
+# requires the plan file's sha256 to be BOTH one of these AND approved in the ledger, and caps every
+# reservation at min(budget approved in the database, budget pinned here): no database change (budget
+# raised, CHECK dropped, trigger rebound) can raise it. A new plan or budget needs a reviewed commit.
+PINNED_PLANS = {
+    "e75ce9396b2f57cb0dbbdccd141cbc2783871fa88ab9a5ec03ba2557d366c6ca": ("BATCH1", 78),
+    "0f4262a1d4a29ed2e5c04f7b8cc74d9dc41f133fa6154585b96af952ad94521f": ("LIVE_FULL_MATCH_SNAPSHOT", 8),
+}
+# Review #201 P2-a: the 12 ledger triggers, pinned to bridge 0010 (tests derive them from the file):
+# table|trigger|function(args)|function in the ledger schema|tgtype|tgenabled|tgnargs|no WHEN|tgattr.
+LEDGER_TRIGGER_SIGNATURES = ";".join(sorted(
+    f"{table}|{name}|{function}()|true|{tgtype}|O|0|true|" for table, name, function, tgtype in (
+        ("api_football_cert_campaign_attempts", "api_football_cert_attempt_budget", "api_football_cert_attempt_guard", 7),
+        ("api_football_cert_campaign_attempts", "api_football_cert_attempts_immutable", "api_football_cert_reject_mutation", 58),
+        ("api_football_cert_campaign_attempts", "api_football_cert_attempts_stamp", "api_football_cert_stamp", 7),
+        ("api_football_cert_campaign_outcomes", "api_football_cert_outcomes_immutable", "api_football_cert_reject_mutation", 58),
+        ("api_football_cert_campaign_outcomes", "api_football_cert_outcomes_stamp", "api_football_cert_stamp", 7),
+        ("api_football_cert_campaigns", "api_football_cert_campaigns_immutable", "api_football_cert_reject_mutation", 58),
+        ("api_football_cert_campaigns", "api_football_cert_campaigns_stamp", "api_football_cert_stamp", 7),
+        ("api_football_cert_plan_usage", "api_football_cert_plan_usage_kept", "api_football_cert_reject_mutation", 42),
+        ("api_football_cert_plan_usage", "api_football_cert_plan_usage_monotonic", "api_football_cert_plan_usage_rule", 23),
+        ("api_football_cert_plans", "api_football_cert_plans_immutable", "api_football_cert_reject_mutation", 58),
+        ("api_football_cert_plans", "api_football_cert_plans_stamp", "api_football_cert_stamp", 7),
+        ("api_football_cert_plans", "api_football_cert_plans_usage_init", "api_football_cert_plan_usage_rule", 5))))
+# Review #201 P1: every CHECK constraint of the 5 ledger tables, exactly (PostgreSQL 18 pg_get_constraintdef
+# of bridge 0010; names and literals derived from the file by tests, values verified on the installed
+# ledger by the integration tests): table|name|definition|validated. Missing, altered, NOT VALID or extra
+# -> refused.
+LEDGER_CHECK_SIGNATURES = ";".join(sorted(
+    f"{table}|{name}|{definition}|true" for table, name, definition in (
+        ("api_football_cert_campaign_attempts", "api_football_cert_campaign_attempts_call_id_check",
+         "CHECK ((call_id ~ '^[A-Za-z0-9_-]{1,32}$'::text))"),
+        ("api_football_cert_campaign_attempts", "api_football_cert_campaign_attempts_seq_check",
+         "CHECK (((seq >= 1) AND (seq <= 78)))"),
+        ("api_football_cert_campaign_outcomes", "api_football_cert_campaign_outcomes_check",
+         "CHECK (((outcome = 'HTTP_RESPONSE'::text) = (http_status IS NOT NULL)))"),
+        ("api_football_cert_campaign_outcomes", "api_football_cert_campaign_outcomes_http_status_check",
+         "CHECK (((http_status >= 100) AND (http_status <= 599)))"),
+        ("api_football_cert_campaign_outcomes", "api_football_cert_campaign_outcomes_outcome_check",
+         "CHECK ((outcome = ANY (ARRAY['HTTP_RESPONSE'::text, 'TRANSPORT_ERROR'::text])))"),
+        ("api_football_cert_campaigns", "api_football_cert_campaigns_campaign_id_check",
+         "CHECK ((campaign_id ~ '^[a-z0-9][a-z0-9-]{7,63}$'::text))"),
+        ("api_football_cert_plan_usage", "api_football_cert_plan_usage_used_check",
+         "CHECK (((used >= 0) AND (used <= 78)))"),
+        ("api_football_cert_plans", "api_football_cert_plans_approved_by_check",
+         "CHECK ((approved_by ~ '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'::text))"),
+        ("api_football_cert_plans", "api_football_cert_plans_budget_check", "CHECK (((budget >= 1) AND (budget <= 78)))"),
+        ("api_football_cert_plans", "api_football_cert_plans_check",
+         "CHECK (((plan_kind <> 'LIVE_FULL_MATCH_SNAPSHOT'::text) OR (budget <= 8)))"),
+        ("api_football_cert_plans", "api_football_cert_plans_github_run_id_check", "CHECK ((github_run_id > 0))"),
+        ("api_football_cert_plans", "api_football_cert_plans_plan_kind_check",
+         "CHECK ((plan_kind = ANY (ARRAY['BATCH1'::text, 'LIVE_FULL_MATCH_SNAPSHOT'::text])))"),
+        ("api_football_cert_plans", "api_football_cert_plans_plan_sha256_check",
+         "CHECK ((plan_sha256 ~ '^[0-9a-f]{64}$'::text))"))))
 # review P2 F1: the 4 ledger functions, pinned to bridge 0010 (tests derive every value from the pinned
 # file): name|identity args|return type|language|SECURITY DEFINER|proconfig|volatility|md5(prosrc).
 LEDGER_FUNCTION_SIGNATURES = ";".join(sorted(
@@ -134,7 +189,32 @@ LEDGER_INTEGRITY_SQL = (
     "JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s "
     "AND p.proowner OPERATOR(pg_catalog.=) o.oid) OPERATOR(pg_catalog.=) %(functions)s "
     "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace "
-    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND p.proowner OPERATOR(pg_catalog.<>) o.oid)) AS ok "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND p.proowner OPERATOR(pg_catalog.<>) o.oid) "
+    # review #201 P2-a: each of the 12 triggers bound to its exact function (schema included), type, state
+    "AND (SELECT pg_catalog.string_agg(z.s, ';' ORDER BY z.s COLLATE pg_catalog.\"C\") FROM (SELECT "
+    "c.relname::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) "
+    "t.tgname::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) f.proname::pg_catalog.text "
+    "OPERATOR(pg_catalog.||) '(' OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_identity_arguments(f.oid) "
+    "OPERATOR(pg_catalog.||) ')|' OPERATOR(pg_catalog.||) (fn.nspname OPERATOR(pg_catalog.=) %(schema)s)::pg_catalog.text "
+    "OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) t.tgtype::pg_catalog.text OPERATOR(pg_catalog.||) '|' "
+    "OPERATOR(pg_catalog.||) t.tgenabled::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) "
+    "t.tgnargs::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) (t.tgqual IS NULL)::pg_catalog.text "
+    "OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) t.tgattr::pg_catalog.text AS s "
+    "FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) t.tgrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
+    "JOIN pg_catalog.pg_proc f ON f.oid OPERATOR(pg_catalog.=) t.tgfoid "
+    "JOIN pg_catalog.pg_namespace fn ON fn.oid OPERATOR(pg_catalog.=) f.pronamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) "
+    "AND NOT t.tgisinternal) z) OPERATOR(pg_catalog.=) %(triggers)s "
+    # review #201 P1: every CHECK of the 5 tables, exactly, validated
+    "AND (SELECT pg_catalog.string_agg(z.s, ';' ORDER BY z.s COLLATE pg_catalog.\"C\") FROM (SELECT "
+    "c.relname::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) "
+    "k.conname::pg_catalog.text OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) pg_catalog.pg_get_constraintdef(k.oid) "
+    "OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) k.convalidated::pg_catalog.text AS s "
+    "FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) k.conrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
+    "WHERE n.nspname OPERATOR(pg_catalog.=) %(schema)s AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s) "
+    "AND k.contype OPERATOR(pg_catalog.=) 'c') z) OPERATOR(pg_catalog.=) %(checks)s) AS ok "
     "FROM pg_catalog.pg_roles o WHERE o.rolname OPERATOR(pg_catalog.=) %(owner)s")
 
 
@@ -409,7 +489,8 @@ class PostgresCampaignLedger:
     message, DSN or value is surfaced."""
 
 
-    def __init__(self, connect=None, schema: str = "public", owner_role: str | None = None):
+    def __init__(self, connect=None, schema: str = "public", owner_role: str | None = None,
+                 pinned_plans: Mapping[str, tuple[str, int]] | None = None):
         if connect is None:  # PATH A: the runner's DSN, database fcb_cert; DSN never logged
             def connect():
                 import psycopg
@@ -424,6 +505,8 @@ class PostgresCampaignLedger:
         if owner_role is not None and not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", owner_role):
             raise ValueError("INVALID_OWNER_ROLE")
         self._owner_role = owner_role  # PATH A integrity checks (None: offline/legacy tests only)
+        # review #201 P1: the versioned plan identities and budgets (production: PINNED_PLANS, always)
+        self._pinned = PINNED_PLANS if pinned_plans is None else pinned_plans
         self._connect = connect
         self._schema = schema  # "public" in production; a throwaway schema in integration tests
         self._plans = f"{schema}.api_football_cert_plans"
@@ -461,7 +544,8 @@ class PostgresCampaignLedger:
             if not self._one(cur, "ok"):
                 raise LedgerUnavailable("RUNNER_IDENTITY_NOT_DEDICATED")
             cur.execute(LEDGER_INTEGRITY_SQL, {"schema": self._schema, "tables": list(LEDGER_TABLES),
-                                               "owner": self._owner_role, "functions": LEDGER_FUNCTION_SIGNATURES})
+                                               "owner": self._owner_role, "functions": LEDGER_FUNCTION_SIGNATURES,
+                                               "triggers": LEDGER_TRIGGER_SIGNATURES, "checks": LEDGER_CHECK_SIGNATURES})
             if not self._one(cur, "ok"):
                 raise LedgerUnavailable("CAMPAIGN_LEDGER_INTEGRITY_FAILED")
 
@@ -500,9 +584,14 @@ class PostgresCampaignLedger:
             raise LedgerUnavailable("CAMPAIGN_BUDGET_OUT_OF_RANGE")
         with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute(f"SELECT budget FROM {self._plans} WHERE plan_sha256=%s", (plan_sha,))
-            if self._one(cur, "budget") is None:
+            if self._owner_role is not None and plan_sha not in self._pinned:
+                raise LedgerUnavailable("PLAN_NOT_PINNED")  # review #201 P1: not a versioned plan
+            cur.execute(f"SELECT budget, plan_kind FROM {self._plans} WHERE plan_sha256=%s", (plan_sha,))
+            row = cur.fetchone()
+            if row is None or (row["budget"] if isinstance(row, dict) else row[0]) is None:
                 raise LedgerUnavailable("PLAN_NOT_APPROVED")  # before any request
+            if self._owner_role is not None and (row["plan_kind"] if isinstance(row, dict) else row[1]) != self._pinned[plan_sha][0]:
+                raise LedgerUnavailable("PLAN_NOT_PINNED")
             cur.execute(f"INSERT INTO {self._campaigns} (campaign_id, plan_sha256) "
                         "VALUES (%s, %s) ON CONFLICT (campaign_id) DO NOTHING", (campaign_id, plan_sha))
             cur.execute(f"SELECT plan_sha256 FROM {self._campaigns} WHERE campaign_id=%s", (campaign_id,))
@@ -517,14 +606,23 @@ class PostgresCampaignLedger:
         rollback (or a killed process) undoes both."""
         with self._read_committed(self._connect()) as conn, conn.cursor() as cur:
             self._require_schema(cur)
-            cur.execute(f"SELECT p.budget FROM {self._campaigns} c JOIN {self._plans} p "
+            cur.execute(f"SELECT p.budget, p.plan_sha256 FROM {self._campaigns} c JOIN {self._plans} p "
                         "ON p.plan_sha256 = c.plan_sha256 WHERE c.campaign_id=%s", (campaign_id,))
-            if self._one(cur, "budget") is None:
+            row = cur.fetchone()
+            budget, plan_sha = ((row["budget"], row["plan_sha256"]) if isinstance(row, dict) else tuple(row)) if row else (None, None)
+            if budget is None:
                 raise LedgerUnavailable("PLAN_NOT_APPROVED")
+            cap = None
+            if self._owner_role is not None:  # review #201 P1: min(database budget, pinned budget)
+                if plan_sha not in self._pinned:
+                    raise LedgerUnavailable("PLAN_NOT_PINNED")
+                cap = min(int(budget), int(self._pinned[plan_sha][1]), HARD_CAP)
             cur.execute(f"INSERT INTO {self._attempts} (campaign_id, call_id) VALUES (%s, %s) RETURNING seq",
                         (campaign_id, call_id))
             seq = int(self._one(cur, "seq"))
             self._counter_matches_committed(cur, campaign_id, seq)  # SAME transaction, before COMMIT
+            if cap is not None and seq > cap:  # count == seq is enforced above: this caps the plan
+                raise BudgetExhausted("CAMPAIGN_BUDGET_EXHAUSTED")  # rolled back with the INSERT
             return seq  # committed on leaving the block
 
     def _counter_matches_committed(self, cur, campaign_id: str, seq: int) -> None:

@@ -113,9 +113,15 @@ def _defaultdb_fingerprint(ns):
             "(SELECT used FROM api_football_quota_counters WHERE api_key_hash = 'seed') AS seed").fetchone()
 
 
+# Review #201 P1: the runner only accepts VERSIONED plans (batch.PINNED_PLANS in production). The test
+# plans below are pinned for the test ledgers only, with the budget they were approved with.
+TEST_PINNED: dict = dict(batch.PINNED_PLANS)
+
+
 def _approve(ns, budget, tag, kind="BATCH1", sha=None, run_id="4242"):
     sha = sha or hashlib.sha256(f"path-a-{budget}-{tag}-{uuid.uuid4().hex}".encode()).hexdigest()
     path_a.approve_plan(lambda: ns.admin("fcb_cert"), sha, kind, budget, "owner-test", run_id)
+    TEST_PINNED.setdefault(sha, (kind, budget))
     return sha
 
 
@@ -135,7 +141,7 @@ def _counter_matches(ns, plan, expected=None):
 
 
 def _ledger(ns):
-    return batch.PostgresCampaignLedger(ns.runner, schema="public", owner_role=OWNER)
+    return batch.PostgresCampaignLedger(ns.runner, schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
 
 
 @pytest.fixture(autouse=True)
@@ -351,7 +357,7 @@ def test_inv1_runner_binds_only_the_committed_approved_plan_and_sends_nothing_ot
 
 # ------------------------------------------------------------------ INV-2: atomic per-plan budget
 
-def _iso_worker(dsn, campaign, plan, level, out):
+def _iso_worker(dsn, campaign, plan, level, out, pinned=None):
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     from apifootball_campaign_kit import load as _load
@@ -360,7 +366,7 @@ def _iso_worker(dsn, campaign, plan, level, out):
     granted = conflicts = 0
     if level == "RUNNER":
         ledger = mod.PostgresCampaignLedger(lambda: psycopg.connect(dsn, row_factory=dict_row), schema="public",
-                                            owner_role="fcb_cert_owner")
+                                            owner_role="fcb_cert_owner", pinned_plans=pinned)
         asyncio.run(ledger.open(campaign, 78, plan))
         for i in range(20):
             try:
@@ -408,7 +414,7 @@ def test_inv2_nine_runner_processes_never_exceed_the_plan_budget_at_any_isolatio
         out = ctx.Queue()
         tag = uuid.uuid4().hex[:8]
         procs = [ctx.Process(target=_iso_worker, args=(env.runner_dsn(), f"camp-iso-{tag}-{i:04d}", plan,
-                                                       level, out)) for i in range(9)]
+                                                       level, out, dict(TEST_PINNED))) for i in range(9)]
         for p in procs:
             p.start()
         for p in procs:
@@ -446,7 +452,7 @@ def test_inv2_original_stale_snapshot_defect_is_a_serialization_failure_not_an_o
     _counter_matches(env, plan, 2)
 
 
-def _plan_worker(dsn, campaign, plan, mode, out):
+def _plan_worker(dsn, campaign, plan, mode, out, pinned=None):
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     from apifootball_campaign_kit import load as _load
@@ -455,7 +461,7 @@ def _plan_worker(dsn, campaign, plan, mode, out):
 
     def connect():
         return psycopg.connect(dsn, row_factory=dict_row)
-    ledger = mod.PostgresCampaignLedger(connect, schema="public", owner_role="fcb_cert_owner")
+    ledger = mod.PostgresCampaignLedger(connect, schema="public", owner_role="fcb_cert_owner", pinned_plans=pinned)
     asyncio.run(ledger.open(campaign, 78, plan))
     got = 0
     for i in range(80):
@@ -489,7 +495,7 @@ def test_inv2_kills_rollbacks_restarts_and_new_campaign_ids_never_renew_the_budg
     out = ctx.Queue()
 
     def spawn(modes, offset):
-        procs = [ctx.Process(target=_plan_worker, args=(env.runner_dsn(), f"camp-kill-{offset + i:04d}", plan, mode, out))
+        procs = [ctx.Process(target=_plan_worker, args=(env.runner_dsn(), f"camp-kill-{offset + i:04d}", plan, mode, out, dict(TEST_PINNED)))
                  for i, mode in enumerate(modes)]
         for p in procs:
             p.start()
@@ -514,7 +520,7 @@ def test_inv2_kills_rollbacks_restarts_and_new_campaign_ids_never_renew_the_budg
 
 # ------------------------------------------------------------------ INV-3: evidence, RESERVED_UNKNOWN, fail-closed
 
-def _crash_worker(runner_dsn, coordinator_dsn, plan_sha, where, marker):
+def _crash_worker(runner_dsn, coordinator_dsn, plan_sha, where, marker, pinned=None):
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     import httpx as _httpx
@@ -533,7 +539,7 @@ def _crash_worker(runner_dsn, coordinator_dsn, plan_sha, where, marker):
         Path(marker).write_text("sent", encoding="utf-8")
         return _Provider().default(request)
     cls = DiesBeforeOutcome if where == "between_send_and_outcome" else mod.PostgresCampaignLedger
-    ledger = cls(lambda: psycopg.connect(runner_dsn, row_factory=dict_row), schema="public", owner_role="fcb_cert_owner")
+    ledger = cls(lambda: psycopg.connect(runner_dsn, row_factory=dict_row), schema="public", owner_role="fcb_cert_owner", pinned_plans=pinned)
     quota = PostgresQuota(QuotaLimits(100, 1000, 8), connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
     plan_text = mod.render_plan(mod.build_plan())
     asyncio.run(mod.execute(json.loads(plan_text), campaign_id="camp-crash-" + where.split("_")[1][:4], settings=_settings(),
@@ -552,7 +558,7 @@ def test_inv3_killed_runner_full_stack_reserved_unknown_counted_and_never_retrie
     _approve(env, 78, "batch1", sha=sha)
     marker = tmp_path / "sent.txt"
     ctx = multiprocessing.get_context("spawn")
-    proc = ctx.Process(target=_crash_worker, args=(env.runner_dsn(), env.runner_dsn("defaultdb"), sha, where, str(marker)))
+    proc = ctx.Process(target=_crash_worker, args=(env.runner_dsn(), env.runner_dsn("defaultdb"), sha, where, str(marker), dict(TEST_PINNED)))
     proc.start()
     proc.join(120)
     assert proc.exitcode == 17 and marker.exists() == (where == "between_send_and_outcome")
@@ -608,7 +614,7 @@ def test_fail_closed_when_the_runner_identity_is_the_administrator(env, monkeypa
                        "--out", str(Path(os.environ.get("TMPDIR", "/tmp")) / "pa-out")]) == 2
     assert "CAMPAIGN_REFUSED RUNNER_IDENTITY_NOT_DEDICATED" in capsys.readouterr().out and sent == []
     # the ledger itself also refuses the administrator (it cannot even read the tables)
-    admin_ledger = batch.PostgresCampaignLedger(lambda: env.admin("fcb_cert"), schema="public", owner_role=OWNER)
+    admin_ledger = batch.PostgresCampaignLedger(lambda: env.admin("fcb_cert"), schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
     with pytest.raises(batch.LedgerUnavailable):
         asyncio.run(admin_ledger.open("camp-admin-0002", 78, "a" * 64))
 
@@ -617,7 +623,7 @@ def test_fail_closed_when_a_database_is_unavailable(env, monkeypatch, capsys):
     plan_text = batch.render_plan(batch.build_plan())
     provider = Provider()
     down = batch.PostgresCampaignLedger(lambda: psycopg.connect(_dsn(RUNNER, env.runner_pw, "fcb_cert_missing")),
-                                        schema="public", owner_role=OWNER)
+                                        schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
     with pytest.raises(batch.LedgerUnavailable, match="CAMPAIGN_LEDGER_UNAVAILABLE"):
         asyncio.run(batch.execute(json.loads(plan_text), campaign_id="camp-down-00001", settings=settings(),
                                   ledger=down, inner_transport=provider.transport(), quota=Quota(),
@@ -926,7 +932,7 @@ def test_a2_order_is_authorization_plan_lease_reservation_call_outcome(env):
     plan = json.loads(text)
     plan["calls"] = plan["calls"][:2]
     run = asyncio.run(batch.execute(plan, campaign_id="camp-order-" + uuid.uuid4().hex[:8], settings=settings(),
-                              ledger=Recording(env.runner, schema="public", owner_role=OWNER),
+                              ledger=Recording(env.runner, schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED),
                               inner_transport=transport, quota=_recording_quota(env, events), plan_text=text,
                               source_sha="x"))
     assert len(sent) == 2, run["calls"]
@@ -1023,7 +1029,7 @@ def test_a2_no_provider_request_with_only_a_quota_lease(env, case):
                 su.execute(f"GRANT fcbpa_any TO {RUNNER}")
             restore = ("postgres", "DROP ROLE fcbpa_any")
     try:
-        sent, codes, campaign, sha = _refused_run(env, Ledger(env.runner, schema="public", owner_role=OWNER), events, tag,
+        sent, codes, campaign, sha = _refused_run(env, Ledger(env.runner, schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED), events, tag,
                                                   budget=budget, after_acquire=after_acquire)
     finally:
         if restore:
@@ -1043,7 +1049,7 @@ def test_a2_no_provider_request_with_only_a_quota_lease(env, case):
         assert events.count("release") == events.count("lease")
 
 
-def _kill_between_insert_and_commit(runner_dsn, coordinator_dsn, plan_text, campaign, marker):
+def _kill_between_insert_and_commit(runner_dsn, coordinator_dsn, plan_text, campaign, marker, pinned=None):
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     import httpx as _httpx
@@ -1063,7 +1069,7 @@ def _kill_between_insert_and_commit(runner_dsn, coordinator_dsn, plan_text, camp
         Path(marker).write_text("sent", encoding="utf-8")
         return _httpx.Response(200, json={})
     ledger = mod.PostgresCampaignLedger(lambda: Dies.connect(runner_dsn), schema="public",
-                                        owner_role="fcb_cert_owner")
+                                        owner_role="fcb_cert_owner", pinned_plans=pinned)
     quota = PostgresQuota(QuotaLimits(1000, 100000, 8), connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
     plan = json.loads(plan_text)
     plan["calls"] = plan["calls"][:1]
@@ -1082,7 +1088,7 @@ def test_a2_process_killed_between_insert_and_commit_sends_nothing_and_consumes_
     marker = tmp_path / "sent"
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(target=_kill_between_insert_and_commit,
-                       args=(env.runner_dsn(), env.runner_dsn("defaultdb"), text, campaign, str(marker)))
+                       args=(env.runner_dsn(), env.runner_dsn("defaultdb"), text, campaign, str(marker), dict(TEST_PINNED)))
     proc.start()
     proc.join(120)
     assert proc.exitcode == 9 and not marker.exists()  # died; the provider was never reached
@@ -1230,7 +1236,7 @@ def test_f3_any_member_of_the_runner_is_refused_before_any_request(env, option, 
 
 def test_f4_each_connection_must_really_be_on_its_database(env, monkeypatch, capsys):
     # the ledger on the coordinator database (a DSN pointing elsewhere): refused before any lease or call
-    wrong = batch.PostgresCampaignLedger(lambda: env.runner("defaultdb"), schema="public", owner_role=OWNER)
+    wrong = batch.PostgresCampaignLedger(lambda: env.runner("defaultdb"), schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
     sent, codes = _execute_counting(env, wrong, "f4-ledger")
     assert sent == [] and codes == ["LEDGER_DATABASE_WRONG"], codes
     # the coordinator on the ledger database: refused by the runner before any lease
@@ -1334,7 +1340,7 @@ def test_review201_the_check_itself_failing_refuses_fail_closed(env, monkeypatch
     _counter_matches(env, sha, before)
 
 
-def _iso_runner_worker(dsn, campaign, plan, level, out):
+def _iso_runner_worker(dsn, campaign, plan, level, out, pinned=None):
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     from apifootball_campaign_kit import load as _load
@@ -1348,8 +1354,8 @@ def _iso_runner_worker(dsn, campaign, plan, level, out):
             return conn
     connect = lambda: psycopg.connect(dsn, row_factory=dict_row)  # noqa: E731
     # the campaign is opened as the runner does (READ COMMITTED); the RESERVATIONS run at `level`
-    asyncio.run(mod.PostgresCampaignLedger(connect, schema="public", owner_role="fcb_cert_owner").open(campaign, 78, plan))
-    ledger = Ledger(connect, schema="public", owner_role="fcb_cert_owner")
+    asyncio.run(mod.PostgresCampaignLedger(connect, schema="public", owner_role="fcb_cert_owner", pinned_plans=pinned).open(campaign, 78, plan))
+    ledger = Ledger(connect, schema="public", owner_role="fcb_cert_owner", pinned_plans=pinned)
     granted = conflicts = false_refusals = 0
     for i in range(40):
         try:
@@ -1372,7 +1378,7 @@ def test_review201_nine_processes_each_isolation_no_overrun_no_false_refusal(env
     ctx = multiprocessing.get_context("spawn")
     out = ctx.Queue()
     tag = uuid.uuid4().hex[:8]
-    procs = [ctx.Process(target=_iso_runner_worker, args=(env.runner_dsn(), f"camp-r201-{tag}-{i}", plan, level, out))
+    procs = [ctx.Process(target=_iso_runner_worker, args=(env.runner_dsn(), f"camp-r201-{tag}-{i}", plan, level, out, dict(TEST_PINNED)))
              for i in range(9)]
     for p in procs:
         p.start()
@@ -1383,3 +1389,171 @@ def test_review201_nine_processes_each_isolation_no_overrun_no_false_refusal(env
     assert sum(r[0] for r in results) == 7, results  # no overrun, no lost legitimate reservation
     assert sum(r[2] for r in results) == 0, results  # no false positive of the counter check
     _counter_matches(env, plan, 7)
+
+
+# ------------------------------------------------------------------ review #201 P1 / P2-a (owner decision, option A)
+
+def _seq_checks(env):
+    with env.su("fcb_cert") as c:
+        return {r["conname"]: r["d"] for r in c.execute(
+            "SELECT k.conname, pg_get_constraintdef(k.oid) AS d FROM pg_constraint k JOIN pg_class t ON t.oid = k.conrelid "
+            "WHERE t.relnamespace = 'public'::regnamespace AND k.contype = 'c' AND t.relname = ANY(%s)",
+            (["api_football_cert_plans", "api_football_cert_plan_usage", "api_football_cert_campaign_attempts"],))}
+
+
+def test_p1_installed_triggers_and_checks_match_the_pinned_signatures(env):
+    with env.su("fcb_cert") as c:
+        trig = c.execute(
+            "SELECT string_agg(s, ';' ORDER BY s COLLATE \"C\") AS s FROM (SELECT t2.relname || '|' || t.tgname || '|' || "
+            "f.proname || '(' || pg_get_function_identity_arguments(f.oid) || ')|' || (fn.nspname = 'public')::text || '|' || "
+            "t.tgtype::text || '|' || t.tgenabled::text || '|' || t.tgnargs::text || '|' || (t.tgqual IS NULL)::text || '|' || "
+            "t.tgattr::text AS s FROM pg_trigger t JOIN pg_class t2 ON t2.oid = t.tgrelid JOIN pg_proc f ON f.oid = t.tgfoid "
+            "JOIN pg_namespace fn ON fn.oid = f.pronamespace WHERE t2.relnamespace = 'public'::regnamespace "
+            "AND t2.relname LIKE 'api_football_cert_%%' AND NOT t.tgisinternal) z").fetchone()["s"]
+        chk = c.execute(
+            "SELECT string_agg(s, ';' ORDER BY s COLLATE \"C\") AS s FROM (SELECT t.relname || '|' || k.conname || '|' || "
+            "pg_get_constraintdef(k.oid) || '|' || k.convalidated::text AS s FROM pg_constraint k JOIN pg_class t ON t.oid = k.conrelid "
+            "WHERE t.relnamespace = 'public'::regnamespace AND t.relname LIKE 'api_football_cert_%%' AND k.contype = 'c') z").fetchone()["s"]
+    assert trig == batch.LEDGER_TRIGGER_SIGNATURES and chk == batch.LEDGER_CHECK_SIGNATURES
+
+
+def test_p1_reviewer_scenario_db_budget_raised_to_156_sends_nothing_beyond_78(env):
+    """The independent review's P1: the lot spent 78/78; as the owner (SET self-grant) the CHECKs on
+    plans.budget / plan_usage.used / attempts.seq are dropped, the immutability trigger bypassed and the
+    budget raised to 156. A new campaign_id: 0 provider requests (pinned cap 78 + CHECK integrity)."""
+    text, sha = _plan_variant(env, 78, "p1-raise-" + uuid.uuid4().hex[:6])
+    ledger = _ledger(env)
+    asyncio.run(ledger.open("camp-p1-raise-a1", 78, sha))
+    for i in range(78):
+        asyncio.run(ledger.reserve("camp-p1-raise-a1", f"R{i}"))
+    _counter_matches(env, sha, 78)
+    original = _seq_checks(env)
+    tables = {"api_football_cert_plans_budget_check": "api_football_cert_plans",
+              "api_football_cert_plan_usage_used_check": "api_football_cert_plan_usage",
+              "api_football_cert_campaign_attempts_seq_check": "api_football_cert_campaign_attempts"}
+    _as_owner_deliberately(env, *[f"ALTER TABLE public.{t} DROP CONSTRAINT {n}" for n, t in tables.items()],
+                           "ALTER TABLE public.api_football_cert_plans DISABLE TRIGGER api_football_cert_plans_immutable",
+                           f"UPDATE public.api_football_cert_plans SET budget = 156 WHERE plan_sha256 = '{sha}'",
+                           "ALTER TABLE public.api_football_cert_plans ENABLE TRIGGER api_football_cert_plans_immutable")
+    try:
+        sent, codes = _plan_run(env, text, 2, "camp-p1-raise-b1")
+        assert sent == 0 and codes[0] in ("CAMPAIGN_LEDGER_INTEGRITY_FAILED", "CAMPAIGN_BUDGET_EXHAUSTED"), codes
+        _counter_matches(env, sha, 78)
+    finally:
+        _as_owner_deliberately(env, "ALTER TABLE public.api_football_cert_plans DISABLE TRIGGER api_football_cert_plans_immutable",
+                               f"UPDATE public.api_football_cert_plans SET budget = 78 WHERE plan_sha256 = '{sha}'",
+                               "ALTER TABLE public.api_football_cert_plans ENABLE TRIGGER api_football_cert_plans_immutable",
+                               *[f"ALTER TABLE public.{t} ADD CONSTRAINT {n} {original[n]}" for n, t in tables.items()])
+    assert _seq_checks(env) == original
+
+
+def test_p1_the_pinned_cap_alone_bounds_a_higher_database_budget(env):
+    """The double bound in isolation (all CHECKs and triggers intact): database budget 5, versioned budget
+    3 -> exactly 3 requests; the 4th reservation is refused in its own transaction and rolled back."""
+    sha_text, sha = _plan_variant(env, 5, "p1-cap-" + uuid.uuid4().hex[:6])
+    TEST_PINNED[sha] = ("BATCH1", 3)  # what the versioned code would say for this plan
+    try:
+        assert _plan_run(env, sha_text, 5, "camp-p1-cap-a1")[0] == 3
+        _counter_matches(env, sha, 3)
+        ledger = _ledger(env)
+        asyncio.run(ledger.open("camp-p1-cap-b1", 78, sha))
+        with pytest.raises(batch.BudgetExhausted):
+            asyncio.run(ledger.reserve("camp-p1-cap-b1", "X"))
+        assert _committed_attempts(env, "camp-p1-cap-b1") == 0
+        _counter_matches(env, sha, 3)
+    finally:
+        TEST_PINNED[sha] = ("BATCH1", 5)
+
+
+def test_p1_a_lowered_database_budget_is_the_effective_limit(env):
+    text, sha = _plan_variant(env, 78, "p1-lower-" + uuid.uuid4().hex[:6])
+    assert _plan_run(env, text, 1, "camp-p1-lower-a1")[0] == 1
+    _as_owner_deliberately(env, "ALTER TABLE public.api_football_cert_plans DISABLE TRIGGER api_football_cert_plans_immutable",
+                           f"UPDATE public.api_football_cert_plans SET budget = 2 WHERE plan_sha256 = '{sha}'",
+                           "ALTER TABLE public.api_football_cert_plans ENABLE TRIGGER api_football_cert_plans_immutable")
+    sent, codes = _plan_run(env, text, 4, "camp-p1-lower-b1")
+    assert sent == 1, codes  # min(2, 78) = 2 in total: one more, never the pinned 78
+    _counter_matches(env, sha, 2)
+
+
+def test_p2a_reviewer_scenario_trigger_rebound_to_a_foreign_function_is_refused(env):
+    text, sha = _plan_variant(env, 3, "p2a-rebind-" + uuid.uuid4().hex[:6])
+    assert _plan_run(env, text, 3, "camp-p2a-a1")[0] == 3
+    _counter_matches(env, sha, 3)
+    _as_owner_deliberately(
+        env, "CREATE SCHEMA rrx",
+        "CREATE FUNCTION rrx.g() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$"
+        " BEGIN NEW.seq := (SELECT count(*) + 1 FROM public.api_football_cert_campaign_attempts a"
+        " JOIN public.api_football_cert_campaigns c USING (campaign_id) WHERE c.plan_sha256 ="
+        " (SELECT plan_sha256 FROM public.api_football_cert_campaigns WHERE campaign_id = NEW.campaign_id));"
+        " RETURN NEW; END $$",
+        "DROP TRIGGER api_football_cert_attempt_budget ON public.api_football_cert_campaign_attempts",
+        "CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON public.api_football_cert_campaign_attempts"
+        " FOR EACH ROW EXECUTE FUNCTION rrx.g()")
+    try:
+        sent, codes = _plan_run(env, text, 3, "camp-p2a-b1")
+        assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_INTEGRITY_FAILED", codes
+        _counter_matches(env, sha, 3)
+    finally:
+        _as_owner_deliberately(
+            env, "DROP TRIGGER api_football_cert_attempt_budget ON public.api_football_cert_campaign_attempts",
+            "CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON public.api_football_cert_campaign_attempts"
+            " FOR EACH ROW EXECUTE FUNCTION public.api_football_cert_attempt_guard()",
+            "DROP SCHEMA rrx CASCADE")
+    assert _plan_run(env, *_plan_variant(env, 3, "p2a-ok-" + uuid.uuid4().hex[:6])[:1], 1, "camp-p2a-ok1")[0] == 1
+
+
+@pytest.mark.parametrize("change", ["dropped", "altered", "not_valid", "extra", "when_clause"])
+def test_p1_a_changed_check_or_trigger_definition_is_refused(env, change):
+    text, sha = _plan_variant(env, 78, f"p1-{change}-" + uuid.uuid4().hex[:6])
+    seq = "api_football_cert_campaign_attempts_seq_check"
+    att = "public.api_football_cert_campaign_attempts"
+    original = _seq_checks(env)[seq]
+    tamper, restore = {
+        "dropped": ([f"ALTER TABLE {att} DROP CONSTRAINT {seq}"], [f"ALTER TABLE {att} ADD CONSTRAINT {seq} {original}"]),
+        "altered": ([f"ALTER TABLE {att} DROP CONSTRAINT {seq}", f"ALTER TABLE {att} ADD CONSTRAINT {seq} CHECK (seq BETWEEN 1 AND 156)"],
+                    [f"ALTER TABLE {att} DROP CONSTRAINT {seq}", f"ALTER TABLE {att} ADD CONSTRAINT {seq} {original}"]),
+        "not_valid": ([f"ALTER TABLE {att} DROP CONSTRAINT {seq}", f"ALTER TABLE {att} ADD CONSTRAINT {seq} {original} NOT VALID"],
+                      [f"ALTER TABLE {att} DROP CONSTRAINT {seq}", f"ALTER TABLE {att} ADD CONSTRAINT {seq} {original}"]),
+        "extra": ([f"ALTER TABLE {att} ADD CONSTRAINT fcbpa_extra CHECK (seq > 0)"], [f"ALTER TABLE {att} DROP CONSTRAINT fcbpa_extra"]),
+        "when_clause": (["DROP TRIGGER api_football_cert_attempt_budget ON " + att,
+                         "CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON " + att +
+                         " FOR EACH ROW WHEN (NEW.call_id <> 'x') EXECUTE FUNCTION public.api_football_cert_attempt_guard()"],
+                        ["DROP TRIGGER api_football_cert_attempt_budget ON " + att,
+                         "CREATE TRIGGER api_football_cert_attempt_budget BEFORE INSERT ON " + att +
+                         " FOR EACH ROW EXECUTE FUNCTION public.api_football_cert_attempt_guard()"]),
+    }[change]
+    _as_owner_deliberately(env, *tamper)
+    try:
+        sent, codes = _plan_run(env, text, 2, f"camp-p1-{change[:5].replace('_', '-')}-" + uuid.uuid4().hex[:6])
+        assert sent == 0 and codes[0] == "CAMPAIGN_LEDGER_INTEGRITY_FAILED", codes
+    finally:
+        _as_owner_deliberately(env, *restore)
+    assert _plan_run(env, text, 1, "camp-p1-ok-" + uuid.uuid4().hex[:8])[0] == 1  # restored: works again
+    _counter_matches(env, sha, 1)
+
+
+def test_p1_a_plan_that_is_not_the_versioned_one_is_refused_before_any_request(env):
+    """A plan approved in the database but not pinned in the code (a different plan file): refused."""
+    text, sha = _plan_variant(env, 78, "p1-unpinned-" + uuid.uuid4().hex[:6])
+    for ledger in (batch.PostgresCampaignLedger(env.runner, schema="public", owner_role=OWNER),  # production pins
+                   batch.PostgresCampaignLedger(env.runner, schema="public", owner_role=OWNER,
+                                                pinned_plans={sha: ("LIVE_FULL_MATCH_SNAPSHOT", 8)})):  # wrong kind
+        events = _Events()
+        transport, sent = _recording_provider(events)
+        with pytest.raises(batch.LedgerUnavailable, match="PLAN_NOT_PINNED"):
+            asyncio.run(batch.execute(json.loads(text), campaign_id="camp-unpin-" + uuid.uuid4().hex[:8],
+                                      settings=settings(), ledger=ledger, inner_transport=transport,
+                                      quota=_recording_quota(env, events), plan_text=text, source_sha="x"))
+        assert sent == [] and "lease" not in events
+    assert sha not in batch.PINNED_PLANS
+
+
+def test_p1_an_error_of_the_integrity_check_itself_refuses_fail_closed(env, monkeypatch):
+    text, sha = _plan_variant(env, 78, "p1-ierr-" + uuid.uuid4().hex[:6])
+    monkeypatch.setattr(batch, "LEDGER_INTEGRITY_SQL", "SELECT %(no_such_parameter)s AS ok")
+    sent, codes = _plan_run(env, text, 2, "camp-p1-ierr-" + uuid.uuid4().hex[:6])
+    assert sent == 0 and codes == ["CAMPAIGN_LEDGER_UNAVAILABLE"], codes
+    monkeypatch.setattr(batch, "LEDGER_INTEGRITY_SQL", "SELECT NULL::boolean AS ok WHERE %(schema)s::text IS NOT NULL")
+    sent, codes = _plan_run(env, text, 2, "camp-p1-inul-" + uuid.uuid4().hex[:6])
+    assert sent == 0 and codes == ["CAMPAIGN_LEDGER_INTEGRITY_FAILED"], codes

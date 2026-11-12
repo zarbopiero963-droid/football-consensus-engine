@@ -355,3 +355,19 @@ Il ledger è la 0010 byte per byte nel database `fcb_cert` dello stesso servizio
 - Un'incoerenza produce `CAMPAIGN_LEDGER_COUNTER_MISMATCH`; un errore o un NULL del controllo stesso produce `CAMPAIGN_LEDGER_COUNTER_CHECK_FAILED`. In entrambi i casi la transazione viene annullata e non parte nessuna richiesta.
 
 **Limite accettato e dichiarato.** Il ledger è protetto dal runner, dalle modifiche ordinarie e dalle incoerenze rilevabili (contatore azzerato o alterato, funzioni sostituite, ruoli o membership anomali, database sbagliato). Non è protetto da un amministratore intenzionalmente malevolo, né da un runtime compromesso con credenziali admin, che modifichi in modo coerente contatore, tentativi ed evidenze. Su Aiven avnadmin può sempre concedersi `fcb_cert_owner`. I controlli falliscono chiusi quando rilevano una violazione, ma non impediscono un attacco amministrativo successivo alla verifica. Il ledger non va presentato come resistente a qualunque attacco admin.
+
+**Tetto indipendente dal database (review #201, P1, opzione A).** Il runner accetta solo i piani versionati nel codice (`PINNED_PLANS` in `scripts/apifootball_cert_batch1.py`):
+- batch1 `e75ce939…` con budget 78;
+- snapshot `0f4262a1…` con budget 8.
+
+Lo sha256 del file del piano deve essere pinnato e approvato nel ledger, altrimenti `PLAN_NOT_PINNED`. Ogni prenotazione è limitata a `min(budget approvato nel DB, budget versionato)` nella stessa transazione, dopo il controllo di coerenza: oltre il tetto c'è `CAMPAIGN_BUDGET_EXHAUSTED` con rollback. Un budget alzato nel DB, CHECK rimossi o il trigger di budget ripuntato non alzano quindi il tetto. Un nuovo piano o un nuovo budget richiede un commit revisionato.
+
+Il controllo di integrità a ogni transazione verifica anche:
+- i 12 trigger: tabella, funzione esatta con schema, `tgtype`, abilitazione, nessun `WHEN` e nessun argomento;
+- tutti i CHECK delle 5 tabelle: definizione esatta e `convalidated`, nessuno mancante o in più.
+
+Qualunque differenza, o errore del controllo stesso, rifiuta prima dell'invio.
+
+**Rischi residui dichiarati (P3).**
+- **Riscrittura coerente delle evidenze (P3-a).** Un amministratore malevolo che, con atto deliberato, ricollega le campagne a un altro piano e azzera il contatore produce uno stato coerente. Il tetto versionato limita comunque ogni piano al budget del codice, ma la riscrittura dell'evidenza non è rilevabile.
+- **Fuori perimetro:** F2, F5, F6, la membership F3 non legata all'amministratore atteso (P3-b) e le role settings modificabili dal runner.
