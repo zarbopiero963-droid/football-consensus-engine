@@ -205,8 +205,11 @@ def test_simulated_cancel_after_match_deferred_on_two_orders_in_one_batch(tmp_pa
     s.sim.inject("DELETE", "/orders-v3", "cancel_after_match_deferred", taker_stake=1_500_000, land_after=8)
     rep = s.cx.cancel_orders([oid1, oid2], s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[oid1, oid2]))
     assert {rep["orders"][o]["reason"] for o in (oid1, oid2)} == {"CANCEL_AFTER_MATCH"}
+    before = s.exposure().total
     s.sim.advance(9)
+    assert s.exposure().total == before  # nothing changes before a read (review 414728a P3-a)
     assert {s.gw.reconcile(k)["state"] for k in (key1, key2)} <= {od.CANCELLED, od.FILLED}
+    assert all(s.ledger.get(k).filled > 0 for k in (key1, key2)) and s.sim.deferred_matches == []
 
 
 def test_simulated_second_cancel_inside_the_window_is_cancel_pending(tmp_path):
