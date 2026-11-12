@@ -215,6 +215,8 @@ STALE_ACTIVE_AFTER_SECONDS = 24 * 3600
 NO_PAGINATION_HINT = {"/fixture/active": "This route has no pagination in the contract (leagueId only): the league is "
                                          "too large for one MCP response; with upcoming_only=true retry without it "
                                          "(the upcoming view repeats rows)."}  # reviews 52fcee6 / d7f186b P3-4
+# Large DERIVED views that call() may omit (in this order) to keep provider data that fits the MCP cap readable.
+OMITTABLE_VIEWS = ("fixture_status_view", "stale_active_view", "status_decoded", "upcoming", "fee_rates")
 VIEW_LIST_MAX = 50  # each flagged list is capped, the rest counted (review 52fcee6 P2-A); call() also omits a view
 # rather than turning data that fits into PAYLOAD_TOO_LARGE (review d7f186b P2-1)
 
@@ -395,16 +397,22 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         def size(obj):
             return len(json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         if derive is not None:
-            derived = derive(data)
-            with_views = {**result, **derived}
-            if size(with_views) <= _MAX_MCP_BYTES or size(result) > _MAX_MCP_BYTES:
-                result = with_views
-            else:
-                # The raw provider answer fits, the DERIVED views do not: the views are omitted explicitly, the data is
-                # returned (review d7f186b P2-1: a derived view never makes readable provider data unreadable).
-                result = {**result, **{k: {"label": "DERIVED", "status": "VIEW_OMITTED_FOR_SIZE",
-                                           "note": "Provider data fits the MCP cap only without this view."}
-                                       for k in derived}}
+            result = {**result, **derive(data)}
+            # The raw provider answer must never become unreadable because of a DERIVED view (review d7f186b P2-1).
+            # Only OMITTABLE_VIEWS are dropped, one at a time in that order (S2 views first, review 79da023 P2-2);
+            # typed lookup fields (not_found, lookup_complete, lookup_note) are never replaced (P2-1). Every omission
+            # is listed at the top level and in warnings (P2-3).
+            omitted = []
+            for key in OMITTABLE_VIEWS:
+                if size(result) <= _MAX_MCP_BYTES:
+                    break
+                if key in result:
+                    result[key] = {"label": "DERIVED", "status": "VIEW_OMITTED_FOR_SIZE"}
+                    omitted.append(key)
+            if omitted:
+                result["views_omitted"] = omitted
+                result["warnings"] = [*result.get("warnings", []),
+                                      "VIEW_OMITTED_FOR_SIZE: " + ", ".join(omitted) + " (provider data complete)"]
         if size(result) > _MAX_MCP_BYTES:
             # Never truncate silently: ask for a smaller page instead.
             return {**base, "status": "PAYLOAD_TOO_LARGE", "parameters": params, "network_calls_made": 1,

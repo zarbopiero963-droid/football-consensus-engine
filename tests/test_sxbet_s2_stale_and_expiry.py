@@ -162,6 +162,7 @@ def test_review_d7f186b_p2_1_view_is_omitted_never_the_data_at_the_cap_boundary(
     out = run(t["sxbet_fixtures_active"](league_id=1))
     assert out["status"] == "REAL_API_RESPONSE" and out["data"] == rows
     assert out["fixture_status_view"]["status"] == "VIEW_OMITTED_FOR_SIZE"
+    assert out["views_omitted"] == ["fixture_status_view"] and any("VIEW_OMITTED_FOR_SIZE" in w for w in out["warnings"])
     monkeypatch.setattr(sx, "_MAX_MCP_BYTES", raw_only - 10)  # the data itself does not fit: explicit error
     assert run(t["sxbet_fixtures_active"](league_id=1))["status"] == "PAYLOAD_TOO_LARGE"
 
@@ -172,3 +173,32 @@ def test_review_d7f186b_p3_bounded_count_keys_and_missing_status_apart():
     assert v["counts_by_status"] == {"non_int:dict": 1, "missing": 2}
     assert v["status_missing"]["total"] == 2 and v["undocumented_status"]["items"] == [
         {"eventId": "A", "provider_status": "<dict>"}]
+
+
+def test_review_79da023_p2_2_upcoming_survives_when_only_the_s2_view_is_too_much(monkeypatch):
+    import json
+    rows = [{"eventId": f"U{i}", "status": 1, "startDate": "2096-01-01T00:00:00Z", "pad": "y" * 120}
+            for i in range(300)]
+    t, _, _ = make(universal(overrides={"/fixture/active": lambda r: _ok(rows)}))
+    full = run(t["sxbet_fixtures_active"](league_id=1, upcoming_only=True))
+    big = len(json.dumps(full, separators=(",", ":"), ensure_ascii=False).encode())
+    view = len(json.dumps(full["fixture_status_view"], separators=(",", ":"), ensure_ascii=False).encode())
+    monkeypatch.setattr(sx, "_MAX_MCP_BYTES", big - view // 2)  # only the S2 view must go
+    out = run(t["sxbet_fixtures_active"](league_id=1, upcoming_only=True))
+    assert out["views_omitted"] == ["fixture_status_view"] and out["upcoming"]["rows"] == rows
+
+
+def test_review_79da023_p2_1_lookup_fields_keep_their_types_under_size_pressure(monkeypatch):
+    import json
+    hashes = ["0x" + f"{i:064x}" for i in range(30)]
+    rows = [{"marketHash": h, "status": "ACTIVE", "pad": "z" * 3000} for h in hashes[:29]]
+    t, _, _ = make(universal(overrides={"/markets/find": lambda r: _ok(rows)}))
+    full = run(t["sxbet_markets_find"](market_hashes=hashes))
+    monkeypatch.setattr(sx, "_MAX_MCP_BYTES",
+                        len(json.dumps(full, separators=(",", ":"), ensure_ascii=False).encode()) - 5)
+    out = run(t["sxbet_markets_find"](market_hashes=hashes))
+    # nothing omittable: the typed fields are never replaced, so the answer is the explicit PAYLOAD_TOO_LARGE
+    assert out["status"] == "PAYLOAD_TOO_LARGE" and "not_found" not in out
+    monkeypatch.undo()
+    ok = run(t["sxbet_markets_find"](market_hashes=hashes))
+    assert ok["not_found"] == [hashes[29]] and ok["lookup_complete"] is True and "views_omitted" not in ok
