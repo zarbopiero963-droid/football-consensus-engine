@@ -615,10 +615,11 @@ def _verify_codes(connect):
 
 
 def test_wp009_verify_model_differential_of_0009_and_0010(wp009):
-    """DECLARED: the WP-009 verify model (verify_bridge_roles.sql: pinned routines, triggers and
-    runtime allowlist of 0001-0008) is NOT changed by this PR. On the same simplified role setup,
-    the checks that 0009 and 0010 make fail are exactly these (the roles workflow also pins
-    0001-0008 counts and migration rows, so on a 0009/0010 database it refuses before writing)."""
+    """DECLARED INTENTIONAL CHANGE (WP-009 compatibility, owner GO): the WP-009 verify model now
+    admits exactly the 0009 and 0010 objects, so on the same simplified role setup 0009 and 0010
+    add NO failing check (before: unexpected_relation_grant for 0009; column_grant,
+    expression_functions, routine_set, trigger_set for 0010). The exact-state and negative tests
+    are in test_wp009_bridge_states_postgres.py."""
     codes = {}
     for upto in (8, 9, 10):
         db, connect = wp009(upto)
@@ -632,10 +633,8 @@ def test_wp009_verify_model_differential_of_0009_and_0010(wp009):
     assert codes[8] <= codes[9] <= codes[10]
 
 
-VERIFY_CODES_ADDED_BY_0009 = {"unexpected_relation_grant"}  # PR #198: fcb_app S I U D on oauth_throttle_buckets
-# 0010: 3 functions (pinned search_path), 7 triggers, clock_timestamp() defaults, and column-level
-# INSERT grants (review #199 P3-2; the WP-009 model allows no column privilege).
-VERIFY_CODES_ADDED_BY_0010 = {"column_grant", "expression_functions", "routine_set", "trigger_set"}
+VERIFY_CODES_ADDED_BY_0009 = set()  # was {"unexpected_relation_grant"} before the WP-009 compatibility fix
+VERIFY_CODES_ADDED_BY_0010 = set()  # was {"column_grant", "expression_functions", "routine_set", "trigger_set"}
 
 
 def test_readiness_requires_all_three_0010_tables_once_recorded(schema, monkeypatch):

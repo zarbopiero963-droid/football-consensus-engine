@@ -19,6 +19,11 @@ Subcommands (secrets are always read from the environment, never from argv):
                          for the expected database identity fcb_app (stdlib, -I -S)
   evidence               (python -I, psycopg) print the schema_migrations row count and rows, read
                          AS fcb_app: the administrator never reads a bridge table row
+  bridge-state           (stdlib, -I -S) read `evidence` output on stdin; print the bridge state it is,
+                         EXACTLY, among the admitted ones (8, 9 or 10: rows, names and checksums equal
+                         to the repository's first N bridge migrations), else exit 1
+  expected-migrations N  (stdlib, -I -S) print `version=name=sha256` of the first N bridge
+                         migrations, space separated (the roles transaction's expected_migrations)
   login-check --phase 1|2 [--require-tls]
                          (python -I, psycopg from scripts/fcb_db_roles_requirements.txt) log in as
                          fcb_app (both phases), as fcb_migrator (phase 2; phase 1 proves its login
@@ -49,6 +54,38 @@ VERIFIER_RE = re.compile(r"SCRAM-SHA-256\$4096:[A-Za-z0-9+/]+=*\$[A-Za-z0-9+/]+=
 
 
 MODE_ROLES = {"apply": ("fcb_app",), "enable-migrator": ("fcb_app", "fcb_migrator")}
+# WP-009 compatibility (owner GO): the bridge states the roles workflow admits, exactly. 0009
+# (#198, OAuth throttle) and 0010 (#199, certification ledger) are applied by their own
+# owner-gated workflows as fcb_migrator, i.e. only after phase 2; the model then re-verifies.
+BRIDGE_STATES = (8, 9, 10)
+BRIDGE_DIR = Path(__file__).resolve().parents[1] / "sql" / "migrations" / "bridge"
+
+
+def expected_migrations(state: int) -> list[str]:
+    """`version=name=sha256` of the repository's bridge migrations 1..state (checksums of the files)."""
+    rows = []
+    for path in sorted(BRIDGE_DIR.glob("[0-9][0-9][0-9][0-9]_*.sql")):
+        version = int(path.name[:4])
+        if version <= state:
+            rows.append(f"{version}={path.name}={hashlib.sha256(path.read_bytes()).hexdigest()}")
+    if [int(r.split("=", 1)[0]) for r in rows] != list(range(1, state + 1)):
+        raise ValueError("BRIDGE_SERIES_INCOMPLETE")
+    return rows
+
+
+def expected_evidence(state: int) -> str:
+    rows = expected_migrations(state)
+    return "\n".join([f"schema_migrations_rows={len(rows)}", *rows])
+
+
+def bridge_state(evidence_text: str) -> int | None:
+    """The admitted state whose rows the evidence equals exactly, else None (mixed, partial, extra
+    or tampered rows: refused)."""
+    text = evidence_text.strip()
+    for state in BRIDGE_STATES:
+        if text == expected_evidence(state):
+            return state
+    return None
 
 
 def password_problem(env=None, roles=("fcb_app", "fcb_migrator")) -> str | None:
@@ -204,12 +241,14 @@ def _check_role(role: str, env, require_tls: bool) -> str:
 
             readiness = schema_readiness.evaluate(app_connect)["state"]
             legacy_denied = _denied(conn, "SELECT 1 FROM public.model_snapshots LIMIT 0")
-            ok = readiness == "READY" and create_denied and legacy_denied and migrations == 8
+            # WP-009 compatibility: one of the admitted bridge states (the exact rows, checksums,
+            # catalog and structure of that state are proved by the workflow before this check)
+            ok = readiness == "READY" and create_denied and legacy_denied and migrations in BRIDGE_STATES
             line = (f"login {role}: tls={row[1]} schema_migrations_rows={migrations} readiness={readiness} "
                     f"create_denied={create_denied} legacy_read_denied={legacy_denied}")
         else:
             # The migrator owns the bridge: CREATE succeeds, but inside a rolled-back transaction.
-            ok = migrations == 8 and not create_denied
+            ok = migrations in BRIDGE_STATES and not create_denied
             line = f"login {role}: tls={row[1]} schema_migrations_rows={migrations} can_create={not create_denied}"
     if not ok:
         raise RuntimeError("FCB_LOGIN_MODEL_MISMATCH " + line)
@@ -360,6 +399,17 @@ def main(argv: list[str]) -> int:
     if cmd == "structure-fingerprint-sql" and len(argv) == 2:
         full = Path(__file__).resolve().parents[1] / "sql" / "aiven" / "fingerprint_bridge_schema.sql"
         sys.stdout.write(structure_fingerprint_sql(full.read_text(encoding="utf-8")))
+        return 0
+    if cmd == "bridge-state" and len(argv) == 2:
+        state = bridge_state(sys.stdin.read())
+        if state is None:
+            print("::error::schema_migrations rows are not exactly bridge 0001-0008, 0001-0009 or 0001-0010",
+                  file=sys.stderr)
+            return 1
+        print(state)
+        return 0
+    if cmd == "expected-migrations" and len(argv) == 3 and argv[2] in tuple(str(s) for s in BRIDGE_STATES):
+        print(" ".join(expected_migrations(int(argv[2]))))
         return 0
     if cmd == "login-check" and len(argv) >= 4 and argv[2] == "--phase" and argv[3] in ("1", "2") \
             and argv[4:] in ([], ["--require-tls"]):

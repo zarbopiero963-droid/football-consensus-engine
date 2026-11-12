@@ -10,10 +10,8 @@
 -- TRUNCATE for every role). fcb_app does not own the tables and is not a member of fcb_migrator, so
 -- it can neither ALTER them nor DISABLE their triggers. Catalog-qualified.
 -- The same conditional grant is in the WP-009 files (grant_bridge_runtime.sql,
--- finalize_bridge_privileges.sql), but NOTE: the WP-009 roles workflow today refuses any database
--- whose schema_migrations differs from 0001-0008 (pinned counts, rows and verify model), so that
--- block is NOT reached through the workflow on a 0009/0010 database until the WP-009 verify model
--- is updated (dedicated PR, owner decision). Until then this file is the only grant path.
+-- finalize_bridge_privileges.sql); the WP-009 roles workflow admits the 0001-0010 state exactly
+-- (verify_bridge_roles.sql: these grants, and nothing else, on a 0010 database).
 --   api_football_cert_plans              S                                              read the approved plan budget (AF-15: rows
 --                                                                                      written ONLY by the plan approval workflow as fcb_migrator)
 --   api_football_cert_campaigns          S, I(campaign_id, plan_sha256)                 open (ON CONFLICT DO NOTHING)

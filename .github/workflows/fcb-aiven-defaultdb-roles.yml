@@ -73,13 +73,13 @@ jobs:
         sql/aiven/count_bridge_catalog.sql=ab0317404cf0ac9a3722a808f2e9f6c1ac4a75503ccac8c508aa2eb5aa304fae
         sql/aiven/roles_apply_guard.sql=e190992da69803ae840a166ab82c0379e43bb5488af6c808c483994531ebf5e8
         sql/aiven/upsert_bridge_roles.sql=d98180803cf88fc736057955c7d59098b086e2f17baa74b1a8c706db127084f4
-        sql/aiven/grant_bridge_runtime.sql=a9b7ba493605df4c81762baf0efbf1ab3f477c92415a466b43d1283a577c3c92
+        sql/aiven/grant_bridge_runtime.sql=4fafa643d4cfe61b29493ce21f76956443a557affbe4b8cd42ec70425f2f5586
         sql/aiven/assert_bridge_counts.sql=aee4b5378ce4c0ecfd55b6d3461b02cba87cbb0c119afe2e2fc65f6dd450b0b2
         sql/aiven/assert_bridge_roles.sql=1d945d5c33502d3983d4d7129f6a8343d935328e49f9b77517cf8b35f41c2241
         sql/aiven/enable_bridge_migrator.sql=f72274593da4d640b12a4dff35a6a756f6be0cee9abafa88496766b23c5b421d
         sql/aiven/prepare_bridge_roles.sql=150c7895f9245d5dca4ba1981310ad8bef782c9ec232ce06a2d66792671a6d0f
-        sql/aiven/finalize_bridge_privileges.sql=6de503a4e7afca570296106f2bff29efd3dd109f53c28d95b623e426ff420620
-        sql/aiven/verify_bridge_roles.sql=625ac4ffabe22489d141a48d811226c7ba492b88ee0af70e71d6bffedf59023c
+        sql/aiven/finalize_bridge_privileges.sql=43acc3ee43337c84507a2c3390aa2740f7f554ee6f49d41113f2faecc82a3e28
+        sql/aiven/verify_bridge_roles.sql=e6d7549b6e3aa9e538b483ff4aec4846babc670baa2cd3452f867fef021c615a
         sql/aiven/diagnose_bridge_roles.sql=b6052fb941fd52bd48064a71bbf3a9ffd61cdccac292b45c0cb2383b5cd0f270
         sql/aiven/verify_bridge_schema.sql=fd063c1d7fee80616647f3f98a42693bbf4a7c77691846d89a8df590e14deb24
         sql/aiven/defaultdb_precheck.sql=d3291db3e7d6cc75ba9e40f34c86f44241f4c883f22d2098d5abfde274311d6d
@@ -90,6 +90,18 @@ jobs:
       EXPECTED_FINGERPRINT: 'b825ab11029502140b038ce6d3add670'
       # Same pinned object counts as the restore (PostgreSQL 18); they must hold after each phase.
       EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'
+      # WP-009 compatibility (owner GO): the bridge states this workflow admits, EXACTLY:
+      # 0001-0008 (above), 0001-0009 (#198) and 0001-0010 (#199). 0009 and 0010 are applied by
+      # their own owner-gated workflows as fcb_migrator, i.e. after phase 2; a re-run then proves
+      # the state by its schema_migrations rows (names and checksums, read AS fcb_app), the
+      # catalog model (verify_bridge_roles.sql: exact grants, column grants, routines, triggers),
+      # the object counts and the structure fingerprint (columns, constraints, indexes, triggers,
+      # function bodies, column ACLs) pinned here for that state (PostgreSQL 18).
+      EXPECTED_COUNTS_0009: 'tables=35 functions=4 triggers=9 indexes=63 constraints_information_schema=339 constraints_pg_constraint=69 schema_migrations_rows=9'
+      EXPECTED_COUNTS_0010: 'tables=40 functions=8 triggers=21 indexes=68 constraints_information_schema=381 constraints_pg_constraint=91 schema_migrations_rows=10'
+      EXPECTED_STRUCTURE_0008: '82e19f8838ede071de6c26f1fbbf2ca7'
+      EXPECTED_STRUCTURE_0009: '3d3f4b2322ac20c4cbfa6b588109c34e'
+      EXPECTED_STRUCTURE_0010: '2dfad03bca4406e5a7749691eb06a813'
       PGCONNECT_TIMEOUT: '15'
       # Same Aiven service as fcb-aiven-defaultdb-restore.yml (public values from the Aiven API).
       EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
@@ -383,16 +395,30 @@ jobs:
           if [ "$roles_before" != "HARDENED_PHASE1" ] && { [ "$before" != "BRIDGE_0001_0008" ] || [ "$roles_before" != "ROLES_ABSENT" ]; }; then
             echo "::error::state changed since precheck ($before / $roles_before); refusing"; exit 1
           fi
-          migrations="$(for f in sql/migrations/bridge/000[1-8]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
+          # The bridge state, exactly one of 0001-0008/0009/0010 (WP-009 compatibility).
+          counts_for() { case "$1" in 8) printf '%s' "$EXPECTED_COUNTS" ;; 9) printf '%s' "$EXPECTED_COUNTS_0009" ;; 10) printf '%s' "$EXPECTED_COUNTS_0010" ;; *) return 1 ;; esac; }
+          structure_for() { case "$1" in 8) printf '%s' "$EXPECTED_STRUCTURE_0008" ;; 9) printf '%s' "$EXPECTED_STRUCTURE_0009" ;; 10) printf '%s' "$EXPECTED_STRUCTURE_0010" ;; *) return 1 ;; esac; }
+          catalog_state() { q -f sql/aiven/verify_bridge_roles.sql -c '\echo :fcb_bridge_state' | tail -n 1; }
+          if [ "$roles_before" = "ROLES_ABSENT" ]; then
+            bridge=8  # first phase 1: the restored 0001-0008 (fingerprint and counts below)
+          else
+            rows_before="$(python -I scripts/fcb_db_roles.py evidence)"  # rows read AS fcb_app
+            bridge="$(printf '%s\n' "$rows_before" | python -I -S scripts/fcb_db_roles.py bridge-state)" \
+              || { echo "::error::schema_migrations rows are not an admitted bridge state"; exit 1; }
+          fi
+          test "$(catalog_state)" = "BRIDGE_0001_$(printf '%04d' "$bridge")" || { echo "::error::catalog bridge state differs from the migration rows"; exit 1; }
+          bridge_counts="$(counts_for "$bridge")"
+          migrations="$(python -I -S scripts/fcb_db_roles.py expected-migrations "$bridge")"
           # SCRAM-SHA-256 verifier, computed on the runner and kept in a shell variable only: never
           # echoed (not even as ::add-mask::), never in the runner env files or argv; psql reads it
           # from its own environment with \getenv, and psql stderr is printed only after
           # scripts/fcb_db_roles.py sanitize, which drops every line carrying SCRAM-SHA-256 or PASSWORD.
           app_verifier="$(python -I -S scripts/fcb_db_roles.py verifier FCB_APP_DB_PASSWORD)"
           # Object counts from the catalog only (privilege-independent), rows AS fcb_app.
-          expected_catalog="$(printf '%s\n' $EXPECTED_COUNTS | grep -v -e '^constraints_information_schema=' -e '^schema_migrations_rows=' | paste -sd' ')"
-          expected_rows="$(printf 'schema_migrations_rows=8\n%s\n' "$(printf '%s\n' $migrations)")"
+          expected_catalog="$(printf '%s\n' $bridge_counts | grep -v -e '^constraints_information_schema=' -e '^schema_migrations_rows=' | paste -sd' ')"
+          expected_rows="$(printf 'schema_migrations_rows=%s\n%s\n' "$bridge" "$(printf '%s\n' $migrations)")"
           structure_before="$(q -f sql/aiven/fingerprint_bridge_structure.sql)"
+          test "$structure_before" = "$(structure_for "$bridge")" || { echo "::error::bridge structure is not the pinned one of state $bridge"; exit 1; }
           catalog_before="$(q -f sql/aiven/count_bridge_catalog.sql)"
           test "$catalog_before" = "$expected_catalog" || { echo "::error::object counts differ from expected"; exit 1; }
           if [ "$roles_before" = "ROLES_ABSENT" ]; then
@@ -404,11 +430,10 @@ jobs:
             counts_before="$(printf '%s\n' "$restore_evidence" | head -n 7 | paste -sd' ')"
             test "$counts_before" = "$EXPECTED_COUNTS" || { echo "::error::object counts differ from expected"; exit 1; }
           else
-            rows_before="$(python -I scripts/fcb_db_roles.py evidence)"  # rows read AS fcb_app
             test "$rows_before" = "$expected_rows" || { echo "::error::schema_migrations rows differ from the repository"; exit 1; }
           fi
           run() { FCB_APP_DB_VERIFIER="$app_verifier" \
-                    sp -X -q -v ON_ERROR_STOP=1 -v expected_counts="$EXPECTED_COUNTS" -v expected_migrations="$migrations" -v expected_roles_state=HARDENED_PHASE1 -1 \
+                    sp -X -q -v ON_ERROR_STOP=1 -v expected_counts="$bridge_counts" -v expected_migrations="$migrations" -v expected_roles_state=HARDENED_PHASE1 -1 \
                     -c "$GUARD" -f sql/aiven/roles_apply_guard.sql -f sql/aiven/upsert_bridge_roles.sql -f sql/aiven/grant_bridge_runtime.sql -f sql/aiven/assert_bridge_counts.sql -f sql/aiven/assert_bridge_roles.sql >/dev/null; }
           run;    first="$(q -f sql/aiven/diagnose_bridge_roles.sql)"
           run;    second="$(q -f sql/aiven/diagnose_bridge_roles.sql)"
@@ -460,13 +485,21 @@ jobs:
             *) echo "::error::state changed since precheck ($roles_before); refusing"; exit 1 ;;
           esac
           # Catalog only, and evidence rows read AS fcb_app: the administrator reads no bridge row.
-          migrations="$(for f in sql/migrations/bridge/000[1-8]_*.sql; do n="$(basename "$f")"; echo "$((10#${n:0:4}))=$n=$(sha256sum "$f" | cut -d' ' -f1)"; done | paste -sd' ')"
-          expected_catalog="$(printf '%s\n' $EXPECTED_COUNTS | grep -v -e '^constraints_information_schema=' -e '^schema_migrations_rows=' | paste -sd' ')"
-          expected_rows="$(printf 'schema_migrations_rows=8\n%s\n' "$(printf '%s\n' $migrations)")"
+          # The bridge state, exactly one of 0001-0008/0009/0010 (WP-009 compatibility).
+          counts_for() { case "$1" in 8) printf '%s' "$EXPECTED_COUNTS" ;; 9) printf '%s' "$EXPECTED_COUNTS_0009" ;; 10) printf '%s' "$EXPECTED_COUNTS_0010" ;; *) return 1 ;; esac; }
+          structure_for() { case "$1" in 8) printf '%s' "$EXPECTED_STRUCTURE_0008" ;; 9) printf '%s' "$EXPECTED_STRUCTURE_0009" ;; 10) printf '%s' "$EXPECTED_STRUCTURE_0010" ;; *) return 1 ;; esac; }
+          catalog_state() { q -f sql/aiven/verify_bridge_roles.sql -c '\echo :fcb_bridge_state' | tail -n 1; }
+          rows_before="$(python -I scripts/fcb_db_roles.py evidence)"
+          bridge="$(printf '%s\n' "$rows_before" | python -I -S scripts/fcb_db_roles.py bridge-state)" \
+            || { echo "::error::schema_migrations rows are not an admitted bridge state"; exit 1; }
+          test "$(catalog_state)" = "BRIDGE_0001_$(printf '%04d' "$bridge")" || { echo "::error::catalog bridge state differs from the migration rows"; exit 1; }
+          migrations="$(python -I -S scripts/fcb_db_roles.py expected-migrations "$bridge")"
+          expected_catalog="$(printf '%s\n' $(counts_for "$bridge") | grep -v -e '^constraints_information_schema=' -e '^schema_migrations_rows=' | paste -sd' ')"
+          expected_rows="$(printf 'schema_migrations_rows=%s\n%s\n' "$bridge" "$(printf '%s\n' $migrations)")"
           structure_before="$(q -f sql/aiven/fingerprint_bridge_structure.sql)"
+          test "$structure_before" = "$(structure_for "$bridge")" || { echo "::error::bridge structure is not the pinned one of state $bridge"; exit 1; }
           catalog_before="$(q -f sql/aiven/count_bridge_catalog.sql)"
           test "$catalog_before" = "$expected_catalog" || { echo "::error::object counts differ from expected"; exit 1; }
-          rows_before="$(python -I scripts/fcb_db_roles.py evidence)"
           test "$rows_before" = "$expected_rows" || { echo "::error::schema_migrations rows differ from the repository"; exit 1; }
           migrator_verifier="$(python -I -S scripts/fcb_db_roles.py verifier FCB_MIGRATOR_DB_PASSWORD)"
           FCB_MIGRATOR_DB_VERIFIER="$migrator_verifier" \

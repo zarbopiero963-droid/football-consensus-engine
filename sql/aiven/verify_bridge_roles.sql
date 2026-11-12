@@ -58,7 +58,57 @@ rel_grants AS (
     WHERE c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r', 'p', 'v', 'm', 'S', 'f']::pg_catalog."char"[])
       AND a.grantee OPERATOR(pg_catalog.<>) c.relowner
 ),
-runtime_tables(relname, privs) AS (VALUES
+-- Bridge state (WP-009 compatibility, owner GO): which of the three admitted bridge states the
+-- catalog holds, from the relations present: 8 = 0001-0008 (no 0009/0010 table), 9 = 0001-0009
+-- (both 0009 tables, no 0010 table), 10 = 0001-0010 (both 0009 tables and all five 0010 tables).
+-- Anything else (0010 without 0009, a partial 0009 or 0010) is 0 and fails 'bridge_state'. The
+-- exact objects of the detected state are then required by every check below (relations' grants,
+-- column grants, routines, triggers, expression functions); the workflow also requires the
+-- schema_migrations rows (read AS fcb_app) and the pinned structure fingerprint of that state.
+bridge_presence AS (
+    SELECT (SELECT pg_catalog.count(*) FROM rels c WHERE c.relkind OPERATOR(pg_catalog.=) 'r'::pg_catalog."char"
+              AND c.relname OPERATOR(pg_catalog.=) ANY (ARRAY['oauth_throttle_buckets', 'oauth_throttle_unlock_audit']::pg_catalog.name[])) AS v9,
+           (SELECT pg_catalog.count(*) FROM rels c WHERE c.relkind OPERATOR(pg_catalog.=) 'r'::pg_catalog."char"
+              AND c.relname OPERATOR(pg_catalog.=) ANY (ARRAY['api_football_cert_plans', 'api_football_cert_plan_usage', 'api_football_cert_campaigns',
+                                           'api_football_cert_campaign_attempts', 'api_football_cert_campaign_outcomes']::pg_catalog.name[])) AS v10
+),
+bridge_state AS (
+    SELECT CASE WHEN b.v9 OPERATOR(pg_catalog.=) 0 AND b.v10 OPERATOR(pg_catalog.=) 0 THEN 8
+                WHEN b.v9 OPERATOR(pg_catalog.=) 2 AND b.v10 OPERATOR(pg_catalog.=) 0 THEN 9
+                WHEN b.v9 OPERATOR(pg_catalog.=) 2 AND b.v10 OPERATOR(pg_catalog.=) 5 THEN 10
+                ELSE 0 END AS v
+    FROM bridge_presence b
+),
+runtime_tables_by_state(relname, privs, since) AS (VALUES
+    -- 0009 (#198): the persistent OAuth throttle; the unlock audit gets no runtime privilege.
+    ('oauth_throttle_buckets'::pg_catalog.text, ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']::pg_catalog.text[], 9),
+    -- 0010 (#199): the certification ledger: SELECT on the tables (INSERT is column-level, below);
+    -- nothing at all on the plan counter (api_football_cert_plan_usage).
+    ('api_football_cert_plans', ARRAY['SELECT'], 10),
+    ('api_football_cert_campaigns', ARRAY['SELECT'], 10),
+    ('api_football_cert_campaign_attempts', ARRAY['SELECT'], 10),
+    ('api_football_cert_campaign_outcomes', ARRAY['SELECT'], 10)
+),
+expected_column_grants(relname, attname, priv, since) AS (VALUES
+    ('api_football_cert_campaigns'::pg_catalog.text, 'campaign_id'::pg_catalog.text, 'INSERT'::pg_catalog.text, 10),
+    ('api_football_cert_campaigns', 'plan_sha256', 'INSERT', 10),
+    ('api_football_cert_campaign_attempts', 'campaign_id', 'INSERT', 10),
+    ('api_football_cert_campaign_attempts', 'call_id', 'INSERT', 10),
+    ('api_football_cert_campaign_outcomes', 'campaign_id', 'INSERT', 10),
+    ('api_football_cert_campaign_outcomes', 'seq', 'INSERT', 10),
+    ('api_football_cert_campaign_outcomes', 'outcome', 'INSERT', 10),
+    ('api_football_cert_campaign_outcomes', 'http_status', 'INSERT', 10)
+),
+column_grants AS (
+    SELECT c.relname::pg_catalog.text AS relname, a.attname::pg_catalog.text AS attname, x.grantee,
+           x.privilege_type::pg_catalog.text AS priv
+    FROM rels c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid,
+         LATERAL pg_catalog.aclexplode(a.attacl) x
+    WHERE a.attacl IS NOT NULL
+),
+runtime_tables(relname, privs) AS (
+    SELECT t.relname, t.privs FROM runtime_tables_by_state t, bridge_state b WHERE t.since OPERATOR(pg_catalog.<=) b.v
+    UNION ALL SELECT * FROM (VALUES
     ('schema_migrations'::pg_catalog.text, ARRAY['SELECT']::pg_catalog.text[]),
     ('oauth_authorization_codes', ARRAY['SELECT', 'INSERT', 'UPDATE']),
     ('oauth_access_tokens', ARRAY['SELECT', 'INSERT']),
@@ -70,6 +120,7 @@ runtime_tables(relname, privs) AS (VALUES
     ('api_football_quota_attempts', ARRAY['SELECT', 'INSERT', 'DELETE']),
     ('sxbet_rate_attempts', ARRAY['SELECT', 'INSERT', 'DELETE']),
     ('sxbet_rate_cooldowns', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
+    ) AS base(relname, privs)
 ),
 expected_grants AS (
     SELECT t.relname, (SELECT app.oid FROM app) AS grantee, p.priv
@@ -118,6 +169,15 @@ allowed_expr_functions(sig) AS (VALUES
     ('texteq(text, text)'), ('textlike(text, text)'), ('textne(text, text)'), ('textregexeq(text, text)'),
     ('timestamptz_gt(timestamp with time zone, timestamp with time zone)')
 ),
+-- 0010 (#199) adds exactly these in its CHECK constraints and defaults (budget ranges, the
+-- outcome/status coherence, github_run_id > 0, approved_role DEFAULT session_user).
+allowed_expr_functions_0010(sig) AS (VALUES
+    ('booleq(boolean, boolean)'), ('int4ge(integer, integer)'), ('int84gt(bigint, integer)'), ('text(name)')
+),
+allowed_expr_functions_state(sig) AS (
+    SELECT a.sig FROM allowed_expr_functions a
+    UNION ALL SELECT a.sig FROM allowed_expr_functions_0010 a, bridge_state b WHERE b.v OPERATOR(pg_catalog.>=) 10
+),
 expr_trees(tree) AS (
     SELECT d.adbin::pg_catalog.text FROM pg_catalog.pg_attrdef d JOIN rels c ON c.oid OPERATOR(pg_catalog.=) d.adrelid
     UNION ALL SELECT k.conbin::pg_catalog.text FROM pg_catalog.pg_constraint k JOIN rels c ON c.oid OPERATOR(pg_catalog.=) k.conrelid
@@ -148,6 +208,28 @@ bridge_functions(sig) AS (VALUES
     ('seal_evaluation_protocol||trigger|plpgsql|false|-|7377c626fd29b2fd4ef38c13d35bb323'),
     ('seal_pilot_row||trigger|plpgsql|false|-|fe277f0013ff9ac7ff637742361dbca4')
 ),
+-- 0010 (#199): its four functions (pinned search_path; only the budget trigger is SECURITY DEFINER,
+-- owned by the ledger owner) and twelve triggers. 0009 adds neither.
+bridge_functions_0010(sig) AS (VALUES
+    ('api_football_cert_attempt_guard||trigger|plpgsql|true|{"search_path=pg_catalog, pg_temp"}|49a19e3727b56c804e8f0c3d3b85b7fc'),
+    ('api_football_cert_plan_usage_rule||trigger|plpgsql|false|{"search_path=pg_catalog, pg_temp"}|7c23be9b71fd513ddaf6fef40437832d'),
+    ('api_football_cert_reject_mutation||trigger|plpgsql|false|{"search_path=pg_catalog, pg_temp"}|e61761d43ca2caf61cd43e1cb5a33dd4'),
+    ('api_football_cert_stamp||trigger|plpgsql|false|{"search_path=pg_catalog, pg_temp"}|c5ff7ff31ef4c10ed1b59e4f98678390')
+),
+bridge_triggers_0010(sig) AS (VALUES
+    ('api_football_cert_campaign_attempts|api_football_cert_attempt_budget|api_football_cert_attempt_guard|7'),
+    ('api_football_cert_campaign_attempts|api_football_cert_attempts_immutable|api_football_cert_reject_mutation|58'),
+    ('api_football_cert_campaign_attempts|api_football_cert_attempts_stamp|api_football_cert_stamp|7'),
+    ('api_football_cert_campaign_outcomes|api_football_cert_outcomes_immutable|api_football_cert_reject_mutation|58'),
+    ('api_football_cert_campaign_outcomes|api_football_cert_outcomes_stamp|api_football_cert_stamp|7'),
+    ('api_football_cert_campaigns|api_football_cert_campaigns_immutable|api_football_cert_reject_mutation|58'),
+    ('api_football_cert_campaigns|api_football_cert_campaigns_stamp|api_football_cert_stamp|7'),
+    ('api_football_cert_plan_usage|api_football_cert_plan_usage_kept|api_football_cert_reject_mutation|42'),
+    ('api_football_cert_plan_usage|api_football_cert_plan_usage_monotonic|api_football_cert_plan_usage_rule|23'),
+    ('api_football_cert_plans|api_football_cert_plans_immutable|api_football_cert_reject_mutation|58'),
+    ('api_football_cert_plans|api_football_cert_plans_stamp|api_football_cert_stamp|7'),
+    ('api_football_cert_plans|api_football_cert_plans_usage_init|api_football_cert_plan_usage_rule|5')
+),
 bridge_triggers(sig) AS (VALUES
     ('canonical_alias_versions|canonical_alias_version_insert|canonical_alias_revision_guard|7'),
     ('canonical_alias_versions|canonical_aliases_immutable|canonical_reject_mutation|58'),
@@ -158,6 +240,14 @@ bridge_triggers(sig) AS (VALUES
     ('source_pilot_predictions|source_pilot_predictions_seal|seal_pilot_row|31'),
     ('source_pilot_runs|source_pilot_runs_no_truncate|seal_pilot_row|34'),
     ('source_pilot_runs|source_pilot_runs_seal|seal_pilot_row|31')
+),
+state_functions(sig) AS (
+    SELECT f.sig FROM bridge_functions f
+    UNION ALL SELECT f.sig FROM bridge_functions_0010 f, bridge_state b WHERE b.v OPERATOR(pg_catalog.>=) 10
+),
+state_triggers(sig) AS (
+    SELECT t.sig FROM bridge_triggers t
+    UNION ALL SELECT t.sig FROM bridge_triggers_0010 t, bridge_state b WHERE b.v OPERATOR(pg_catalog.>=) 10
 ),
 checks(code, bad) AS (
     SELECT 'roles_missing'::pg_catalog.text, ((SELECT pg_catalog.count(*) FROM rl) OPERATOR(pg_catalog.<>) 3::pg_catalog.int8)
@@ -201,8 +291,15 @@ checks(code, bad) AS (
     UNION ALL SELECT 'missing_runtime_grant', (EXISTS (
         SELECT e.relname, e.grantee, e.priv FROM expected_grants e
         EXCEPT SELECT g.relname, g.grantee, g.priv FROM rel_grants g))
-    UNION ALL SELECT 'column_grant', (EXISTS (SELECT 1 FROM rels c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid
-        WHERE a.attacl IS NOT NULL))
+    UNION ALL SELECT 'column_grant', (EXISTS (
+        SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g
+        EXCEPT SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
+        WHERE e.since OPERATOR(pg_catalog.<=) b.v)
+        OR EXISTS (
+        SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
+        WHERE e.since OPERATOR(pg_catalog.<=) b.v
+        EXCEPT SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g))
+    UNION ALL SELECT 'bridge_state', ((SELECT b.v FROM bridge_state b) OPERATOR(pg_catalog.=) 0)
     UNION ALL SELECT 'routine_grant', (EXISTS (
         SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace,
         LATERAL pg_catalog.aclexplode(COALESCE(p.proacl, pg_catalog.acldefault('f'::pg_catalog."char", p.proowner))) a
@@ -227,7 +324,7 @@ checks(code, bad) AS (
         AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(d.defaclacl) a
         WHERE a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid)))
     UNION ALL SELECT 'expression_functions', (EXISTS (SELECT 1 FROM expr_function_oids f
-        WHERE f.oid OPERATOR(pg_catalog.<>) 0::pg_catalog.oid AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN allowed_expr_functions a
+        WHERE f.oid OPERATOR(pg_catalog.<>) 0::pg_catalog.oid AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN allowed_expr_functions_state a
             ON a.sig OPERATOR(pg_catalog.=) (p.proname::pg_catalog.text OPERATOR(pg_catalog.||) '('::pg_catalog.text
                OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_identity_arguments(p.oid) OPERATOR(pg_catalog.||) ')'::pg_catalog.text)
             WHERE p.oid OPERATOR(pg_catalog.=) f.oid
@@ -235,11 +332,12 @@ checks(code, bad) AS (
     UNION ALL SELECT 'role_settings', (EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting rs
         WHERE rs.setrole OPERATOR(pg_catalog.=) ANY (ARRAY(SELECT rl.oid FROM rl))))
     UNION ALL SELECT 'routine_set', ((SELECT pg_catalog.count(*) FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace)
-            OPERATOR(pg_catalog.<>) (SELECT pg_catalog.count(*) FROM bridge_functions)
+            OPERATOR(pg_catalog.<>) (SELECT pg_catalog.count(*) FROM state_functions)
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN ns ON ns.oid OPERATOR(pg_catalog.=) p.pronamespace
             JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang
-            WHERE p.prokind OPERATOR(pg_catalog.<>) 'f'::pg_catalog."char" OR p.prosecdef OR p.proconfig IS NOT NULL
-               OR NOT EXISTS (SELECT 1 FROM bridge_functions b WHERE b.sig OPERATOR(pg_catalog.=) (
+            WHERE p.prokind OPERATOR(pg_catalog.<>) 'f'::pg_catalog."char"
+               -- SECURITY DEFINER and SET are part of the pinned signature (only the 0010 budget trigger has them)
+               OR NOT EXISTS (SELECT 1 FROM state_functions b WHERE b.sig OPERATOR(pg_catalog.=) (
                     p.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                     OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_identity_arguments(p.oid) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                     OPERATOR(pg_catalog.||) pg_catalog.format_type(p.prorettype, NULL::pg_catalog.int4) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
@@ -248,7 +346,7 @@ checks(code, bad) AS (
                     OPERATOR(pg_catalog.||) COALESCE(p.proconfig::pg_catalog.text, '-'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                     OPERATOR(pg_catalog.||) pg_catalog.md5(p.prosrc)))))
     UNION ALL SELECT 'trigger_set', ((SELECT pg_catalog.count(*) FROM pg_catalog.pg_trigger tg JOIN rels c ON c.oid OPERATOR(pg_catalog.=) tg.tgrelid
-            WHERE NOT tg.tgisinternal) OPERATOR(pg_catalog.<>) (SELECT pg_catalog.count(*) FROM bridge_triggers)
+            WHERE NOT tg.tgisinternal) OPERATOR(pg_catalog.<>) (SELECT pg_catalog.count(*) FROM state_triggers)
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_trigger tg JOIN rels c ON c.oid OPERATOR(pg_catalog.=) tg.tgrelid
             JOIN pg_catalog.pg_proc f ON f.oid OPERATOR(pg_catalog.=) tg.tgfoid
             WHERE NOT tg.tgisinternal AND (
@@ -259,7 +357,7 @@ checks(code, bad) AS (
                 OR tg.tgqual IS NOT NULL
                 OR tg.tgconstraint OPERATOR(pg_catalog.<>) 0::pg_catalog.oid
                 OR tg.tgoldtable IS NOT NULL OR tg.tgnewtable IS NOT NULL
-                OR NOT EXISTS (SELECT 1 FROM bridge_triggers b WHERE b.sig OPERATOR(pg_catalog.=) (
+                OR NOT EXISTS (SELECT 1 FROM state_triggers b WHERE b.sig OPERATOR(pg_catalog.=) (
                     c.relname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                     OPERATOR(pg_catalog.||) tg.tgname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                     OPERATOR(pg_catalog.||) f.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
@@ -298,5 +396,8 @@ SELECT CASE
     WHEN NOT EXISTS (SELECT 1 FROM checks WHERE checks.bad) THEN 'HARDENED_PHASE1'::pg_catalog.text
     ELSE 'NOT_HARDENED:'::pg_catalog.text OPERATOR(pg_catalog.||)
          (SELECT pg_catalog.string_agg(checks.code, ','::pg_catalog.text ORDER BY checks.code) FROM checks WHERE checks.bad)
-END AS roles_state \gset fcb_
+END AS roles_state,
+       (SELECT CASE b.v WHEN 0 THEN 'BRIDGE_STATE_INVALID'::pg_catalog.text
+               ELSE 'BRIDGE_0001_' OPERATOR(pg_catalog.||) pg_catalog.lpad(b.v::pg_catalog.text, 4, '0'::pg_catalog.text) END
+        FROM bridge_state b) AS bridge_state \gset fcb_
 \echo :fcb_roles_state

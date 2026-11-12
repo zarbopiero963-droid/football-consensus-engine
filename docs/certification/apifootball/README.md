@@ -182,11 +182,12 @@ Una chiamata che non ha prenotato nulla (rifiutata prima dell'invio per autorizz
 - Una riesecuzione dei file di grant WP-009 dopo la 0010 lascia i privilegi del ledger invariati.
 - **Però** oggi il workflow ruoli WP-009 rifiuta qualunque database con `schema_migrations` diverso da 0001-0008. Su un database 0009/0010 quindi il blocco **non viene raggiunto tramite il workflow**, finché il modello di verifica WP-009 non viene aggiornato (PR dedicata, decisione owner). Fino ad allora l'unico percorso di grant è il file 0010.
 
-**Limite dichiarato del modello WP-009 (non cambiato in questa PR).** Il modello di verifica `verify_bridge_roles.sql` resta quello di 0001-0008 (routine, trigger e allowlist pinnati). Lo stesso vale per i conteggi e le righe `schema_migrations` pinnati nel workflow ruoli.
-- Su un database con 0009 il modello segnala in più `unexpected_relation_grant`; questo viene da #198.
-- La 0010 aggiunge `routine_set`, `trigger_set`, `expression_functions` e `column_grant`: tre funzioni con `search_path` fissato, sette trigger, i default `clock_timestamp()` e i grant `INSERT` per colonna.
-- Il workflow ruoli, su un database 0009/0010, **rifiuta prima di scrivere** (fail-closed).
-- Aggiornare quel modello è una decisione owner separata.
+**Modello WP-009 (compatibilità, GO owner "WP-009 COMPATIBILITY FIX").** Il workflow ruoli ammette **esattamente** gli stati 0001-0008, 0001-0009 e 0001-0010; il dettaglio è in `docs/certification/areas/wp009_roles_runbook.md`. Per ogni stato verifica:
+- le righe `schema_migrations` con i checksum;
+- il modello di catalogo: grant di tabella e di colonna, routine, trigger e owner esatti;
+- conteggi e fingerprint di struttura pinnati.
+
+Stati misti o parziali, grant in più e oggetti inattesi vengono rifiutati.
 
 **Applicazione** (preparata, NON eseguita, AF-14): `.github/workflows/fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml`, derivato dal workflow 0009 con gli stessi gate:
 - Environment `aiven-production` e dispatch dell'owner da main;
@@ -249,7 +250,7 @@ L'applicazione della 0010, il dispatch della campagna e lo snapshot reale restan
 
 **Decisioni owner aperte:**
 1. Ruolo dedicato al ledger al posto di `fcb_app` condiviso (obiettivo futuro).
-2. Aggiornamento del modello di verifica e dei conteggi del workflow ruoli WP-009 per i database 0009/0010.
+2. (Risolto: compatibilità WP-009 con 0009/0010.)
 3. In produzione: prima applicare la 0009 (workflow #198), poi la 0010.
 
 ### AF-08 — Guardia `live_harness` (modifica intenzionale di un test esistente)

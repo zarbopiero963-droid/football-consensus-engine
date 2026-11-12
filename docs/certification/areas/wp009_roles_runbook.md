@@ -85,6 +85,11 @@ effective session -> fcb_signer member=true inherits_privileges=false can_set_ro
 | `sxbet_rate_attempts` S I D | `ratelimit._reserve` | coordinator test | keep; **UPDATE revoked** |
 | `sxbet_rate_cooldowns` S I U D | `ratelimit._reserve` (expiry DELETE), `_record` (UPSERT) | same | keep |
 | `oauth_throttle_buckets` S I U D (bridge 0009) | `oauth_persistent_throttle.acquire` (UPSERT), `refund` (UPDATE), cleanup (DELETE) | `test_oauth_persistent_throttle_postgres.py`, `test_oauth_throttle_workflow_sql_postgres.py` | granted only where 0009 exists (no-op on 0001-0008); `oauth_throttle_unlock_audit`: nothing |
+| `api_football_cert_plans` S (bridge 0010) | `scripts/apifootball_cert_batch1.py` `PostgresCampaignLedger.open`/`reserve` | `test_apifootball_cert_ledger_postgres.py`, `test_wp009_bridge_states_postgres.py` | written only by the owner-gated plan approval workflow as fcb_migrator |
+| `api_football_cert_plan_usage` none (bridge 0010) | the per-plan counter, written only by the SECURITY DEFINER budget trigger | same | no privilege at all |
+| `api_football_cert_campaigns` S, INSERT (`campaign_id`, `plan_sha256`) | `PostgresCampaignLedger.open` | same | column-level INSERT only |
+| `api_football_cert_campaign_attempts` S, INSERT (`campaign_id`, `call_id`) | `PostgresCampaignLedger.reserve` (seq from the server) | same | column-level INSERT only |
+| `api_football_cert_campaign_outcomes` S, INSERT (`campaign_id`, `seq`, `outcome`, `http_status`) | `PostgresCampaignLedger.record_outcome` | same | column-level INSERT only |
 | Revoked DML above | none (grep of `bridge/` and `app/`) | RED: each statement denied now (the uniform grant allowed it). GREEN: the whole runtime | **implemented** |
 | `TEMPORARY` on defaultdb (PUBLIC default) | none | RED: fcb_app creates a temp table. GREEN: after `REVOKE TEMPORARY … FROM PUBLIC`, the real app (OAuth, MCP) is unchanged | **owner decision**: database-wide default; Aiven tooling may rely on it |
 | Large objects (`lo_create`) | none | RED: fcb_app creates one. The administrator cannot revoke EXECUTE on pg_catalog functions: PostgreSQL only warns, nothing is revoked | residual (superuser only) |
@@ -92,6 +97,42 @@ effective session -> fcb_signer member=true inherits_privileges=false can_set_ro
 | EXECUTE on functions in `public` | none | none granted (model: `routine_grant`, global default revoke) | implemented (WP-009) |
 | Privileged pg_catalog functions (`pg_read_file`, `pg_ls_dir`, `lo_import`, `COPY … PROGRAM`, signalling other backends) | none | denied | n/a |
 | Advisory lock 460244120 | none | RED: fcb_app can hold it. No GRANT can forbid a lock id | **mitigated**: both phases use `pg_try_advisory_xact_lock` and refuse at once with `FCB_ROLES_LOCK_BUSY` (no hang); `diagnose` prints `bridge_lock_holders <role>`. The GitHub concurrency group already serializes restore and roles. The restore script's own lock is owner-reserved and unchanged |
+
+## Admitted bridge states (WP-009 compatibility, owner GO)
+
+The roles workflow admits **exactly** three bridge states:
+
+| State | How it is reached | Pinned for it in the workflow |
+|---|---|---|
+| 0001-0008 | the restore | `EXPECTED_COUNTS`, `EXPECTED_STRUCTURE_0008` |
+| 0001-0009 | #198, applied by `fcb-aiven-defaultdb-oauth-throttle-0009.yml` as fcb_migrator | `EXPECTED_COUNTS_0009`, `EXPECTED_STRUCTURE_0009` |
+| 0001-0010 | #199, applied by `fcb-aiven-defaultdb-apifootball-cert-ledger-0010.yml` as fcb_migrator | `EXPECTED_COUNTS_0010`, `EXPECTED_STRUCTURE_0010` |
+
+0009 and 0010 need fcb_migrator's login, so they exist only after phase 2. On a 0009 or 0010 database the workflow therefore runs:
+- the diagnose step;
+- re-dispatches of phase 2 (`enable-migrator`, password rotation).
+
+Phase 1 stays refused after phase 2, as before.
+
+**What every run requires**, and what makes a run fail:
+1. The `schema_migrations` rows, read as `fcb_app`, must be exactly the repository's first N bridge migrations, names and checksums included (`fcb_db_roles.py bridge-state`). Missing, extra or tampered rows are refused.
+2. The catalog model (`verify_bridge_roles.sql`) must detect the same state from the relations present. It refuses:
+   - 0010 without 0009, or a partial 0009 or 0010 (`bridge_state`);
+   - any routine other than the pinned ones, with name, arguments, language, SECURITY DEFINER, SET options and md5 of the body (`routine_set`);
+   - any trigger other than the pinned ones, including a disabled one (`trigger_set`);
+   - table grants other than the state's runtime matrix (`unexpected_relation_grant` / `missing_runtime_grant`), or column grants other than the state's (`column_grant`);
+   - EXECUTE grants on routines (`routine_grant`), owner drift (`owner_model`), rules or policies (`relation_hooks`), and expression functions outside the state's list (`expression_functions`).
+3. The object counts and the structure fingerprint must be that state's pinned values. The fingerprint covers columns, constraints, indexes, triggers, function bodies and column ACLs.
+
+**Unchanged by this:**
+- the phases' SQL and their idempotence;
+- the least privilege of `fcb_app` (matrix above);
+- the 0009 and 0010 migrations, whose checksums are unchanged;
+- the budget and certification logic.
+
+The `login-check` of both identities accepts the row count of an admitted state; the exact rows are proved before it.
+
+**Tests:** `tests/integration/test_wp009_bridge_states_postgres.py` (real workflow bash, all three states, negatives) and `tests/test_defaultdb_roles_workflow.py`.
 
 ## Owner procedure
 
