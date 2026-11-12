@@ -242,7 +242,8 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         names.append(fn.__name__)
         return fn
 
-    async def call(tool: str, path: str, build, *, auth: bool, derive=None) -> dict[str, Any]:
+    async def call(tool: str, path: str, build, *, auth: bool, derive=None,
+                   template: str | None = None) -> dict[str, Any]:
         at = datetime.now(timezone.utc).isoformat()
         base = {"provider": "SX_BET", "tool": tool, "endpoint": path, "network": settings.network,
                 "mode": "READ_ONLY", "source_contract": DOCS, "retrieved_at_utc": at,
@@ -257,13 +258,16 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         try:
             reply = await client.get(path, params, auth=auth)
         except SXBetError as exc:
-            not_found = exc.code == "SXBET_HTTP_ERROR" and exc.http_status == 404
+            # Issue #187 D3: NOT_FOUND only where the official contract documents a 404 "not found" answer.
+            not_found = (exc.code == "SXBET_HTTP_ERROR" and exc.http_status == 404
+                         and (template or path) in NOT_FOUND_DOCUMENTED)
             out = {**base, "status": "NOT_FOUND" if not_found else "PROVIDER_ERROR", "parameters": params,
                    "network_calls_made": 0 if exc.code in NO_NETWORK_CODES else 1,
                    "http_status": exc.http_status,
                    "error": {"code": "SXBET_NOT_FOUND" if not_found else exc.code}}
             if not_found:  # issue #187 D3: a documented 404 is an answer, not a failure; nothing is invented
                 out["not_found"] = {"meaning": "The provider has no object for these parameters (HTTP 404).",
+                                    "contract": NOT_FOUND_DOCUMENTED[template or path],
                                     "proof_of_absence": False}
             if exc.retry_after is not None:
                 out["error"]["retry_after_seconds"] = exc.retry_after
@@ -695,7 +699,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             return {"provider": "SX_BET", "tool": tool, "endpoint": template, "network": settings.network,
                     "mode": "READ_ONLY", "source_contract": DOCS, "network_calls_made": 0, "data": None,
                     "status": "INVALID_INPUT", "error": {"code": str(exc)}}
-        out = await call(tool, path, params, auth=True)
+        out = await call(tool, path, params, auth=True, template=template)
         out["endpoint"] = template
         out["api_key_scope"] = scope
         out["path_parameters"] = _path_parameters(template, path)  # issue #187 D8
@@ -1366,6 +1370,16 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
 def _raise(code: str):
     raise InvalidInput(code)
 
+
+# Routes whose official OpenAPI 404 response is a "not found" answer (ErrorNest example "... not found"),
+# checked on https://docs.sx.bet/openapi.json on 12-11-2026. Every other 404 stays PROVIDER_ERROR: for
+# example /orders-v3/public documents 404 as "de-anonymized identity is not available on this environment".
+NOT_FOUND_DOCUMENTED = {
+    "/orders-v3/{orderId}": "openapi.json GET /orders-v3/{orderId} 404: Order not found",
+    "/orders-v3/client/{clientOrderId}": "openapi.json GET /orders-v3/client/{clientOrderId} 404: Order not found",
+    "/trades-v3/{tradeId}": "openapi.json GET /trades-v3/{tradeId} 404: Trade not found",
+    "/orderbook-v3/snapshot/market": "openapi.json GET /orderbook-v3/snapshot/market 404: Market not found",
+}
 
 _INTENT_KEYS = ("intent", "intent_hash", "signing_ready", "live_eligibility")
 

@@ -285,6 +285,10 @@ def simulate_hedge(*, market_position: Mapping[str, Any] | None, book: Any, mark
         "order_parameters_for_owner_review": {
             "executable": False, "signed": False, "submitted": False,
             "requires_explicit_owner_command": True,
+            # Deprecated alias (issue #187 D2): kept with the same value so existing MCP clients keep working;
+            # it now means "an explicit owner command is required", never an out-of-band per-order approval.
+            "requires_owner_out_of_band_approval": True,
+            "deprecated_fields": {"requires_owner_out_of_band_approval": "use requires_explicit_owner_command"},
             "market_hash": h, "betting_outcome_one": hedge_one, "stake_base_units": str(spent),
             "percentage_odds_limit": str(worst),
             "note": "Taker frame: highest implied probability accepted. Validate with sxbet_simulate_order."},

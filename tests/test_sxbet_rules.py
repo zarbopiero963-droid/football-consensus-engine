@@ -38,7 +38,9 @@ def test_stop_loss_produces_a_non_executable_proposal():
     p = out["proposal"]
     assert p["executable"] is False and p["signed"] is False and p["submitted"] is False
     # Issue #187 D2 (intentional): the key follows governance 2.6 (explicit owner command, no out-of-band approval).
-    assert p["requires_explicit_owner_command"] is True and "requires_owner_out_of_band_approval" not in p
+    assert p["requires_explicit_owner_command"] is True
+    # Compatibility: the previous key stays as a deprecated alias with the same value (no MCP contract break).
+    assert p["requires_owner_out_of_band_approval"] is True and "requires_owner_out_of_band_approval" in p["deprecated_fields"]
     assert p["triggered_by"] == ["stop_loss"]
     assert p["order_parameters"]["stake_base_units"] == "212" and p["proposal_hash"].startswith("sha256:")
     assert ev({"stop_loss": {"enabled": True, "max_loss_base_units": 600}})["decision"] == "NO_ACTION"

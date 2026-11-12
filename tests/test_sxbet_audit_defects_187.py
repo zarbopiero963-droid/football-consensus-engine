@@ -90,7 +90,8 @@ def test_d1_tools_without_position_are_consistent():
 def test_d2_no_out_of_band_per_order_approval_language_left():
     for mod in (hm, rl, sim, sx_tools):
         src = inspect.getsource(mod)
-        assert "out-of-band owner approval" not in src and "out_of_band_approval" not in src, mod.__name__
+        # The key name survives only as a deprecated alias (compatibility); the per-order approval wording is gone.
+        assert "out-of-band owner approval" not in src and "out-of-band approval" not in src, mod.__name__
         assert "owner-approved, signer-verified" not in src, mod.__name__
         assert "per-order confirmation" not in src, mod.__name__
     t, _, _ = make()
@@ -99,24 +100,62 @@ def test_d2_no_out_of_band_per_order_approval_language_left():
     assert risk["live_trading"] == "UNAVAILABLE" and "explicit, complete owner command" in risk["live_trading_reason"]
 
 
-# ------------------------------------------------------------------ D3: 404 is NOT_FOUND
+# ------------------------------------------------------------------ D3: 404 is NOT_FOUND only where documented
 @pytest.mark.parametrize("tool,kwargs,path", [
     ("sxbet_order", {"order_id": OID}, "/orders-v3/" + OID),
+    ("sxbet_order_by_client_id", {"client_order_id": "cid-0001"}, "/orders-v3/client/cid-0001"),
     ("sxbet_trade", {"trade_id": "t-123"}, "/trades-v3/t-123"),
-    ("sxbet_safe_info", {"safe_address": ADDR}, f"/user/multisig/{ADDR}/info"),
+    ("sxbet_orderbook_market", {"market_hash": H}, "/orderbook-v3/snapshot/market"),
 ])
-def test_d3_provider_404_is_not_found_not_provider_error(tool, kwargs, path):
-    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json={"status": "failure"})}))
+def test_d3_documented_404_is_not_found_not_provider_error(tool, kwargs, path):
+    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json={"statusCode": 404})}))
     out = run(t[tool](**kwargs))
     assert out["status"] == "NOT_FOUND" and out["http_status"] == 404
     assert out["error"] == {"code": "SXBET_NOT_FOUND"} and out["data"] is None
-    assert out["not_found"]["proof_of_absence"] is False and out["network_calls_made"] == 1
+    assert out["not_found"]["proof_of_absence"] is False and "openapi.json" in out["not_found"]["contract"]
+    assert out["network_calls_made"] == 1
+
+
+@pytest.mark.parametrize("tool,kwargs,path", [
+    # 404 not documented as "not found" by the contract: stays a provider error, never an answer
+    ("sxbet_safe_info", {"safe_address": ADDR}, f"/user/multisig/{ADDR}/info"),
+    ("sxbet_public_market_orders", {"market_hash": H}, "/orders-v3/public"),  # 404 = identity unavailable
+    ("sxbet_metadata", {}, "/metadata/obv3"),
+])
+def test_d3_undocumented_404_stays_provider_error(tool, kwargs, path):
+    t, _, _ = make(universal(overrides={path: lambda r: httpx.Response(404, json={"statusCode": 404})}))
+    out = run(t[tool](**kwargs))
+    assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_HTTP_ERROR"
+    assert out["http_status"] == 404 and "not_found" not in out
 
 
 def test_d3_other_http_errors_stay_provider_error():
     t, _, _ = make(universal(overrides={"/orders-v3/" + OID: lambda r: httpx.Response(500, text="x")}))
     out = run(t["sxbet_order"](order_id=OID))
     assert out["status"] == "PROVIDER_ERROR" and out["error"]["code"] == "SXBET_HTTP_ERROR"
+
+
+def test_d3_documented_routes_match_the_official_inventory():
+    import json
+    import pathlib
+    inv = json.loads((pathlib.Path(__file__).parents[1] / "docs/sxbet/official_api_inventory.json").read_text())
+    paths = {o["path"] for o in inv["operations"] if o["method"] == "GET"}
+    assert set(sx_tools.NOT_FOUND_DOCUMENTED) <= paths
+
+
+# ------------------------------------------------------------------ D2 compatibility of the renamed key
+def test_d2_renamed_key_keeps_the_deprecated_alias_with_the_same_value():
+    out = hm.simulate_hedge(market_position={**_no_position(), "matched_stake_base_units": {"total": 500},
+                                             "pnl_base_units": {"if_outcome_one": 300, "if_outcome_two": -200,
+                                                                "if_void": 0}},
+                            book={**HEDGE_BOOK, "marketHash": H}, market={**HEDGE_MARKET, "marketHash": H},
+                            fees=HEDGE_FEES, max_slippage_percentage_odds=5 * P, max_data_age_seconds=10,
+                            data_age_seconds=1.0, min_order_base_units=1)
+    params = out["order_parameters_for_owner_review"]
+    assert params["requires_explicit_owner_command"] is True
+    assert params["requires_owner_out_of_band_approval"] is True
+    assert params["deprecated_fields"] == {"requires_owner_out_of_band_approval": "use requires_explicit_owner_command"}
+    assert params["executable"] is False and params["signed"] is False and params["submitted"] is False
 
 
 # ------------------------------------------------------------------ D5: no intent for an untradeable market

@@ -210,6 +210,9 @@ def evaluate(config: Any, *, market_position: Mapping[str, Any] | None, market: 
                     "order_parameters": {k: v for k, v in params.items() if k != "note"}}
             proposal = {**body, "proposal_hash": proposal_hash(body), "executable": False, "signed": False,
                         "submitted": False, "requires_explicit_owner_command": True,
+                        "requires_owner_out_of_band_approval": True,  # deprecated alias, same value (issue #187 D2)
+                        "deprecated_fields": {"requires_owner_out_of_band_approval":
+                                              "use requires_explicit_owner_command"},
                         "note": "A proposal is not an order and never becomes one by itself. Only a new explicit and "
                                 "complete owner command, verified by the isolated signer, could lead to an order."}
     decision = ORDER_PROPOSAL if proposal else (ALERT if any(x["result"] == ALERT for x in results) else NO_ACTION)
