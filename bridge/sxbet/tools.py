@@ -25,6 +25,7 @@ from typing import Any
 
 from . import hedging as hedge_mod
 from . import order_requests as oreq
+from .order_request_tools import TOOL_COSTS as _ORT_COSTS, TOOL_NAMES as _ORT_NAMES
 from . import positions as pos_mod
 from . import rules as rules_mod
 from . import simulation as sim
@@ -1363,12 +1364,9 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
     return tuple(names)
 
 
-ORDER_REQUEST_TOOLS = ("sxbet_order_request_place", "sxbet_order_request_cancel", "sxbet_order_request_status")
-ORDER_REQUEST_TOOL_COSTS = {
-    "sxbet_order_request_place": {"max_provider_calls": 1, "basis": "metadata/obv3"},
-    "sxbet_order_request_cancel": {"max_provider_calls": 0, "basis": "none (queue write only)"},
-    "sxbet_order_request_status": {"max_provider_calls": 2, "basis": (
-        "orders-v3/{orderId} + fills-v3 (only with a known order id and the API key)")}}
+# Single source: bridge/sxbet/order_request_tools.py (review of 8396424, P3-3).
+ORDER_REQUEST_TOOLS = _ORT_NAMES
+ORDER_REQUEST_TOOL_COSTS = _ORT_COSTS
 
 
 def _raise(code: str):

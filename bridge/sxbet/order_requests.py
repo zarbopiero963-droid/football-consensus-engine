@@ -27,11 +27,12 @@ deduced by the model. Every view carries `final` (True only when nothing can cha
     UNKNOWN           anything ambiguous: a send that may have happened, a signed order never sent (signature
                       outstanding until its expiry), an exchange rejection (not final while a signature is out), a
                       final state without its fill amount, inconsistent or conflicting evidence. Reconcile first.
-    ACCEPTED          on the exchange; no fill proven (exchange reply or read)
+    ACCEPTED          on the exchange; no fill seen in the evidence read (a snapshot: see `fill_evidence`)
     PARTIALLY_FILLED  some fill proven (exchange read or ledger); `resting: False` when the rest is inactive
     FILLED            fully filled (exchange read or final ledger state FILLED)
-    CANCELLED         inactive with NOTHING filled (exchange read, or ledger CANCELLED with filled = 0)
-    EXPIRED           expired with NOTHING filled (same evidence as CANCELLED)
+    CANCELLED         inactive with nothing filled IN THE EVIDENCE READ (exchange read, or ledger CANCELLED with
+                      filled = 0); not final: a late fill can appear until settlement
+    EXPIRED           expired with nothing filled in the evidence read (same rules as CANCELLED)
     SETTLED           settled by the exchange; the matched amount is `filled_base_units` (never "full")
 Cancel requests: REFUSED (nothing sent), UNKNOWN, PROCESSING, and for a cancel that was sent: ACCEPTED (every
 order reported cancelled; scope cancels: request accepted), NOT_CANCELLED, PARTIALLY_CANCELLED. A cancel reply is
@@ -248,18 +249,25 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any]) -> dic
         return {**out, "state": "UNKNOWN", "final": False, "code": "SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING",
                 "note": "Signed but not sent according to the signer's ledger; the signed order stays reserved "
                         "until its expiry. Not a final refusal: reconcile before any new command."}
+    # `ledger_final`: the signer recorded a final ledger state (merge_exchange treats a contradicting read as a
+    # conflict). `final` (for the model) is narrower: CANCELLED / EXPIRED / a partial fill can still gain a late
+    # fill until settlement (signer/orders.py LATE_FILL_AFTER_EXPIRY, CANCELLED self-transition): review of
+    # 8396424, P2-A.
     if ledger == "FILLED":
-        return {**out, "state": "FILLED", "final": True, "ledger_state": ledger}
+        return {**out, "state": "FILLED", "final": True, "ledger_final": True, "ledger_state": ledger}
     if ledger == "SETTLED":
         # Settled by the exchange: some stake was matched; how much is filled_base_units (ledger), never "full".
-        return {**out, "state": "SETTLED", "final": True, "ledger_state": ledger}
+        return {**out, "state": "SETTLED", "final": True, "ledger_final": True, "ledger_state": ledger}
     if ledger in _INACTIVE_NO_FILL:
         if filled is None:
             return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
                     "code": "FILL_AMOUNT_NOT_PROVEN"}
+        late = "Not final: a late fill can still appear until settlement; read the fills before relying on it."
         if filled == 0:
-            return {**out, "state": ledger, "final": True, "ledger_state": ledger}
-        return {**out, "state": "PARTIALLY_FILLED", "final": True, "resting": False, "ledger_state": ledger}
+            return {**out, "state": ledger, "final": False, "ledger_final": True, "ledger_state": ledger,
+                    "warning": late}
+        return {**out, "state": "PARTIALLY_FILLED", "final": False, "ledger_final": True, "resting": False,
+                "ledger_state": ledger, "warning": late}
     return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
             "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
 
@@ -317,10 +325,14 @@ def queue_view(kind: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]
     return _cancel_view(events, out) if kind == "CANCEL" else _place_view(events, out)
 
 
-def merge_exchange(view: Mapping[str, Any], lookup_state: str | None) -> dict[str, Any]:
+_NO_FILL_CLAIMED = frozenset({"ACCEPTED", "CANCELLED", "EXPIRED"})
+
+
+def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False) -> dict[str, Any]:
     """Combine the queue view with a fresh exchange reconciliation. Deterministic precedence:
     - REFUSED / QUEUED / SETTLED are never changed by an order read (SETTLED comes after the order lifecycle);
-    - a final queue state stands unless the read contradicts it: then UNKNOWN (conflict);
+    - fill rows on the exchange against a state that claims nothing filled: UNKNOWN (conflict);
+    - a final ledger state stands unless the read contradicts it: then UNKNOWN (conflict);
     - otherwise a conclusive read that proves presence on the exchange (ACCEPTED, PARTIALLY_FILLED, FILLED) wins
       unless it is an earlier stage than the queue's (conflict);
     - an inactive-without-fills read (CANCELLED / EXPIRED) replaces only ACCEPTED: it never resolves UNKNOWN or
@@ -329,9 +341,14 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None) -> dict[st
     out["exchange_state"] = lookup_state
     q = view["state"]
     ex = _LOOKUP_TO_MCP.get(lookup_state) if lookup_state is not None else None
+    if fills_seen and q in _NO_FILL_CLAIMED and ex not in ("PARTIALLY_FILLED", "FILLED"):
+        # The exchange shows fill rows for this order while the evidence so far says nothing filled (e.g. a late
+        # fill after the order row was purged): never report "nothing filled" (review of 8396424, P2-A).
+        out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="FILLS_SEEN_ON_EXCHANGE", queue_state=q)
+        return out
     if q in ("REFUSED", "QUEUED", "SETTLED") or ex is None:
         return out
-    if view.get("final"):
+    if view.get("ledger_final"):
         if ex != q and not (q == "PARTIALLY_FILLED" and ex == "PARTIALLY_FILLED"):
             out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="QUEUE_AND_EXCHANGE_DISAGREE",
                        queue_state=q)

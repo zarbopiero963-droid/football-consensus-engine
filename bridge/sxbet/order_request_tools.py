@@ -202,8 +202,10 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
 
         States: QUEUED, PROCESSING, REFUSED, UNKNOWN, ACCEPTED, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED,
         SETTLED; cancels also NOT_CANCELLED, PARTIALLY_CANCELLED. `final` says whether it can still change.
-        UNKNOWN means reconcile before any new command; it is never "not sent". ACCEPTED proves no fill;
-        CANCELLED/EXPIRED mean nothing filled; SETTLED reports the matched amount, never "fully filled".
+        UNKNOWN means reconcile before any new command; it is never "not sent". ACCEPTED / CANCELLED / EXPIRED
+        mean no fill was seen in the evidence read: a snapshot, see `fill_evidence` (SIGNER_EVENT_SNAPSHOT_ONLY
+        when the exchange was not read now, e.g. no API key); CANCELLED / EXPIRED can still gain a late fill
+        until settlement. SETTLED reports the matched amount, never "fully filled".
         """
         out = base("sxbet_order_request_status")
         if not oreq.valid_request_id(request_id):
@@ -253,7 +255,12 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                                         "fills_count": len(rows) if isinstance(rows, list) else None,
                                         "fills_more_pages": bool(isinstance(fills, dict) and fills.get("nextKey")),
                                         "errors": [e for e in (oerr, ferr) if e and e.get("http_status") != 404]}
-        result = oreq.merge_exchange(view, lookup_state)
+        fills_seen = isinstance(out.get("exchange_read"), dict) and bool(out["exchange_read"].get("fills_count"))
+        result = oreq.merge_exchange(view, lookup_state, fills_seen=fills_seen)
+        if result["state"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
+            # Without a conclusive read made now, the state is the signer's last recorded snapshot (review P2-B).
+            result["fill_evidence"] = ("EXCHANGE_READ_NOW" if lookup_state is not None
+                                       else "SIGNER_EVENT_SNAPSHOT_ONLY")
         return {**out, "status": "OK", **result}
 
     return tuple(names)

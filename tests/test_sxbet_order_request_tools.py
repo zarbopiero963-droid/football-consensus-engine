@@ -374,6 +374,7 @@ def test_inconsistent_or_duplicate_terminal_evidence_is_unknown_never_a_false_su
     assert v["state"] == "UNKNOWN" and v["code"] == code
 
 
+# Rewritten by the review of ce4a702 (new `final` / `ledger_final` fields, P3-2 rule): declared behaviour change.
 @pytest.mark.parametrize("queue, final, lookup, state", [
     ("UNKNOWN", False, "SUBMITTED", "ACCEPTED"),
     ("UNKNOWN", False, "NOT_ON_EXCHANGE", "UNKNOWN"),          # a 404 is never promoted to "not sent"
@@ -393,7 +394,8 @@ def test_inconsistent_or_duplicate_terminal_evidence_is_unknown_never_a_false_su
     ("REFUSED", True, "FILLED", "REFUSED"),
 ])
 def test_exchange_evidence_merge_is_deterministic(queue, final, lookup, state):
-    out = oreq.merge_exchange({"state": queue, "final": final, "evidence": "QUEUE_EVENTS"}, lookup)
+    out = oreq.merge_exchange({"state": queue, "final": final, "ledger_final": final, "evidence": "QUEUE_EVENTS"},
+                              lookup)
     assert out["state"] == state
 
 
@@ -522,6 +524,8 @@ def test_review_ce4a702_p3_8_retry_refused_after_validation_points_to_the_existi
     assert again["request_with_this_key_exists"] is True
 
 
+# Changed by the review of ce4a702 (P2-2): `sent` with no buckets / no explicit acceptance is UNKNOWN, no longer
+# ACCEPTED (declared behaviour change; the old `accepted: False` case is covered by the bucket/scope tests).
 def test_cancel_states_never_claim_a_cancellation_as_proven():
     done = ev(("CLAIMED", {}), ("DONE", {"scope": "ALL", "sent": True, "accepted": True}))
     assert oreq.queue_view("CANCEL", done)["state"] == "ACCEPTED"
@@ -571,3 +575,57 @@ def test_status_input_and_missing_request(s):
     t, _ = tools(s, MemoryQueue())
     assert status(t, "XYZ")["error"]["code"] == "INVALID_REQUEST_ID"
     assert status(t, "0" * 32)["status"] == "NOT_FOUND"
+
+
+# ---------------------------------------------------------------- review of 8396424 (NOT SAFE): regressions
+def test_review_8396424_p2_a_cancelled_is_never_final_and_a_late_fill_is_a_conflict(s):
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {}), ("SUBMITTED", {"state": "OPEN"}),
+                                    ("DONE", {"state": "CANCELLED", "filled": "0"})))
+    assert v["state"] == "CANCELLED" and v["final"] is False and "late fill" in v["warning"]
+    assert oreq.merge_exchange(v, None, fills_seen=True)["state"] == "UNKNOWN"         # row purged, fills remain
+    assert oreq.merge_exchange(v, None, fills_seen=True)["code"] == "FILLS_SEEN_ON_EXCHANGE"
+    assert oreq.merge_exchange(v, "PARTIALLY_FILLED")["state"] == "UNKNOWN"            # ledger final contradicted
+    acc = {"state": "ACCEPTED", "final": False, "evidence": "QUEUE_EVENTS"}
+    assert oreq.merge_exchange(acc, None, fills_seen=True)["state"] == "UNKNOWN"
+
+
+def test_review_8396424_p2_a_end_to_end_late_fill_after_purge_is_not_cancelled(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7201")
+    res = place(t, s, "order-key-S7201", text)
+    svc = signer_service(s, q)
+    svc.process_once()
+    oid = status(t, res["request_id"])["order_id"]
+    run(t["sxbet_order_request_cancel"](owner_command=f"Cancella l'ordine {oid}", scope="ORDER_IDS",
+                                        idempotency_key="cancel-key-S7201", order_ids=[oid]))
+    svc.process_once()                                  # cancelled on the exchange, nothing filled
+    s.gw.reconcile("order-key-S7201")
+    (done,) = svc.sync_outcomes()
+    assert done["detail"] == {**done["detail"], "state": "CANCELLED", "filled": "0"}
+    first = status(t, res["request_id"])
+    assert first["state"] == "CANCELLED" and first["final"] is False
+    s.sim.late_fill(oid, 2 * USDC)
+    s.clock.t += 1000                                   # past the ~900 s retention: the row is purged (404)
+    st = status(t, res["request_id"])
+    assert st["exchange_read"]["status"] == "NOT_FOUND" and st["exchange_read"]["fills_count"] == 1
+    assert st["state"] == "UNKNOWN" and st["code"] == "FILLS_SEEN_ON_EXCHANGE" and st["final"] is False
+
+
+def test_review_8396424_p2_b_without_a_read_accepted_is_labelled_a_snapshot(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q, api_key="")
+    text, _ = owner_text(s, "order-key-S7202")
+    res = place(t, s, "order-key-S7202", text)
+    signer_service(s, q).process_once()
+    s.sim.fill_maker_order(status(t, res["request_id"])["order_id"], 2 * USDC)
+    st = status(t, res["request_id"])
+    assert st["state"] == "ACCEPTED" and st["fill_evidence"] == "SIGNER_EVENT_SNAPSHOT_ONLY"
+    assert st["exchange_read"] == {"status": "KEY_NOT_CONFIGURED"}
+    doc = t["sxbet_order_request_status"].__doc__
+    assert "proves no fill" not in doc and "snapshot" in doc
+
+
+def test_review_8396424_p3_3_one_cost_catalog():
+    from bridge.sxbet import order_request_tools as ort, tools as tl
+    assert tl.ORDER_REQUEST_TOOL_COSTS is ort.TOOL_COSTS and tl.ORDER_REQUEST_TOOLS is ort.TOOL_NAMES

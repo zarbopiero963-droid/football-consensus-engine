@@ -216,7 +216,7 @@ Nessun argomento di un tool può attivare il trading o cambiare rete, maker, lim
 
 **Configurazione** (Render; nessun valore in repository):
 - `SXBET_ORDER_REQUESTS_ENABLED=true`;
-- `SXBET_SIGNER_QUEUE_DATABASE_URL`: il DSN del ruolo MCP sul database del signer. Deve essere **diverso** da `DATABASE_URL`, perché la coda non sta mai nel database del bridge (WP-009). Il confronto normalizza host, porta e nome del database degli URL; è solo una protezione di base, il controllo vincolante sono i permessi dei ruoli;
+- `SXBET_SIGNER_QUEUE_DATABASE_URL`: il DSN del ruolo MCP sul database del signer. Deve essere **diverso** da `DATABASE_URL`, perché la coda non sta mai nel database del bridge (WP-009). Il confronto normalizza host, porta e nome del database degli URL. È solo una protezione di base: non riconosce lo stesso database scritto in forma `chiave=valore` contro URL, con host socket codificati diversamente o con il nome in maiuscole e minuscole diverse. Il controllo vincolante sono i permessi dei ruoli;
 - `SXBET_MAKER_ADDRESS`: l'indirizzo del maker, configurazione server e mai un argomento.
 
 `sxbet_health.order_requests.tool_cost_catalog` dichiara il costo massimo: 1 GET per `place` (`/metadata/obv3`), 0 per `cancel`, 2 per `status` (`/orders-v3/{orderId}` e `/fills-v3`). Se un retry di `place` viene rifiutato dopo la validazione (per esempio la scadenza è ormai troppo vicina), la risposta riporta `request_id` e `request_with_this_key_exists`, così non sembra mai "non accodato".
@@ -246,18 +246,24 @@ Ogni risposta riporta anche `final`, vero solo quando lo stato non può più cam
 | `PROCESSING` | presa in carico o firmata; esito dell'invio non ancora registrato, mai "non inviato" |
 | `REFUSED` | rifiutata dal signer **prima** di qualunque firma (finale). Per una cancellazione: nulla inviato |
 | `UNKNOWN` | invio forse avvenuto; ordine firmato e mai inviato con la firma ancora valida fino alla scadenza (`SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING`, si legge comunque l'exchange); rifiuto dell'exchange (non finale con una firma in giro); stato finale senza importo eseguito (`FILL_AMOUNT_NOT_PROVEN`); evidenze incoerenti (eventi dopo un terminale, doppia presa in carico, scrittori diversi, transizioni non ammesse) o in conflitto tra coda ed exchange. Riconciliare prima di un nuovo comando. |
-| `ACCEPTED` | sull'exchange, **nessuna esecuzione provata** |
+| `ACCEPTED` | sull'exchange, nessuna esecuzione vista nelle evidenze lette: è un'istantanea (vedi `fill_evidence`) |
 | `PARTIALLY_FILLED` | esecuzione parziale provata (lettura dell'exchange o ledger); `resting: false` se il resto non è più attivo |
 | `FILLED` | esecuzione completa (lettura dell'exchange o stato finale `FILLED` del ledger) |
-| `CANCELLED` | inattivo **senza nulla eseguito** (lettura dell'exchange, o `CANCELLED` del ledger con `filled` = 0) |
-| `EXPIRED` | scaduto **senza nulla eseguito** (stesse evidenze di `CANCELLED`) |
+| `CANCELLED` | inattivo, nessuna esecuzione nelle evidenze lette (lettura dell'exchange, o `CANCELLED` del ledger con `filled` = 0). **Non finale**: un fill tardivo può comparire fino al settlement |
+| `EXPIRED` | scaduto, nessuna esecuzione nelle evidenze lette (stesse regole di `CANCELLED`) |
 | `SETTLED` | regolato dall'exchange; l'importo abbinato è `filled_base_units`, mai "esecuzione completa" |
+
+`fill_evidence` dice da dove viene uno stato `ACCEPTED`, `PARTIALLY_FILLED`, `CANCELLED` o `EXPIRED`:
+- `EXCHANGE_READ_NOW`: lettura conclusiva dell'exchange fatta adesso;
+- `SIGNER_EVENT_SNAPSHOT_ONLY`: ultimo evento registrato dal signer, per esempio senza chiave API o con una lettura fallita.
+
+Righe di fill sull'exchange per un ordine che le evidenze danno senza esecuzioni (per esempio un fill tardivo dopo che la riga dell'ordine è stata rimossa) danno `UNKNOWN` / `FILLS_SEEN_ON_EXCHANGE` (review indipendente di `8396424`, P2-A). Uno stato `UNKNOWN` / `SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING` non diventa mai finale, nemmeno dopo la scadenza, perché l'evento `DONE` del signer è già terminale: è una scelta prudente, si chiarisce leggendo l'ordine.
 
 Il signer riporta nell'evento finale l'importo abbinato dal ledger (`filled`, unità base). `CANCELLED`, `EXPIRED` e `SETTLED` possono infatti seguire un'esecuzione parziale (review indipendente di `ce4a702`, P1-1).
 
 Regole di precedenza:
 - `REFUSED`, `QUEUED` e `SETTLED` non cambiano per una lettura dell'ordine;
-- uno stato finale resta tale, salvo una lettura che lo contraddice: in quel caso `UNKNOWN` / `QUEUE_AND_EXCHANGE_DISAGREE`;
+- uno stato finale del ledger resta tale, salvo una lettura che lo contraddice: in quel caso `UNKNOWN` / `QUEUE_AND_EXCHANGE_DISAGREE`;
 - una lettura che prova la presenza sull'exchange (`ACCEPTED`, `PARTIALLY_FILLED`, `FILLED`) prevale, salvo che indichi una fase precedente a quella della coda (conflitto);
 - una lettura "inattivo senza esecuzioni" sostituisce solo `ACCEPTED`: non risolve mai `UNKNOWN` né `PROCESSING`, perché una firma può essere ancora valida;
 - un 404 non diventa mai "non inviato".
