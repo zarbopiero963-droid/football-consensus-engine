@@ -140,9 +140,11 @@ class KillSwitch:
             trigger = ledger.kill_switch_state()["trigger"] or ("KILL_SWITCH_UNRECORDED_ENGAGEMENT"
                                                                 if ledger.kill_marker_status == "UNRECORDED"
                                                                 else "KILL_SWITCH_MARKER_INVALID")
-            first_audit = self._safe_log("KILL_SWITCH_MARKER_" + ledger.kill_marker_status, reason=trigger)
+            status = ledger.kill_marker_status
             with ledger.kill_lock:  # recovery engage and flag drop under ONE hold (review f667594 P3-1)
                 self.recovery = self._engage(trigger, source="AUTOMATIC", triggers=())
+                # Audit AFTER the engagement is recorded (review b8337c1 P3-5).
+                first_audit = self._safe_log("KILL_SWITCH_MARKER_" + status, reason=trigger)
                 self.recovery["audit_written"] = self.recovery["audit_written"] and first_audit  # P3-3
                 if self.recovery["persisted"]:
                     # Drops flag / inode witness only if a JSON marker was written just before this ENGAGE.
@@ -220,6 +222,10 @@ class KillSwitch:
             except Exception as exc:  # any failure of the ENGAGE line (review 63d14d3 P3-5)
                 logs.append(("KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE",
                              {"reason": getattr(exc, "code", "LEDGER_ERROR")}))
+                if marked:  # the marker may still be lost (e.g. fsync EIO + power loss): witness too (P3-2)
+                    witness = self._ledger.set_inode_witness()
+                    if not witness:
+                        logs.append(("KILL_SWITCH_INODE_WITNESS_FAILED", {"reason": trigger}))
                 if not marked:  # nothing durable recorded it: quarantine FIRST, then everything else
                     quarantined, witness = self._ledger.quarantine_for_kill_switch_detailed()
                     if not witness:

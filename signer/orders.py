@@ -174,6 +174,7 @@ KILL_MARKER_SUFFIX = ".killswitch.json"
 KILL_MARKER_UNRECORDED = "KILL_SWITCH_UNRECORDED_ENGAGEMENT"
 KILL_MARKER_INVALID = "KILL_SWITCH_MARKER_INVALID"
 KILL_QUARANTINE_SUFFIX = ".killswitch-quarantine"
+KILL_RELEASED_SUFFIX = ".killswitch-released"
 # Inode witness (review f667594 P2-1): the set-group-ID mode bit on the LEDGER FILE itself, set with fchmod
 # (an inode metadata update: no data or directory block, so it works when writes fail) BEFORE a quarantine.
 # mv / cp -p keep it, so a ledger restored by hand still opens blocked. Without group-execute the kernel does
@@ -477,11 +478,6 @@ class OrderLedger:
                  kill_marker_path: str | None = None):
         if not isinstance(signer_address, str) or not _ADDRESS.fullmatch(signer_address.lower()):
             raise LedgerError("LEDGER_SIGNER_ADDRESS_INVALID")
-        if not OrderLedger._witness_capable(path, _create):
-            raise LedgerError("LEDGER_INODE_WITNESS_UNAVAILABLE")  # fail closed before any side effect
-        if _create and _quarantine_siblings(path):
-            # A quarantined ledger of this path exists: a new ledger never replaces it silently (P3-6).
-            raise LedgerError("LEDGER_QUARANTINE_PENDING")
         self._path = path
         self.signer_id = signer_id
         self.signer_address = signer_address.lower()
@@ -523,6 +519,13 @@ class OrderLedger:
             except Exception:
                 raise LedgerError("LEDGER_ANCHOR_UNREACHABLE") from None
         try:
+            # After the writer lease (a second writer is refused before any file access), before the open,
+            # GENESIS or any anchor head use.
+            if not OrderLedger._witness_capable(path, _create):
+                raise LedgerError("LEDGER_INODE_WITNESS_UNAVAILABLE")  # fail closed before any ledger side effect
+            if _create and _quarantine_siblings(path):
+                # A quarantined ledger of this path exists: a new ledger never replaces it silently (P3-6).
+                raise LedgerError("LEDGER_QUARANTINE_PENDING")
             if anchor is not None and _create and self._anchor_head() is not None:
                 raise LedgerError("LEDGER_ANCHOR_EXISTS")  # a fresh file never replaces an anchored history
             # The local flock is kept in anchored mode too (defence in depth: a misconfigured or split store
@@ -954,11 +957,15 @@ class OrderLedger:
             return True  # missing / unreadable: the open itself reports it with its own fixed code
         if os.geteuid() != 0 and uid != os.geteuid():
             return False
-        return gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()
+        if not (gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()):
+            return False
+        return _filesystem_keeps_setgid(os.path.dirname(os.path.abspath(path)) or ".")
 
     def _check_kill_marker(self) -> None:
         """On every open/create: a marker whose engagement the ledger does not hold keeps the signer blocked."""
-        flag = os.path.lexists(self.kill_flag_path) or self.inode_witness_set()
+        # Flag, inode witness or a quarantined copy of this ledger next to it (review b8337c1 P3-1: a restore that
+        # lost the mode bit while the quarantine file is still there) all mean "possibly unrecorded".
+        flag = os.path.lexists(self.kill_flag_path) or self.inode_witness_set() or _quarantine_siblings(self._path)
         try:
             with open(self.kill_marker_path, "rb") as fh:
                 raw = fh.read(4097)
@@ -1027,7 +1034,7 @@ class OrderLedger:
             _fsync_dir(self.kill_flag_path)
             return True
         except OSError:
-            return os.path.lexists(self.kill_flag_path)
+            return False  # not durable (e.g. fsync EIO): never counted as marked (review b8337c1 P3-2)
 
     @staticmethod
     def _unlink(path: str) -> bool:
@@ -1089,6 +1096,23 @@ class OrderLedger:
                 return False
             return self._unlink(self.kill_flag_path) and self._clear_inode_witness()
 
+    def _archive_quarantine_siblings(self) -> bool:
+        """After an owner-signed release only: <ledger>.killswitch-quarantine-* -> <ledger>.killswitch-released-*
+        (rename: content never modified, kept as evidence)."""
+        d = os.path.dirname(os.path.abspath(self._path)) or "."
+        base = os.path.basename(self._path)
+        try:
+            for n in os.listdir(d):
+                if n.startswith(base + KILL_QUARANTINE_SUFFIX):
+                    target = os.path.join(d, base + KILL_RELEASED_SUFFIX + n[len(base + KILL_QUARANTINE_SUFFIX):])
+                    if os.path.lexists(target):
+                        return False
+                    os.rename(os.path.join(d, n), target)
+            _fsync_dir(self._path)
+            return True
+        except OSError:
+            return False
+
     def remove_kill_marker_after_release(self, released_engage_seq: int) -> str:
         """After an owner-signed RELEASE only. Removes the marker only if it predates the released engagement
         (a marker written by a later engagement is never removed, review 30f5a96 P2-1), the empty flag and the
@@ -1109,7 +1133,8 @@ class OrderLedger:
                     return "KEPT_LATER_ENGAGEMENT"
                 if not self._unlink(self.kill_marker_path):
                     return "UNREMOVABLE"
-            ok = self._unlink(self.kill_flag_path) and self._clear_inode_witness()
+            ok = (self._unlink(self.kill_flag_path) and self._clear_inode_witness()
+                  and self._archive_quarantine_siblings())
             return "REMOVED" if ok else "UNREMOVABLE"
 
     def quarantine_for_kill_switch(self) -> bool:
@@ -1415,3 +1440,25 @@ def _fd_witness_capable(fd: int) -> bool:
     if euid != 0 and st.st_uid != euid:
         return False
     return st.st_gid in {os.getegid(), *os.getgroups()} or _has_cap_fsetid()
+
+
+def _filesystem_keeps_setgid(directory: str) -> bool:
+    """Real probe (review b8337c1 P3-4): a temporary file in the ledger's directory gets S_ISGID via fchmod and is
+    read back with fstat; vfat or some NFS/FUSE mounts drop it. The probe file is always removed."""
+    probe = os.path.join(directory, f".sxbet-witness-probe-{os.urandom(8).hex()}")
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_CLOEXEC", 0), 0o600)
+    except OSError:
+        return False
+    try:
+        os.fchmod(fd, 0o600 | KILL_INODE_WITNESS)
+        return bool(os.fstat(fd).st_mode & KILL_INODE_WITNESS)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass

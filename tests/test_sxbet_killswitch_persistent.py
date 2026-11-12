@@ -548,3 +548,77 @@ def test_review_7ea81ac_p3_b_refused_create_after_open_leaves_no_file(tmp_path, 
     with pytest.raises(od.LedgerError) as e:
         od.OrderLedger.create(path, signer_id="sig-1", signer_address="0x" + "11" * 20)
     assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE" and not os.path.exists(path)
+
+
+# ---------------------------------------------------------------- fixes from the final review of b8337c1
+def test_review_b8337c1_p3_1_restore_by_plain_copy_stays_blocked_while_the_quarantine_file_exists(s, monkeypatch):
+    import shutil
+    import stat
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    _all_marker_writes_fail(monkeypatch, s)
+    path = s.ledger._path
+    assert k.engage("OWNER_MANUAL_STOP")["ledger_quarantined"] is True
+    monkeypatch.undo()
+    (q,) = [p for p in pathlib.Path(path).parent.iterdir() if od.KILL_QUARANTINE_SUFFIX in p.name]
+    s.ledger.close()
+    shutil.copyfile(q, path)                              # plain copy: the mode bit is lost
+    assert not os.stat(path).st_mode & stat.S_ISGID
+    s.restart()
+    assert s.ledger.kill_marker_status == "UNRECORDED" and s.ledger.kill_switch_engaged
+    assert refused(lambda: s.sign(s.intent("order-key-B3101"))) == "KILL_SWITCH_ENGAGED"
+    k2 = make_ks(s)
+    assert k2.release(release(s, k2))["marker_removed"] is True
+    assert not q.exists() and any(od.KILL_RELEASED_SUFFIX in p.name for p in q.parent.iterdir())  # kept, renamed
+    s.restart()
+    assert not s.ledger.kill_switch_engaged
+
+
+def test_review_b8337c1_p3_2_flag_without_durable_directory_entry_is_not_marked(s, monkeypatch):
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    real_open = os.open
+    monkeypatch.setattr(os, "open", lambda p, *a, **kw: (_ for _ in ()).throw(OSError(28, "ENOSPC"))
+                        if ".tmp-" in str(p) else real_open(p, *a, **kw))
+    monkeypatch.setattr(od, "_fsync_dir", lambda p: (_ for _ in ()).throw(OSError(5, "EIO")))
+    rep = k.engage("OWNER_MANUAL_STOP")
+    monkeypatch.undo()
+    assert rep["marker_written"] is False and rep["inode_witness_set"] is True
+
+
+def test_review_b8337c1_p3_2_witness_is_set_whenever_the_engage_line_fails(s, monkeypatch):
+    import stat
+    k = make_ks(s)
+    _ledger_write_fails(monkeypatch, s)
+    rep = k.engage("OWNER_MANUAL_STOP")                    # JSON marker written, ENGAGE line lost
+    monkeypatch.undo()
+    assert rep["marker_written"] is True and rep["inode_witness_set"] is True
+    assert os.stat(s.ledger._path).st_mode & stat.S_ISGID
+    s.restart()
+    k2 = make_ks(s)                                        # recovery records it and clears the witness
+    assert k2.recovery["persisted"] and not s.ledger.inode_witness_set()
+
+
+def test_review_b8337c1_p3_4_filesystem_that_drops_setgid_is_refused(s, monkeypatch):
+    path = s.ledger._path
+    s.ledger.close()
+    monkeypatch.setattr(od, "_filesystem_keeps_setgid", lambda d: False)
+    with pytest.raises(od.LedgerError) as e:
+        od.OrderLedger.open(path, signer_id=s.ledger.signer_id, signer_address=s.ledger.signer_address, clock=s.clock)
+    assert e.value.code == "LEDGER_INODE_WITNESS_UNAVAILABLE"
+    assert not [p for p in pathlib.Path(path).parent.iterdir() if ".sxbet-witness-probe-" in p.name]
+
+
+def test_review_b8337c1_p3_4_the_real_probe_leaves_no_file(tmp_path):
+    assert od._filesystem_keeps_setgid(str(tmp_path)) is True
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_review_b8337c1_p3_5_recovery_audit_runs_after_the_engagement_is_recorded(s, monkeypatch):
+    marker(s).write_bytes(b"{not json")
+    s.restart()
+    from signer.audit import AuditLog
+    monkeypatch.setattr(AuditLog, "append", lambda self, **kw: (_ for _ in ()).throw(ValueError("AUDIT_FIELD_NOT_ALLOWED")))
+    with pytest.raises(ValueError):
+        make_ks(s)
+    assert s.ledger.kill_switch_state()["engaged"]  # recorded on the ledger before the broken audit
