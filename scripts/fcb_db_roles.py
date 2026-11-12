@@ -127,8 +127,6 @@ def scram_verifier(password: str, salt: bytes | None = None, iterations: int = S
 
 
 _STRUCTURE_REPLACEMENTS = (
-    ("' acl='::pg_catalog.text\n        OPERATOR(pg_catalog.||) COALESCE(c.relacl::pg_catalog.text, '-'::pg_catalog.text)",
-     "' acl=*'::pg_catalog.text"),
     ("' own='::pg_catalog.text\n        OPERATOR(pg_catalog.||) (c.relowner OPERATOR(pg_catalog.=) (SELECT me.oid FROM me))::pg_catalog.text",
      "' own=*'::pg_catalog.text"),
     ("' acl='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(p.proacl::pg_catalog.text, '-'::pg_catalog.text)",
@@ -146,8 +144,17 @@ STRUCTURE_HEADER = (
 )
 
 
+# PATH A2: the relation ACL field of fingerprint_bridge_schema.sql renders '-' for no ACL or for exactly
+# the fcb_cert_runner coordinator grant; the structure fingerprint masks the whole field, as before.
+_STRUCTURE_REL_ACL = re.compile(
+    r"' acl='::pg_catalog\.text\n        OPERATOR\(pg_catalog\.\|\|\) CASE WHEN \(c\.relacl IS NULL OR [^\n]*"
+    r" THEN '-'::pg_catalog\.text ELSE c\.relacl::pg_catalog\.text END")
+
+
 def structure_fingerprint_sql(full: str) -> str:
-    out = full
+    out, n = _STRUCTURE_REL_ACL.subn(lambda _m: "' acl=*'::pg_catalog.text", full)
+    if n != 1:
+        raise ValueError("fingerprint_bridge_schema.sql changed; update the structure transform")
     for old, new in _STRUCTURE_REPLACEMENTS:
         if out.count(old) != 1:
             raise ValueError("fingerprint_bridge_schema.sql changed; update the structure transform")

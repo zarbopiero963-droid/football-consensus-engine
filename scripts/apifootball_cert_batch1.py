@@ -1009,6 +1009,11 @@ def main(argv: list[str] | None = None) -> int:
         from app.db import connect as _coordinator_connect
         with _coordinator_connect() as conn:
             identity = runner_identity_problem(conn)
+            # PATH A2: the ONLY ledger is fcb_cert; a ledger in the coordinator database would be a
+            # second, independent budget (legacy bridge 0010 in defaultdb): refused before any request.
+            if identity is None and conn.execute(
+                    "SELECT pg_catalog.to_regclass('public.api_football_cert_plans') IS NOT NULL AS x").fetchone()["x"]:
+                identity = "SECOND_LEDGER_PRESENT"
     except Exception:  # noqa: BLE001 - fixed code only, never the message or the DSN
         identity = "COORDINATOR_DATABASE_UNAVAILABLE"
     if identity:

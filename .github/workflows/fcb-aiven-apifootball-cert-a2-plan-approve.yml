@@ -1,0 +1,176 @@
+name: FCB Aiven API-FOOTBALL cert plan approval A2 (owner-gated)
+
+# PATH A2. Manual only. Registers ONE approved API-FOOTBALL certification plan in the dedicated
+# ledger database `fcb_cert` (scripts/apifootball_cert_path_a.py approve,
+# sql/aiven/apifootball_cert_path_a_plan_approve.sql): the administrator grants itself SET on
+# fcb_cert_owner for ONE transaction, inserts as the owner, and the grant is revoked and asserted
+# before COMMIT. plan_sha256 = SHA-256 of the plan file committed on main (equal to the input);
+# budget and kind come from that file, never from inputs. Append-only: ON CONFLICT DO NOTHING; an
+# approved plan is never renewed (same sha, other budget/kind -> FCB_CERT_PLAN_CONFLICT). Gates:
+# protected Environment `aiven-production`, owner dispatch from main, mode=approve + exact phrase
+# (default diagnose writes nothing), pinned SHA-256, pinned target, PG18, TLS verify-full.
+on:
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: "Which committed plan: batch1 or live_full_match_snapshot"
+        type: choice
+        options: [batch1, live_full_match_snapshot]
+        default: batch1
+      plan_sha256:
+        description: "SHA-256 of the plan file committed on main (must match exactly)"
+        type: string
+        default: ''
+      mode:
+        description: "diagnose = read-only checks (default); approve = register the plan in fcb_cert"
+        type: choice
+        options: [diagnose, approve]
+        default: diagnose
+      confirm:
+        description: "For mode=approve only: type exactly APPROVE API-FOOTBALL CERT PLAN IN fcb_cert"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  certa2approve:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_DEFAULTDB_URL
+      CONFIRM_PHRASE: APPROVE API-FOOTBALL CERT PLAN IN fcb_cert
+      EXPECTED_FILE_SHA256: |
+        sql/aiven/apifootball_cert_path_a_plan_approve.sql=dea288d57b660366ae78421b80ad666d8e5ebf00d52091330bf5ba5091e46a18
+        scripts/apifootball_cert_path_a.py=55684ee8c29c02db695e1c0e871b995dd0ca030cb5835d0874c0c33aa06eb593
+      PGCONNECT_TIMEOUT: '15'
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            approve)
+              if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+                echo "::error::mode=approve requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: approve (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify the pinned files and that plan_sha256 is the plan file committed on main
+        env:
+          PLAN: ${{ inputs.plan }}
+          PLAN_SHA256_INPUT: ${{ inputs.plan_sha256 }}
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS='=' read -r path sha; do
+            [ -n "$path" ] || continue
+            test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_FILE_SHA256"
+          test "$n" -eq 2
+          printf '%s' "$PLAN_SHA256_INPUT" | grep -Eqx '[0-9a-f]{64}' || { echo "::error::plan_sha256 is not 64 lowercase hex"; exit 1; }
+          python -m pip install --quiet -r requirements.txt
+          python scripts/apifootball_cert_batch1.py --check-plan
+          read -r sha budget kind <<< "$(python scripts/apifootball_cert_batch1.py --plan-approval-request "$PLAN")"
+          case "$PLAN" in
+            batch1) file=docs/certification/apifootball/batch1_plan.json ;;
+            live_full_match_snapshot) file=docs/certification/apifootball/live_snapshot_plan.json ;;
+            *) echo "::error::unknown plan"; exit 1 ;;
+          esac
+          test "$(sha256sum "$file" | cut -d' ' -f1)" = "$sha" || { echo "::error::plan file hash differs"; exit 1; }
+          test "$sha" = "$PLAN_SHA256_INPUT" || { echo "::error::plan_sha256 input is not the committed plan"; exit 1; }
+          { echo "PLAN_SHA256=$sha"; echo "PLAN_BUDGET=$budget"; echo "PLAN_KIND=$kind"; } >> "$GITHUB_ENV"
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1; fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || { echo "::error::Aiven CA checksum mismatch"; exit 1; }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+
+      - name: Mask connection details and enforce the pinned target
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          python3 -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode != 'approve' }}
+        run: echo "## Diagnose mode - plan $PLAN_SHA256 (budget $PLAN_BUDGET, $PLAN_KIND) NOT registered" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Register the approved plan in fcb_cert (single transaction, append-only)
+        if: ${{ inputs.mode == 'approve' && inputs.confirm == 'APPROVE API-FOOTBALL CERT PLAN IN fcb_cert' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          APPROVED_BY: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+          PGSSLMODE: verify-full
+        run: |
+          set -euo pipefail
+          python scripts/apifootball_cert_path_a.py approve FCB_DEFAULTDB_URL "$PLAN_SHA256" "$PLAN_KIND" "$PLAN_BUDGET" "$APPROVED_BY" "$RUN_ID" \
+            || { echo "::error::approval refused (fixed code only)"; exit 1; }
+          echo "## Plan $PLAN_SHA256 approved in fcb_cert (budget $PLAN_BUDGET, $PLAN_KIND; never renewed)" >> "$GITHUB_STEP_SUMMARY"

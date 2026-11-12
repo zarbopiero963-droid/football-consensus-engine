@@ -1842,3 +1842,75 @@ def test_workflow_bash_password_gate_fails_closed_without_echoing(fresh, tmp_pat
     rc, out = _run_step(fresh, step, tmp_path, pw)  # the write step re-checks via `verifier`
     assert rc != 0
     assert fresh.roles_state() == ("ROLES_ABSENT" if mode == "apply" else "HARDENED_PHASE1")
+
+
+# ---------------------------------------------------------------- PATH A2 (owner GO): fcb_cert_runner
+# PATH A2 adds to defaultdb only the exact quota-coordinator grant of the plain role fcb_cert_runner.
+# The WP-009 verify model accepts exactly that grant (and nothing more) in every phase; the restore
+# precheck and fingerprints accept it on the 0001-0008 status quo.
+
+def _a2_install(env):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from fcb_db_roles import scram_verifier
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        if conn.execute("SELECT 1 FROM pg_roles WHERE rolname IN ('fcb_cert_runner', 'fcb_cert_owner')").fetchone():
+            pytest.skip("PATH A2 roles already exist on this server; not touching them")
+    env.extra_roles += ["fcb_cert_runner", "fcb_cert_owner"]
+    env.superuser(SQL("ALTER ROLE {} CREATEDB BYPASSRLS").format(Identifier(env.admin_role)))  # Aiven's avnadmin shape
+    sql = (AIVEN / "apifootball_cert_path_a_roles.sql").read_text(encoding="utf-8")
+    assert sql.count("'defaultdb'::pg_catalog.name") == 1
+    sql = sql.replace("'defaultdb'::pg_catalog.name", f"'{env.dbname}'::pg_catalog.name")
+    with psycopg.connect(env.admin_dsn, options=ADMIN_OPTIONS) as conn:
+        conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)",
+                     (scram_verifier(secrets.token_urlsafe(32)),))
+        conn.execute(sql)
+
+
+def _a2_runner_privileges(env):
+    with psycopg.connect(_dsn_for(env.dbname)) as conn:
+        return conn.execute(
+            "SELECT count(*) FILTER (WHERE a.attname IS NULL), count(*) FILTER (WHERE a.attname IS NOT NULL), "
+            "bool_and(pg_get_userbyid(x.grantor) = pg_get_userbyid(c.relowner)) FROM pg_class c "
+            "LEFT JOIN LATERAL aclexplode(c.relacl) x ON true LEFT JOIN pg_attribute a ON false "
+            "WHERE x.grantee = 'fcb_cert_runner'::regrole "
+            "UNION ALL SELECT 0, count(*), true FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid, "
+            "LATERAL aclexplode(a.attacl) x WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchall()
+
+
+def test_a2_status_quo_restore_checks_and_both_wp009_phases_accept_exactly_the_runner_grant(fresh):
+    assert fresh.roles_state() == "ROLES_ABSENT"  # WITHOUT A2: unchanged
+    _a2_install(fresh)
+    # restore precheck, full and structure fingerprints: unchanged by the exact runner grant
+    assert fresh.state() == "BRIDGE_0001_0008"
+    assert fresh.full_fingerprint() == fresh.full_before and fresh.structure_fingerprint() == fresh.structure_before
+    if _server_major_raw() == 18:
+        assert fresh.full_fingerprint() == RESTORE_PINNED_FINGERPRINT
+    rc, _, err = _roles_tx(fresh)  # WP-009 phase 1 through the workflow's transaction
+    assert rc == 0, err
+    assert fresh.roles_state() == "HARDENED_PHASE1"
+    assert fresh.structure_fingerprint() == fresh.structure_before
+    rc, _, err = _enable_tx(fresh)  # phase 2: ownership to fcb_migrator (the runner's grantor follows)
+    assert rc == 0, err
+    assert fresh.roles_state() == "HARDENED"
+    assert fresh.structure_fingerprint() == fresh.structure_before
+    assert _a2_runner_privileges(fresh) == [(8, 0, True), (0, 1, True)]
+    # documented residual: phase 1 revokes PUBLIC's USAGE on public, so the A2 runner can no longer
+    # reach the coordinator (fail closed: no lease, no request) until the owner decides otherwise
+    with psycopg.connect(_dsn_for(fresh.dbname)) as conn:
+        assert conn.execute("SELECT has_schema_privilege('fcb_cert_runner', 'public', 'USAGE')").fetchone()[0] is False
+
+
+@pytest.mark.parametrize("tamper,code", [
+    ("GRANT TRUNCATE ON public.api_football_quota_counters TO fcb_cert_runner", "unexpected_relation_grant"),
+    ("GRANT SELECT ON public.oauth_access_tokens TO fcb_cert_runner", "unexpected_relation_grant"),
+    ("GRANT UPDATE (bucket) ON public.api_football_quota_counters TO fcb_cert_runner", "column_grant"),
+    ("REVOKE DELETE ON public.api_football_quota_leases FROM fcb_cert_runner", "missing_runtime_grant"),
+    ("ALTER ROLE fcb_cert_runner CREATEDB", "unexpected_relation_grant"),
+])
+def test_a2_wp009_verify_still_refuses_anything_beyond_the_exact_runner_grant(fresh, tamper, code):
+    _a2_install(fresh)
+    rc, _, err = _roles_tx(fresh)
+    assert rc == 0, err
+    fresh.superuser(tamper)
+    state = fresh.roles_state()
+    assert state.startswith("NOT_HARDENED") and code in state, state

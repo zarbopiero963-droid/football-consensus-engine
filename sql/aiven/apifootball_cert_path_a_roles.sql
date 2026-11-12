@@ -9,10 +9,21 @@
 -- verifier of the runner password (computed client-side; the cleartext never reaches the server).
 -- Aiven runs with createrole_self_grant = 'inherit,set': it is turned off for this transaction, so
 -- the creator keeps only PostgreSQL's automatic ADMIN-only membership (no INHERIT, no SET).
--- Coordinator privileges (bridge/api_football/quota.py, the only SQL the runner sends to defaultdb):
---   api_football_quota_counters  S, I, U(used)  conditional increment / provider-reported zero
---   api_football_quota_leases    S, I, D        lease, expired-lease cleanup, release
---   api_football_quota_attempts  S, I, D        rolling 60 s window
+-- Coordinator privileges: EXACTLY these 9 (8 table-level + 1 column-level, in 4 GRANT statements),
+-- each required by bridge/api_football/quota.py (PostgresQuota), the only SQL the runner sends to
+-- defaultdb (tests/integration/test_apifootball_cert_path_a_postgres.py revokes each one in turn and
+-- shows the coordinator then fails):
+--   api_football_quota_counters  SELECT       _reserve/_snapshot read `used`; ON CONFLICT ... WHERE used < max RETURNING used
+--   api_football_quota_counters  INSERT       _reserve/_mark_exhausted upsert of the minute/day bucket
+--   api_football_quota_counters  UPDATE(used) the ON CONFLICT DO UPDATE SET used = ... (+1 or GREATEST); no other column
+--   api_football_quota_leases    SELECT       _reserve/_snapshot count active leases; DELETE ... WHERE reads columns
+--   api_football_quota_leases    INSERT       _reserve takes the lease
+--   api_football_quota_leases    DELETE       _reserve expired-lease cleanup; _release
+--   api_football_quota_attempts  SELECT       rolling 60 s window count / retry-after / provider-zero probe
+--   api_football_quota_attempts  INSERT       _reserve records the attempt; _mark_exhausted fills the window
+--   api_football_quota_attempts  DELETE       _reserve prunes attempts older than 60 s
+-- No schema grant: USAGE on public comes from PUBLIC (asserted below). No TRUNCATE, REFERENCES,
+-- TRIGGER, MAINTAIN or grant option; nothing on any other table, sequence or function.
 -- Catalog-qualified. Idempotent: a second run changes nothing.
 SET LOCAL createrole_self_grant = '';
 SET LOCAL search_path = pg_catalog, public;
@@ -41,7 +52,6 @@ END $fcbcertguard$;
 ALTER ROLE fcb_cert_owner WITH NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS PASSWORD NULL;
 ALTER ROLE fcb_cert_runner WITH LOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS CONNECTION LIMIT 12;
 
-GRANT USAGE ON SCHEMA public TO fcb_cert_runner;
 GRANT SELECT, INSERT ON TABLE public.api_football_quota_counters TO fcb_cert_runner;
 GRANT UPDATE (used) ON TABLE public.api_football_quota_counters TO fcb_cert_runner;
 GRANT SELECT, INSERT, DELETE ON TABLE public.api_football_quota_leases, public.api_football_quota_attempts TO fcb_cert_runner;
@@ -68,6 +78,15 @@ BEGIN
     -- the runner: no CREATE in public, and on the 33+ existing tables nothing but the coordinator grant
     IF pg_catalog.has_schema_privilege('fcb_cert_runner', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_RUNNER_CAN_CREATE';
+    END IF;
+    -- no schema grant is made: USAGE on public comes from PUBLIC (PostgreSQL 15+ default); without
+    -- it the runner could not reach the coordinator, so the install refuses instead of widening
+    IF NOT pg_catalog.has_schema_privilege('fcb_cert_runner', 'public', 'USAGE')
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) a
+                  JOIN pg_catalog.pg_roles r ON r.oid OPERATOR(pg_catalog.=) a.grantee
+                  WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
+                    AND r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['fcb_cert_owner', 'fcb_cert_runner']::pg_catalog.name[])) THEN
+        RAISE EXCEPTION 'FCB_CERT_PATH_A_RUNNER_SCHEMA_USAGE_UNEXPECTED';
     END IF;
     FOR t IN SELECT c.relname::pg_catalog.text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
              WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name

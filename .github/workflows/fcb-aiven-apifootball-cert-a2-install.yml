@@ -1,0 +1,198 @@
+name: FCB Aiven API-FOOTBALL cert ledger A2 install (owner-gated)
+
+# PATH A2 (owner GO "FCB PATH A2 IMPLEMENTATION"). Manual only. Installs the API-FOOTBALL
+# certification ledger in the DEDICATED database `fcb_cert` of the SAME Aiven service, without any
+# WP-009 phase, without changing the owner of any existing object and without touching the Render
+# DATABASE_URL (scripts/apifootball_cert_path_a.py):
+#   step 1 (defaultdb, one tx): roles fcb_cert_owner NOLOGIN and fcb_cert_runner LOGIN (SCRAM
+#          verifier computed here, never the cleartext on the server) + EXACTLY the runner's quota
+#          coordinator grant (9 privileges on the 3 api_football_quota_* tables), asserted;
+#   step 2: CREATE DATABASE fcb_cert OWNER fcb_cert_owner (temporary SET grant revoked in finally);
+#   step 3 (fcb_cert, one tx): bridge 0010 byte-for-byte AS fcb_cert_owner, runner grants, asserts,
+#          the administrator's temporary SET grant revoked and asserted before COMMIT.
+# Gates, all required: protected Environment `aiven-production` (required reviewer, main only);
+# owner dispatch from main; mode=apply AND the exact confirmation phrase (default mode=diagnose is
+# read-only); pinned SHA-256 of every file it runs; pinned target (host/port hashes, database),
+# PostgreSQL 18, TLS verify-full with the authenticated Aiven CA; administrative identity (no
+# superuser, CREATEROLE, not an fcb_cert role). apply runs the installer TWICE: the second run must
+# leave the catalog evidence unchanged (no-op). No DROP anywhere; rollback = stop dispatching the
+# campaign workflow (the append-only ledger stays as evidence). Nothing dispatches this automatically.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "diagnose = read-only catalog evidence (default); apply = install A2 (twice, second run no-op)"
+        type: choice
+        options: [diagnose, apply]
+        default: diagnose
+      confirm:
+        description: "For mode=apply only: type exactly INSTALL API-FOOTBALL CERT LEDGER A2 IN fcb_cert"
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with the restore, roles and approval workflows: never two writers against the service.
+  group: fcb-aiven-defaultdb-restore
+  cancel-in-progress: false
+
+jobs:
+  certa2install:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: aiven-production
+    env:
+      EXPECTED_DB: defaultdb
+      FCB_DB_URL_VAR: FCB_DEFAULTDB_URL
+      CONFIRM_PHRASE: INSTALL API-FOOTBALL CERT LEDGER A2 IN fcb_cert
+      # SHA-256 of every file this workflow runs (tests/test_apifootball_cert_a2_workflows.py).
+      EXPECTED_FILE_SHA256: |
+        sql/aiven/apifootball_cert_path_a_roles.sql=b3f052179b8ad25fa2a10d2cd1998c8538a41dd9c96fa05fc494176ef503dc40
+        sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
+        sql/aiven/apifootball_cert_path_a_ledger_post.sql=d2a8d7b8205aa805d9a22b03dadb2604f0fa806a5a959b3ecea8b645a4ecd6fe
+        sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql=64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8
+        scripts/apifootball_cert_path_a.py=55684ee8c29c02db695e1c0e871b995dd0ca030cb5835d0874c0c33aa06eb593
+        scripts/fcb_db_roles.py=8c52b237162ad3efe14b71555ff39671ae5251bba9b0d7f538fca1d30857b3b6
+        scripts/aiven_pg18_diag.py=825235c2b70126f438343efd61ab6805b1b498848cb294ee1efa494e8812d8e6
+      PGCONNECT_TIMEOUT: '15'
+      EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
+      EXPECTED_PORT: '14274'
+      EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      PGPORT: '14274'
+      REQUIRE_SSLMODE_VERIFY_FULL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require a protected environment (required reviewer), else refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reviewers="$(bash scripts/require_protected_environment.sh "$REPO" aiven-production)"
+          echo "## Gate: environment aiven-production protected (required reviewers: $reviewers)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mode and confirmation gate
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GIT_REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/require_owner_main_dispatch.sh
+          case "$MODE" in
+            diagnose) echo "## Mode: diagnose (read-only)" >> "$GITHUB_STEP_SUMMARY" ;;
+            apply)
+              if [ "$CONFIRM" != "$CONFIRM_PHRASE" ]; then
+                echo "::error::mode=apply requires the exact confirmation phrase"; exit 1
+              fi
+              echo "## Mode: apply (confirmation phrase matched)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::unknown mode"; exit 1 ;;
+          esac
+
+      - name: Verify the pinned SHA-256 of every file it runs
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS='=' read -r path sha; do
+            [ -n "$path" ] || continue
+            test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
+            n=$((n + 1))
+          done <<< "$EXPECTED_FILE_SHA256"
+          test "$n" -eq 7
+          python3 -m pip install --quiet 'psycopg[binary]==3.3.6'
+
+      - name: Fail closed if a protected input is missing
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_CERT_RUNNER_DB_PASSWORD: ${{ secrets.FCB_CERT_RUNNER_DB_PASSWORD }}
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FCB_DEFAULTDB_URL:-}" ]; then echo "::error::environment secret FCB_DEFAULTDB_URL is not set"; exit 1; fi
+          if [ "${#FCB_CERT_RUNNER_DB_PASSWORD}" -lt 32 ]; then
+            echo "::error::environment secret FCB_CERT_RUNNER_DB_PASSWORD missing or shorter than 32 characters"; exit 1
+          fi
+          if [ -z "${FCB_AIVEN_CA_PEM:-}" ] || [ -z "${FCB_AIVEN_CA_SHA256:-}" ]; then
+            echo "::error::authenticated Aiven CA inputs are not set"; exit 1
+          fi
+
+      - name: Materialize and authenticate the Aiven project CA
+        env:
+          FCB_AIVEN_CA_PEM: ${{ secrets.FCB_AIVEN_CA_PEM }}
+          FCB_AIVEN_CA_SHA256: ${{ secrets.FCB_AIVEN_CA_SHA256 }}
+        run: |
+          set -euo pipefail
+          ca="$RUNNER_TEMP/aiven-ca.pem"
+          umask 077
+          printf '%s' "$FCB_AIVEN_CA_PEM" > "$ca"
+          openssl x509 -in "$ca" -noout -subject -issuer -dates >/dev/null
+          actual="$(sha256sum "$ca" | cut -d' ' -f1)"
+          test "$actual" = "$FCB_AIVEN_CA_SHA256" || { echo "::error::Aiven CA checksum mismatch"; exit 1; }
+          echo "PGSSLROOTCERT=$ca" >> "$GITHUB_ENV"
+
+      - name: Mask connection details and enforce the pinned target
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+        run: |
+          set -euo pipefail
+          python3 -I -S scripts/aiven_pg18_diag.py check-raw
+          python3 -I -S scripts/aiven_pg18_diag.py target | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Prechecks (administrative identity, PostgreSQL 18, TLS) and read-only evidence
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          PGSSLMODE: verify-full
+          PGOPTIONS: '-c search_path=public'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys
+          import psycopg
+          with psycopg.connect(os.environ["FCB_DEFAULTDB_URL"], dbname=os.environ["EXPECTED_DB"]) as conn:
+              ok = conn.execute(
+                  "SELECT pg_catalog.current_database() OPERATOR(pg_catalog.=) %s AND CURRENT_USER OPERATOR(pg_catalog.=) SESSION_USER "
+                  "AND NOT r.rolsuper AND r.rolcreaterole AND r.rolname OPERATOR(pg_catalog.<>) ALL (ARRAY['fcb_cert_owner', 'fcb_cert_runner']::pg_catalog.name[]) "
+                  "AND pg_catalog.current_setting('server_version_num')::pg_catalog.int4 BETWEEN 180000 AND 189999 "
+                  "AND COALESCE((SELECT s.ssl FROM pg_catalog.pg_stat_ssl s WHERE s.pid OPERATOR(pg_catalog.=) pg_catalog.pg_backend_pid()), false) "
+                  "FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER", (os.environ["EXPECTED_DB"],)).fetchone()
+          if not (ok and ok[0]):
+              print("::error::FCB_CERT_A2_PRECHECK_FAILED"); sys.exit(1)
+          PY
+          python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL > "$RUNNER_TEMP/evidence_before.txt"
+          { echo '## Evidence before'; echo '```'; cat "$RUNNER_TEMP/evidence_before.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose mode - stop before any write
+        if: ${{ inputs.mode != 'apply' }}
+        run: echo "## Diagnose mode - nothing was written" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install A2 (run twice; the second run must change nothing)
+        if: ${{ inputs.mode == 'apply' && inputs.confirm == 'INSTALL API-FOOTBALL CERT LEDGER A2 IN fcb_cert' }}
+        env:
+          FCB_DEFAULTDB_URL: ${{ secrets.FCB_DEFAULTDB_URL }}
+          FCB_CERT_RUNNER_DB_PASSWORD: ${{ secrets.FCB_CERT_RUNNER_DB_PASSWORD }}
+          PGSSLMODE: verify-full
+          PGOPTIONS: '-c search_path=public'
+        run: |
+          set -euo pipefail
+          python3 scripts/apifootball_cert_path_a.py install FCB_DEFAULTDB_URL FCB_CERT_RUNNER_DB_PASSWORD > "$RUNNER_TEMP/run1.txt" \
+            || { echo "::error::install run 1 failed (fixed code only)"; exit 1; }
+          first="$(python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL)"
+          python3 scripts/apifootball_cert_path_a.py install FCB_DEFAULTDB_URL FCB_CERT_RUNNER_DB_PASSWORD > "$RUNNER_TEMP/run2.txt" \
+            || { echo "::error::install run 2 failed (fixed code only)"; exit 1; }
+          second="$(python3 scripts/apifootball_cert_path_a.py evidence FCB_DEFAULTDB_URL)"
+          grep -qx 'FCB_CERT_PATH_A_INSTALLED database=ALREADY_PRESENT' "$RUNNER_TEMP/run2.txt" || { echo "::error::run 2 was not a no-op"; exit 1; }
+          test "$first" = "$second" || { echo "::error::second run changed the catalog evidence"; exit 1; }
+          printf '%s\n' "$second" | grep -qx 'defaultdb bridge_versions=1,2,3,4,5,6,7,8' || { echo "::error::defaultdb bridge series changed"; exit 1; }
+          { echo "## A2 install: PASS ($(cat "$RUNNER_TEMP/run1.txt"); run 2 no-op)"; echo '```'; printf '%s\n' "$second"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

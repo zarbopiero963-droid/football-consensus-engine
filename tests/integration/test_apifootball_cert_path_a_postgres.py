@@ -737,3 +737,385 @@ def test_bridge_readiness_and_oauth_unchanged_with_the_admin_dsn(env, monkeypatc
     assert oauth_store.valid_access_token(access, "https://bridge.example/mcp", "browser:use")
     client = oauth_store.register_claude_dcr_client(redirect)
     assert oauth_store.valid_claude_dcr_client(client, redirect)
+
+
+# ------------------------------------------------------------------ A2 (owner GO): coordinator grant, order, escalation
+
+COORDINATOR_PRIVILEGES = [  # (table, privilege, column or None): the EXACT runner grant, each one needed
+    ("api_football_quota_counters", "SELECT", None), ("api_football_quota_counters", "INSERT", None),
+    ("api_football_quota_counters", "UPDATE", "used"),
+    ("api_football_quota_leases", "SELECT", None), ("api_football_quota_leases", "INSERT", None),
+    ("api_football_quota_leases", "DELETE", None),
+    ("api_football_quota_attempts", "SELECT", None), ("api_football_quota_attempts", "INSERT", None),
+    ("api_football_quota_attempts", "DELETE", None)]
+
+
+def _coordinator_cycle(env):
+    """Every coordinator operation the runner performs: prepare, acquire (+ expired cleanup), release,
+    provider-reported zero (mark_exhausted) and snapshot."""
+    from bridge.api_football.quota import PostgresQuota, QuotaLimits
+    quota = PostgresQuota(QuotaLimits(50, 1000, 4), connect=lambda: env.runner("defaultdb"))
+    key = "PATH-A2-PRIV-" + uuid.uuid4().hex
+
+    async def go():
+        await quota.prepare()
+        lease = await quota.acquire(key)
+        await quota.release(lease)
+        lease = await quota.acquire(key)  # second time: the minute/day buckets exist -> ON CONFLICT DO UPDATE
+        await quota.release(lease)
+        await quota.mark_exhausted(key, "day")
+        return await quota.snapshot(key)
+    return asyncio.run(go())
+
+
+def test_a2_the_runner_coordinator_grant_is_exactly_nine_privileges(env):
+    with env.admin() as conn:
+        rows = conn.execute(
+            "SELECT c.relname, x.privilege_type, x.is_grantable, pg_get_userbyid(x.grantor) AS grantor FROM pg_class c, "
+            "LATERAL aclexplode(c.relacl) x WHERE c.relnamespace = 'public'::regnamespace AND x.grantee = %s::regrole "
+            "ORDER BY 1, 2", (RUNNER,)).fetchall()
+        cols = conn.execute(
+            "SELECT c.relname, a.attname, x.privilege_type FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid, "
+            "LATERAL aclexplode(a.attacl) x WHERE c.relnamespace = 'public'::regnamespace AND x.grantee = %s::regrole",
+            (RUNNER,)).fetchall()
+        schema = conn.execute("SELECT count(*) AS n FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x "
+                              "WHERE x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"]
+    got = {(r["relname"], r["privilege_type"], None) for r in rows} | {(c["relname"], c["privilege_type"], c["attname"]) for c in cols}
+    assert got == set(COORDINATOR_PRIVILEGES) and len(got) == 9 and schema == 0
+    assert all(r["is_grantable"] is False and r["grantor"] == ADMIN for r in rows)
+    assert _coordinator_cycle(env)["remaining_day"] == 0  # the full cycle works with exactly these
+
+
+@pytest.mark.parametrize("table,priv,column", COORDINATOR_PRIVILEGES)
+def test_a2_each_coordinator_privilege_is_needed(env, table, priv, column):
+    target = f"{priv} ({column})" if column else priv
+    with env.admin() as conn:
+        conn.execute(f"REVOKE {target} ON public.{table} FROM {RUNNER}")
+    try:
+        with pytest.raises(Exception) as exc:
+            _coordinator_cycle(env)
+        assert isinstance(exc.value, psycopg.errors.InsufficientPrivilege) or "permission denied" in str(exc.value)
+    finally:
+        with env.admin() as conn:
+            conn.execute(f"GRANT {target} ON public.{table} TO {RUNNER}")
+    _coordinator_cycle(env)
+
+
+def test_a2_runner_cannot_escalate(env):
+    statements = {
+        "defaultdb": [f"CREATE ROLE fcbpa_x", f"ALTER ROLE {RUNNER} CREATEDB", f"ALTER ROLE {OWNER} SET search_path = x",
+                      f"GRANT {OWNER} TO {RUNNER}", f"GRANT {ADMIN} TO {RUNNER}", f"SET ROLE {ADMIN}", f"SET ROLE {OWNER}",
+                      "CREATE DATABASE fcbpa_x", "ALTER TABLE public.api_football_quota_counters OWNER TO " + RUNNER,
+                      "CREATE SCHEMA fcbpa_x", "SELECT * FROM public.oauth_access_tokens"],
+        "fcb_cert": [f"GRANT SELECT ON public.api_football_cert_plan_usage TO {RUNNER}", f"ALTER DATABASE fcb_cert OWNER TO {RUNNER}", f"ALTER DATABASE fcb_cert SET search_path = pg_temp",
+                     f"ALTER ROLE {OWNER} LOGIN", "CREATE FUNCTION public.f() RETURNS int LANGUAGE sql AS 'select 1'",
+                     "SELECT pg_catalog.set_config('role', 'fcb_cert_owner', false)"]}
+    n = 0
+    for db, stmts in statements.items():
+        for statement in stmts:
+            with pytest.raises(psycopg.Error) as exc:
+                with env.runner(db) as conn:
+                    conn.autocommit = True  # CREATE DATABASE must reach the privilege check
+                    conn.execute(statement)
+            assert exc.value.sqlstate in ("42501", "22023", "0LP01", "42704"), (statement, exc.value.sqlstate)
+            n += 1
+    assert n == 17
+    # without a grant option a GRANT is a no-op (PostgreSQL only warns): the ACL is unchanged
+    with env.admin() as conn:
+        acl = conn.execute("SELECT relacl::text AS a FROM pg_class WHERE oid = 'public.api_football_quota_counters'::regclass").fetchone()
+    for statement in ("GRANT SELECT ON public.api_football_quota_counters TO PUBLIC",
+                      f"GRANT DELETE, TRUNCATE ON public.api_football_quota_counters TO {RUNNER}"):
+        with env.runner("defaultdb") as conn:
+            conn.execute(statement)
+    with env.admin() as conn:
+        assert conn.execute("SELECT relacl::text AS a FROM pg_class WHERE oid = 'public.api_football_quota_counters'::regclass").fetchone() == acl
+    with env.su("fcb_cert") as conn:
+        acls = conn.execute("SELECT string_agg(relacl::text, ';' ORDER BY relname) AS a FROM pg_class "
+                            "WHERE relnamespace = 'public'::regnamespace").fetchone()
+    for statement in (f"GRANT INSERT ON public.api_football_cert_plans TO {RUNNER}",
+                      "GRANT INSERT ON public.api_football_cert_campaign_attempts TO PUBLIC"):
+        with env.runner() as conn:
+            conn.execute(statement)
+    with env.su("fcb_cert") as conn:
+        assert conn.execute("SELECT string_agg(relacl::text, ';' ORDER BY relname) AS a FROM pg_class "
+                            "WHERE relnamespace = 'public'::regnamespace").fetchone() == acls
+    with env.su("postgres") as su:  # nothing changed
+        assert su.execute("SELECT rolcreatedb OR rolcreaterole OR rolsuper OR rolbypassrls AS x FROM pg_roles WHERE rolname = %s",
+                          (RUNNER,)).fetchone()["x"] is False
+        assert su.execute("SELECT count(*) AS n FROM pg_auth_members WHERE member = %s::regrole", (RUNNER,)).fetchone()["n"] == 0
+
+
+class _Events(list):
+    pass
+
+
+def _plan_variant(env, budget, tag):
+    """A distinct committed-looking plan text (its own sha) approved with `budget`: lets each test own its budget."""
+    text = json.dumps({**json.loads(batch.render_plan(batch.build_plan())), "x_test_variant": tag}, sort_keys=True)
+    sha = batch.plan_sha256(text)
+    with env.su("fcb_cert") as conn:
+        known = conn.execute("SELECT 1 FROM api_football_cert_plans WHERE plan_sha256 = %s", (sha,)).fetchone()
+    if not known:
+        _approve(env, budget, tag, sha=sha)
+    return text, sha
+
+
+def _recording_quota(env, events, after_acquire=None):
+    from bridge.api_football.quota import PostgresQuota, QuotaLimits
+    real = PostgresQuota(QuotaLimits(1000, 100000, 8), connect=lambda: env.runner("defaultdb"))
+
+    class Q:
+        async def prepare(self):
+            await real.prepare()
+
+        async def acquire(self, secret):
+            lease = await real.acquire(secret)
+            with env.su("defaultdb") as su:  # the lease is REALLY committed in defaultdb
+                assert su.execute("SELECT count(*) AS n FROM api_football_quota_leases WHERE lease_id = %s",
+                                  (lease.lease_id,)).fetchone()["n"] == 1
+            events.append("lease")
+            if after_acquire:
+                after_acquire()
+            return lease
+
+        async def release(self, lease):
+            events.append("release")
+            await real.release(lease)
+
+        async def mark_exhausted(self, secret, kind):
+            await real.mark_exhausted(secret, kind)
+
+        async def snapshot(self, secret):
+            return await real.snapshot(secret)
+    return Q()
+
+
+def _recording_provider(events):
+    import httpx
+    sent = []
+
+    def handler(request):
+        events.append("send")
+        sent.append(request.url.path)
+        return Provider().default(request)
+    return httpx.MockTransport(handler), sent
+
+
+def test_a2_order_is_authorization_plan_lease_reservation_call_outcome(env):
+    text, sha = _plan_variant(env, 78, "order")
+    events = _Events()
+
+    class Recording(batch.PostgresCampaignLedger):
+        async def open(self, *a):
+            events.append("plan")
+            return await super().open(*a)
+
+        async def reserve(self, *a):
+            seq = await super().reserve(*a)
+            with env.su("fcb_cert") as su:  # COMMITTED before the call
+                assert su.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts WHERE seq = %s "
+                                  "AND campaign_id = %s", (seq, a[0])).fetchone()["n"] == 1
+            events.append("reserve")
+            return seq
+
+        async def record_outcome(self, *a):
+            events.append("outcome")
+            return await super().record_outcome(*a)
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:2]
+    run = asyncio.run(batch.execute(plan, campaign_id="camp-order-" + uuid.uuid4().hex[:8], settings=settings(),
+                              ledger=Recording(env.runner, schema="public", owner_role=OWNER),
+                              inner_transport=transport, quota=_recording_quota(env, events), plan_text=text,
+                              source_sha="x"))
+    assert len(sent) == 2, run["calls"]
+    assert events == ["plan", "lease", "reserve", "send", "outcome", "release"] * 1 + ["lease", "reserve", "send", "outcome", "release"]
+
+
+def _refused_run(env, ledger, events, tag, budget=78, after_acquire=None):
+    text, sha = _plan_variant(env, budget, tag)
+    transport, sent = _recording_provider(events)
+    plan = json.loads(text)
+    plan["calls"] = plan["calls"][:3]
+    campaign = "camp-neg-" + uuid.uuid4().hex[:10]
+    codes = []
+    try:
+        run = asyncio.run(batch.execute(plan, campaign_id=campaign, settings=settings(), ledger=ledger,
+                                        inner_transport=transport, quota=_recording_quota(env, events, after_acquire),
+                                        plan_text=text, source_sha="x"))
+        codes = [c.get("refusal_code") for c in run["calls"]]
+        assert all(c["outcome"] == "REFUSED_BEFORE_SEND" and c["verdict"] == "NOT_TESTED" for c in run["calls"]), run["calls"]
+    except batch.LedgerUnavailable as exc:  # the next call's pre-check refused the whole run: still pre-send
+        codes = [str(exc)]
+    return sent, codes, campaign, sha
+
+
+def _committed_attempts(env, campaign):
+    with env.su("fcb_cert") as conn:
+        return conn.execute("SELECT count(*) AS n FROM api_football_cert_campaign_attempts WHERE campaign_id = %s",
+                            (campaign,)).fetchone()["n"]
+
+
+@pytest.mark.parametrize("case", ["ledger_unreachable_after_lease", "budget_exhausted", "serialization_failure",
+                                  "integrity_violation", "identity_violation", "commit_connection_killed"])
+def test_a2_no_provider_request_with_only_a_quota_lease(env, case):
+    """OWNER REQUIREMENT: a quota lease alone never reaches the provider. The lease is REALLY taken in
+    defaultdb (asserted), then the persistent reservation in fcb_cert fails or is never committed:
+    MockTransport records ZERO requests and every call is a pre-send refusal (NOT_TESTED)."""
+    events = _Events()
+    switch = {"on": False}
+    expected = {"ledger_unreachable_after_lease": "CAMPAIGN_LEDGER_UNAVAILABLE", "budget_exhausted": "CAMPAIGN_BUDGET_EXHAUSTED",
+                "serialization_failure": "SERIALIZATION_FAILURE", "integrity_violation": "CAMPAIGN_LEDGER_INTEGRITY_FAILED",
+                "identity_violation": "RUNNER_IDENTITY_NOT_DEDICATED",
+                "commit_connection_killed": "CAMPAIGN_LEDGER_UNAVAILABLE"}[case]
+    inserted = []
+
+    class Ledger(batch.PostgresCampaignLedger):
+        def _reserve(self, campaign_id, call_id):
+            if not switch["on"]:
+                return super()._reserve(campaign_id, call_id)
+            if case == "ledger_unreachable_after_lease":
+                self._connect, keep = (lambda: psycopg.connect(_dsn(RUNNER, env.runner_pw, "fcb_cert_down"),
+                                                               connect_timeout=3)), self._connect
+            elif case == "serialization_failure":
+                def conflicting():  # every reservation attempt is cancelled by the server-side conflict code
+                    with env.runner() as conn:  # the ledger database answers, then the reservation conflicts
+                        conn.execute("SELECT 1")
+                    raise psycopg.errors.SerializationFailure("could not serialize access")
+                self._connect, keep = conflicting, self._connect
+            elif case == "commit_connection_killed":
+                class Killed(psycopg.Connection):
+                    def commit(inner):
+                        inserted.append(inner.info.backend_pid)  # the INSERT ran (RETURNING seq) inside this tx
+                        with env.su("fcb_cert") as su:
+                            su.execute("SELECT pg_terminate_backend(%s)", (inner.info.backend_pid,))
+                        return super().commit()
+                self._connect, keep = (lambda: Killed.connect(env.runner_dsn(), row_factory=dict_row)), self._connect
+            else:
+                keep = self._connect
+            try:
+                return super()._reserve(campaign_id, call_id)
+            finally:
+                self._connect = keep
+    budget = 78
+    tag = case + uuid.uuid4().hex[:6]
+    restore = None
+    if case == "budget_exhausted":
+        budget = 1
+        text, sha = _plan_variant(env, 1, tag)
+        with env.runner() as conn:  # another campaign of the same plan already spent its only unit
+            conn.execute("INSERT INTO api_football_cert_campaigns (campaign_id, plan_sha256) VALUES (%s, %s)",
+                         ("camp-spent-" + uuid.uuid4().hex[:8], sha))
+            conn.execute("INSERT INTO api_football_cert_campaign_attempts (campaign_id, call_id) SELECT campaign_id, 'X' "
+                         "FROM api_football_cert_campaigns WHERE plan_sha256 = %s", (sha,))
+
+    def after_acquire():
+        nonlocal restore
+        switch["on"] = True
+        if case == "integrity_violation" and restore is None:
+            with env.su("fcb_cert") as su:
+                su.execute("ALTER TABLE api_football_cert_campaign_attempts DISABLE TRIGGER api_football_cert_attempt_budget")
+            restore = ("fcb_cert", "ALTER TABLE api_football_cert_campaign_attempts ENABLE TRIGGER api_football_cert_attempt_budget")
+        if case == "identity_violation" and restore is None:
+            with env.su("postgres") as su:
+                su.execute("CREATE ROLE fcbpa_any NOLOGIN")
+                su.execute(f"GRANT fcbpa_any TO {RUNNER}")
+            restore = ("postgres", "DROP ROLE fcbpa_any")
+    try:
+        sent, codes, campaign, sha = _refused_run(env, Ledger(env.runner, schema="public", owner_role=OWNER), events, tag,
+                                                  budget=budget, after_acquire=after_acquire)
+    finally:
+        if restore:
+            with env.su(restore[0]) as su:
+                su.execute(restore[1])
+    assert sent == [] and "send" not in events, events
+    assert "lease" in events and events.index("lease") < len(events)  # a lease WAS obtained first
+    # the first call meets the failing reservation; later ones may also be stopped by the client's own
+    # circuit breaker after consecutive refusals (CIRCUIT_OPEN): every one of them is pre-send
+    assert codes and codes[0] == expected and set(codes) <= {expected, "CIRCUIT_OPEN"}, codes
+    assert _committed_attempts(env, campaign) == 0
+    if case == "commit_connection_killed":
+        assert inserted, "the INSERT must have run before the killed COMMIT"
+    if case == "budget_exhausted":
+        _counter_matches(env, sha, 1)
+    with env.su("defaultdb") as su:  # every lease taken was released (or would expire): none left active by this run
+        assert events.count("release") == events.count("lease")
+
+
+def _kill_between_insert_and_commit(runner_dsn, coordinator_dsn, plan_text, campaign, marker):
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "tests"))
+    import httpx as _httpx
+    from apifootball_campaign_kit import load as _load, settings as _settings
+    from bridge.api_football.quota import PostgresQuota, QuotaLimits
+    mod = _load("apifootball_cert_batch1_pa_killcommit", "apifootball_cert_batch1.py")
+    os.environ[mod.AUTH_VAR] = "true"
+
+    class Dies(psycopg.Connection):
+        def commit(self):
+            if self.execute("SELECT EXISTS (SELECT 1 FROM public.api_football_cert_campaign_attempts a "
+                            "WHERE a.xmin = pg_current_xact_id_if_assigned()::text::xid)").fetchone()[0]:
+                os._exit(9)  # the attempt row is INSERTed (xid assigned) and the process dies before COMMIT
+            return super().commit()
+
+    def handler(request):
+        Path(marker).write_text("sent", encoding="utf-8")
+        return _httpx.Response(200, json={})
+    ledger = mod.PostgresCampaignLedger(lambda: Dies.connect(runner_dsn), schema="public",
+                                        owner_role="fcb_cert_owner")
+    quota = PostgresQuota(QuotaLimits(1000, 100000, 8), connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
+    plan = json.loads(plan_text)
+    plan["calls"] = plan["calls"][:1]
+    asyncio.run(mod.execute(plan, campaign_id=campaign, settings=_settings(), ledger=ledger,
+                            inner_transport=_httpx.MockTransport(handler), quota=quota, plan_text=plan_text, source_sha="x"))
+    os._exit(0)
+
+
+def test_a2_process_killed_between_insert_and_commit_sends_nothing_and_consumes_nothing(env, tmp_path):
+    text, sha = _plan_variant(env, 78, "killcommit")
+    campaign = "camp-kc-" + uuid.uuid4().hex[:8]
+    with env.su("fcb_cert") as su:
+        before = su.execute("SELECT used FROM api_football_cert_plan_usage WHERE plan_sha256 = %s", (sha,)).fetchone()["used"]
+    with env.su("defaultdb") as su:
+        leases_before = su.execute("SELECT count(*) AS n FROM api_football_quota_leases").fetchone()["n"]
+    marker = tmp_path / "sent"
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(target=_kill_between_insert_and_commit,
+                       args=(env.runner_dsn(), env.runner_dsn("defaultdb"), text, campaign, str(marker)))
+    proc.start()
+    proc.join(120)
+    assert proc.exitcode == 9 and not marker.exists()  # died; the provider was never reached
+    assert _committed_attempts(env, campaign) == 0  # the uncommitted reservation rolled back...
+    _counter_matches(env, sha, before)  # ...with its counter increment: nothing consumed
+    with env.su("defaultdb") as su:  # the lease WAS committed before (orphan, expires after 180 s)
+        assert su.execute("SELECT count(*) AS n FROM api_football_quota_leases").fetchone()["n"] == leases_before + 1
+
+
+def test_a2_a_second_ledger_in_defaultdb_is_refused_before_any_request(env, monkeypatch, capsys):
+    with env.admin() as conn:
+        conn.execute("CREATE TABLE public.api_football_cert_plans (plan_sha256 text)")
+        conn.execute(f"GRANT SELECT ON public.api_football_cert_plans TO {RUNNER}")
+    try:
+        monkeypatch.setenv("DATABASE_URL", env.runner_dsn("defaultdb"))
+        monkeypatch.setenv("APIFOOTBALL_ENABLED", "true")
+        monkeypatch.setenv("APIFOOTBALL_LIVE_AUTHORIZED", "true")
+        monkeypatch.setenv("APIFOOTBALL_API_KEY", KEY)
+        assert batch.main(["--execute", "--authorize-live-campaign", "--campaign-id", "camp-second-001",
+                           "--out", "/tmp/pa-second"]) == 2
+        assert "CAMPAIGN_REFUSED SECOND_LEDGER_PRESENT" in capsys.readouterr().out
+    finally:
+        with env.admin() as conn:
+            conn.execute("DROP TABLE public.api_football_cert_plans")
+
+
+def test_a2_evidence_is_catalog_only_stable_and_free_of_secrets(env):
+    def ev():
+        return path_a.evidence(env.admin, lambda: env.admin("fcb_cert"))
+    first = ev()
+    assert first == ev()
+    text = "\n".join(first)
+    assert env.admin_pw not in text and env.runner_pw not in text and "SCRAM" not in text
+    assert "database fcb_cert owner=fcb_cert_owner acl_entries=3" in first
+    assert "defaultdb bridge_versions=1,2,3,4,5,6,7,8" in first
+    assert sum(line.startswith("grant ") for line in first) == 8 and sum(line.startswith("column_grant ") for line in first) == 1
+    assert "ledger triggers_enabled=13 triggers=13" in first

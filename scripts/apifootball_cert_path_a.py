@@ -17,6 +17,7 @@ ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-
 Nothing here prints a password, a verifier, a DSN or a host. Usage (owner-gated workflows only):
   install   ADMIN_DSN_VAR RUNNER_PASSWORD_VAR   steps 1-3 (idempotent)
   approve   ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID
+  evidence  ADMIN_DSN_VAR                       read-only catalog evidence (diagnose, rerun no-op)
 """
 from __future__ import annotations
 
@@ -115,7 +116,77 @@ def approve_plan(connect_ledger, sha: str, kind: str, budget: int, actor: str, r
         conn.execute(_sql("apifootball_cert_path_a_plan_approve.sql"))
 
 
+EVIDENCE_DEFAULTDB_SQL = """
+SELECT 'role ' || r.rolname || ' login=' || r.rolcanlogin || ' super=' || r.rolsuper || ' createrole=' || r.rolcreaterole
+       || ' createdb=' || r.rolcreatedb || ' bypassrls=' || r.rolbypassrls || ' inherit=' || r.rolinherit AS line
+FROM pg_catalog.pg_roles r WHERE r.rolname IN ('fcb_cert_owner', 'fcb_cert_runner')
+UNION ALL
+SELECT 'membership ' || g.rolname || ' <- ' || CASE WHEN m.member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = SESSION_USER)
+       THEN 'session' ELSE u.rolname END || ' admin=' || a.admin_option || ' inherit=' || a.inherit_option || ' set=' || a.set_option
+FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles u ON u.oid = a.member,
+     LATERAL (SELECT a.member) m(member)
+WHERE g.rolname IN ('fcb_cert_owner', 'fcb_cert_runner') OR u.rolname IN ('fcb_cert_owner', 'fcb_cert_runner')
+UNION ALL
+SELECT 'grant ' || c.relname || ' ' || x.privilege_type || ' grantable=' || x.is_grantable
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace, LATERAL pg_catalog.aclexplode(c.relacl) x
+WHERE n.nspname = 'public' AND x.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'fcb_cert_runner')
+UNION ALL
+SELECT 'column_grant ' || c.relname || '.' || t.attname || ' ' || x.privilege_type
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_catalog.pg_attribute t ON t.attrelid = c.oid, LATERAL pg_catalog.aclexplode(t.attacl) x
+WHERE n.nspname = 'public' AND x.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'fcb_cert_runner')
+UNION ALL
+SELECT 'database fcb_cert owner=' || pg_catalog.pg_get_userbyid(d.datdba) || ' acl_entries=' || pg_catalog.cardinality(d.datacl)
+FROM pg_catalog.pg_database d WHERE d.datname = 'fcb_cert'
+UNION ALL
+SELECT 'defaultdb bridge_versions=' || (SELECT pg_catalog.string_agg(m.version::text, ',' ORDER BY m.version) FROM public.schema_migrations m)
+ORDER BY 1"""
+EVIDENCE_LEDGER_SQL = """
+SELECT 'ledger relations_owned_by_owner=' || pg_catalog.count(*) FILTER (WHERE c.relowner = o.oid)
+       || ' relations_total=' || pg_catalog.count(*) AS line
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace, pg_catalog.pg_roles o
+WHERE n.nspname = 'public' AND o.rolname = 'fcb_cert_owner'
+UNION ALL
+SELECT 'ledger triggers_enabled=' || pg_catalog.count(*) FILTER (WHERE t.tgenabled = 'O') || ' triggers=' || pg_catalog.count(*)
+FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND NOT t.tgisinternal
+UNION ALL
+SELECT 'ledger function ' || p.proname || ' secdef=' || p.prosecdef || ' owner=' || pg_catalog.pg_get_userbyid(p.proowner)
+       || ' config=' || COALESCE(p.proconfig::text, '-')
+FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
+ORDER BY 1"""
+
+
+def evidence(connect_defaultdb, connect_ledger) -> list[str]:
+    """Catalog-only, read-only evidence (no row of any ledger or bridge table but schema_migrations
+    versions; no secret). Used by the install workflow: the second run must leave it unchanged."""
+    with connect_defaultdb() as conn:
+        lines = [r["line"] if isinstance(r, dict) else r[0] for r in conn.execute(EVIDENCE_DEFAULTDB_SQL)]
+    if any(line.startswith("database fcb_cert ") for line in lines):
+        with connect_ledger() as conn:
+            lines += [r["line"] if isinstance(r, dict) else r[0] for r in conn.execute(EVIDENCE_LEDGER_SQL)]
+    else:
+        lines.append("database fcb_cert absent")
+    return lines
+
+
+def _fixed_code(exc: BaseException) -> str:
+    """Only a fixed FCB_CERT_* code raised by the SQL files, never a server message or a DSN."""
+    import re as _re
+    text = getattr(getattr(exc, "diag", None), "message_primary", None) or (exc.args[0] if exc.args else "")
+    found = _re.match(r"(FCB_CERT_[A-Z0-9_]+)", text if isinstance(text, str) else "")
+    return found.group(1) if found else "FCB_CERT_PATH_A_DB_ERROR"
+
+
 def main(argv: list[str]) -> int:
+    try:
+        return _main(argv)
+    except Exception as exc:  # noqa: BLE001 - fixed code only
+        print(_fixed_code(exc))
+        return 1
+
+
+def _main(argv: list[str]) -> int:
     import psycopg
     from psycopg.rows import dict_row
     if len(argv) >= 3 and argv[0] == "install":
@@ -138,7 +209,14 @@ def main(argv: list[str]) -> int:
                      argv[2], argv[3], int(argv[4]), argv[5], argv[6])
         print("FCB_CERT_PATH_A_PLAN_APPROVED")
         return 0
-    print("usage: install ADMIN_DSN_VAR RUNNER_PASSWORD_VAR | approve ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID")
+    if len(argv) == 2 and argv[0] == "evidence":
+        dsn = os.environ.get(argv[1], "")
+        for line in evidence(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row),
+                             lambda: psycopg.connect(dsn, dbname=LEDGER_DATABASE, row_factory=dict_row)):
+            print(line)
+        return 0
+    print("usage: install ADMIN_DSN_VAR RUNNER_PASSWORD_VAR | approve ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID"
+          " | evidence ADMIN_DSN_VAR")
     return 2
 
 

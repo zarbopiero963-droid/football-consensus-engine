@@ -19,6 +19,7 @@
 --              and no bridge role can reach (MEMBER) another bridge role or the session;
 --   ownership  every relation, routine and type in public is owned by fcb_migrator;
 --   tables     the only non-owner privileges in public are the runtime allowlist of fcb_app
+--              and (PATH A2) the exact quota-coordinator grant of a plain fcb_cert_runner;
 --              (finalize_bridge_privileges.sql); no column privilege; no PUBLIC or signer grant;
 --   routines   no non-owner EXECUTE (PUBLIC revoked);
 --   schema     public: fcb_migrator USAGE+CREATE, fcb_app USAGE, nothing for PUBLIC/fcb_signer
@@ -122,9 +123,34 @@ runtime_tables(relname, privs) AS (
     ('sxbet_rate_cooldowns', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
     ) AS base(relname, privs)
 ),
+-- PATH A2 (owner GO): the dedicated certification runner fcb_cert_runner, when it exists as a PLAIN
+-- role (no attribute, member of nothing), holds EXACTLY the shared quota coordinator grant of
+-- sql/aiven/apifootball_cert_path_a_roles.sql and nothing else; any other privilege of it, or the
+-- same privileges held by a non-plain fcb_cert_runner, stays unexpected.
+cert_runner AS (
+    SELECT r.oid FROM pg_catalog.pg_roles r
+    WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_cert_runner'::pg_catalog.name
+      AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolbypassrls
+      AND NOT r.rolreplication AND NOT r.rolinherit
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid)
+),
+cert_runner_grants(relname, priv) AS (VALUES
+    ('api_football_quota_counters'::pg_catalog.text, 'SELECT'::pg_catalog.text),
+    ('api_football_quota_counters', 'INSERT'),
+    ('api_football_quota_leases', 'SELECT'),
+    ('api_football_quota_leases', 'INSERT'),
+    ('api_football_quota_leases', 'DELETE'),
+    ('api_football_quota_attempts', 'SELECT'),
+    ('api_football_quota_attempts', 'INSERT'),
+    ('api_football_quota_attempts', 'DELETE')
+),
+cert_runner_column_grants(relname, attname, priv) AS (VALUES
+    ('api_football_quota_counters'::pg_catalog.text, 'used'::pg_catalog.text, 'UPDATE'::pg_catalog.text)
+),
 expected_grants AS (
     SELECT t.relname, (SELECT app.oid FROM app) AS grantee, p.priv
     FROM runtime_tables t, LATERAL pg_catalog.unnest(t.privs) AS p(priv)
+    UNION ALL SELECT g.relname, w.oid, g.priv FROM cert_runner_grants g, cert_runner w
 ),
 schema_grants AS (
     SELECT a.grantee, a.privilege_type::pg_catalog.text AS priv
@@ -293,11 +319,13 @@ checks(code, bad) AS (
         EXCEPT SELECT g.relname, g.grantee, g.priv FROM rel_grants g))
     UNION ALL SELECT 'column_grant', (EXISTS (
         SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g
-        EXCEPT SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
-        WHERE e.since OPERATOR(pg_catalog.<=) b.v)
+        EXCEPT (SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
+        WHERE e.since OPERATOR(pg_catalog.<=) b.v
+        UNION ALL SELECT g.relname, g.attname, w.oid, g.priv FROM cert_runner_column_grants g, cert_runner w))
         OR EXISTS (
         SELECT e.relname, e.attname, (SELECT app.oid FROM app), e.priv FROM expected_column_grants e, bridge_state b
         WHERE e.since OPERATOR(pg_catalog.<=) b.v
+        UNION ALL SELECT g.relname, g.attname, w.oid, g.priv FROM cert_runner_column_grants g, cert_runner w
         EXCEPT SELECT g.relname, g.attname, g.grantee, g.priv FROM column_grants g))
     UNION ALL SELECT 'bridge_state', ((SELECT b.v FROM bridge_state b) OPERATOR(pg_catalog.=) 0)
     UNION ALL SELECT 'routine_grant', (EXISTS (
