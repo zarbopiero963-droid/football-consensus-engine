@@ -72,6 +72,7 @@ Un exit code 0 di `pg_restore` **non basta**. Il job fallisce, prima di cifrare,
 - funzioni (firma e md5 della definizione);
 - sequenze (`last_value` e `is_called`). Le sequenze non devono muoversi durante il dump;
 - owner di ogni tabella, sequenza e funzione;
+- opzioni di colonna (`attoptions`, per esempio `n_distinct`). Si ignora solo `pg_attver=<numero>`, l'opzione interna che PostgreSQL 18.7/16.16 scrive da solo su ogni colonna con un valore diverso per ogni server (`pg_dump` 18.7 non la esporta): non è un dato e confrontarla darebbe un falso errore;
 - ACL normalizzate (`relacl`, ACL di colonna, `proacl`, ACL dei tipi, owner e ACL dello schema `public`, default privileges `pg_default_acl`);
 - database: owner, ACL e tutte le impostazioni `pg_db_role_setting` (`ALTER DATABASE … SET` e `ALTER ROLE … IN DATABASE … SET`);
 - ruoli (nomi e attributi `LOGIN`, `CREATEROLE`, …) e membership, confrontati con il catalogo sorgente;

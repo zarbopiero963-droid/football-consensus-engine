@@ -131,7 +131,7 @@ WRITE_SQL = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|DROP|ALTER|GRANT
 def test_source_side_sql_is_read_only_catalog_or_select():
     mod = _module()
     for name in ("GUARD_SQL", "TABLES_SQL", "SEQUENCES_SQL", "FUNCTIONS_SQL", "REFERENCED_ROLES_SQL", "OWNERS_SQL",
-                 "ACLS_SQL", "ROLES_SQL", "MEMBERSHIPS_SQL", "BOOTSTRAP_SQL"):
+                 "ACLS_SQL", "ROLES_SQL", "MEMBERSHIPS_SQL", "BOOTSTRAP_SQL", "COLUMN_OPTIONS_SQL", "DATABASE_SQL"):
         assert not WRITE_SQL.search(getattr(mod, name)), name
     for path in (mod.COUNT_SQL, mod.STRUCTURE_SQL):
         assert not WRITE_SQL.search(_sql_only(path.read_text())), path
@@ -591,3 +591,9 @@ def test_p3_public_summary_has_no_per_table_counts_and_no_schema_names():
     names = [n for n, ok, _ in checks.items if not ok]
     assert names == ["restore_rows_per_table", "restore_content_per_table", "restore_content_sha256"] or \
         set(names) >= {"restore_rows_per_table", "restore_content_per_table"}
+
+
+def test_column_options_ignore_only_a_well_formed_pg_attver():
+    sql_text = _module().COLUMN_OPTIONS_SQL
+    assert "o.opt OPERATOR(pg_catalog.!~) '^pg_attver=[0-9]+$'::pg_catalog.text" in sql_text
+    assert sql_text.count("pg_attver") == 1

@@ -506,3 +506,37 @@ def test_extension_outside_public_is_refused_by_the_guard(source, short_tmp, cap
     rc, out, summary = _run(_module(), source, short_tmp, capsys)
     _assert_failed_clean(rc, out, summary, short_tmp, "source_guard_catalog_only")
     assert "EXTENSION_OUTSIDE_PUBLIC" in summary
+
+
+
+# ------------------------------------------------------------------ PostgreSQL 18.7 / 16.16: pg_attver
+
+def _attver_server():
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        v = conn.info.server_version
+    return v >= 180007 or 160016 <= v < 170000
+
+
+def test_column_options_are_restored_and_pg_attver_never_causes_a_false_mismatch(source, short_tmp, capsys):
+    """A real column option survives and is compared; the server-managed pg_attver (different on
+    source and restore) is ignored, so the run is PASS on 18.6 and 18.7 alike."""
+    if source.kind != "fresh":
+        pytest.skip("one state is enough")
+    source.superuser("ALTER TABLE public.ingest_runs ALTER COLUMN source SET (n_distinct = 5)", as_role=source.admin_role)
+    with psycopg.connect(rr._dsn_for(source.dbname)) as conn:
+        opts = conn.execute("SELECT attoptions FROM pg_attribute WHERE attrelid = 'public.ingest_runs'::regclass "
+                            "AND attname = 'source'").fetchone()[0]
+    assert "n_distinct=5" in opts and any(o.startswith("pg_attver=") for o in opts) == _attver_server()
+    rc, out, summary = _run(_module(), source, short_tmp, capsys)
+    assert rc == 0, out + summary
+    assert "| restore_column_options | PASS | options=1 (pg_attver ignored) |" in summary
+
+
+def test_a_lost_column_option_fails_the_restore_verification(source, short_tmp, capsys, monkeypatch):
+    if source.kind != "fresh":
+        pytest.skip("one state is enough")
+    source.superuser("ALTER TABLE public.ingest_runs ALTER COLUMN source SET (n_distinct = 5)", as_role=source.admin_role)
+    mod = _module()
+    _tamper_restore(mod, monkeypatch, short_tmp, "ALTER TABLE public.ingest_runs ALTER COLUMN source RESET (n_distinct)")
+    rc, out, summary = _run(mod, source, short_tmp, capsys)
+    _assert_failed_clean(rc, out, summary, short_tmp, "restore_column_options")

@@ -428,6 +428,22 @@ SELECT obj.k,
 """
 
 
+# Column options (attoptions) of public tables, e.g. n_distinct: restored by pg_dump and compared.
+# PostgreSQL 18.7/16.16's internal, server-managed `pg_attver=<decimal>` is left out: each server
+# writes its own value at CREATE time (pg_dump 18.7 does not dump it), so it would be a false
+# mismatch; any OTHER option, including a malformed pg_attver, is compared as is.
+COLUMN_OPTIONS_SQL = """
+SELECT c.relname::pg_catalog.text OPERATOR(pg_catalog.||) '.'::pg_catalog.text OPERATOR(pg_catalog.||) a.attname::pg_catalog.text
+       OPERATOR(pg_catalog.||) ' '::pg_catalog.text OPERATOR(pg_catalog.||) o.opt
+  FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) a.attrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace,
+       LATERAL pg_catalog.unnest(a.attoptions) o(opt)
+ WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND a.attnum OPERATOR(pg_catalog.>) 0::pg_catalog.int2
+   AND NOT a.attisdropped AND o.opt OPERATOR(pg_catalog.!~) '^pg_attver=[0-9]+$'::pg_catalog.text
+ ORDER BY 1
+"""
+
+
 def read_acls(conn) -> list[str]:
     """One sorted line per object: `<kind name> <grantor>grantee:privilege[*]>,...`."""
     by_obj: dict[str, list[str]] = {}
@@ -576,6 +592,7 @@ def read_evidence(conn) -> dict:
     functions = [r[0] for r in conn.execute(FUNCTIONS_SQL).fetchall()]
     owners = [r[0] for r in conn.execute(OWNERS_SQL).fetchall()]
     acls = read_acls(conn)
+    column_options = [r[0] for r in conn.execute(COLUMN_OPTIONS_SQL).fetchall()]
     tables = {}
     for (table,) in conn.execute(TABLES_SQL).fetchall():
         rows, digest = conn.execute(_table_hash_sql(table)).fetchone()
@@ -589,6 +606,7 @@ def read_evidence(conn) -> dict:
         "owners": owners,
         "owners_sha256": hashlib.sha256("\n".join(owners).encode()).hexdigest(),
         "acls": acls,
+        "column_options": column_options,
         "acls_sha256": hashlib.sha256("\n".join(acls).encode()).hexdigest(),
         "sequences": read_sequences(conn),
         "tables": tables,
@@ -807,6 +825,8 @@ def _compare(checks: Checks, src: dict, dst: dict, expected_catalog: str, expect
                f"sequences={len(dst['sequences'])}")
     checks.add("restore_owners", dst["owners"] == src["owners"],
                f"objects={len(dst['owners'])} sha256={dst['owners_sha256']}")
+    checks.add("restore_column_options", dst.get("column_options") == src.get("column_options"),
+               f"options={len(dst.get('column_options') or [])} (pg_attver ignored)")
     checks.add("restore_acls_normalized", dst["acls"] == src["acls"],
                f"objects={len(dst['acls'])} sha256={dst['acls_sha256']}")
     checks.add("restore_table_set", sorted(dst["tables"]) == sorted(src["tables"]),
