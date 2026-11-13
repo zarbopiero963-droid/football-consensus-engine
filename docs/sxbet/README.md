@@ -293,6 +293,32 @@ Per una cancellazione inviata:
 
 La risposta non è mai una prova: si legge ogni ordine fino a `INACTIVE`.
 
+**Contratto di stato** (decisioni dell'owner D01–D07, 13-11-2026). Ogni risposta di `sxbet_order_request_status` riporta tre condizioni **indipendenti**, che possono coesistere. Ciascuna vale `YES`, `NO` o `NOT_DETERMINABLE`: mai un `false` al posto di un'informazione sconosciuta.
+
+| Campo | Significato | Da quali evidenze |
+|---|---|---|
+| `may_still_be_open` | l'ordine può essere, o diventare, attivo sull'exchange | `YES`: riga conclusiva attiva, richiesta non ancora decisa, oppure ordine firmato e non inviato con la firma ancora valida. `NO`: riga conclusiva inattiva, stato finale, oppure scadenza firmata + 30 s superata. Altrimenti `NOT_DETERMINABLE` |
+| `reconciliation_required` | l'esito va verificato su SX Bet prima di qualunque nuovo comando | sempre `YES` per `UNKNOWN` e per gli esiti di una cancellazione inviata, perché la risposta non è una prova |
+| `evidence_insufficient` | le evidenze lette non provano lo stato riportato | `YES` per `UNKNOWN` e per gli stati che vengono solo dall'istantanea del signer o da una lettura non conclusiva |
+
+Inoltre:
+- `automatic_resend_allowed` è **sempre** `false` (D04);
+- `next_action` dice cosa fare;
+- `UNKNOWN` ha sempre `final: false` (D01);
+- `FILLED` richiede l'intero stake abbinato in unità intere esatte (D05);
+- `CANCELLED` richiede una riga inattiva conclusiva o lo stato finale del ledger con `filled` = 0 (D06);
+- un 404 o la scomparsa dell'ordine non provano né esecuzione né cancellazione (D07).
+
+**Importi che crescono soltanto** (review indipendente di `46e1be8`). Un importo abbinato non diminuisce mai, quindi il risultato finale viene controllato contro tutte le evidenze:
+- se il signer ha registrato un fill (importo > 0 o stato del ledger `PARTIALLY_FILLED`/`FILLED`/`SETTLED`, in qualunque evento), un risultato "nessuna esecuzione" (`ACCEPTED`, `CANCELLED`, `EXPIRED`) o un importo inferiore è un conflitto: `UNKNOWN` / `QUEUE_AND_EXCHANGE_DISAGREE`;
+- una riga ben formata di questo ordine che mostra un fill, anche se non accettata come evidenza, impedisce "nessuna esecuzione": `UNKNOWN` / `ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE`;
+- un parziale finale del ledger contro un importo diverso sulla riga è un conflitto;
+- un `FILLED` del ledger contro una riga ancora attiva è un conflitto;
+- l'evento di recupero `SUBMITTED{FILLED, filled}` segue le stesse regole dell'evento finale;
+- `SETTLED` richiede un importo abbinato > 0, non superiore allo stake.
+
+Per una cancellazione, le tre condizioni riguardano gli **ordini bersaglio**: `may_still_be_open` resta `NOT_DETERMINABLE` finché ogni ordine non viene letto.
+
 **Rischio residuo accettato dall'owner** (Opzione 1, 12-11-2026): un MCP o un client compromesso può scrivere una richiesta con un comando falsificato. Il rischio è **limitato, non eliminato**, dai controlli del signer:
 - monouso dell'**impronta** del comando (l'hash dell'operazione risolta e del testo). Il `command_id` lo genera il MCP a ogni chiamata, quindi contro un MCP compromesso il monouso dell'id non conta: conta solo l'impronta;
 - verifica del testo contro l'ordine sulle letture del signer;

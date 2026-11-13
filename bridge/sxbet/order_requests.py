@@ -219,6 +219,19 @@ _RANK = {"ACCEPTED": 0, "PARTIALLY_FILLED": 1, "FILLED": 2}
 _INACTIVE_NO_FILL = frozenset({"CANCELLED", "EXPIRED"})
 
 
+def _ledger_filled(out: dict[str, Any], ledger: str, filled: int | None, stake: int | None) -> dict[str, Any]:
+    # signer/orders.py records an INACTIVE/FILLED row with a remainder as ledger FILLED with filled < stake:
+    # FILLED here only when the matched amount IS the signed stake (review of 47a770b, P2-1).
+    if filled is None or stake is None:
+        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_NOT_PROVEN"}
+    if filled == stake:
+        return {**out, "state": "FILLED", "final": True, "ledger_final": True, "ledger_state": ledger}
+    if 0 < filled < stake:
+        return {**out, "state": "PARTIALLY_FILLED", "final": False, "ledger_final": True, "resting": False,
+                "ledger_state": ledger, "code": "FILLED_AMOUNT_BELOW_STAKE"}
+    return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_INCONSISTENT"}
+
+
 def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any], stake: int | None) -> dict[str, Any]:
     states = [e["state"] for e in events]
     last = events[-1]
@@ -230,12 +243,12 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any], stake:
             # A refusal recorded after this request's SIGNED event: a signature may be outstanding.
             return {**out, "state": "UNKNOWN", "final": False, "code": d.get("code") or "REFUSED_AFTER_SIGNATURE"}
         return {**out, "state": "REFUSED", "final": True}
-    if ev == "UNKNOWN":
-        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": d.get("state")}
     ledger, filled = d.get("state"), _units(d.get("filled"))
     if filled is not None:
         out["filled_base_units"] = str(filled)
         out["filled_source"] = "SIGNER_LEDGER_SNAPSHOT"  # as of the signer's event, not a fresh read (P3-3)
+    if ev == "UNKNOWN":
+        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger}
     if ev == "SUBMITTED":
         if d.get("sent") is False:  # e.g. a duplicate the gateway did not send: not proof of anything here
             return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
@@ -244,9 +257,11 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any], stake:
             return {**out, "state": "ACCEPTED", "final": False, "ledger_state": ledger}
         if ledger == "PARTIALLY_FILLED":
             return {**out, "state": ledger, "final": False, "ledger_state": ledger}
-        if ledger == "FILLED":
+        if ledger == "FILLED" and filled is None:
             # The send-time event carries no amount: never "fully filled" without it (review 47a770b P2-1).
             return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_NOT_PROVEN"}
+        if ledger == "FILLED":
+            return _ledger_filled(out, ledger, filled, stake)  # recover writes SUBMITTED{FILLED, filled} (46e1be8 P2-1)
         # REJECTED is not final while a signature is out (signer/orders.py H3); anything else is not conclusive.
         return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
                 "code": d.get("code") or "LEDGER_STATE_NOT_CONCLUSIVE"}
@@ -262,18 +277,12 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any], stake:
     # fill until settlement (signer/orders.py LATE_FILL_AFTER_EXPIRY, CANCELLED self-transition): review of
     # 8396424, P2-A.
     if ledger == "FILLED":
-        # signer/orders.py records an INACTIVE/FILLED row with a remainder as ledger FILLED with filled < stake:
-        # FILLED here only when the matched amount IS the signed stake (review of 47a770b, P2-1).
-        if filled is None or stake is None:
-            return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_NOT_PROVEN"}
-        if filled == stake:
-            return {**out, "state": "FILLED", "final": True, "ledger_final": True, "ledger_state": ledger}
-        if 0 < filled < stake:
-            return {**out, "state": "PARTIALLY_FILLED", "final": False, "ledger_final": True, "resting": False,
-                    "ledger_state": ledger, "code": "FILLED_AMOUNT_BELOW_STAKE"}
-        return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_INCONSISTENT"}
+        return _ledger_filled(out, ledger, filled, stake)
     if ledger == "SETTLED":
         # Settled by the exchange: some stake was matched; how much is filled_base_units (ledger), never "full".
+        # The signer only settles a matched amount > 0 (orders._next): anything else is malformed (46e1be8 P3-2).
+        if filled is None or filled <= 0 or (stake is not None and filled > stake):
+            return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger, "code": "FILL_AMOUNT_NOT_PROVEN"}
         return {**out, "state": "SETTLED", "final": True, "ledger_final": True, "ledger_state": ledger}
     if ledger in _INACTIVE_NO_FILL:
         if filled is None:
@@ -339,7 +348,19 @@ def queue_view(kind: str, events: Sequence[Mapping[str, Any]], *, intent_total: 
         ids = [e["detail"].get(k) for e in events if isinstance(e["detail"].get(k), str)]
         if ids:
             out[k] = ids[-1]
-    return _cancel_view(events, out) if kind == "CANCEL" else _place_view(events, out, _units(intent_total))
+    if kind == "CANCEL":
+        return _cancel_view(events, out)
+    view = _place_view(events, out, _units(intent_total))
+    # Any fill the signer ever recorded for this request (amount > 0 or a filled ledger state): a later read that
+    # says "nothing filled" or a smaller amount can never silently replace it (review of 46e1be8, P2-1).
+    amounts = [a for a in (_units(e["detail"].get("filled")) for e in events) if a is not None]
+    claimed = any(a > 0 for a in amounts) or any(e["detail"].get("state") in ("PARTIALLY_FILLED", "FILLED", "SETTLED")
+                                                 for e in events)
+    view["queue_fill_claimed"] = claimed
+    view["queue_ledger_filled"] = any(e["detail"].get("state") == "FILLED" for e in events)
+    if amounts:
+        view["queue_max_filled_base_units"] = str(max(amounts))
+    return view
 
 
 _NO_FILL_CLAIMED = frozenset({"ACCEPTED", "CANCELLED", "EXPIRED"})
@@ -353,8 +374,10 @@ def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[st
     review of 21082c0 P2-1): another order, a size that is not the signed stake, remaining outside 0..total, FILLED
     without a fill, an unknown status or inactiveReason -> state None (never promoted). Returned states use the
     lookup vocabulary of merge_exchange: SUBMITTED, PARTIALLY_FILLED, FILLED, CANCELLED, EXPIRED."""
-    def none(reason: str) -> dict[str, Any]:
-        return {"state": None, "reason": reason, "resting": None}
+    def none(reason: str, shown: int | None = None) -> dict[str, Any]:
+        # `row_filled_unaccepted`: the amount a refused-but-well-formed row of THIS order shows. Never evidence of a
+        # state, but a "nothing filled" result can never stand against it (review of 46e1be8, P2-2).
+        return {"state": None, "reason": reason, "resting": None, "row_filled_unaccepted": shown}
     if not isinstance(row, Mapping) or not isinstance(row.get("id"), str) or row["id"].lower() != order_id.lower():
         return none("EVIDENCE_OTHER_ORDER")
     total, remaining, stake = _units(row.get("totalBetSize")), _units(row.get("remainingSize")), _units(intent_total)
@@ -363,23 +386,23 @@ def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[st
     filled = total - remaining
     status, reason = row.get("status"), row.get("inactiveReason")
     if status not in ("PENDING", "ACTIVE", "INACTIVE"):
-        return none("EVIDENCE_STATUS_UNKNOWN")
+        return none("EVIDENCE_STATUS_UNKNOWN", filled)
     if filled == total and not (status == "INACTIVE" and reason == "FILLED"):
         # Whole stake matched but not reported as FILLED: the signer records no evidence either (review P3-5).
-        return none("EVIDENCE_FULL_FILL_NOT_MARKED_FILLED")
+        return none("EVIDENCE_FULL_FILL_NOT_MARKED_FILLED", filled)
     if status in ("PENDING", "ACTIVE"):
         return {"state": "PARTIALLY_FILLED" if filled else "SUBMITTED", "reason": "EXCHANGE_ORDER_" + status,
                 "resting": True, "filled": filled}
     if reason == "FILLED":
         if not filled:
-            return none("EVIDENCE_FILLED_WITHOUT_FILL")
+            return none("EVIDENCE_FILLED_WITHOUT_FILL", filled)
         st = "FILLED" if filled == total else "PARTIALLY_FILLED"
     elif reason == "EXPIRED":
         st = "PARTIALLY_FILLED" if filled else "EXPIRED"
     elif reason in _CANCEL_REASONS:
         st = "PARTIALLY_FILLED" if filled else "CANCELLED"
     else:
-        return none("EVIDENCE_INACTIVE_REASON_UNKNOWN")
+        return none("EVIDENCE_INACTIVE_REASON_UNKNOWN", filled)
     return {"state": st, "reason": "EXCHANGE_ORDER_INACTIVE_" + str(reason), "resting": False, "filled": filled}
 
 
@@ -416,8 +439,47 @@ def _merge(view: Mapping[str, Any], lookup_state: str | None, fills_seen: bool) 
     return out
 
 
+def _conflict(out: dict[str, Any], view: Mapping[str, Any], code: str) -> dict[str, Any]:
+    out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code=code, queue_state=view["state"])
+    out.pop("resting", None)
+    return out
+
+
 def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False,
-                   ex_resting: bool | None = None) -> dict[str, Any]:
+                   ex_resting: bool | None = None, row_filled: int | None = None,
+                   row_filled_unaccepted: int | None = None) -> dict[str, Any]:
+    out = _merge_exchange(view, lookup_state, fills_seen=fills_seen, ex_resting=ex_resting)
+    if out.get("evidence") == "CONFLICT":
+        return out
+    # Final consistency checks on the RESULT (review of 46e1be8, P2-1 / P2-2 / P3-1): matched amounts only grow.
+    state = out["state"]
+    queue_max = _units(view.get("queue_max_filled_base_units"))
+    shown = [a for a in (row_filled, row_filled_unaccepted) if a is not None]
+    if state in _NO_FILL_CLAIMED:
+        if view.get("queue_fill_claimed"):
+            return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")      # the signer recorded a fill
+        if any(a > 0 for a in shown):
+            return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE")
+    if state == "PARTIALLY_FILLED":
+        ledger_amount = _units(out.get("filled_base_units")) if out.get("evidence") == "QUEUE_EVENTS" else None
+        for a in shown:
+            if queue_max is not None and a < queue_max:
+                return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")  # the row shows less than recorded
+            if ledger_amount is not None and view.get("ledger_final") and a != ledger_amount:
+                return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")  # final ledger amount vs another one
+        if row_filled_unaccepted is not None and out.get("evidence") == "QUEUE_EVENTS" and \
+                ledger_amount is not None and row_filled_unaccepted != ledger_amount:
+            return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE")
+    if state == "FILLED" and queue_max is not None and any(a < queue_max for a in shown):
+        return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
+    if view.get("queue_ledger_filled") and ex_resting is True:
+        # Ledger FILLED only comes from an INACTIVE/FILLED row: a row resting now contradicts it.
+        return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
+    return out
+
+
+def _merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False,
+                    ex_resting: bool | None = None) -> dict[str, Any]:
     if (view.get("ledger_final") and view["state"] == "PARTIALLY_FILLED" and lookup_state == "PARTIALLY_FILLED"
             and ex_resting is True):
         # The ledger says the remainder is no longer resting, the row shows it resting (review 21082c0 P3-2).
@@ -447,6 +509,73 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
                    queue_state=view["state"])
         out.pop("resting", None)  # review 47a770b P3-4
     return out
+
+
+# ---------------------------------------------------------------- status contract (owner decisions D01-D07)
+YES, NO, NOT_DETERMINABLE = "YES", "NO", "NOT_DETERMINABLE"
+# Same grace as signer/orders.py EXPIRY_GRACE_SECONDS: past expiry + grace the exchange cannot hold the order open.
+EXPIRY_GRACE_SECONDS = 30
+_RECONCILE = ("Reconcile first: read the order (sxbet_order_request_status again, sxbet_order_status) until the "
+              "state is proven. Never place the same order again on this result.")
+
+
+def status_contract(result: Mapping[str, Any], kind: str, *, row_resting: bool | None, intent_expiry: Any,
+                    now: int) -> dict[str, Any]:
+    """Three explicit, independent conditions for the model (owner decisions D02/D03), each YES / NO /
+    NOT_DETERMINABLE (never a silent false for an unknown), derived only from the evidence already in `result`:
+    - may_still_be_open: the order may be (or become) active on the exchange;
+    - reconciliation_required: the outcome must be verified on SX Bet before any new command;
+    - evidence_insufficient: the evidence read does not prove the reported state.
+    UNKNOWN is never final (D01) and nothing here ever allows an automatic resend (D04)."""
+    state = result.get("state")
+    snapshot = result.get("fill_evidence") not in (None, "EXCHANGE_READ_NOW")
+    expiry = intent_expiry if type(intent_expiry) is int else None
+    expired = expiry is not None and now > expiry + EXPIRY_GRACE_SECONDS
+
+    signed_not_sent = "SIGNED_NOT_SENT_SIGNATURE_OUTSTANDING" in (result.get("code"), result.get("queue_code"))
+
+    def open_from_evidence() -> str:
+        if row_resting is True:
+            return YES                       # a conclusive row shows it resting now
+        if row_resting is False or expired:
+            return NO                        # a conclusive inactive row, or past the signed expiry + grace
+        if signed_not_sent:
+            return YES                       # a valid signed order exists until its expiry: it can still be posted
+        return NOT_DETERMINABLE
+
+    if kind == "CANCEL":
+        # About the TARGET orders of the cancel: a cancel reply is never proof (D06).
+        if state in ("REFUSED", "PROCESSING", "QUEUED"):
+            c = (NOT_DETERMINABLE, NO, NO)
+        else:   # ACCEPTED / NOT_CANCELLED / PARTIALLY_CANCELLED / UNKNOWN
+            c = (NOT_DETERMINABLE, YES, YES if state == "UNKNOWN" else NO)
+    elif state in ("QUEUED", "PROCESSING"):
+        c = (NO if expired else YES, NO, NO)            # not decided yet: it can still be signed and sent
+    elif state in ("REFUSED", "FILLED", "SETTLED"):
+        c = (NO, NO, NO)
+    elif state == "ACCEPTED":
+        # Past the signed expiry the exchange cannot hold it open; the ACCEPTED snapshot is then stale.
+        c = (NO if expired else YES, NO, YES if snapshot or expired else NO)
+    elif state == "PARTIALLY_FILLED":
+        r = result.get("resting")
+        c = (YES if r is True else NO if r is False else open_from_evidence(), NO, YES if snapshot else NO)
+    elif state in ("CANCELLED", "EXPIRED"):
+        c = (NO, NO, YES if snapshot else NO)
+    else:   # UNKNOWN and anything unexpected: never final, always reconcile (D01, D04, D07)
+        c = (open_from_evidence(), YES, YES)
+    may_open, reconcile, insufficient = c
+    if state == "UNKNOWN":
+        action = "UNKNOWN is not final and is not permission to resend or repeat the order. " + _RECONCILE
+    elif reconcile == YES:
+        action = _RECONCILE
+    elif result.get("final"):
+        action = "Final. Any new operation needs a new explicit owner command and a new idempotency_key."
+    else:
+        action = ("Not final: read the status again later. Any new operation needs a new explicit owner command "
+                  "and a new idempotency_key; never repeat this one.")
+    return {"may_still_be_open": may_open, "reconciliation_required": reconcile,
+            "evidence_insufficient": insufficient, "automatic_resend_allowed": False, "next_action": action,
+            "condition_values": "YES | NO | NOT_DETERMINABLE (independent conditions; they can coexist)"}
 
 
 # ---------------------------------------------------------------- configuration and storage
@@ -561,4 +690,4 @@ __all__ = ["CANCEL_SCOPES", "CLIENT_REF_UNAVAILABLE", "EVENT_STATES", "KINDS", "
            "OrderRequestSettings", "PostgresRequestWriter", "QueueUnavailable", "REQUEST_SCHEMA",
            "RequestInvalid", "build_cancel_request", "build_place_request", "canonical_sha256",
            "deterministic_salt", "merge_exchange", "postgres_connect", "queue_view", "request_id_for",
-           "same_request", "valid_request_id"]
+           "same_request", "status_contract", "valid_request_id"]

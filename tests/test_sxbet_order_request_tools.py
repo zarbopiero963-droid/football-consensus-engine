@@ -874,3 +874,158 @@ def test_review_47a770b_p3_4_no_resting_flag_on_a_fills_conflict():
 def test_review_47a770b_p3_5_whole_stake_matched_but_not_marked_filled_is_not_evidence(r):
     out = oreq.exchange_row_state(r, order_id=OID, intent_total="5000000")
     assert out["state"] is None and out["reason"] == "EVIDENCE_FULL_FILL_NOT_MARKED_FILLED"
+
+
+# ---------------------------------------------------------------- owner decisions D01-D07: UNKNOWN contract
+NOW = 1_800_000_000
+
+
+def contract(result, kind="PLACE", *, row_resting=None, expiry=NOW + 3600, now=NOW):
+    return oreq.status_contract(result, kind, row_resting=row_resting, intent_expiry=expiry, now=now)
+
+
+def triple(c):
+    return c["may_still_be_open"], c["reconciliation_required"], c["evidence_insufficient"]
+
+
+@pytest.mark.parametrize("result, row_resting, expiry, expected", [
+    # UNKNOWN: always reconcile + insufficient; "open" only from a conclusive row or the signed expiry (D02/D03)
+    ({"state": "UNKNOWN", "final": False}, None, NOW + 3600, ("NOT_DETERMINABLE", "YES", "YES")),
+    ({"state": "UNKNOWN", "final": False}, True, NOW + 3600, ("YES", "YES", "YES")),
+    ({"state": "UNKNOWN", "final": False}, False, NOW + 3600, ("NO", "YES", "YES")),
+    ({"state": "UNKNOWN", "final": False}, None, NOW - 31, ("NO", "YES", "YES")),
+    ({"state": "UNKNOWN", "final": False}, None, NOW - 30, ("NOT_DETERMINABLE", "YES", "YES")),   # grace not over
+    ({"state": "UNKNOWN", "final": False}, None, None, ("NOT_DETERMINABLE", "YES", "YES")),       # no expiry known
+    ({"state": "QUEUED", "final": False}, None, NOW + 3600, ("YES", "NO", "NO")),
+    ({"state": "PROCESSING", "final": False}, None, NOW + 3600, ("YES", "NO", "NO")),
+    ({"state": "REFUSED", "final": True}, None, NOW + 3600, ("NO", "NO", "NO")),
+    ({"state": "FILLED", "final": True}, None, NOW + 3600, ("NO", "NO", "NO")),
+    ({"state": "SETTLED", "final": True}, None, NOW + 3600, ("NO", "NO", "NO")),
+    ({"state": "ACCEPTED", "fill_evidence": "EXCHANGE_READ_NOW"}, True, NOW + 3600, ("YES", "NO", "NO")),
+    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW + 3600, ("YES", "NO", "YES")),
+    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW - 31, ("NO", "NO", "YES")),
+    ({"state": "PARTIALLY_FILLED", "resting": True, "fill_evidence": "EXCHANGE_READ_NOW"}, True, NOW + 3600,
+     ("YES", "NO", "NO")),
+    ({"state": "PARTIALLY_FILLED", "resting": False, "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None,
+     NOW + 3600, ("NO", "NO", "YES")),
+    ({"state": "PARTIALLY_FILLED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW + 3600,
+     ("NOT_DETERMINABLE", "NO", "YES")),
+    ({"state": "CANCELLED", "fill_evidence": "EXCHANGE_READ_NOW"}, False, NOW + 3600, ("NO", "NO", "NO")),
+    ({"state": "EXPIRED", "fill_evidence": "EXCHANGE_READ_INCONCLUSIVE"}, None, NOW + 3600, ("NO", "NO", "YES")),
+])
+def test_owner_d02_d03_three_independent_conditions_from_evidence(result, row_resting, expiry, expected):
+    c = contract(result, row_resting=row_resting, expiry=expiry)
+    assert triple(c) == expected
+    assert set(triple(c)) <= {"YES", "NO", "NOT_DETERMINABLE"}            # never a bare true/false/null
+    assert c["automatic_resend_allowed"] is False                         # D04, in every case
+
+
+@pytest.mark.parametrize("state, expected", [
+    ("ACCEPTED", ("NOT_DETERMINABLE", "YES", "NO")), ("NOT_CANCELLED", ("NOT_DETERMINABLE", "YES", "NO")),
+    ("PARTIALLY_CANCELLED", ("NOT_DETERMINABLE", "YES", "NO")), ("UNKNOWN", ("NOT_DETERMINABLE", "YES", "YES")),
+    ("REFUSED", ("NOT_DETERMINABLE", "NO", "NO")), ("PROCESSING", ("NOT_DETERMINABLE", "NO", "NO")),
+])
+def test_owner_d06_a_cancel_reply_never_proves_the_orders_are_closed(state, expected):
+    c = contract({"state": state}, "CANCEL")
+    assert triple(c) == expected and c["automatic_resend_allowed"] is False
+
+
+def test_owner_d01_d04_end_to_end_ambiguous_send_is_unknown_not_final_and_never_resendable(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q, api_key="")
+    text, _ = owner_text(s, "order-key-S7601")
+    res = place(t, s, "order-key-S7601", text)
+    s.sim.inject("POST", "/orders-v3", "timeout_before")
+    signer_service(s, q).process_once()
+    st = status(t, res["request_id"])
+    assert st["state"] == "UNKNOWN" and st["final"] is False
+    assert (st["reconciliation_required"], st["evidence_insufficient"]) == ("YES", "YES")
+    assert st["may_still_be_open"] == "NOT_DETERMINABLE"                  # no row read, expiry still ahead
+    assert st["automatic_resend_allowed"] is False and "Never place the same order again" in st["next_action"]
+    s.clock.t += 3600 + 31                                              # past the signed expiry + grace
+    assert status(t, res["request_id"])["may_still_be_open"] == "NO"
+
+
+def test_owner_d01_d05_end_to_end_proven_states_carry_the_contract(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7602")
+    res = place(t, s, "order-key-S7602", text)
+    assert triple(status(t, res["request_id"])) == ("YES", "NO", "NO")              # QUEUED
+    signer_service(s, q).process_once()
+    st = status(t, res["request_id"])
+    assert st["state"] == "ACCEPTED" and triple(st) == ("YES", "NO", "NO")          # fresh resting row
+    s.sim.fill_maker_order(st["order_id"], 5 * USDC)
+    st = status(t, res["request_id"])
+    assert st["state"] == "FILLED" and triple(st) == ("NO", "NO", "NO")
+    assert all(status(t, res["request_id"])["automatic_resend_allowed"] is False for _ in range(2))
+
+
+# ---------------------------------------------------------------- review of 46e1be8 (NOT SAFE): regressions
+def _sub(**d):
+    return ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}), ("SUBMITTED", d))
+
+
+def _done(**d):
+    return ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}), ("SUBMITTED", {"state": "OPEN"}), ("DONE", d))
+
+
+def _read(view_events, r, *, fills_seen=False):
+    v = oreq.queue_view("PLACE", view_events, intent_total="5000000")
+    x = oreq.exchange_row_state(r, order_id=OID, intent_total="5000000")
+    return oreq.merge_exchange(v, x["state"], fills_seen=fills_seen, ex_resting=x["resting"],
+                               row_filled=x.get("filled") if x["state"] else None,
+                               row_filled_unaccepted=x.get("row_filled_unaccepted"))
+
+
+@pytest.mark.parametrize("events, r, code", [
+    # P2-1: recover writes SUBMITTED{FILLED, filled}; a fresh unfilled ACTIVE row must not overwrite the fill
+    (_sub(state="FILLED", filled="5000000"), row(), "QUEUE_AND_EXCHANGE_DISAGREE"),
+    (_sub(state="FILLED", filled="5000000"), row(remainingSize="3000000"), "QUEUE_AND_EXCHANGE_DISAGREE"),
+    (_sub(state="FILLED"), row(), "QUEUE_AND_EXCHANGE_DISAGREE"),                        # gateway, no amount
+    (_sub(state="FILLED"), row(remainingSize="3000000"), "QUEUE_AND_EXCHANGE_DISAGREE"),  # resting vs ledger FILLED
+    (ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}), ("UNKNOWN", {"state": "CANCELLED", "filled": "1000000"})),
+     row(), "QUEUE_AND_EXCHANGE_DISAGREE"),
+    # P2-2: a refused row that shows the whole stake matched never leaves "no fill" standing
+    (_sub(state="SUBMITTED", sent=True), row(remainingSize="0"), "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE"),
+    (_done(state="CANCELLED", filled="0"), row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="0"),
+     "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE"),
+    (_done(state="FILLED", filled="1000000"), row(remainingSize="0"), "QUEUE_AND_EXCHANGE_DISAGREE"),  # amounts differ
+    # P3-1: a final ledger partial against another partial amount on the row
+    (_done(state="FILLED", filled="1000000"), row(status="INACTIVE", inactiveReason="FILLED", remainingSize="2500000"),
+     "QUEUE_AND_EXCHANGE_DISAGREE"),
+])
+def test_review_46e1be8_contradictory_amounts_are_a_conflict_never_a_lower_state(events, r, code):
+    out = _read(events, r)
+    assert out["state"] == "UNKNOWN" and out["final"] is False and out["evidence"] == "CONFLICT"
+    assert out["code"] == code and "resting" not in out
+
+
+@pytest.mark.parametrize("events, r, state", [
+    (_sub(state="FILLED", filled="5000000"), None, "FILLED"),                        # recover, full stake proven
+    (_sub(state="PARTIALLY_FILLED", filled="1000000"), row(remainingSize="3000000"), "PARTIALLY_FILLED"),  # grows
+    (_done(state="FILLED", filled="1000000"), row(status="INACTIVE", inactiveReason="FILLED", remainingSize="4000000"),
+     "PARTIALLY_FILLED"),                                                          # same amount: agreement
+    (_done(state="CANCELLED", filled="0"), row(status="INACTIVE", inactiveReason="USER_REQUESTED"), "CANCELLED"),
+])
+def test_review_46e1be8_consistent_evidence_is_still_reported(events, r, state):
+    if r is None:
+        assert oreq.queue_view("PLACE", events, intent_total="5000000")["state"] == state
+    else:
+        assert _read(events, r)["state"] == state
+
+
+@pytest.mark.parametrize("filled", [None, "0", "6000000"])
+def test_review_46e1be8_p3_2_malformed_settled_is_unknown(filled):
+    d = {"state": "SETTLED"} if filled is None else {"state": "SETTLED", "filled": filled}
+    v = oreq.queue_view("PLACE", _done(**d), intent_total="5000000")
+    assert v["state"] == "UNKNOWN" and v["final"] is False
+
+
+def test_review_46e1be8_p2_3_signed_not_sent_before_expiry_may_still_be_open():
+    v = oreq.queue_view("PLACE", ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}),
+                                    ("DONE", {"sent": False, "code": "INTERRUPTED_AFTER_SIGNATURE"})))
+    c = contract(v)
+    assert triple(c) == ("YES", "YES", "YES") and c["automatic_resend_allowed"] is False
+    assert c["next_action"].startswith("UNKNOWN is not final and is not permission to resend")
+    assert contract(v, now=NOW + 3600 + 31)["may_still_be_open"] == "NO"           # past the signed expiry

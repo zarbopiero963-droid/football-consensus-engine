@@ -228,6 +228,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         out.update({"kind": kind, "created_at_unix": payload.get("created_at"),
                     "events": [{"seq": e["seq"], "event": e["state"], "detail": e["detail"]} for e in events]})
         lookup_state = None
+        ex_filled = row_unaccepted = None
         oid = view.get("order_id")
         intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
         if kind == "PLACE" and isinstance(oid, str) and _HASH.fullmatch(oid) and view["state"] != "REFUSED":
@@ -250,6 +251,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                                              intent_total=intent.get("total_bet_size")) \
                     if lookup["kind"] == "FOUND" else {"state": None, "reason": "EVIDENCE_" + lookup["kind"]}
                 lookup_state = ex["state"]
+                row_unaccepted = ex.get("row_filled_unaccepted")
                 fills_complete = not ferr and complete_fills
                 # Only for a row accepted as evidence, with the signer's number rule (review 47a770b P3-3).
                 ex_filled = ex.get("filled")
@@ -263,7 +265,9 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                                         "errors": [e for e in (oerr, ferr) if e and e.get("http_status") != 404]}
         read = out.get("exchange_read") if isinstance(out.get("exchange_read"), dict) else {}
         fills_seen = bool(read.get("fills_count"))
-        result = oreq.merge_exchange(view, lookup_state, fills_seen=fills_seen, ex_resting=read.get("resting"))
+        result = oreq.merge_exchange(view, lookup_state, fills_seen=fills_seen, ex_resting=read.get("resting"),
+                                     row_filled=ex_filled if lookup_state else None,
+                                     row_filled_unaccepted=row_unaccepted)
         if kind == "PLACE" and result["state"] in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
             # Where the state comes from (reviews 8396424 P2-B, c9c32e7 P3-1/P3-2, 21082c0 P3-1/P3-4): a fresh
             # conclusive order ROW with a COMPLETE fills read; the order row alone; an inconclusive read (404,
@@ -273,6 +277,10 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 "EXCHANGE_ORDER_ROW_ONLY" if lookup_state is not None else
                 "EXCHANGE_READ_INCONCLUSIVE" if read.get("status") in ("FOUND", "NOT_FOUND", "ERROR") else
                 "SIGNER_EVENT_SNAPSHOT_ONLY")
+        if result["state"] == "UNKNOWN":
+            result["final"] = False          # D01: never final, whatever the view carried
+        result.update(oreq.status_contract(result, kind, row_resting=read.get("resting") if lookup_state else None,
+                                           intent_expiry=intent.get("expiry"), now=int(clock())))
         return {**out, "status": "OK", **result}
 
     return tuple(names)
