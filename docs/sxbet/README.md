@@ -301,6 +301,15 @@ La risposta non è mai una prova: si legge ogni ordine fino a `INACTIVE`.
 | `reconciliation_required` | l'esito va verificato su SX Bet prima di qualunque nuovo comando | sempre `YES` per `UNKNOWN` e per gli esiti di una cancellazione inviata, perché la risposta non è una prova |
 | `evidence_insufficient` | le evidenze lette non provano lo stato riportato | `YES` per `UNKNOWN` e per gli stati che vengono solo dall'istantanea del signer o da una lettura non conclusiva |
 
+Regole (review indipendente di `03828f9`):
+- una riga conclusiva decide per prima se l'ordine è aperto;
+- uno stato ambiguo richiede **sempre** la riconciliazione (`reconciliation_required: YES`). Sono ambigui:
+  - un'istantanea del signer o una lettura non conclusiva (404, errore, riga rifiutata);
+  - un `ACCEPTED` o un parziale oltre la scadenza firmata;
+  - una riga ancora attiva oltre la scadenza;
+  - righe di fill che non concordano con la riga dell'ordine (`fills_consistent: false`);
+- `PROCESSING` dopo la firma (esito dell'invio non ancora registrato) vale: `may_still_be_open` `YES` fino alla scadenza, `reconciliation_required` `NOT_DETERMINABLE`, `evidence_insufficient` `YES`.
+
 Inoltre:
 - `automatic_resend_allowed` è **sempre** `false` (D04);
 - `next_action` dice cosa fare;
@@ -315,7 +324,9 @@ Inoltre:
 - un parziale finale del ledger contro un importo diverso sulla riga è un conflitto;
 - un `FILLED` del ledger contro una riga ancora attiva è un conflitto;
 - l'evento di recupero `SUBMITTED{FILLED, filled}` segue le stesse regole dell'evento finale;
-- `SETTLED` richiede un importo abbinato > 0, non superiore allo stake.
+- `SETTLED` richiede un importo abbinato > 0, non superiore allo stake; contro una riga fresca che risulta attiva o mostra un altro importo è un conflitto;
+- un importo **maggiore** sulla riga rispetto al ledger è un fill tardivo legittimo (il signer ammette la crescita): viene riportato l'importo della riga (`filled_source: EXCHANGE_ORDER_ROW`), quello del ledger resta in `queue_filled_base_units`; un importo **minore** è un conflitto;
+- quando decide la riga, l'importo riportato è quello della riga.
 
 Per una cancellazione, le tre condizioni riguardano gli **ordini bersaglio**: `may_still_be_open` resta `NOT_DETERMINABLE` finché ogni ordine non viene letto.
 

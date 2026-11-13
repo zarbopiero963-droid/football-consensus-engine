@@ -279,6 +279,10 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 "SIGNER_EVENT_SNAPSHOT_ONLY")
         if result["state"] == "UNKNOWN":
             result["final"] = False          # D01: never final, whatever the view carried
+        if (kind == "PLACE" and result["state"] in ("FILLED", "PARTIALLY_FILLED") and lookup_state is not None
+                and read.get("fills_complete") and not read.get("fills_count")):
+            # The row shows a fill, the complete fills read shows none: not proven (review 03828f9 P3-4).
+            result["fills_consistent"] = False
         result.update(oreq.status_contract(result, kind, row_resting=read.get("resting") if lookup_state else None,
                                            intent_expiry=intent.get("expiry"), now=int(clock())))
         return {**out, "status": "OK", **result}

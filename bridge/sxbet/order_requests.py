@@ -460,18 +460,36 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
             return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")      # the signer recorded a fill
         if any(a > 0 for a in shown):
             return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE")
+    if state == "SETTLED" and lookup_state is not None:
+        # A settled ledger against a fresh accepted row that rests, or shows another matched amount: never a final
+        # SETTLED on contradicting evidence (review 03828f9 P2-2).
+        settled = _units(out.get("filled_base_units"))
+        if ex_resting is True or (row_filled is not None and settled is not None and row_filled != settled):
+            return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
     if state == "PARTIALLY_FILLED":
         ledger_amount = _units(out.get("filled_base_units")) if out.get("evidence") == "QUEUE_EVENTS" else None
         for a in shown:
             if queue_max is not None and a < queue_max:
                 return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")  # the row shows less than recorded
-            if ledger_amount is not None and view.get("ledger_final") and a != ledger_amount:
-                return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")  # final ledger amount vs another one
+            if ledger_amount is not None and view.get("ledger_final") and a < ledger_amount:
+                return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")  # amounts only grow
+        if row_filled is not None and ledger_amount is not None and row_filled > ledger_amount:
+            # A legitimate late fill (CANCELLED / FILLED self-transition, LATE_FILL_AFTER_EXPIRY): the row's larger
+            # amount is reported, the ledger's stays as queue_* (review 03828f9 P3-3).
+            out["queue_filled_base_units"] = out["filled_base_units"]
+            out["filled_base_units"], out["filled_source"] = str(row_filled), "EXCHANGE_ORDER_ROW"
+            out["evidence"] = "EXCHANGE_READ"
         if row_filled_unaccepted is not None and out.get("evidence") == "QUEUE_EVENTS" and \
                 ledger_amount is not None and row_filled_unaccepted != ledger_amount:
             return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE")
     if state == "FILLED" and queue_max is not None and any(a < queue_max for a in shown):
         return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
+    if out.get("evidence") == "EXCHANGE_READ" and row_filled is not None and \
+            out.get("filled_source") != "EXCHANGE_ORDER_ROW":
+        # The row decides: its amount is reported, a stale ledger amount moves to queue_* (review 03828f9 P3-4).
+        if out.get("filled_base_units") is not None:
+            out["queue_filled_base_units"] = out["filled_base_units"]
+        out["filled_base_units"], out["filled_source"] = str(row_filled), "EXCHANGE_ORDER_ROW"
     if view.get("queue_ledger_filled") and ex_resting is True:
         # Ledger FILLED only comes from an INACTIVE/FILLED row: a row resting now contradicts it.
         return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
@@ -543,24 +561,45 @@ def status_contract(result: Mapping[str, Any], kind: str, *, row_resting: bool |
             return YES                       # a valid signed order exists until its expiry: it can still be posted
         return NOT_DETERMINABLE
 
+    signed = result.get("last_event") == "SIGNED" or result.get("queue_last_event") == "SIGNED"
+    fills_inconsistent = result.get("fills_consistent") is False
+    live_after_expiry = row_resting is True and expired   # the exchange shows it resting past its signed expiry
+
     if kind == "CANCEL":
         # About the TARGET orders of the cancel: a cancel reply is never proof (D06).
         if state in ("REFUSED", "PROCESSING", "QUEUED"):
             c = (NOT_DETERMINABLE, NO, NO)
         else:   # ACCEPTED / NOT_CANCELLED / PARTIALLY_CANCELLED / UNKNOWN
             c = (NOT_DETERMINABLE, YES, YES if state == "UNKNOWN" else NO)
-    elif state in ("QUEUED", "PROCESSING"):
+    elif state == "QUEUED" or (state == "PROCESSING" and not signed):
         c = (NO if expired else YES, NO, NO)            # not decided yet: it can still be signed and sent
-    elif state in ("REFUSED", "FILLED", "SETTLED"):
+    elif state == "PROCESSING":
+        # Signed, send outcome not recorded yet (e.g. a crash after the send): a signature is out
+        # (review 03828f9 P3-2). Open unless a conclusive row or the expiry says otherwise.
+        c = (YES if row_resting is True else NO if row_resting is False or expired else YES, NOT_DETERMINABLE, YES)
+    elif state == "REFUSED":
         c = (NO, NO, NO)
-    elif state == "ACCEPTED":
-        # Past the signed expiry the exchange cannot hold it open; the ACCEPTED snapshot is then stale.
-        c = (NO if expired else YES, NO, YES if snapshot or expired else NO)
-    elif state == "PARTIALLY_FILLED":
-        r = result.get("resting")
-        c = (YES if r is True else NO if r is False else open_from_evidence(), NO, YES if snapshot else NO)
-    elif state in ("CANCELLED", "EXPIRED"):
-        c = (NO, NO, YES if snapshot else NO)
+    elif state in ("FILLED", "SETTLED"):
+        c = (NO, YES, YES) if fills_inconsistent else (NO, NO, NO)
+    elif state in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
+        # A conclusive row decides "open" first (review 03828f9 P2-1). Anything ambiguous (snapshot or
+        # inconclusive read, past the expiry, a live row past its expiry, fills that disagree with the row)
+        # requires reconciliation: an ambiguous state is never reported as needing none (P2-1, P3-1).
+        if state in ("CANCELLED", "EXPIRED"):
+            may = NO
+        elif row_resting is True:
+            may = YES
+        elif row_resting is False:
+            may = NO
+        elif state == "PARTIALLY_FILLED" and result.get("resting") is not None:
+            may = YES if result.get("resting") else NO
+        elif state == "PARTIALLY_FILLED":
+            may = open_from_evidence()
+        else:
+            may = NO if expired else YES
+        ambiguous = snapshot or fills_inconsistent or live_after_expiry or (
+            state in ("ACCEPTED", "PARTIALLY_FILLED") and expired and row_resting is not False)
+        c = (may, YES if ambiguous else NO, YES if ambiguous else NO)
     else:   # UNKNOWN and anything unexpected: never final, always reconcile (D01, D04, D07)
         c = (open_from_evidence(), YES, YES)
     may_open, reconcile, insufficient = c

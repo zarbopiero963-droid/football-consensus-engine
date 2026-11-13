@@ -902,16 +902,18 @@ def triple(c):
     ({"state": "FILLED", "final": True}, None, NOW + 3600, ("NO", "NO", "NO")),
     ({"state": "SETTLED", "final": True}, None, NOW + 3600, ("NO", "NO", "NO")),
     ({"state": "ACCEPTED", "fill_evidence": "EXCHANGE_READ_NOW"}, True, NOW + 3600, ("YES", "NO", "NO")),
-    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW + 3600, ("YES", "NO", "YES")),
-    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW - 31, ("NO", "NO", "YES")),
+    # Changed by the review of 03828f9 (P2-1/P3-1, declared): an ambiguous state (snapshot, inconclusive read,
+    # past the expiry) always requires reconciliation.
+    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW + 3600, ("YES", "YES", "YES")),
+    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW - 31, ("NO", "YES", "YES")),
     ({"state": "PARTIALLY_FILLED", "resting": True, "fill_evidence": "EXCHANGE_READ_NOW"}, True, NOW + 3600,
      ("YES", "NO", "NO")),
     ({"state": "PARTIALLY_FILLED", "resting": False, "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None,
-     NOW + 3600, ("NO", "NO", "YES")),
+     NOW + 3600, ("NO", "YES", "YES")),
     ({"state": "PARTIALLY_FILLED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, NOW + 3600,
-     ("NOT_DETERMINABLE", "NO", "YES")),
+     ("NOT_DETERMINABLE", "YES", "YES")),
     ({"state": "CANCELLED", "fill_evidence": "EXCHANGE_READ_NOW"}, False, NOW + 3600, ("NO", "NO", "NO")),
-    ({"state": "EXPIRED", "fill_evidence": "EXCHANGE_READ_INCONCLUSIVE"}, None, NOW + 3600, ("NO", "NO", "YES")),
+    ({"state": "EXPIRED", "fill_evidence": "EXCHANGE_READ_INCONCLUSIVE"}, None, NOW + 3600, ("NO", "YES", "YES")),
 ])
 def test_owner_d02_d03_three_independent_conditions_from_evidence(result, row_resting, expiry, expected):
     c = contract(result, row_resting=row_resting, expiry=expiry)
@@ -990,9 +992,10 @@ def _read(view_events, r, *, fills_seen=False):
     (_sub(state="SUBMITTED", sent=True), row(remainingSize="0"), "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE"),
     (_done(state="CANCELLED", filled="0"), row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="0"),
      "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE"),
-    (_done(state="FILLED", filled="1000000"), row(remainingSize="0"), "QUEUE_AND_EXCHANGE_DISAGREE"),  # amounts differ
-    # P3-1: a final ledger partial against another partial amount on the row
-    (_done(state="FILLED", filled="1000000"), row(status="INACTIVE", inactiveReason="FILLED", remainingSize="2500000"),
+    (_done(state="FILLED", filled="1000000"), row(remainingSize="0"), "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE"),
+    # P3-1: a final ledger partial against a SMALLER amount on the row (amounts only grow). Changed by the review
+    # of 03828f9 (P3-3, declared): a LARGER amount is a legitimate late fill, see the test below.
+    (_done(state="FILLED", filled="3000000"), row(status="INACTIVE", inactiveReason="FILLED", remainingSize="2500000"),
      "QUEUE_AND_EXCHANGE_DISAGREE"),
 ])
 def test_review_46e1be8_contradictory_amounts_are_a_conflict_never_a_lower_state(events, r, code):
@@ -1029,3 +1032,67 @@ def test_review_46e1be8_p2_3_signed_not_sent_before_expiry_may_still_be_open():
     assert triple(c) == ("YES", "YES", "YES") and c["automatic_resend_allowed"] is False
     assert c["next_action"].startswith("UNKNOWN is not final and is not permission to resend")
     assert contract(v, now=NOW + 3600 + 31)["may_still_be_open"] == "NO"           # past the signed expiry
+
+
+# ---------------------------------------------------------------- review of 03828f9 (NOT SAFE): regressions
+@pytest.mark.parametrize("result, row_resting, expected", [
+    # P2-1 (a): a conclusive resting row past the expiry: open per the row, and a contradiction to reconcile
+    ({"state": "ACCEPTED", "fill_evidence": "EXCHANGE_READ_NOW"}, True, ("YES", "YES", "YES")),
+    ({"state": "PARTIALLY_FILLED", "resting": True, "fill_evidence": "EXCHANGE_READ_NOW"}, True, ("YES", "YES", "YES")),
+    # P2-1 (b): ACCEPTED past the expiry with an inconclusive read or no read
+    ({"state": "ACCEPTED", "fill_evidence": "EXCHANGE_READ_INCONCLUSIVE"}, None, ("NO", "YES", "YES")),
+    ({"state": "ACCEPTED", "fill_evidence": "SIGNER_EVENT_SNAPSHOT_ONLY"}, None, ("NO", "YES", "YES")),
+    # P3-2: PROCESSING after SIGNED: a signature is out, outcome not recorded
+    ({"state": "PROCESSING", "last_event": "SIGNED"}, None, ("NO", "NOT_DETERMINABLE", "YES")),
+])
+def test_review_03828f9_conditions_past_expiry_follow_the_row_and_require_reconciliation(result, row_resting,
+                                                                                       expected):
+    assert triple(contract(result, row_resting=row_resting, now=NOW + 3600 + 31)) == expected
+
+
+def test_review_03828f9_p2_1_accepted_404_before_expiry_requires_reconciliation():
+    c = contract({"state": "ACCEPTED", "fill_evidence": "EXCHANGE_READ_INCONCLUSIVE"})
+    assert triple(c) == ("YES", "YES", "YES")
+    signed = contract({"state": "PROCESSING", "last_event": "SIGNED"})
+    assert triple(signed) == ("YES", "NOT_DETERMINABLE", "YES")
+
+
+@pytest.mark.parametrize("r", [row(), row(status="INACTIVE", inactiveReason="USER_REQUESTED"),
+                               row(status="INACTIVE", inactiveReason="FILLED", remainingSize="2500000")])
+def test_review_03828f9_p2_2_settled_against_a_contradicting_row_is_a_conflict(r):
+    out = _read(_done(state="SETTLED", filled="1000000"), r)
+    assert out["state"] == "UNKNOWN" and out["final"] is False and out["evidence"] == "CONFLICT"
+    c = contract(out, row_resting=True)
+    assert c["reconciliation_required"] == "YES"
+
+
+def test_review_03828f9_p2_2_settled_agreeing_with_the_row_stays_settled():
+    out = _read(_done(state="SETTLED", filled="1000000"),
+                row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="4000000"))
+    assert out["state"] == "SETTLED" and out["final"] is True
+
+
+@pytest.mark.parametrize("ledger", ["CANCELLED", "EXPIRED", "FILLED"])
+def test_review_03828f9_p3_3_a_late_fill_that_grows_is_reported_not_a_conflict(ledger):
+    reason = {"CANCELLED": "USER_REQUESTED", "EXPIRED": "EXPIRED", "FILLED": "FILLED"}[ledger]
+    out = _read(_done(state=ledger, filled="1000000"),
+                row(status="INACTIVE", inactiveReason=reason, remainingSize="2500000"))
+    assert out["state"] == "PARTIALLY_FILLED" and out["filled_base_units"] == "2500000"
+    assert out["filled_source"] == "EXCHANGE_ORDER_ROW" and out["queue_filled_base_units"] == "1000000"
+
+
+def test_review_03828f9_p3_4_filled_from_the_row_reports_the_row_amount():
+    v = oreq.queue_view("PLACE", _sub(state="PARTIALLY_FILLED", filled="1000000"), intent_total="5000000")
+    x = oreq.exchange_row_state(row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0"), order_id=OID,
+                                intent_total="5000000")
+    out = oreq.merge_exchange(v, x["state"], ex_resting=x["resting"], row_filled=x["filled"])
+    assert out["state"] == "FILLED" and out["filled_base_units"] == "5000000"
+    assert out["filled_source"] == "EXCHANGE_ORDER_ROW" and out["queue_filled_base_units"] == "1000000"
+    assert triple(contract({**out, "fills_consistent": False})) == ("NO", "YES", "YES")
+
+
+def test_review_03828f9_p3_4_end_to_end_filled_row_without_fills_is_not_proven(s, monkeypatch):
+    st = _status_with_row(s, monkeypatch, "order-key-S7701", {"status": "INACTIVE", "inactiveReason": "FILLED",
+                                                              "remainingSize": "0"}, fills=[], timeout=False)
+    assert st["state"] == "FILLED" and st["fills_consistent"] is False
+    assert (st["reconciliation_required"], st["evidence_insufficient"]) == ("YES", "YES")
