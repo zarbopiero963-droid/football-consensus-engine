@@ -226,6 +226,7 @@ def test_upload_contains_only_the_ciphertext_and_its_sha256_for_one_day():
     assert sum(1 for s in STEPS if "upload-artifact" in str(s.get("uses", ""))) == 1
     cleanup = STEPS[-1]
     assert cleanup["if"] == "${{ always() }}" and "fcb-backup-out" in cleanup["run"] and "fcb-backup-work" in cleanup["run"]
+    assert cleanup["run"].index("pg_ctl") < cleanup["run"].index("rm -rf")  # cluster stopped before its data is removed
 
 
 def test_summary_is_published_only_after_the_leak_check():

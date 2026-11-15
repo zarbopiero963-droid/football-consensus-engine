@@ -253,4 +253,8 @@ jobs:
       - name: Remove local backup files
         if: ${{ always() }}
         run: |
+          # A cancelled run skips the script's own cleanup: stop the isolated restore cluster first.
+          if [ -f "$RUNNER_TEMP/fcb-backup-work/restore/pgdata/postmaster.pid" ]; then
+            "$PG18_BINDIR/pg_ctl" -D "$RUNNER_TEMP/fcb-backup-work/restore/pgdata" -m immediate -w stop || true
+          fi
           rm -rf "$RUNNER_TEMP/fcb-backup-work" "$RUNNER_TEMP/fcb-backup-out" "$RUNNER_TEMP/fcb-backup-summary.md" "$RUNNER_TEMP/aiven-ca.pem"
