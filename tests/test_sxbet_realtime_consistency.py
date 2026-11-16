@@ -118,7 +118,8 @@ OK_CHAIN = {"chain_id": 4162, "usdc_decimals": 6}
     # Changed by the review of 9729fe1 (P2, declared): proxy 0 is only explained with the escrow lower bound read.
     ([row()], 0, "PARTIAL", "EXPLANATION_UNVERIFIED"),
     ([row()], 9, "PARTIAL", "DIFFERENCE_NOT_EXPLAINED_BY_DOCUMENTED_FIELDS"),          # explained, never "anomaly"
-    ([row(escrowAddress="0x" + "11" * 20)], 14140000, "FAIL", "USDC_ROW_NOT_ON_THE_DOCUMENTED_ESCROW"),
+    # Reason renamed by the review of 53a5b84 (P3-8, declared): rows are selected by the documented escrow.
+    ([row(escrowAddress="0x" + "11" * 20)], 14140000, "FAIL", "NO_SINGLE_USDC_ROW_ON_THE_DOCUMENTED_ESCROW"),
     ([row(wallet="0x" + "22" * 20)], 14140000, "FAIL", "BALANCE_ROW_WALLET_IS_NOT_THE_PROXY"),
     ([], 0, "EMPTY_VALID", "NO_USDC_ROW"),
     ([row(tokenAddress="0x" + "33" * 20)], 0, "PARTIAL", "NO_ROW_FOR_THE_DOCUMENTED_USDC"),
@@ -178,7 +179,8 @@ def test_review_9729fe1_p1_recovery_never_passes_without_evidence(before, replay
 def test_review_9729fe1_p2_proxy_zero_explained_only_with_the_escrow_lower_bound():
     base = dict(api_rows=[row()], proxy=PROXY, eoa=None)
     ok = rc.classify_balances(**base, onchain={**OK_CHAIN, "proxy_usdc": 0, "escrow_usdc": 10 ** 12})
-    assert (ok["outcome"], ok["reason"]) == ("PASS", "PROXY_TOKEN_ZERO_ESCROW_HOLDS_AT_LEAST_THE_API_AMOUNT")
+    # Changed by the review of 53a5b84 (P3-7, declared): the shared escrow gives a lower bound only, never PASS.
+    assert (ok["outcome"], ok["reason"]) == ("PARTIAL", "PROXY_ZERO_ESCROW_LOWER_BOUND_SATISFIED")
     low = rc.classify_balances(**base, onchain={**OK_CHAIN, "proxy_usdc": 0, "escrow_usdc": 5})
     assert (low["outcome"], low["reason"]) == ("PARTIAL", "EXPLANATION_UNVERIFIED")
 
@@ -206,3 +208,48 @@ def test_review_9729fe1_p3_book_channels_do_not_require_message_ids():
     out = rc.analyze_channel([{"offset": 1, "message_id": None}, {"offset": 2, "message_id": None}],
                              require_message_id=False)
     assert out["outcome"] == "PASS"
+
+
+# ---------------------------------------------------------------- review of 53a5b84 (NOT SAFE): regressions
+@pytest.mark.parametrize("kw, proxy_usdc, escrow, outcome, reason", [
+    (dict(available="0", escrowed="50000000"), 0, 5, "PARTIAL", "EXPLANATION_UNVERIFIED"),          # P2: no 0 == 0
+    (dict(available="0", escrowed="50000000"), 0, 0, "PARTIAL", "EXPLANATION_UNVERIFIED"),
+    (dict(available="0", escrowed="0", pe="-5"), 0, 0, "PARTIAL", "ZERO_BALANCES_WITH_PENDING_MOVEMENT"),
+])
+def test_review_53a5b84_p2_zero_available_is_never_a_trivial_pass(kw, proxy_usdc, escrow, outcome, reason):
+    out = rc.classify_balances(api_rows=[row(**kw)], proxy=PROXY, eoa=None,
+                               onchain={**OK_CHAIN, "proxy_usdc": proxy_usdc, "escrow_usdc": escrow})
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def test_review_53a5b84_p3_8_extra_usdc_rows_on_other_escrows_are_information():
+    rows = [row(), row(escrowAddress="0x" + "11" * 20, available="7")]
+    out = rc.classify_balances(api_rows=rows, proxy=PROXY, eoa=None, onchain={**OK_CHAIN, "proxy_usdc": 14140000})
+    assert out["outcome"] == "PASS" and out["other_usdc_rows"] == 1
+
+
+@pytest.mark.parametrize("replayed, after, outcome, reason", [
+    (pubs(10, ids=["m10"]), [], "NOT_TESTED", "ONLY_DUPLICATES_AFTER_RECONNECT"),                    # P3-1
+    (pubs(11, ids=["b"]), [{"offset": None, "message_id": "c"}], "PARTIAL", "OFFSETS_NOT_PROVIDED"),  # P3-2
+])
+def test_review_53a5b84_recovery_needs_new_publications_with_offsets(replayed, after, outcome, reason):
+    out = rc.analyze_recovery(CH, before=pubs(9, 10), resubscribe=REC, replayed=replayed, after=after)
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def _book(v, m="0xab"):
+    return {"offset": None, "message_id": None, "data": {"version": v, "marketHash": m}}
+
+
+def test_review_53a5b84_p3_3_book_channels_are_judged_by_version():
+    out = rc.analyze_book_channel([_book(V1), _book(V1), _book(V2), _book(V1)])
+    assert (out["outcome"], out["applied"], out["ignored_not_newer"]) == ("PASS", 2, 2)
+    assert rc.analyze_book_channel([_book("x")])["outcome"] == "FAIL"
+    assert rc.analyze_book_channel([])["outcome"] == "EMPTY_VALID"
+
+
+@pytest.mark.parametrize("levels", [[1, 2], [{"percentageOdds": None, "size": None}], [{"size": "1"}]])
+def test_review_53a5b84_p3_4_junk_levels_are_never_equal(levels):
+    out = rc.compare_book_versions([{"version": V1, "outcomeOne": levels, "outcomeTwo": []}],
+                                   {"version": V1, "outcomeOne": levels, "outcomeTwo": []})
+    assert (out["outcome"], out["reason"]) == ("PARTIAL", "LEVELS_MISSING")

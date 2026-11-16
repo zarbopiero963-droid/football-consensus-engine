@@ -650,12 +650,16 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
         for t in ("realtime_stream_integrity", "realtime_recovery", "rest_vs_realtime", "onchain_balance"):
             rec.add(t, "REAL_CONSISTENCY", "NOT_TESTED", reason="SXBET_API_KEY_SECRET_ABSENT")
         return
-    async with asyncio.timeout(20):
-        _, token = await fetch_realtime_token(api_key)
-    if not token:
+    token = None
+    try:  # isolated: without a token the REST tape and on-chain checks still run (review 53a5b84 P3-5)
+        async with asyncio.timeout(20):
+            _, token = await fetch_realtime_token(api_key)
+    except Exception as exc:
+        rec.add("realtime_token (consistency)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
+    if token:
+        secrets.append(token)
+    else:
         rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", reason="REALTIME_TOKEN_UNAVAILABLE")
-        return
-    secrets.append(token)
     trades_ch = "recent_trades_v3:global"
     subs = {trades_ch: {"recoverable": True}}
     book_ch = f"orderbook_v3:{market_hash}" if market_hash else None
@@ -665,7 +669,8 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
     before: list[dict[str, Any]] = []
     first: dict[str, Any] = {"connected": False, "results": {}, "pubs": {ch: [] for ch in subs}}
     try:
-        first = await _ws_session(token, subs, seconds)
+        if token:
+            first = await _ws_session(token, subs, seconds)
     except Exception as exc:  # isolated: the REST and on-chain checks still run (review 9729fe1 P3)
         rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
     if first["connected"]:
@@ -679,10 +684,11 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
                         reason="SUBSCRIBE_REFUSED" if sub_res.get("subscribed") is False else "NO_SUBSCRIBE_REPLY",
                         error_code=sub_res.get("error_code"))
                 continue
-            out = rcx.analyze_channel(first["pubs"][ch], require_message_id=rcx.requires_message_id(ch))
+            out = (rcx.analyze_channel(first["pubs"][ch]) if rcx.requires_message_id(ch)
+                   else rcx.analyze_book_channel(first["pubs"][ch]))   # book: by version (review 53a5b84 P3-3)
             rec.add(f"realtime_stream_integrity {label}", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
         before = first["pubs"][trades_ch]
-    elif "realtime_stream_integrity" not in {r["test"] for r in rec.rows}:
+    elif token and "realtime_stream_integrity" not in {r["test"] for r in rec.rows}:
         rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", reason="CONNECT_NOT_CONFIRMED")
     # Deliberate reconnect from the last stream position (recent_trades_v3: history 100 msgs / 5 min).
     last = max((p["offset"] for p in before if type(p["offset"]) is int), default=None)
@@ -698,10 +704,17 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
             res = second["results"].get(trades_ch) or {}
             replayed_n = res.get("replayed") or 0
             got = second["pubs"][trades_ch]
-            out = rcx.analyze_recovery(trades_ch, before=before,
-                                       resubscribe=res if second["connected"] and res.get("subscribed") else None,
-                                       replayed=got[:replayed_n], after=got[replayed_n:])
-            rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+            if not second["connected"] or res.get("subscribed") is not True:
+                # Refused = FAIL, unanswered = NOT_TESTED, as for the first subscriptions (review 53a5b84 P3-6).
+                refused = second["connected"] and res.get("subscribed") is False
+                rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY",
+                        "FAIL" if refused else "NOT_TESTED",
+                        reason="RESUBSCRIBE_REFUSED" if refused else "NO_RESUBSCRIBE_REPLY")
+            else:
+                out = rcx.analyze_recovery(trades_ch, before=before, resubscribe=res,
+                                           replayed=got[:replayed_n], after=got[replayed_n:])
+                rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", out.pop("outcome"),
+                        detail=out)
             before = [*before, *got]
         except Exception as exc:
             rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", "FAIL",

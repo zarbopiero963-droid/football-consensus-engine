@@ -116,6 +116,15 @@ def analyze_recovery(channel: str, *, before: Sequence[Mapping[str, Any]], resub
         return {"outcome": "NOT_TESTED", "reason": "RECOVERED_NOTHING_DELIVERED_AFTER_RECONNECT", "replayed": 0}
     if first_next is None:
         return {"outcome": "PARTIAL", "reason": "NO_OFFSET_AFTER_RECONNECT", "replayed": len(replayed)}
+    seen_before = {p.get("message_id") for p in before}
+    fresh = [p["offset"] for p in [*replayed, *after]
+             if type(p.get("offset")) is int and p.get("message_id") not in seen_before and p["offset"] > last_before]
+    if not fresh:
+        # Only duplicates of what was already seen: nothing new was delivered (review 53a5b84 P3-1).
+        return {"outcome": "NOT_TESTED", "reason": "ONLY_DUPLICATES_AFTER_RECONNECT", "replayed": len(replayed)}
+    if stream["reason"] == "OFFSETS_NOT_PROVIDED":
+        return {"outcome": "PARTIAL", "reason": "OFFSETS_NOT_PROVIDED", "replayed": len(replayed)}  # P3-2
+    first_next = min(fresh)
     contiguous = first_next <= last_before + 1
     if stream["out_of_order"] or not contiguous:
         outcome, reason = "FAIL", "GAP_ACROSS_RECONNECT" if not contiguous else "OFFSETS_OUT_OF_ORDER"
@@ -126,6 +135,28 @@ def analyze_recovery(channel: str, *, before: Sequence[Mapping[str, Any]], resub
     return {"outcome": outcome, "reason": reason, "replayed": len(replayed),
             "duplicates_dropped": stream["duplicates_dropped"], "last_offset_before": last_before,
             "first_offset_after": first_next}
+
+
+def analyze_book_channel(pubs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Book channels (orderbook_v3 / orderbook_v3_event): each publication is the full book of one market with a
+    per-market `version`; a client keeps a publication only when its version is strictly greater, as strings
+    (book-versioning). Duplicates and older versions are legal at-least-once effects: counted, never a FAIL
+    (review 53a5b84 P3-3). FAIL only for a missing or malformed version or market."""
+    if not pubs:
+        return {"outcome": "EMPTY_VALID", "reason": "NO_PUBLICATION_IN_WINDOW", "publications": 0}
+    latest: dict[str, str] = {}
+    applied = ignored = 0
+    for p in pubs:
+        d = p.get("data") if isinstance(p.get("data"), Mapping) else {}
+        v, m = d.get("version"), d.get("marketHash")
+        if not isinstance(v, str) or _VERSION.fullmatch(v) is None or not isinstance(m, str):
+            return {"outcome": "FAIL", "reason": "BOOK_VERSION_OR_MARKET_MALFORMED", "publications": len(pubs)}
+        if m not in latest or v > latest[m]:
+            latest[m], applied = v, applied + 1
+        else:
+            ignored += 1
+    return {"outcome": "PASS", "reason": "VERSIONS_APPLIED_STRICTLY_INCREASING", "publications": len(pubs),
+            "applied": applied, "ignored_not_newer": ignored, "markets": len(latest)}
 
 
 # ---------------------------------------------------------------- REST vs realtime, same identifiers
@@ -182,9 +213,15 @@ def compare_book_versions(ws_books: Sequence[Mapping[str, Any]], rest_book: Mapp
 
 
 def _levels(levels: Any) -> list[tuple[str, str]] | None:
+    """Strict (review 53a5b84 P3-4): every level must be an object with decimal-string odds and size."""
     if not isinstance(levels, list):
         return None
-    return [(str(lv.get("percentageOdds")), str(lv.get("size"))) for lv in levels if isinstance(lv, Mapping)]
+    out = []
+    for lv in levels:
+        if not isinstance(lv, Mapping) or units(lv.get("percentageOdds")) is None or units(lv.get("size")) is None:
+            return None
+        out.append((lv["percentageOdds"], lv["size"]))
+    return out
 
 
 # ---------------------------------------------------------------- independent on-chain balance
@@ -211,9 +248,12 @@ def classify_balances(*, api_rows: Sequence[Mapping[str, Any]] | None, proxy: st
             return {"outcome": "PARTIAL", "reason": "PROXY_FUNDED_BUT_NO_API_USDC_ROW"}
         return {"outcome": "EMPTY_VALID" if not api_rows else "PARTIAL",
                 "reason": "NO_USDC_ROW" if not api_rows else "NO_ROW_FOR_THE_DOCUMENTED_USDC"}
-    if len(rows) != 1 or str(rows[0].get("escrowAddress", "")).lower() != MAINNET["escrow"]:
-        return {"outcome": "FAIL", "reason": "USDC_ROW_NOT_ON_THE_DOCUMENTED_ESCROW"}
-    r = rows[0]
+    # Rows are keyed by (token, escrow): pick the documented escrow, keep the others as information (P3-8).
+    mine = [x for x in rows if str(x.get("escrowAddress", "")).lower() == MAINNET["escrow"]]
+    if len(mine) != 1:
+        return {"outcome": "FAIL", "reason": "NO_SINGLE_USDC_ROW_ON_THE_DOCUMENTED_ESCROW"}
+    other_rows = len(rows) - 1
+    r = mine[0]
     if str(r.get("wallet", "")).lower() != proxy.lower():
         return {"outcome": "FAIL", "reason": "BALANCE_ROW_WALLET_IS_NOT_THE_PROXY"}
     available, escrowed = units(r.get("availableAmount")), units(r.get("escrowedAmount"))
@@ -223,23 +263,26 @@ def classify_balances(*, api_rows: Sequence[Mapping[str, Any]] | None, proxy: st
     if available == escrowed == pend_a == pend_e == proxy_usdc == 0:
         return {"outcome": "EMPTY_VALID", "reason": "ALL_ZERO_NOTHING_TO_COMPARE"}   # review 9729fe1 P2: no PASS
     held = available + escrowed
-    if proxy_usdc == available:
+    if proxy_usdc == 0 and held > 0:
+        # Checked FIRST (review 53a5b84 P2): never a trivial 0 == 0 PASS. The escrow is shared by every account,
+        # so "escrow >= API amount" is only a necessary condition: never PASS on it alone (P3-7).
+        relation = ("PROXY_ZERO_ESCROW_LOWER_BOUND_SATISFIED" if type(escrow_usdc) is int and escrow_usdc >= held
+                    else "EXPLANATION_UNVERIFIED")
+    elif proxy_usdc == 0 and held == 0:
+        relation = "ZERO_BALANCES_WITH_PENDING_MOVEMENT"          # pending deltas only: nothing proven
+    elif proxy_usdc == available:
         relation = "PROXY_TOKEN_EQUALS_AVAILABLE"
     elif proxy_usdc == held:
         relation = "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_ESCROWED"
     elif proxy_usdc == available + pend_a:
         relation = "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING"
-    elif proxy_usdc == 0 and held > 0:
-        # A hypothesis, checked only as far as the chain allows: the (shared) escrow contract must hold at least
-        # what the API attributes to this account (a lower bound, never an equality).
-        relation = ("PROXY_TOKEN_ZERO_ESCROW_HOLDS_AT_LEAST_THE_API_AMOUNT"
-                    if type(escrow_usdc) is int and escrow_usdc >= held else "EXPLANATION_UNVERIFIED")
     else:
         relation = "DIFFERENT"
-    explained = relation not in ("DIFFERENT", "EXPLANATION_UNVERIFIED")
+    explained = relation in ("PROXY_TOKEN_EQUALS_AVAILABLE", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_ESCROWED",
+                             "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING")
     return {"outcome": "PASS" if explained else "PARTIAL",
-            "reason": relation if explained else ("EXPLANATION_UNVERIFIED" if relation == "EXPLANATION_UNVERIFIED"
-                                                  else "DIFFERENCE_NOT_EXPLAINED_BY_DOCUMENTED_FIELDS"),
+            "reason": "DIFFERENCE_NOT_EXPLAINED_BY_DOCUMENTED_FIELDS" if relation == "DIFFERENT" else relation,
+            "other_usdc_rows": other_rows,
             "api": {"available": str(available), "escrowed": str(escrowed), "pending_available": str(pend_a),
                     "pending_escrow": str(pend_e)},
             "onchain": {"proxy_usdc": str(proxy_usdc), "eoa_usdc": None if eoa_usdc is None else str(eoa_usdc),
@@ -257,4 +300,4 @@ def _signed(v: Any) -> int | None:
 
 
 __all__ = ["MAINNET", "analyze_channel", "analyze_recovery", "classify_balances", "compare_book_versions",
-           "compare_trades", "namespace", "requires_message_id", "units"]
+           "analyze_book_channel", "compare_trades", "namespace", "requires_message_id", "units"]

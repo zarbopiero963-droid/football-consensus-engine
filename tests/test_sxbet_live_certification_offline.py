@@ -157,7 +157,8 @@ def _fake_io(monkeypatch, *, recovered=True, rest_trades=("t1", "t2"), proxy_usd
                                 **{c: {"subscribed": True} for c in subs if c != trades}},
                     "pubs": {trades: [{"offset": 11, "message_id": "m11", "data": {"trade": {"tradeId": "t1"}}}],
                              **{c: [{"offset": 1, "message_id": "b1",
-                                     "data": {"version": "0001", "outcomeOne": [], "outcomeTwo": []}}]
+                                     "data": {"version": "0001", "marketHash": "0x" + "ab" * 32,
+                                              "outcomeOne": [], "outcomeTwo": []}}]
                                 for c in subs if c != trades}}}
         return {"connected": True,
                 "results": {trades: {"subscribed": True, "was_recovering": True, "recovered": recovered,
@@ -210,6 +211,7 @@ def test_consistency_probe_reports_each_r2_check_from_real_shaped_data(monkeypat
     assert rows["realtime_recovery recent_trades_v3:global"]["outcome"] == "PASS"
     assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "PASS"
     assert rows["rest_vs_realtime orderbook (version)"]["outcome"] == "PASS"
+    assert rows["realtime_stream_integrity orderbook_v3:<probe market>"]["outcome"] == "PASS"
     onchain = rows["onchain_balance usdc (rpc vs /user/balance-v3)"]
     assert onchain["outcome"] == "PASS" and onchain["relation"] == "PROXY_TOKEN_EQUALS_AVAILABLE"
     # The reconnect asks for recovery from the last stream position.
@@ -276,3 +278,30 @@ def test_review_9729fe1_malformed_rest_tape_is_fail(monkeypatch):
     rows, _, _ = _run_probe()
     assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "FAIL"
     assert rows["rest_vs_realtime trades (tradeId)"]["reason"] == "REST_TAPE_MALFORMED"
+
+
+def test_review_53a5b84_token_failure_still_runs_rest_and_onchain(monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    _fake_io(monkeypatch)
+
+    async def no_token(api_key):
+        return 503, None
+    monkeypatch.setattr(cert, "fetch_realtime_token", no_token)
+    rows, _, _ = _run_probe()
+    assert rows["realtime_stream_integrity"]["outcome"] == "FAIL"
+    assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "NOT_TESTED"     # no socket ids to compare
+    assert rows["onchain_balance usdc (rpc vs /user/balance-v3)"]["outcome"] == "PASS"
+
+
+def test_review_53a5b84_unanswered_resubscribe_is_not_tested(monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    _fake_io(monkeypatch)
+    first_ws = cert._ws_session
+
+    async def no_reply_second(tok, subs, seconds):
+        if "recover" in next(iter(subs.values())):
+            return {"connected": True, "results": {}, "pubs": {c: [] for c in subs}}
+        return await first_ws(tok, subs, seconds)
+    monkeypatch.setattr(cert, "_ws_session", no_reply_second)
+    rows, _, _ = _run_probe()
+    assert rows["realtime_recovery recent_trades_v3:global"]["outcome"] == "NOT_TESTED"
