@@ -451,7 +451,10 @@ def test_review_20970af_p3_d_claim_committed_then_raised_is_resumed_once_by_reco
     assert out[0]["event"] == "CLAIM_FAILED" and q.states(a["request_id"]) == ["CLAIMED"]
     monkeypatch.undo()
     # Declared change (review 9792c7d P2-1): while A is claimed but unresolved, no later PLACE runs (B waits).
-    assert [r["request_id"] for r in service(s, q).process_once()] == []  # A not taken twice, B not before A
+    from signer.service import PlacesBlockedByUnresolvedRequest
+    with pytest.raises(PlacesBlockedByUnresolvedRequest):         # visible, not silent (review 9e7bfca P3-2)
+        service(s, q).process_once()                              # A not taken twice, B not before A
+    assert q.states(b["request_id"]) == []
     (res,) = service(s, q).recover()
     assert res["event"] == "SUBMITTED" and service(s, q).recover() == []
     service(s, q).process_once()                                 # now B

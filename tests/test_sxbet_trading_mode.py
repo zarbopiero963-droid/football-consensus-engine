@@ -544,12 +544,15 @@ def test_void_write_failure_on_the_marked_request_never_lets_the_resend_run(live
         return real_void(**kw)
     monkeypatch.setattr(s.signer._ledger, "void_command", flaky)
     svc = _svc(s, q)
+    from signer.service import PlacesBlockedByUnresolvedRequest
     with pytest.raises(LedgerError):
         svc.process_once(10)                                         # A claimed, void failed: batch stops
-    assert svc.process_once(10) == []                                # A unresolved: no PLACE at all
+    with pytest.raises(PlacesBlockedByUnresolvedRequest):            # A unresolved: no PLACE, visible failure
+        svc.process_once(10)
     with pytest.raises(LedgerError):
         svc.recover()                                                # second failure
-    assert svc.process_once(10) == []
+    with pytest.raises(PlacesBlockedByUnresolvedRequest):
+        svc.process_once(10)
     (ra,) = svc.recover()
     assert ra["detail"]["code"] == "KILL_SWITCH_OBSERVED_AT_QUEUE"
     (rb,) = svc.process_once(10)

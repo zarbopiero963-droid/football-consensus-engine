@@ -412,3 +412,49 @@ def test_p2_malformed_command_id_never_wedges_the_service(tmp_path):
     (r,) = svc.refuse_pending_places(10)
     assert r["event"] == "REFUSED" and _code(r) == "REQUEST_COMMAND_ID_INVALID"
     assert svc.recover() == [] and q.states(p["request_id"])[-1] == "REFUSED"
+
+
+# ---------------------------------------------------------------- review 9e7bfca P3
+def test_p3_1_void_failure_inside_sign_order_keeps_the_request_open(tmp_path, monkeypatch):
+    """Engagement during processing + a transient void write failure: the request is NOT closed without its void;
+    recover() retries, the void lands, and a re-send after the release is refused."""
+    from signer import orders as od
+    s, q, kill = _stack(tmp_path)
+    p, _, ctx = _place(s, q, "order-key-T001")
+    svc = _svc(s, q)
+    real_reads, real_void = s.signer._reads, s.ledger.void_command
+    left = {"n": 2}
+
+    def reads_then_engage(*a, **k):
+        r = real_reads(*a, **k)
+        kill.engage("OWNER_TEST", source="MANUAL")
+        return r
+
+    def flaky_void(**kw):
+        if left["n"]:
+            left["n"] -= 1
+            raise od.LedgerError("LEDGER_WRITE_FAILED")
+        return real_void(**kw)
+    monkeypatch.setattr(s.signer, "_reads", reads_then_engage)
+    monkeypatch.setattr(s.ledger, "void_command", flaky_void)
+    with pytest.raises(od.LedgerError):
+        svc.process_once(10)
+    assert q.states(p["request_id"]) == ["CLAIMED"]                   # open, never closed without its void
+    monkeypatch.setattr(s.signer, "_reads", real_reads)
+    (r,) = svc.recover()                                              # retried: void written, then refused
+    assert r["event"] == "REFUSED" and s.ledger.command_text_voided(p["command"]["command_text_sha256"])
+    monkeypatch.undo()
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    _resend(s, q, p, ctx, "order-key-T002")
+    (res,) = svc.process_once(10)
+    assert _code(res) == "COMMAND_VOIDED_BY_KILL_SWITCH" and _posts(s) == []
+
+
+def test_p3_3_a_false_claim_also_keeps_queue_order(tmp_path, monkeypatch):
+    s, q, kill = _stack(tmp_path)
+    a, _, _ = _place(s, q, "order-key-T010")
+    b, _, _ = _place(s, q, "order-key-T011")
+    real = q.claim
+    monkeypatch.setattr(q, "claim", lambda rid, sid: False if rid == a["request_id"] else real(rid, sid))
+    assert _svc(s, q).process_once(10) == [] and _posts(s) == []      # B waits for A

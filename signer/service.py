@@ -45,6 +45,15 @@ class QueueClaimUnavailable(RuntimeError):
         super().__init__(self.code)
 
 
+class PlacesBlockedByUnresolvedRequest(RuntimeError):
+    """An earlier PLACE is still open (claimed/signed, not closed): no later PLACE is handled until recover()
+    closes it. Raised after the cancels so the worker stage fails visibly (review 9e7bfca P3-2)."""
+
+    def __init__(self) -> None:
+        super().__init__("PLACES_BLOCKED_BY_UNRESOLVED_REQUEST")
+        self.code = "PLACES_BLOCKED_BY_UNRESOLVED_REQUEST"
+
+
 class SignerService:
     def __init__(self, queue: RequestQueue, signer: Signer, gateway: Any, cancellation: Any, *, network: str,
                  signer_id: str, clock: Callable[[], float] = time.time,
@@ -71,13 +80,16 @@ class SignerService:
         engaged, owner decision 16-11-2026); the others stay pending, unclaimed."""
         with self._lock:
             out = []
+            blocked_by_unresolved = False
             if kinds is None or "PLACE" in kinds:
-                # Queue order is a safety property (review 9792c7d P2-1): an interrupted PLACE (claimed, not closed:
-                # e.g. a marked or pre-release one whose void was not written) must be resolved by recover() before
-                # any later PLACE is handled, or a re-sent equivalent command could run first. Until then: CANCEL only.
+                # Queue order is a safety property (review 9792c7d P2-1): an interrupted PLACE (last state CLAIMED or
+                # SIGNED: e.g. a marked or pre-release one whose void was not written) must be resolved by recover()
+                # before any later PLACE is handled, or a re-sent equivalent command could run first. Until then:
+                # CANCEL only, and the call FAILS visibly afterwards (review 9e7bfca P3-2: never a silent block).
                 if any(u.get("kind") == "PLACE" and u.get("last_state") in ("CLAIMED", "SIGNED")
                        for u in self._q.unfinished(self._network, self._signer_id)):
                     kinds = ("CANCEL",)
+                    blocked_by_unresolved = True
             batch = self._q.pending(self._network, limit) if kinds is None else \
                 self._q.pending(self._network, limit, kinds)
             failed = 0
@@ -87,6 +99,8 @@ class SignerService:
                     continue      # an earlier PLACE could not be claimed: keep queue order, retry next cycle
                 try:
                     if not self._q.claim(req["request_id"], self._signer_id):
+                        if req.get("kind") == "PLACE":
+                            place_blocked = True     # cautious default (review 9e7bfca P3-3): keep queue order
                         continue  # another instance or an earlier run owns it
                 except Exception as exc:
                     # e.g. a stalled per-request lock: skip it, never block the requests behind it (6c74d55 P3-4).
@@ -102,6 +116,10 @@ class SignerService:
                 out.append(self._handle(req))
             if batch and failed == len(batch):
                 raise QueueClaimUnavailable()  # nothing could be claimed: the queue is unusable, say so
+            if blocked_by_unresolved:
+                # Cancels above were processed; the stage still fails so last_cycle_ok goes false (the MCP refuses
+                # new PLACEs) and repeated cycles engage the automatic kill switch.
+                raise PlacesBlockedByUnresolvedRequest()
             return out
 
     def refuse_pending_places(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -220,6 +238,10 @@ class SignerService:
         try:
             signed = self._signer.sign_order(intent, auth, post_only=p["post_only"])
         except SignerRefused as exc:
+            if self._signer._ledger.kill_switch_engaged:
+                # Review 9e7bfca P3-1: void through the queue path, which RAISES if the void cannot be written, so
+                # the request stays open and recover() retries it (never closed without its void).
+                return self._void_and_refuse(rid, p, "KILL_SWITCH_ENGAGED")
             return self._refuse(rid, exc.code)
         cid = intent.get("idempotency_key")
         self._event(rid, "SIGNED", order_id=signed.get("order_id"), client_order_id=cid)

@@ -476,3 +476,18 @@ def test_worker_cycle_engaged_then_released_never_sends_the_old_placement(tmp_pa
         w.run_cycle()
         w.run_cycle()
     assert q.states(p["request_id"]) == ["CLAIMED", "REFUSED"] and _posts(s) == []
+
+
+def test_places_blocked_by_an_unresolved_request_is_a_visible_stage_failure(tmp_path):
+    """Review 9e7bfca P3-2: never a silent block: the stage fails, last_cycle_ok goes false, repeated cycles engage."""
+    from signer.service import PlacesBlockedByUnresolvedRequest
+
+    class Svc(FakeService):
+        def process_once(self, limit, kinds=None):
+            raise PlacesBlockedByUnresolvedRequest()
+    kill = FakeKill()
+    w = worker(tmp_path, Svc(), kill=kill, max_consecutive_failures=2)
+    r = w.run_cycle()
+    assert r["stages"]["process_once"] == {"ok": False, "error_type": "PlacesBlockedByUnresolvedRequest"}
+    w.run_cycle()
+    assert kill.engages == [("WORKER_REPEATED_FAILURES", "AUTOMATIC")]
