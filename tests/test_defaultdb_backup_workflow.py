@@ -383,7 +383,7 @@ def _artifact(tmp_path, payload=b"\x00" * 64):
     return out, summary
 
 
-ENV = {"FCB_DEFAULTDB_URL": "postgresql://avnadmin:Sup3rSecretPw@pg-host.aivencloud.com:14274/defaultdb?sslmode=verify-full",
+ENV = {"FCB_DEFAULTDB_URL": "postgresql://avnadmin:fake-test-pw-not-real@pg-host.aivencloud.com:14274/defaultdb?sslmode=verify-full",
        "FCB_BACKUP_PASSPHRASE": "Q" * 48}
 
 
@@ -402,7 +402,7 @@ def test_leak_check_passes_on_a_clean_artifact_and_summary(tmp_path):
      "ARTIFACT_CONTAINS_PLAINTEXT_OR_SECRET"),
     (lambda out, s: s.write_text("pass " + "Q" * 48), "SUMMARY_CONTAINS_SECRET"),
     (lambda out, s: s.write_text("host pg-host.aivencloud.com"), "SUMMARY_CONTAINS_SECRET"),
-    (lambda out, s: s.write_text("pw Sup3rSecretPw"), "SUMMARY_CONTAINS_SECRET"),
+    (lambda out, s: s.write_text("pw fake-test-pw-not-real"), "SUMMARY_CONTAINS_SECRET"),
     (lambda out, s: s.write_text("postgresql://x"), "SUMMARY_CONTAINS_FORBIDDEN_TEXT"),
     (lambda out, s: s.write_text("SCRAM-SHA-256$4096:a"), "SUMMARY_CONTAINS_FORBIDDEN_TEXT"),
 ])
@@ -447,7 +447,7 @@ def test_runbook_covers_the_owner_procedure():
 
 # ------------------------------------------------------------------ review #202 regressions
 
-AIVEN_ENV = {"FCB_DEFAULTDB_URL": "postgresql://avnadmin:Sup3rSecretPw@pg-host.aivencloud.com:14274/defaultdb?sslmode=verify-full",
+AIVEN_ENV = {"FCB_DEFAULTDB_URL": "postgresql://avnadmin:fake-test-pw-not-real@pg-host.aivencloud.com:14274/defaultdb?sslmode=verify-full",
              "FCB_BACKUP_PASSPHRASE": "Q" * 48}
 
 
@@ -459,7 +459,7 @@ def test_p1_the_aiven_monitor_schema_name_is_not_a_leak_of_the_avnadmin_user(tmp
     assert _module().leak_problems(summary, out, AIVEN_ENV) == []
 
 
-@pytest.mark.parametrize("text", ["user avnadmin connected", "avnadmin", "role=avnadmin;", "Sup3rSecretPw",
+@pytest.mark.parametrize("text", ["user avnadmin connected", "avnadmin", "role=avnadmin;", "fake-test-pw-not-real",
                                   "pg-host.aivencloud.com", "Q" * 48])
 def test_p1_real_secrets_and_the_bare_username_are_still_leaks(tmp_path, text):
     out, summary = _artifact(tmp_path)

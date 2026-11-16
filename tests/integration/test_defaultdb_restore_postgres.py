@@ -1114,6 +1114,8 @@ def test_any_other_column_option_is_still_drift_with_or_without_pg_attver(schema
 @pytest.mark.parametrize("options", [
     "{pg_attver=abc}", "{pg_attver=}", "{pg_attver=12x}", "{pg_attver=-1}", "{pg_attver=1,pg_attver=2}",
     "{pg_attver=1,n_distinct=5}", "{n_distinct=5,pg_attver=1}", "{PG_ATTVER=1}", "{pg_attver2=1}", "{\"pg_attver=1 \"}", "{\" pg_attver=1\"}",
+    # review #202 P3-a: a lower bound other than 1 made (attoptions)[1] NULL and the predicate fail open
+    "[0:0]={n_distinct=5}", "[2:2]={n_distinct=5}", "[0:0]={pg_attver=1}", "[2:2]={pg_attver=1}",
 ])
 def test_malformed_or_extra_pg_attver_written_into_the_catalog_is_drift(schema, options):
     """Only a superuser editing pg_attribute directly can produce these; each is refused, or the
@@ -1128,6 +1130,10 @@ def test_malformed_or_extra_pg_attver_written_into_the_catalog_is_drift(schema, 
         assert out == "REFUSE_RUNTIME_TABLE_DRIFT", (options, out)
     else:
         assert _attver_server() and "could not parse attribute version" in err, (options, err)
+    # review #202 P3-d: the generated in-transaction guards refuse it too (never apply)
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and ("REFUSE_RUNTIME_TABLE_DRIFT" in err
+                        or (_attver_server() and "could not parse attribute version" in err)), (options, err)
 
 
 def test_a_well_formed_pg_attver_is_accepted_only_on_the_minors_that_write_it(schema):
