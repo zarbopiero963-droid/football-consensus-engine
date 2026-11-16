@@ -33,6 +33,9 @@ class FakeService:
         self.kinds = kinds
         return self._do("process_once", [{"event": "SUBMITTED"}])
 
+    def refuse_pending_places(self, limit):
+        return self._do("refuse_pending_places", [{"event": "REFUSED"}])
+
 
 class FakeMonitor:
     def __init__(self, fail=False):
@@ -72,8 +75,11 @@ def test_kill_switch_engaged_skips_new_orders_but_keeps_reconciling(tmp_path):
     # Declared change (owner decision 16-11-2026): while ENGAGED the worker still processes CANCEL requests only.
     svc, mon = FakeService(), FakeMonitor()
     r = worker(tmp_path, svc, mon, FakeKill(engaged=True)).run_cycle()
+    # Declared (review a046ad9 P2-2/P3-2): stage label is a mode, and pending PLACE requests are refused for good.
     assert svc.kinds == ("CANCEL",) and mon.calls == 1 and "recover" in svc.calls
-    assert r["stages"]["process_once"] == {"ok": True, "skipped": "KILL_SWITCH_ENGAGED", "only_kinds": ["CANCEL"]}
+    assert r["stages"]["process_once"] == {"ok": True, "mode": "CANCEL_ONLY_KILL_SWITCH_ENGAGED",
+                                           "only_kinds": ["CANCEL"]}
+    assert "refuse_pending_places" in svc.calls and r["counts_refused_placements"] == 1
 
 
 def test_unknown_kill_switch_state_fails_closed(tmp_path):
@@ -179,7 +185,10 @@ def test_end_to_end_worker_places_reconciles_and_stops_on_kill_switch(tmp_path):
     p2 = place_request(i2, s.command(i2, ctx2), created_at=int(s.clock()))
     q.insert(p2)
     r = w.run_cycle()
-    assert r["stages"]["process_once"]["skipped"] == "KILL_SWITCH_ENGAGED" and q.states(p2["request_id"]) == []
+    # Declared (review a046ad9 P2-2): the PLACE queued while ENGAGED is closed for good, never signed or sent.
+    assert r["stages"]["process_once"]["mode"] == "CANCEL_ONLY_KILL_SWITCH_ENGAGED"
+    assert q.states(p2["request_id"]) == ["CLAIMED", "REFUSED"]
+    assert q.events_of(p2["request_id"])[-1]["detail"]["code"] == "KILL_SWITCH_ENGAGED"
     posts = [x for x in s.sim.writes() if x.method == "POST"]
     assert len(posts) == 1                                     # only the first order ever left
     w.close()
@@ -260,6 +269,38 @@ def test_end_to_end_kill_switch_engaged_processes_owner_cancels_of_open_orders_o
         r = w.run_cycle()
     assert r["stages"]["process_once"]["only_kinds"] == ["CANCEL"] and r["counts"]["processed"] == 1
     assert q.states(p_cancel["request_id"])[-1] == "DONE"
-    assert q.states(p_place["request_id"]) == []                # pending, unclaimed
+    assert q.states(p_place["request_id"]) == ["CLAIMED", "REFUSED"]   # closed for good, never signed (P2-2)
     assert len([x for x in s.sim.writes() if x.method == "POST"]) == posts_before
     assert len([x for x in s.sim.writes() if x.method == "DELETE"]) == 1
+
+
+def test_a_placement_queued_while_engaged_can_never_run_after_a_release(tmp_path):
+    """Review a046ad9 P2-2: refused terminally while ENGAGED; once released, the refused request is never retried."""
+    s = Stack(tmp_path)
+    q = MemoryQueue()
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    i = s.intent("order-key-W020")
+    ctx = s.context(i)
+    s.signer.config.market_data.world = ctx
+    p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
+    q.insert(p)
+    assert [r["event"] for r in svc.refuse_pending_places(10)] == ["REFUSED"]
+    assert svc.process_once(10) == []                              # after a release nothing is left to run
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+def test_row_kind_must_match_the_payload_kind(tmp_path):
+    """Review a046ad9 P3-1: a CANCEL row carrying a PLACE payload is refused, never routed to placement."""
+    s = Stack(tmp_path)
+    q = MemoryQueue()
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    i = s.intent("order-key-W021")
+    ctx = s.context(i)
+    s.signer.config.market_data.world = ctx
+    p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
+    q.insert(p)
+    rid = p["request_id"]
+    q.requests = [(r[0], "CANCEL", *r[2:]) if r[0] == rid else r for r in q.requests]
+    (res,) = svc.process_once(10, kinds=("CANCEL",))
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "REQUEST_KIND_MISMATCH"
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []

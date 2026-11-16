@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS signer_order_requests (
     payload JSONB NOT NULL,
     payload_sha256 TEXT NOT NULL CHECK (payload_sha256 ~ '^sha256:[0-9a-f]{64}$'),
     network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    -- The row columns the signer filters on must be the payload's own (review a046ad9 P3-1).
+    CONSTRAINT signer_order_requests_kind_matches_payload CHECK (kind = payload->>'kind'),
+    CONSTRAINT signer_order_requests_network_matches_payload CHECK (network = payload->>'network')
 );
 CREATE TABLE IF NOT EXISTS signer_order_request_events (
     request_id TEXT NOT NULL REFERENCES signer_order_requests (request_id),

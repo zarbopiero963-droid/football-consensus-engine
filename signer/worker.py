@@ -9,7 +9,8 @@ One `SignerWorker.run_cycle()` composes the existing, already-reviewed parts in 
 3. `SignerService.sync_outcomes()`: final states learnt by step 2 are mirrored to the request queue;
 4. `SignerService.process_once()`: new owner requests. While the persistent kill switch is ENGAGED only CANCEL
    requests are processed (owner decision 16-11-2026: cancels of orders already open, with the owner command,
-   idempotency, audit and reconciliation of the signer); PLACE requests stay pending. While its state is
+   idempotency, audit and reconciliation of the signer); every pending PLACE request is REFUSED for good
+   (KILL_SWITCH_ENGAGED), never signed, so nothing queued around an engagement can run after a release. While its state is
    UNKNOWN nothing is processed (fail closed). Steps 1-3 keep running so open exposure is still reconciled.
 
 Note on step 1: `recover()` may re-run a PLACE request that was claimed but never reached the ledger. That path
@@ -127,7 +128,10 @@ class SignerWorker:
             # Known ENGAGED: cancels only (they reduce risk); new placements stay pending.
             processed = self._stage(report, "process_once",
                                     lambda: self._service.process_once(self._batch, kinds=("CANCEL",)))
-            report["stages"]["process_once"].update(skipped="KILL_SWITCH_ENGAGED", only_kinds=["CANCEL"])
+            report["stages"]["process_once"].update(mode="CANCEL_ONLY_KILL_SWITCH_ENGAGED", only_kinds=["CANCEL"])
+            refused = self._stage(report, "refuse_new_placements",
+                                  lambda: self._service.refuse_pending_places(self._batch))
+            report["counts_refused_placements"] = len(refused or [])
         elif engaged:
             report["stages"]["process_once"] = {"ok": True, "skipped": "KILL_SWITCH_STATE_UNKNOWN"}
             processed = []

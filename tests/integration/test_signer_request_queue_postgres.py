@@ -30,10 +30,14 @@ def _connect(**kw):
 
 
 
+SQL_0002 = migrations.SIGNER.directory / "0002_signer_order_requests.sql"
+
+
 def _apply_draft():
-    # Draft 0002 is not in the signer series yet (WP-009 coordination): applied here to a throwaway DB only.
+    # 0002 is in the signer series (applied by the fixture); re-running its raw SQL proves it is idempotent
+    # (review a046ad9 P3-3).
     with _connect() as conn:
-        pass                       # 0002 is now part of the signer series applied above
+        conn.execute(SQL_0002.read_text())
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -156,7 +160,8 @@ def test_review_least_privilege_roles_on_a_throwaway_database():
             cur.execute("SET ROLE fce_it_signer_queue")
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 cur.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
-                            "VALUES (%s, 'CANCEL', '{}'::jsonb, %s, 'testnet')", ("9" * 32, "sha256:" + "0" * 64))
+                            "VALUES (%s, 'CANCEL', '{\"kind\": \"CANCEL\", \"network\": \"testnet\"}'::jsonb, %s, "
+                            "'testnet')", ("9" * 32, "sha256:" + "0" * 64))   # consistent row: only the role is wrong
     finally:
         with _connect(autocommit=True) as conn:
             for role in ("fce_it_mcp_queue", "fce_it_signer_queue"):
@@ -206,3 +211,17 @@ def test_review_67e80eb_p2_a_queue_works_under_the_least_privilege_roles():
             for role in (mcp, sig):
                 conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
                 conn.execute(f"DROP ROLE {role}")
+
+
+def test_pending_kinds_filter_in_sql():
+    """Review a046ad9 P3-2: the kill-switch filter runs in SQL; invalid kinds are refused before any query."""
+    from signer.request_queue import QueueError
+    import uuid
+    rid = uuid.uuid4().hex
+    _insert(_payload(rid))                                   # a CANCEL, unclaimed
+    q = PostgresRequestQueue(_connect)
+    assert rid in [r["request_id"] for r in q.pending("testnet", 100, ("CANCEL",))]
+    assert rid not in [r["request_id"] for r in q.pending("testnet", 100, ("PLACE",))]
+    for bad in ((), ("MODIFY",), ("CANCEL", "X")):
+        with pytest.raises(QueueError):
+            q.pending("testnet", 10, bad)

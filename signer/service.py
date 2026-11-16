@@ -91,6 +91,24 @@ class SignerService:
                 raise QueueClaimUnavailable()  # nothing could be claimed: the queue is unusable, say so
             return out
 
+    def refuse_pending_places(self, limit: int = 10) -> list[dict[str, Any]]:
+        """While the kill switch is ENGAGED: every pending PLACE request is closed for good with REFUSED
+        KILL_SWITCH_ENGAGED, never signed (review a046ad9 P2-2): a placement queued around an engagement can never
+        run after a later release. A new placement after the release needs a new owner command."""
+        with self._lock:
+            out = []
+            for req in self._q.pending(self._network, limit, ("PLACE",)):
+                try:
+                    if not self._q.claim(req["request_id"], self._signer_id):
+                        continue
+                except Exception as exc:
+                    _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
+                    out.append({"request_id": req["request_id"], "event": "CLAIM_FAILED",
+                                "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
+                    continue
+                out.append(self._refuse(req["request_id"], "KILL_SWITCH_ENGAGED"))
+            return out
+
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
         d = event_detail(**detail)
         self._q.append_event(request_id, event, d, self._signer_id)
@@ -107,6 +125,9 @@ class SignerService:
             return self._refuse(rid, exc.code)
         if p["request_id"] != rid or canonical_sha256(p) != req.get("payload_sha256"):
             return self._refuse(rid, "REQUEST_HASH_MISMATCH")
+        if req.get("kind") != p["kind"]:
+            # The row kind drives the kill-switch filter; it must be the payload's (review a046ad9 P3-1).
+            return self._refuse(rid, "REQUEST_KIND_MISMATCH")
         if p["network"] != self._network:
             return self._refuse(rid, "REQUEST_NETWORK_MISMATCH")
         now = int(self._clock())
