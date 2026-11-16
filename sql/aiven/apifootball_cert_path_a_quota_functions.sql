@@ -19,6 +19,19 @@
 -- prefix `cert-` and release() deletes only such a lease, named exactly, of the named key.
 -- Limit and lease codes are raised as fixed messages (FCB_CERT_QUOTA_*), mapped back to QuotaExceeded /
 -- QuotaConcurrencyBusy by scripts/apifootball_cert_batch1.py (CertQuotaCoordinator).
+-- Review #201 (59d98c2) hardening:
+--   * P2: ONE key hash only. The caller sets fcb_cert.pinned_key_hash (SHA-256 of the API key the runner
+--     uses, computed by the installer) in this transaction; it is pinned in the fifth routine
+--     fcb_cert_quota.pinned_key_hash() (LANGUAGE sql, SECURITY INVOKER, EXECUTE for the owner only, body
+--     exactly SELECT '<64 hex>'::pg_catalog.text). Every function refuses any other key
+--     (FCB_CERT_QUOTA_KEY_REFUSED) BEFORE taking a lock or touching a row, so a flood with other keys
+--     creates no row. An existing different pin is never replaced (FCB_CERT_PATH_A_QUOTA_KEY_CHANGED: an
+--     owner act outside this step). mark_exhausted('minute') is a no-op while a provider-zero marker of the
+--     key is live, and every mark_exhausted prunes the key's attempts older than 60 s, so per call at most
+--     8 attempt rows and one counter row per minute/day bucket can be created (same order as the bridge).
+--   * P3: every function refuses unless the transaction is READ COMMITTED (FCB_CERT_QUOTA_ISOLATION_REFUSED):
+--     under REPEATABLE READ / SERIALIZABLE a snapshot taken before the advisory lock could miss rows
+--     committed by the previous holder and exceed the limits.
 SET LOCAL search_path = pg_catalog, pg_temp;
 DO $fcbcertquotaguard$
 BEGIN
@@ -39,7 +52,28 @@ BEGIN
                         AND o.rolname OPERATOR(pg_catalog.=) SESSION_USER) THEN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_QUOTA_GUARD_FAILED';
     END IF;
+    IF NOT COALESCE(pg_catalog.current_setting('fcb_cert.pinned_key_hash', true) OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$'::pg_catalog.text, false) THEN
+        RAISE EXCEPTION 'FCB_CERT_PATH_A_QUOTA_KEY_MISSING';
+    END IF;
+    -- the pinned key: created once, never silently replaced
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
+               WHERE p.pronamespace OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.regnamespace
+                 AND p.proname OPERATOR(pg_catalog.=) 'pinned_key_hash'::pg_catalog.name) THEN
+        IF (SELECT p.prosrc FROM pg_catalog.pg_proc p
+            WHERE p.pronamespace OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.regnamespace
+              AND p.proname OPERATOR(pg_catalog.=) 'pinned_key_hash'::pg_catalog.name)
+           IS DISTINCT FROM ('SELECT '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.quote_literal(pg_catalog.current_setting('fcb_cert.pinned_key_hash'))
+                             OPERATOR(pg_catalog.||) '::pg_catalog.text'::pg_catalog.text) THEN
+            RAISE EXCEPTION 'FCB_CERT_PATH_A_QUOTA_KEY_CHANGED';
+        END IF;
+    ELSE
+        EXECUTE pg_catalog.format('CREATE FUNCTION fcb_cert_quota.pinned_key_hash() RETURNS pg_catalog.text LANGUAGE sql IMMUTABLE '
+                                  'SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS %L',
+                                  'SELECT '::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.quote_literal(pg_catalog.current_setting('fcb_cert.pinned_key_hash'))
+                                  OPERATOR(pg_catalog.||) '::pg_catalog.text'::pg_catalog.text);
+    END IF;
 END $fcbcertquotaguard$;
+REVOKE ALL ON FUNCTION fcb_cert_quota.pinned_key_hash() FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION fcb_cert_quota.reserve(p_key_hash pg_catalog.text)
 RETURNS pg_catalog.text
@@ -58,8 +92,14 @@ BEGIN
     IF SESSION_USER OPERATOR(pg_catalog.<>) 'fcb_cert_runner'::pg_catalog.name THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_IDENTITY_REFUSED';
     END IF;
+    IF pg_catalog.current_setting('transaction_isolation') OPERATOR(pg_catalog.<>) 'read committed'::pg_catalog.text THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_ISOLATION_REFUSED';
+    END IF;
     IF NOT COALESCE(p_key_hash OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$'::pg_catalog.text, false) THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_BAD_KEY_HASH';
+    END IF;
+    IF p_key_hash OPERATOR(pg_catalog.<>) fcb_cert_quota.pinned_key_hash() THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_KEY_REFUSED';
     END IF;
     PERFORM pg_catalog.pg_advisory_xact_lock(
         ((('x'::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.substr(p_key_hash, 1, 16))::pg_catalog.bit(64))::pg_catalog.int8)
@@ -140,8 +180,14 @@ BEGIN
     IF SESSION_USER OPERATOR(pg_catalog.<>) 'fcb_cert_runner'::pg_catalog.name THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_IDENTITY_REFUSED';
     END IF;
+    IF pg_catalog.current_setting('transaction_isolation') OPERATOR(pg_catalog.<>) 'read committed'::pg_catalog.text THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_ISOLATION_REFUSED';
+    END IF;
     IF NOT COALESCE(p_key_hash OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$'::pg_catalog.text, false) THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_BAD_KEY_HASH';
+    END IF;
+    IF p_key_hash OPERATOR(pg_catalog.<>) fcb_cert_quota.pinned_key_hash() THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_KEY_REFUSED';
     END IF;
     IF NOT COALESCE(p_lease_id OPERATOR(pg_catalog.~) '^cert-[0-9A-Za-z_-]{32}$'::pg_catalog.text, false) THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_BAD_LEASE_ID';
@@ -165,8 +211,14 @@ BEGIN
     IF SESSION_USER OPERATOR(pg_catalog.<>) 'fcb_cert_runner'::pg_catalog.name THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_IDENTITY_REFUSED';
     END IF;
+    IF pg_catalog.current_setting('transaction_isolation') OPERATOR(pg_catalog.<>) 'read committed'::pg_catalog.text THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_ISOLATION_REFUSED';
+    END IF;
     IF NOT COALESCE(p_key_hash OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$'::pg_catalog.text, false) THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_BAD_KEY_HASH';
+    END IF;
+    IF p_key_hash OPERATOR(pg_catalog.<>) fcb_cert_quota.pinned_key_hash() THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_KEY_REFUSED';
     END IF;
     v_epoch := EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())::pg_catalog.int8;
     v_minute := COALESCE((SELECT c.used FROM public.api_football_quota_counters c
@@ -205,15 +257,33 @@ BEGIN
     IF SESSION_USER OPERATOR(pg_catalog.<>) 'fcb_cert_runner'::pg_catalog.name THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_IDENTITY_REFUSED';
     END IF;
+    IF pg_catalog.current_setting('transaction_isolation') OPERATOR(pg_catalog.<>) 'read committed'::pg_catalog.text THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_ISOLATION_REFUSED';
+    END IF;
     IF p_kind IS NULL OR p_kind OPERATOR(pg_catalog.<>) ALL (ARRAY['minute', 'day']::pg_catalog.text[]) THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_BAD_WINDOW';
     END IF;
     IF NOT COALESCE(p_key_hash OPERATOR(pg_catalog.~) '^[0-9a-f]{64}$'::pg_catalog.text, false) THEN
         RAISE EXCEPTION 'FCB_CERT_QUOTA_BAD_KEY_HASH';
     END IF;
+    IF p_key_hash OPERATOR(pg_catalog.<>) fcb_cert_quota.pinned_key_hash() THEN
+        RAISE EXCEPTION 'FCB_CERT_QUOTA_KEY_REFUSED';
+    END IF;
     PERFORM pg_catalog.pg_advisory_xact_lock(
         ((('x'::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.substr(p_key_hash, 1, 16))::pg_catalog.bit(64))::pg_catalog.int8)
         OPERATOR(pg_catalog.&) 9223372036854775807::pg_catalog.int8);
+    -- bounded rows: the key's attempts older than the 60 s window are never read again
+    DELETE FROM public.api_football_quota_attempts a
+     WHERE a.api_key_hash OPERATOR(pg_catalog.=) p_key_hash
+       AND a.created_at OPERATOR(pg_catalog.<=) (pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-) '60 seconds'::pg_catalog.interval);
+    -- a provider-zero marker of the key is still live: the minute is already exhausted, nothing to add
+    IF p_kind OPERATOR(pg_catalog.=) 'minute'::pg_catalog.text
+       AND EXISTS (SELECT 1 FROM public.api_football_quota_attempts a
+                   WHERE a.api_key_hash OPERATOR(pg_catalog.=) p_key_hash
+                     AND a.attempt_id OPERATOR(pg_catalog.~~) 'provider-zero-%'::pg_catalog.text
+                     AND a.created_at OPERATOR(pg_catalog.>) (pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-) '60 seconds'::pg_catalog.interval)) THEN
+        RETURN;
+    END IF;
     v_epoch := EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())::pg_catalog.int8;
     -- only ever RAISES a counter (GREATEST), to the largest limit any configuration may hold
     INSERT INTO public.api_football_quota_counters AS c (api_key_hash, window_kind, bucket, used)

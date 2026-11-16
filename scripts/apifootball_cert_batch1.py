@@ -167,6 +167,9 @@ class CertQuotaCoordinator:
         from bridge.api_football.quota import QuotaConcurrencyBusy, _day_exceeded, _minute_exceeded
         try:
             with self._connect() as conn:
+                # review #201 P3: the functions refuse any isolation but READ COMMITTED; set it explicitly
+                # (a role or session default of REPEATABLE READ / SERIALIZABLE would otherwise fail closed)
+                conn.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
                 rows = conn.execute(sql, params).fetchall()
                 conn.commit()
                 return rows

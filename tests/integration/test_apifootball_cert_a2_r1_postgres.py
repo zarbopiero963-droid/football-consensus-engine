@@ -47,6 +47,8 @@ RUNNER = "fcb_cert_runner"
 OWNER = "fcb_cert_owner"
 TABLES = ("api_football_quota_counters", "api_football_quota_leases", "api_football_quota_attempts")
 FUNCTIONS = ("reserve(text)", "release(text, text)", "snapshot(text)", "mark_exhausted(text, text)")
+# review #201 P2: the runner may use exactly ONE key, pinned by step 1b (fcb_cert_quota.pinned_key_hash())
+PINNED_SECRET = "R1-PINNED-" + uuid.uuid4().hex
 
 
 def _dsn(user, password, dbname, require=True):
@@ -91,13 +93,24 @@ def env(tmp_path_factory):
             conn.execute("REVOKE USAGE ON SCHEMA public FROM PUBLIC")
         path_a.install_roles(ns.admin, scram_verifier(runner_pw))
         path_a.install_quota_schema(ns.admin)
-        path_a.install_quota_functions(ns.admin)  # the tables' owner (pre-WP-009 shape of this module)
+        path_a.install_quota_functions(ns.admin, _h(PINNED_SECRET))  # the tables' owner (pre-WP-009 shape of this module)
         yield ns
     finally:
         with psycopg.connect(SU_DSN, autocommit=True) as su:
             su.execute("DROP DATABASE IF EXISTS defaultdb WITH (FORCE)")
             for role in (RUNNER, OWNER, OTHER, ADMIN):
                 su.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
+
+
+@pytest.fixture(autouse=True)
+def _reset_pinned_key(request):
+    """Every test starts with no row of the pinned key (fixed limits 8/80/2 are shared by all tests)."""
+    if "env" in request.fixturenames:
+        ns = request.getfixturevalue("env")
+        with ns.su() as su:
+            for table in TABLES:
+                su.execute(f"DELETE FROM public.{table} WHERE api_key_hash = %s", (_h(PINNED_SECRET),))
+    yield
 
 
 def _rows(ns, key_hash):
@@ -136,7 +149,7 @@ def test_install_is_exact_and_idempotent(env):
                           "WHERE n.nspname = 'public' AND x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"] == 0
         assert su.execute("SELECT has_schema_privilege(%s, 'public', 'USAGE') AS u", (RUNNER,)).fetchone()["u"] is False
     path_a.install_quota_schema(env.admin)
-    path_a.install_quota_functions(env.admin)  # second run: no change
+    path_a.install_quota_functions(env.admin, _h(PINNED_SECRET))  # second run: no change
     path_a.assert_quota_functions(env.admin)
     assert _state(env) == "EXACT"
     with env.su() as su:
@@ -148,9 +161,9 @@ def test_install_is_exact_and_idempotent(env):
 
 def test_step_1b_refuses_a_caller_that_is_not_the_tables_owner(env):
     with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_GUARD_FAILED"):
-        path_a.install_quota_functions(env.other)
+        path_a.install_quota_functions(env.other, _h(PINNED_SECRET))
     with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_GUARD_FAILED"):
-        path_a.install_quota_functions(env.runner)
+        path_a.install_quota_functions(env.runner, _h(PINNED_SECRET))
 
 
 # ------------------------------------------------------------------ differential vs PostgresQuota
@@ -169,7 +182,7 @@ def test_differential_same_sequence_same_results_as_postgres_quota(env):
     """The same operation sequence, runner (functions) on key A and bridge (PostgresQuota 8/80/2) on a
     twin key B: identical outcomes (type, window, message), snapshots, counters and row counts."""
     runner, bridge = _runner_q(env), _bridge(env)
-    sa, sb = "R1-DIFF-A-" + uuid.uuid4().hex, "R1-DIFF-B-" + uuid.uuid4().hex
+    sa, sb = PINNED_SECRET, "R1-DIFF-B-" + uuid.uuid4().hex
     trace = {}
     for name, q, secret in (("runner", runner, sa), ("bridge", bridge, sb)):
         out, leases = [], []
@@ -209,7 +222,7 @@ def test_differential_same_sequence_same_results_as_postgres_quota(env):
 
 def test_runner_leases_and_attempts_are_the_shared_rows_the_bridge_counts(env):
     """Same key: what the runner reserves, the bridge sees (and vice versa): one shared budget."""
-    secret = "R1-SHARED-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     runner, bridge = _runner_q(env), _bridge(env)
     l1 = asyncio.run(runner.acquire(secret))
     l2 = asyncio.run(bridge.acquire(secret))
@@ -227,7 +240,7 @@ def test_runner_leases_and_attempts_are_the_shared_rows_the_bridge_counts(env):
 # ------------------------------------------------------------------ no direct SQL, no caller limits
 
 def test_runner_has_no_direct_sql_on_counters_leases_or_attempts(env):
-    secret = "R1-DIRECT-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     bridge_lease = asyncio.run(_bridge(env).acquire(secret))
     key = _h(secret)
     before = (_counters(env, key), _rows(env, key))
@@ -257,8 +270,9 @@ def test_limits_are_not_caller_controlled(env):
     with env.su() as su:
         args = {r["f"]: r["n"] for r in su.execute(
             "SELECT p.proname AS f, p.pronargs AS n FROM pg_proc p WHERE p.pronamespace = 'fcb_cert_quota'::regnamespace")}
-    assert args == {"reserve": 1, "release": 2, "snapshot": 1, "mark_exhausted": 2}  # key hash (+ lease/kind) only
-    key = _h("R1-LIMITS-" + uuid.uuid4().hex)
+    assert args == {"reserve": 1, "release": 2, "snapshot": 1, "mark_exhausted": 2,
+                    "pinned_key_hash": 0}  # key hash (+ lease/kind) only; the pin takes nothing
+    key = _h(PINNED_SECRET)
     for statement, params in (("SELECT fcb_cert_quota.reserve(%s, 1000)", (key,)),
                               ("SELECT fcb_cert_quota.reserve(%s, 1000, 100000, 32)", (key,)),
                               ("SELECT fcb_cert_quota.reserve(p_key_hash => %s, per_minute => 1000)", (key,))):
@@ -276,25 +290,28 @@ def test_limits_are_not_caller_controlled(env):
 
 
 def test_release_deletes_only_the_named_cert_lease_of_the_named_key(env):
-    secret, other_secret = "R1-REL-" + uuid.uuid4().hex, "R1-REL2-" + uuid.uuid4().hex
-    bridge_lease = asyncio.run(_bridge(env).acquire(secret))
-    mine = asyncio.run(_runner_q(env).acquire(other_secret))
-    key, other = _h(secret), _h(other_secret)
+    # review #201 P2 (intentional change): the runner's key is the pinned one; any other key is refused
+    other_secret = "R1-REL-" + uuid.uuid4().hex
+    key, other = _h(PINNED_SECRET), _h(other_secret)
+    bridge_lease = asyncio.run(_bridge(env).acquire(PINNED_SECRET))  # the bridge, same (pinned) key
+    mine = asyncio.run(_runner_q(env).acquire(PINNED_SECRET))
     with env.runner() as conn:
         with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_BAD_LEASE_ID"):
             conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (key, bridge_lease.lease_id))  # a bridge lease
     with env.runner() as conn:
-        conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (key, mine.lease_id))  # right lease, wrong key
-        conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (other, "cert-" + "A" * 32))  # a lease that does not exist
+        with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_KEY_REFUSED"):
+            conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (other, mine.lease_id))  # right lease, wrong key
+    with env.runner() as conn:
+        conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (key, "cert-" + "A" * 32))  # a lease that does not exist
     for bad in ("%", "cert-%", "cert-" + "_" * 32 + "%", "' OR true --"):
         with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_BAD_LEASE_ID"):
             with env.runner() as conn:
-                conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (other, bad))
-    assert _rows(env, key)["api_football_quota_leases"] == 1 and _rows(env, other)["api_football_quota_leases"] == 1
+                conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (key, bad))
+    assert _rows(env, key)["api_football_quota_leases"] == 2
     asyncio.run(_runner_q(env).release(mine))
-    assert _rows(env, other)["api_football_quota_leases"] == 0  # the named one, only
-    assert _rows(env, key)["api_football_quota_leases"] == 1
+    assert _rows(env, key)["api_football_quota_leases"] == 1  # the named one, only: the bridge's stays
     asyncio.run(_bridge(env).release(bridge_lease))
+    assert _rows(env, other) == {t: 0 for t in TABLES}
 
 
 BAD_KEYS = [None, "", "A" * 64, "0" * 63, "0" * 65, "g" * 64, "0" * 63 + "\n", " " + "0" * 63, "0" * 64 + "\n",
@@ -323,13 +340,13 @@ def test_unknown_window_is_refused(env, bad):
 def test_malformed_lease_id_is_refused(env, bad):
     with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_BAD_LEASE_ID"):
         with env.runner() as conn:
-            conn.execute("SELECT fcb_cert_quota.release(%s, %s)", ("0" * 64, bad))
+            conn.execute("SELECT fcb_cert_quota.release(%s, %s)", (_h(PINNED_SECRET), bad))
 
 
 # ------------------------------------------------------------------ identity
 
 def test_only_the_session_identity_fcb_cert_runner_may_call(env):
-    key = _h("R1-ID-" + uuid.uuid4().hex)
+    key = _h(PINNED_SECRET)
     # the tables' owner (EXECUTE as owner) is refused by the identity check
     for connect in (env.admin,):
         for statement in ("SELECT fcb_cert_quota.reserve(%s)", "SELECT * FROM fcb_cert_quota.snapshot(%s)"):
@@ -405,7 +422,7 @@ def test_self_scoped_statements_the_runner_may_issue_change_nothing_or_fail_clos
 def test_search_path_and_pg_temp_shadows_have_no_effect(env):
     """Temp tables named like the coordinator tables, a temp function and a hostile search_path: the
     functions still write the REAL public rows (pinned search_path + qualified names)."""
-    secret = "R1-SHADOW-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     key = _h(secret)
     with env.runner() as conn:
         for t in TABLES:
@@ -484,7 +501,7 @@ def _run_mixed(env, tmp_path, secret, runners=9, bridges=3, rounds=6):
 
 
 def test_concurrency_runner_and_bridge_processes_never_exceed_minute_or_leases(env, tmp_path):
-    secret = "R1-CONC-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     results, ok, peak = _run_mixed(env, tmp_path, secret)
     # 12 processes x 6 attempts within a few seconds: at most 8 grants in the rolling minute, at most
     # 2 leases at any instant (hold windows measured by the workers), and runners AND bridge both refused
@@ -496,7 +513,7 @@ def test_concurrency_runner_and_bridge_processes_never_exceed_minute_or_leases(e
 
 
 def test_concurrency_never_exceeds_the_day(env, tmp_path):
-    secret = "R1-DAY-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     key = _h(secret)
     with env.su() as su:  # the day already holds 78 of 80
         su.execute("INSERT INTO public.api_football_quota_counters VALUES (%s, 'day', "
@@ -519,7 +536,7 @@ def _reserve_then_die(dsn, key, mode):
 
 
 def test_killed_mid_transaction_commits_nothing(env):
-    key = _h("R1-CRASH-TX-" + uuid.uuid4().hex)
+    key = _h(PINNED_SECRET)
     p = multiprocessing.get_context("spawn").Process(target=_reserve_then_die, args=(env.runner_dsn, key, "in_tx"))
     p.start(); p.join(60)
     assert p.exitcode == 9
@@ -527,7 +544,7 @@ def test_killed_mid_transaction_commits_nothing(env):
 
 
 def test_killed_after_reserve_leaves_a_lease_that_expires_and_is_pruned(env):
-    secret = "R1-CRASH-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     key = _h(secret)
     for _ in range(2):
         p = multiprocessing.get_context("spawn").Process(target=_reserve_then_die, args=(env.runner_dsn, key, "after_commit"))
@@ -549,7 +566,7 @@ def test_killed_after_reserve_leaves_a_lease_that_expires_and_is_pruned(env):
 
 
 def test_the_lease_ttl_is_pinned_to_180_seconds(env):
-    secret = "R1-TTL-" + uuid.uuid4().hex
+    secret = PINNED_SECRET
     lease = asyncio.run(_runner_q(env).acquire(secret))
     with env.su() as su:
         ttl = su.execute("SELECT EXTRACT(EPOCH FROM expires_at - a.created_at)::int AS s FROM public.api_football_quota_leases l "
@@ -585,6 +602,23 @@ TAMPER = {
     "runner_member": [f"GRANT {OTHER} TO {RUNNER}"],
     "runner_public_create": [f"GRANT CREATE ON SCHEMA public TO {RUNNER}"],
     "strict": ["ALTER FUNCTION fcb_cert_quota.snapshot(text) STRICT"],
+    # review #201 P1: routines of every kind and every other object kind count
+    "procedure": [f"CREATE PROCEDURE fcb_cert_quota.reset_counters() LANGUAGE sql SECURITY DEFINER "
+                  f"AS 'DELETE FROM public.api_football_quota_counters'",
+                  f"ALTER PROCEDURE fcb_cert_quota.reset_counters() OWNER TO {ADMIN}"],
+    "aggregate": ["CREATE AGGREGATE fcb_cert_quota.agg(int) (SFUNC = int4pl, STYPE = int)"],
+    "window_function": ["CREATE FUNCTION fcb_cert_quota.w() RETURNS int LANGUAGE internal WINDOW AS 'window_row_number'"],
+    "overload": ["CREATE FUNCTION fcb_cert_quota.reserve(p_key_hash text, p_x int) RETURNS text LANGUAGE sql AS 'select 1::text'"],
+    "extra_view": ["CREATE VIEW fcb_cert_quota.v AS SELECT 1 AS a"],
+    "extra_sequence": ["CREATE SEQUENCE fcb_cert_quota.s"],
+    "extra_composite_type": ["CREATE TYPE fcb_cert_quota.c AS (a int)"],
+    "extra_domain": ["CREATE DOMAIN fcb_cert_quota.d AS int"],
+    "pin_body_changed": ["CREATE OR REPLACE FUNCTION fcb_cert_quota.pinned_key_hash() RETURNS text LANGUAGE sql IMMUTABLE "
+                         "SET search_path = pg_catalog, pg_temp AS 'SELECT ''x''::pg_catalog.text'"],
+    "pin_body_any_key": ["CREATE OR REPLACE FUNCTION fcb_cert_quota.pinned_key_hash() RETURNS text LANGUAGE sql IMMUTABLE "
+                         "SET search_path = pg_catalog, pg_temp AS 'SELECT current_setting(''x'')::pg_catalog.text  -- padding pad'"],
+    "pin_executable_by_runner": [f"GRANT EXECUTE ON FUNCTION fcb_cert_quota.pinned_key_hash() TO {RUNNER}"],
+    "pin_security_definer": ["ALTER FUNCTION fcb_cert_quota.pinned_key_hash() SECURITY DEFINER"],
 }
 
 
@@ -625,7 +659,7 @@ def test_a_committed_drift_stops_the_runner_before_any_provider_request(env, mon
                                         ledger=FakeLedger(store), inner_transport=httpx.MockTransport(handler),
                                         quota=_runner_q(env), plan_text=json.dumps(plan), source_sha="x"))
     finally:
-        path_a.install_quota_functions(env.admin)  # the owner's step 1b restores the exact state
+        path_a.install_quota_functions(env.admin, _h(PINNED_SECRET))  # the owner's step 1b restores the exact state
     assert sent == [] and store.attempts == []
     assert all(c["outcome"] == "REFUSED_BEFORE_SEND" for c in run["calls"]), run["calls"]
     assert {c.get("refusal_code") for c in run["calls"]} <= {"QUOTA_COORDINATOR_UNAVAILABLE", "CIRCUIT_OPEN"}
@@ -635,7 +669,7 @@ def test_a_committed_drift_stops_the_runner_before_any_provider_request(env, mon
 def test_runner_main_preflight_refuses_a_drifted_variant(env, monkeypatch, capsys, tmp_path):
     monkeypatch.setenv(batch.AUTH_VAR, "true")
     monkeypatch.setenv("APIFOOTBALL_ENABLED", "true")
-    monkeypatch.setenv("APIFOOTBALL_API_KEY", "R1-MAIN-" + uuid.uuid4().hex)
+    monkeypatch.setenv("APIFOOTBALL_API_KEY", PINNED_SECRET)
     monkeypatch.setenv("APIFOOTBALL_LIVE_AUTHORIZED", "true")
     monkeypatch.setenv("DATABASE_URL", env.runner_dsn)
     with env.admin() as conn:
@@ -647,3 +681,103 @@ def test_runner_main_preflight_refuses_a_drifted_variant(env, monkeypatch, capsy
             conn.execute(f"REVOKE EXECUTE ON FUNCTION fcb_cert_quota.reserve(text) FROM {OTHER}")
     assert rc == 2 and "CAMPAIGN_REFUSED COORDINATOR_FUNCTIONS_NOT_EXACT" in capsys.readouterr().out
     assert _state(env) == "EXACT"
+
+
+# ------------------------------------------------------------------ review #201 P1 / P2 / P3
+
+def test_p1_the_reviewed_procedure_attack_is_drift_and_cannot_wipe_the_counters(env):
+    """The reviewer's repro: the tables' owner adds a SECURITY DEFINER procedure (EXECUTE to PUBLIC by
+    default). It is no longer EXACT, the step-1b assert refuses it and the runner stops before using it."""
+    key = _h(PINNED_SECRET)
+    asyncio.run(_runner_q(env).acquire(PINNED_SECRET))
+    with env.admin() as conn:
+        conn.execute("CREATE PROCEDURE fcb_cert_quota.reset_counters() LANGUAGE sql SECURITY DEFINER "
+                     "AS 'DELETE FROM public.api_football_quota_counters'")
+    try:
+        assert _state(env) == "DRIFT"
+        with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_STATE_UNEXPECTED"):
+            path_a.assert_quota_functions(env.admin)
+        with pytest.raises(RuntimeError, match="APIFOOTBALL_CERT_QUOTA_FUNCTIONS_NOT_EXACT"):
+            asyncio.run(batch.CertQuotaCoordinator(connect=env.runner).prepare())
+    finally:
+        with env.admin() as conn:
+            conn.execute("DROP PROCEDURE fcb_cert_quota.reset_counters()")
+    assert _state(env) == "EXACT" and _counters(env, key)
+
+
+def test_p2_the_runner_is_pinned_to_one_key_and_a_flood_of_other_keys_creates_no_row(env):
+    with env.su() as su:
+        before = {t: su.execute(f"SELECT count(*) AS n FROM public.{t}").fetchone()["n"] for t in TABLES}
+    with env.runner(autocommit=True) as conn:
+        for i in range(300):
+            other = hashlib.sha256(f"flood-{i}-{uuid.uuid4().hex}".encode()).hexdigest()
+            for sql, params in (("SELECT fcb_cert_quota.reserve(%s)", (other,)),
+                                ("SELECT fcb_cert_quota.mark_exhausted(%s, 'minute')", (other,)),
+                                ("SELECT fcb_cert_quota.mark_exhausted(%s, 'day')", (other,)),
+                                ("SELECT * FROM fcb_cert_quota.snapshot(%s)", (other,)),
+                                ("SELECT fcb_cert_quota.release(%s, %s)", (other, "cert-" + "A" * 32))):
+                with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_KEY_REFUSED"):
+                    conn.execute(sql, params)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SELECT fcb_cert_quota.pinned_key_hash()")  # the owner's only
+    with env.su() as su:
+        after = {t: su.execute(f"SELECT count(*) AS n FROM public.{t}").fetchone()["n"] for t in TABLES}
+    assert after == before
+
+
+def test_p2_rows_of_the_pinned_key_stay_bounded_under_a_flood(env):
+    key = _h(PINNED_SECRET)
+    with env.runner(autocommit=True) as conn:
+        for _ in range(400):
+            for sql in ("SELECT fcb_cert_quota.mark_exhausted(%s, 'minute')", "SELECT fcb_cert_quota.reserve(%s)",
+                        "SELECT fcb_cert_quota.mark_exhausted(%s, 'day')"):
+                try:
+                    conn.execute(sql, (key,))
+                except psycopg.errors.RaiseException as exc:
+                    assert (exc.diag.message_primary or "").startswith(("FCB_CERT_QUOTA_MINUTE", "FCB_CERT_QUOTA_DAY",
+                                                                        "FCB_CERT_QUOTA_BUSY"))
+    rows = _rows(env, key)
+    # one provider-zero marker (8 rows) while it is live: every later mark_exhausted('minute') is a no-op;
+    # reserve is refused; counters: at most the current (and previous) minute bucket plus the day bucket
+    assert rows["api_football_quota_attempts"] <= 8, rows
+    assert rows["api_football_quota_leases"] == 0, rows
+    assert rows["api_football_quota_counters"] <= 4, rows
+
+
+def test_p2_install_pins_once_and_never_replaces_the_key(env):
+    with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_KEY_CHANGED"):
+        path_a.install_quota_functions(env.admin, _h("R1-ANOTHER-KEY-" + uuid.uuid4().hex))
+    with pytest.raises(ValueError, match="FCB_CERT_PATH_A_QUOTA_KEY_MISSING"):
+        path_a.install_quota_functions(env.admin, "not-a-hash")
+    with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_KEY_MISSING"):
+        with env.admin() as conn:  # the SQL file alone, without the pin setting
+            conn.execute(path_a._sql("apifootball_cert_path_a_quota_functions.sql"))
+    path_a.install_quota_functions(env.admin, _h(PINNED_SECRET))  # same key: idempotent
+    assert _state(env) == "EXACT"
+
+
+@pytest.mark.parametrize("level", ["REPEATABLE READ", "SERIALIZABLE"])
+def test_p3_every_function_refuses_any_isolation_but_read_committed(env, level):
+    key = _h(PINNED_SECRET)
+    for sql, params in (("SELECT fcb_cert_quota.reserve(%s)", (key,)),
+                        ("SELECT fcb_cert_quota.mark_exhausted(%s, 'minute')", (key,)),
+                        ("SELECT * FROM fcb_cert_quota.snapshot(%s)", (key,)),
+                        ("SELECT fcb_cert_quota.release(%s, %s)", (key, "cert-" + "A" * 32))):
+        with env.runner() as conn:
+            conn.execute(f"SET TRANSACTION ISOLATION LEVEL {level}")
+            with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_ISOLATION_REFUSED"):
+                conn.execute(sql, params)
+    with env.runner() as conn:  # a role default does not help either; the adapter pins READ COMMITTED
+        conn.execute(f"SET default_transaction_isolation = '{level.lower()}'")
+    assert _rows(env, key) == {t: 0 for t in TABLES}
+
+
+def test_p3_the_runner_adapter_works_under_a_serializable_default(env):
+    import functools
+
+    def connect():
+        return env.runner(options="-c default_transaction_isolation=serializable")
+    q = batch.CertQuotaCoordinator(connect=functools.partial(connect))
+    lease = asyncio.run(q.acquire(PINNED_SECRET))
+    asyncio.run(q.release(lease))
+    assert asyncio.run(q.snapshot(PINNED_SECRET))["remaining_minute"] == 7

@@ -123,7 +123,7 @@ def cert_quota_state_one_line():
     the same query; it prints ABSENT, EXACT or DRIFT."""
     text = (ROOT / 'sql' / 'aiven' / 'apifootball_cert_quota_state.sql').read_text(encoding='utf-8')
     body = ' '.join(line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith('--'))
-    if not body.endswith(';') or body.count(';') != 5 or '$' in body or '--' in body:
+    if not body.endswith(';') or '$' in body or '--' in body:
         raise SystemExit('unexpected shape: apifootball_cert_quota_state.sql')
     return body[:-1]
 

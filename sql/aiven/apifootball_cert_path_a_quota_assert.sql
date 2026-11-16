@@ -61,16 +61,21 @@ SELECT CASE
                            OPERATOR(pg_catalog.||) '/USAGE/false'::pg_catalog.text FROM t
                     UNION ALL SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) w.oid::pg_catalog.text
                            OPERATOR(pg_catalog.||) '/USAGE/false'::pg_catalog.text FROM t, w) e)
-           AND (SELECT pg_catalog.string_agg(f.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
-                       OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_arguments(f.oid) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
-                       OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_result(f.oid) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
-                       OPERATOR(pg_catalog.||) l.lanname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
-                       OPERATOR(pg_catalog.||) f.prokind::pg_catalog.text OPERATOR(pg_catalog.||) f.prosecdef::pg_catalog.text
-                       OPERATOR(pg_catalog.||) f.provolatile::pg_catalog.text OPERATOR(pg_catalog.||) f.proisstrict::pg_catalog.text
-                       OPERATOR(pg_catalog.||) f.proleakproof::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+           AND (SELECT pg_catalog.count(*) FROM f) OPERATOR(pg_catalog.=) 5::pg_catalog.int8
+           AND (SELECT pg_catalog.string_agg(COALESCE(f.proname::pg_catalog.text, '?'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                       OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_function_arguments(f.oid), '?'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                       OPERATOR(pg_catalog.||) COALESCE(pg_catalog.pg_get_function_result(f.oid), '?'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                       OPERATOR(pg_catalog.||) COALESCE(l.lanname::pg_catalog.text, '?'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                       OPERATOR(pg_catalog.||) COALESCE(f.prokind::pg_catalog.text, '?'::pg_catalog.text) OPERATOR(pg_catalog.||) COALESCE(f.prosecdef::pg_catalog.text, '?'::pg_catalog.text)
+                       OPERATOR(pg_catalog.||) COALESCE(f.provolatile::pg_catalog.text, '?'::pg_catalog.text) OPERATOR(pg_catalog.||) COALESCE(f.proisstrict::pg_catalog.text, '?'::pg_catalog.text)
+                       OPERATOR(pg_catalog.||) COALESCE(f.proleakproof::pg_catalog.text, '?'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                        OPERATOR(pg_catalog.||) COALESCE(f.proconfig::pg_catalog.text, '-'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
-                       OPERATOR(pg_catalog.||) pg_catalog.md5(f.prosrc) OPERATOR(pg_catalog.||) '|'::pg_catalog.text
-                       OPERATOR(pg_catalog.||) (f.proowner OPERATOR(pg_catalog.=) (SELECT t.oid FROM t))::pg_catalog.text
+                       OPERATOR(pg_catalog.||) CASE WHEN f.proname OPERATOR(pg_catalog.=) 'pinned_key_hash'::pg_catalog.name
+                                     AND COALESCE(f.prosrc OPERATOR(pg_catalog.~) '^SELECT ''[0-9a-f]{64}''::pg_catalog[.]text'::pg_catalog.text
+                                                  AND pg_catalog.length(f.prosrc) OPERATOR(pg_catalog.=) 90, false)
+                                THEN 'PINNED_KEY'::pg_catalog.text
+                                ELSE COALESCE(pg_catalog.md5(f.prosrc), '?'::pg_catalog.text) END OPERATOR(pg_catalog.||) '|'::pg_catalog.text
+                       OPERATOR(pg_catalog.||) COALESCE((f.proowner OPERATOR(pg_catalog.=) (SELECT t.oid FROM t))::pg_catalog.text, '?'::pg_catalog.text)
                        OPERATOR(pg_catalog.||) '|'::pg_catalog.text
                        OPERATOR(pg_catalog.||) COALESCE((SELECT pg_catalog.string_agg(z.e, ','::pg_catalog.text ORDER BY z.e) FROM (
                                 SELECT x.grantor::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text
@@ -83,14 +88,16 @@ SELECT CASE
                                SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) t.oid::pg_catalog.text
                                       OPERATOR(pg_catalog.||) '/EXECUTE/false'::pg_catalog.text AS v FROM t
                                UNION ALL SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) w.oid::pg_catalog.text
-                                      OPERATOR(pg_catalog.||) '/EXECUTE/false'::pg_catalog.text FROM t, w) e), false)::pg_catalog.text,
-                       ';'::pg_catalog.text ORDER BY f.proname COLLATE "C")
-                FROM f JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) f.prolang)
+                                      OPERATOR(pg_catalog.||) '/EXECUTE/false'::pg_catalog.text FROM t, w
+                                WHERE f.proname OPERATOR(pg_catalog.<>) 'pinned_key_hash'::pg_catalog.name) e), false)::pg_catalog.text,
+                       ';'::pg_catalog.text ORDER BY f.proname COLLATE "C", f.oid)
+                FROM f LEFT JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) f.prolang)
                OPERATOR(pg_catalog.=) (
-                'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|a324fbae0bb6e11a5ef72a112fde1414|true|true;' OPERATOR(pg_catalog.||)
-                'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|3559bfb7badfed16609b58384a44ff96|true|true;' OPERATOR(pg_catalog.||)
-                'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|fcf76fe21351fb67f000845642d740ea|true|true;' OPERATOR(pg_catalog.||)
-                'snapshot|p_key_hash text|TABLE(remaining_minute integer, remaining_day integer, active_leases integer)|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|d50a603c2e2ba8ebfa5f9c7b3f369b3e|true|true')::pg_catalog.text
+                'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|acbff5d582b9e2ba1fa773c813980d82|true|true;' OPERATOR(pg_catalog.||)
+                'pinned_key_hash||text|sql|ffalseifalsefalse|{"search_path=pg_catalog, pg_temp"}|PINNED_KEY|true|true;' OPERATOR(pg_catalog.||)
+                'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|b03c37fe76a6eb69cb9e6d11d8edfda2|true|true;' OPERATOR(pg_catalog.||)
+                'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|93910003f5ae8135fb03307fe97154aa|true|true;' OPERATOR(pg_catalog.||)
+                'snapshot|p_key_hash text|TABLE(remaining_minute integer, remaining_day integer, active_leases integer)|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|f0e95511f80b9b2ab398876a918dc42e|true|true')::pg_catalog.text
            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class x, q WHERE x.relnamespace OPERATOR(pg_catalog.=) q.oid)
            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type x, q WHERE x.typnamespace OPERATOR(pg_catalog.=) q.oid)
            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_operator x, q WHERE x.oprnamespace OPERATOR(pg_catalog.=) q.oid)

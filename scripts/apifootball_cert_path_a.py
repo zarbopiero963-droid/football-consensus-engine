@@ -23,7 +23,8 @@ ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-
   revokes in `finally` and asserts the end state.
 
 Nothing here prints a password, a verifier, a DSN or a host. Usage (owner-gated workflows only):
-  install        ADMIN_DSN_VAR GRANTOR_DSN_VAR RUNNER_PASSWORD_VAR   steps 1, 1a, 1b, 2, 3 (idempotent)
+  install        ADMIN_DSN_VAR GRANTOR_DSN_VAR RUNNER_PASSWORD_VAR   steps 1, 1a, 1b, 2, 3 (idempotent);
+                 $FCB_CERT_PINNED_KEY_SHA256 = the key hash step 1b pins (owner-supplied, else fail closed)
   rotate-runner  ADMIN_DSN_VAR RUNNER_PASSWORD_VAR                   step 1 only + exact-grant assert
   approve        ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID
   evidence       ADMIN_DSN_VAR [BRIDGE_DSN_VAR]                      read-only catalog evidence; the
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -91,11 +93,24 @@ def install_quota_schema(connect_defaultdb) -> None:
         conn.execute(_sql("apifootball_cert_path_a_quota_schema.sql"))
 
 
-def install_quota_functions(connect_owner) -> None:
-    """Step 1b (variant R1), one transaction in defaultdb AS the owner of the coordinator tables: the four
-    SECURITY DEFINER quota functions, EXECUTE + schema USAGE to fcb_cert_runner only, then the exact-state
-    assertion (no table, column or sequence privilege of the runner anywhere in public)."""
+PINNED_KEY_VAR = "FCB_CERT_PINNED_KEY_SHA256"
+
+
+def pinned_key_hash_of(api_key: str) -> str:
+    """bridge/api_football/quota.py _key_hash, byte for byte (tests/test_apifootball_cert_path_a.py)."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def install_quota_functions(connect_owner, pinned_key_hash: str) -> None:
+    """Step 1b (variant R1), one transaction in defaultdb AS the owner of the coordinator tables: the key
+    pin fcb_cert_quota.pinned_key_hash() (review #201 P2: the ONLY key hash the runner may use, created once,
+    never replaced), the four SECURITY DEFINER quota functions, EXECUTE + schema USAGE to fcb_cert_runner
+    only, then the exact-state assertion (no table, column or sequence privilege of the runner anywhere in
+    public)."""
+    if not re.fullmatch(r"[0-9a-f]{64}", pinned_key_hash or ""):
+        raise ValueError("FCB_CERT_PATH_A_QUOTA_KEY_MISSING")
     with connect_owner() as conn:
+        conn.execute("SELECT pg_catalog.set_config('fcb_cert.pinned_key_hash', %s, true)", (pinned_key_hash,))
         conn.execute(_sql("apifootball_cert_path_a_quota_functions.sql"))
         conn.execute(_sql("apifootball_cert_path_a_quota_assert.sql"))
 
@@ -254,7 +269,11 @@ def _main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[0] == "install":
         dsn, grantor, password = (os.environ.get(argv[1], ""), os.environ.get(argv[2], ""),
                                   os.environ.get(argv[3], ""))
-        if not dsn or not grantor or len(password) < 32:
+        # review #201 P2: the ONE key hash the runner may use (SHA-256 of its API-FOOTBALL key, as
+        # bridge/api_football/quota.py _key_hash). How it reaches the install job is an OWNER decision
+        # (no secret is wired into the workflow by this change): until it is set the install fails closed.
+        pinned = os.environ.get(PINNED_KEY_VAR, "")
+        if not dsn or not grantor or len(password) < 32 or not re.fullmatch(r"[0-9a-f]{64}", pinned):
             print("FCB_CERT_PATH_A_INPUT_MISSING")
             return 2
         sys.path.insert(0, str(ROOT / "scripts"))
@@ -262,7 +281,7 @@ def _main(argv: list[str]) -> int:
         install_roles(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row),
                       scram_verifier(password))
         install_quota_schema(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row))
-        install_quota_functions(lambda: psycopg.connect(grantor, dbname=COORDINATOR_DATABASE, row_factory=dict_row))
+        install_quota_functions(lambda: psycopg.connect(grantor, dbname=COORDINATOR_DATABASE, row_factory=dict_row), pinned)
         state = create_database(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row,
                                                         autocommit=True))
         install_ledger(lambda: psycopg.connect(dsn, dbname=LEDGER_DATABASE, row_factory=dict_row))
