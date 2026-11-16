@@ -166,7 +166,22 @@ def source_params(env=None, *, expected_db: str, require_tls: bool) -> dict:
         raise BackupError("SOURCE_SSLMODE_NOT_VERIFY_FULL")
     if require_tls and env.get("PGSSLMODE") != "verify-full":
         raise BackupError("SOURCE_PGSSLMODE_NOT_VERIFY_FULL")
-    params = {"host": u.hostname, "port": str(port or 5432), "user": unquote(u.username or ""),
+    # The secret may carry no port or an empty one ("host:"); libpq would then fall back to PGPORT,
+    # but explicit params override it, so resolve it here as libpq + the target check would.
+    expected_port = env.get("EXPECTED_PORT") or ""
+    if port is not None:
+        if expected_port and str(port) != expected_port:
+            raise BackupError("SOURCE_URL_PORT")
+        resolved_port = str(port)
+    elif env.get("PGPORT"):
+        if expected_port and env["PGPORT"] != expected_port:
+            raise BackupError("SOURCE_URL_PORT")
+        resolved_port = env["PGPORT"]
+    elif expected_port:
+        raise BackupError("SOURCE_URL_PORT")
+    else:
+        resolved_port = "5432"
+    params = {"host": u.hostname, "port": resolved_port, "user": unquote(u.username or ""),
               "password": unquote(u.password or ""), "dbname": expected_db}
     if sslmode:
         params["sslmode"] = sslmode

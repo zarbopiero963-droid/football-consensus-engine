@@ -598,3 +598,31 @@ def test_column_options_ignore_only_a_well_formed_pg_attver():
     sql_text = _module().COLUMN_OPTIONS_SQL
     assert "o.opt OPERATOR(pg_catalog.!~) '^pg_attver=[0-9]+$'::pg_catalog.text" in sql_text
     assert sql_text.count("pg_attver") == 1
+
+
+# Review #203 F1: the secret may reach the job with no port or an empty one ("host:"). libpq would
+# use PGPORT, but explicit params override it, so the script must resolve the port the same way the
+# target check accepts it, never silently fall back to 5432.
+_PORT_ENV = {"PGSSLMODE": "verify-full", "PGSSLROOTCERT": "/ca", "EXPECTED_PORT": "14274", "PGPORT": "14274"}
+
+
+@pytest.mark.parametrize("netloc", ["adm:pw@db.example", "adm:pw@db.example:", "adm:pw@db.example:14274"])
+def test_source_port_absent_empty_or_expected_resolves_to_the_pinned_port(netloc):
+    mod = _module()
+    p = mod.source_params({**_PORT_ENV, "FCB_DEFAULTDB_URL": f"postgresql://{netloc}/defaultdb?sslmode=verify-full"},
+                          expected_db="defaultdb", require_tls=True)
+    assert p["port"] == "14274"
+    assert mod.child_env(p)["PGPORT"] == "14274"
+
+
+@pytest.mark.parametrize("env_patch,netloc", [
+    ({}, "adm:pw@db.example:5432"),                         # explicit port other than the pinned one
+    ({"PGPORT": "5432"}, "adm:pw@db.example"),              # PGPORT disagreeing with EXPECTED_PORT
+    ({"PGPORT": ""}, "adm:pw@db.example"),                  # no port anywhere while one is pinned
+])
+def test_source_port_mismatch_or_missing_is_refused(env_patch, netloc):
+    mod = _module()
+    with pytest.raises(mod.BackupError) as exc:
+        mod.source_params({**_PORT_ENV, **env_patch, "FCB_DEFAULTDB_URL": f"postgresql://{netloc}/defaultdb?sslmode=verify-full"},
+                          expected_db="defaultdb", require_tls=True)
+    assert exc.value.code == "SOURCE_URL_PORT" and "pw" not in str(exc.value)
