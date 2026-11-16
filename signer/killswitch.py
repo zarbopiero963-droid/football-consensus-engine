@@ -229,8 +229,13 @@ class KillSwitch:
             raise KillSwitchError("KILL_SWITCH_RELEASE_MISSING")
         try:
             self._verify_release(rel, st, int(self._clock()))
-            self._ledger.record_kill_switch("RELEASE", release_id=rel.release_id,
-                                            release_sha256="sha256:" + _sha(rel), engage_seq=rel.engage_seq)
+            # Serialized with request processing (the signer service lock, taken before the ledger lock as the
+            # service does): a PLACE being handled is either checked against this release or fully refused by the
+            # engaged switch first. Never both unseen (owner decision 16-11-2026, persistent refusal).
+            with self._ledger.service_lock:
+                self._ledger.record_kill_switch("RELEASE", release_id=rel.release_id,
+                                                release_sha256="sha256:" + _sha(rel), engage_seq=rel.engage_seq,
+                                                released_at=int(self._clock()))
         except KillSwitchError as exc:
             self._log("KILL_SWITCH_RELEASE_REFUSED", reason=exc.code)
             raise

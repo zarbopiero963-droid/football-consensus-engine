@@ -319,24 +319,6 @@ class _FlakyAppendQueue(MemoryQueue):
         return super().append_event(request_id, state, detail, signer_id)
 
 
-def test_a_kill_refusal_interrupted_after_the_claim_is_refused_by_recover_even_after_release(tmp_path):
-    """Review 348362c P3-b: the claim committed, the REFUSED write failed, the owner released: never signed."""
-    s = Stack(tmp_path)
-    q = _FlakyAppendQueue()
-    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
-    i = s.intent("order-key-W030")
-    ctx = s.context(i)
-    s.signer.config.market_data.world = ctx
-    p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
-    q.insert(p)
-    with pytest.raises(ConnectionError):
-        svc.refuse_pending_places(10)
-    assert q.states(p["request_id"]) == ["CLAIMED"]
-    (res,) = svc.recover()                                       # kill switch NOT engaged (released) here
-    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
-    assert [x for x in s.sim.writes() if x.method == "POST"] == []
-
-
 def test_kill_refusal_drains_the_whole_backlog(tmp_path):
     s = Stack(tmp_path)
     q = MemoryQueue()
@@ -362,18 +344,130 @@ class _FlakyClaimQueue(MemoryQueue):
         return super().claim(request_id, signer_id)
 
 
-def test_a_kill_refusal_whose_claim_failed_is_refused_by_process_once_after_release(tmp_path):
-    """Review d81c500 P3-1: still pending after a failed claim, then the owner releases: refused, never signed."""
+# ---------------------------------------------------------------- owner decision 16-11-2026: persistent refusal
+# A placement that existed while the kill switch was engaged stays refused after the owner's signed release,
+# whatever happened in between. These tests replace the in-process-set versions (declared: they now use the real
+# ledger-backed kill switch and an owner-signed release, and also cover restart and concurrency).
+def _kill_stack(tmp_path, queue=None):
     s = Stack(tmp_path)
-    q = _FlakyClaimQueue()
-    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
-    i = s.intent("order-key-W050")
+    q = queue if queue is not None else MemoryQueue()
+    kill = ks.KillSwitch(s.ledger, AuditLog(str(tmp_path / "ks.jsonl")), owner_public_key=s.owner.public_key(),
+                         network="mainnet", clock=s.clock)
+    return s, q, kill
+
+
+def _svc(s, q):
+    return SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+
+
+def _owner_release(s, kill):
+    now, seq = int(s.clock()), kill.state()["engage_seq"]
+    rid = f"release-{seq:08d}-{now}"
+    msg = ks.release_message(ledger_id=s.ledger.ledger_id, engage_seq=seq, release_id=rid, issued_at=now,
+                             expires_at=now + 60)
+    return kill.release(ks.KillSwitchRelease(s.ledger.ledger_id, seq, rid, now, now + 60, s.owner.sign(msg)))
+
+
+def _queue_place(s, q, key):
+    i = s.intent(key)
     ctx = s.context(i)
     s.signer.config.market_data.world = ctx
     p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
     q.insert(p)
-    assert [r["event"] for r in svc.refuse_pending_places(10)] == ["CLAIM_FAILED"]
-    assert q.states(p["request_id"]) == []                      # still pending
-    (res,) = svc.process_once(10)                                # released: normal processing
-    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
-    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+    return p
+
+
+def _posts(s):
+    return [x for x in s.sim.writes() if x.method == "POST"]
+
+
+def test_placement_never_refused_in_time_is_refused_after_release(tmp_path):
+    """Worst case: the refusal never ran at all (crash right after the engagement), then the owner releases."""
+    s, q, kill = _kill_stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p = _queue_place(s, q, "order-key-W060")
+    _owner_release(s, kill)
+    (res,) = _svc(s, q).process_once(10)
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE"
+    assert _posts(s) == []
+
+
+def test_refusal_survives_a_restart_after_release(tmp_path):
+    """The release instant is durable: replayed from the ledger after a process restart (no in-memory state)."""
+    s, q, kill = _kill_stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p = _queue_place(s, q, "order-key-W061")
+    _owner_release(s, kill)
+    s.restart()                                                   # ledger replayed from disk
+    assert s.ledger.last_kill_release_at() is not None
+    (res,) = _svc(s, q).process_once(10)
+    assert res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE" and _posts(s) == []
+
+
+def test_claim_committed_refusal_lost_then_restart_and_release(tmp_path):
+    """Claim committed, REFUSED write lost, process restart, owner release: recover() refuses, never signs."""
+    s, q, kill = _kill_stack(tmp_path, _FlakyAppendQueue())
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p = _queue_place(s, q, "order-key-W062")
+    with pytest.raises(ConnectionError):
+        _svc(s, q).refuse_pending_places(10)
+    assert q.states(p["request_id"]) == ["CLAIMED"]
+    _owner_release(s, kill)
+    s.restart()
+    (res,) = _svc(s, q).recover()
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE"
+    assert _posts(s) == []
+
+
+def test_claim_failed_uncommitted_then_restart_and_release(tmp_path):
+    """Claim failed without committing (still pending), restart, release: process_once refuses, never signs."""
+    s, q, kill = _kill_stack(tmp_path, _FlakyClaimQueue())
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p = _queue_place(s, q, "order-key-W063")
+    assert [r["event"] for r in _svc(s, q).refuse_pending_places(10)] == ["CLAIM_FAILED"]
+    _owner_release(s, kill)
+    s.restart()
+    (res,) = _svc(s, q).process_once(10)
+    assert res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE" and _posts(s) == []
+
+
+def test_a_new_command_after_the_release_is_processed_normally(tmp_path):
+    """Not a permanent block: a placement created after the release (new owner command) is signed and sent."""
+    s, q, kill = _kill_stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    _owner_release(s, kill)
+    s.clock.t += 10                                               # past the 5 s clock tolerance
+    p = _queue_place(s, q, "order-key-W064")
+    (res,) = _svc(s, q).process_once(10)
+    assert res["event"] == "SUBMITTED" and len(_posts(s)) == 1
+
+
+def test_release_waits_for_a_request_being_processed(tmp_path):
+    """Concurrency: the release cannot land between the check and the signature (it takes the service lock)."""
+    import threading
+    s, q, kill = _kill_stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    released = threading.Event()
+    with s.ledger.service_lock:                                   # a request is being processed
+        t = threading.Thread(target=lambda: (_owner_release(s, kill), released.set()))
+        t.start()
+        assert not released.wait(0.3)                             # the release is blocked meanwhile
+        assert s.ledger.kill_switch_engaged
+    t.join(5)
+    assert released.is_set() and not s.ledger.kill_switch_engaged
+
+
+def test_worker_cycle_engaged_then_released_never_sends_the_old_placement(tmp_path):
+    """Through the worker: queued while ENGAGED, refused, released, next cycles: never sent."""
+    s, q, kill = _kill_stack(tmp_path)
+    svc = _svc(s, q)
+    mon = Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "m.json"), ledger_id=s.ledger.ledger_id),
+                  clock=s.clock)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p = _queue_place(s, q, "order-key-W065")
+    with SignerWorker(svc, mon, kill, lock_path=str(tmp_path / "w.lock"), sleep=lambda x: None) as w:
+        w.run_cycle()
+        _owner_release(s, kill)
+        w.run_cycle()
+        w.run_cycle()
+    assert q.states(p["request_id"]) == ["CLAIMED", "REFUSED"] and _posts(s) == []

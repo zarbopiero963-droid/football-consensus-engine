@@ -34,6 +34,7 @@ DEFAULT_MAX_REQUEST_AGE_SECONDS = 120   # never above the owner-signed command w
 _FINAL_ORDER_STATES = frozenset({"FILLED", "CANCELLED", "EXPIRED", "SETTLED"})
 _log = logging.getLogger(__name__)
 _MAX_REFUSAL_ROUNDS = 100
+_CREATED_AT_SKEW_SECONDS = 5          # same tolerance as the freshness check (created_at <= now + 5)
 
 
 class QueueClaimUnavailable(RuntimeError):
@@ -64,9 +65,6 @@ class SignerService:
         # One process per signer_id; processing, recovery and sync never run concurrently, also across several
         # service objects built on the same signer (lock shared per Signer: review 67e80eb P3-3).
         self._lock = signer._ledger.service_lock
-        # Requests picked for a kill-switch refusal whose REFUSED event is not recorded yet. Per service object and
-        # per process (lost on restart, residual documented): the worker uses ONE SignerService per signer.
-        self._kill_refusals: set[str] = set()
 
     # ---------------------------------------------------------------- loop
     def process_once(self, limit: int = 10, kinds: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
@@ -89,12 +87,6 @@ class SignerService:
                     _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
                     out.append({"request_id": req["request_id"], "event": "CLAIM_FAILED",
                                 "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
-                    continue
-                if req.get("kind") == "PLACE" and req["request_id"] in self._kill_refusals:
-                    # Picked for a kill-switch refusal whose claim failed: refused, never signed, even after a
-                    # release (review d81c500 P3-1).
-                    out.append(self._refuse(req["request_id"], "KILL_SWITCH_ENGAGED"))
-                    self._kill_refusals.discard(req["request_id"])
                     continue
                 out.append(self._handle(req))
             if batch and failed == len(batch):
@@ -119,8 +111,8 @@ class SignerService:
                     try:
                         claimed = self._q.claim(rid, self._signer_id)
                     except Exception as exc:
-                        # The claim may have committed before the error: recover() must refuse it, never sign it.
-                        self._kill_refusals.add(rid)
+                        # Committed or not, this request was created before any later release: the durable
+                        # ledger rule in _handle refuses it after a release, also after a restart.
                         _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
                         out.append({"request_id": rid, "event": "CLAIM_FAILED",
                                     "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
@@ -128,9 +120,7 @@ class SignerService:
                     if not claimed:
                         continue
                     progressed = True
-                    self._kill_refusals.add(rid)          # until REFUSED is recorded (append may fail)
                     out.append(self._refuse(rid, "KILL_SWITCH_ENGAGED"))
-                    self._kill_refusals.discard(rid)
                 if not progressed:
                     break
             return out
@@ -159,6 +149,14 @@ class SignerService:
         now = int(self._clock())
         if not (p["created_at"] <= now + 5 and now - p["created_at"] <= self._max_age):
             return self._refuse(rid, "REQUEST_EXPIRED")
+        if p["kind"] == "PLACE":
+            # Owner decision 16-11-2026: a placement that existed while the kill switch was engaged stays refused
+            # after the release, whatever happened in between (crash, restart, lost write, concurrency). The rule
+            # is durable: the RELEASE instant is in the fsync'd, anchored ledger; a request created up to it
+            # (plus the clock tolerance accepted above) is refused for good. A new order needs a new command.
+            released_at = self._signer._ledger.last_kill_release_at()
+            if released_at is not None and p["created_at"] <= released_at + _CREATED_AT_SKEW_SECONDS:
+                return self._refuse(rid, "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE")
         c = p["command"]
         auth = cmd.OwnerCommandAuthorization(c["command_id"], c["command_text"], c["command_text_sha256"],
                                              c["received_at"], c["client_ref_sha256"])
@@ -252,12 +250,7 @@ class SignerService:
             command_id = (p.get("command") or {}).get("command_id") if isinstance(p.get("command"), Mapping) else None
             ours = (o is not None and isinstance(command_id, str)
                     and self._signer._ledger.order_of_command(command_id) == cid)  # review 6c74d55 P3-1
-            if p.get("kind") == "PLACE" and o is None and last == "CLAIMED" and rid in self._kill_refusals:
-                # Claimed to be refused while the kill switch was engaged, refusal not recorded: refuse it now,
-                # even if the switch has been released since (review 348362c P3-b). Never signed.
-                out.append(self._refuse(rid, "KILL_SWITCH_ENGAGED"))
-                self._kill_refusals.discard(rid)
-            elif p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
+            if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
             elif o is not None and not ours:
                 # The ledger order belongs to ANOTHER request with the same key (a duplicate claimed before a

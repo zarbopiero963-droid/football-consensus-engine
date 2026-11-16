@@ -482,6 +482,9 @@ class OrderLedger:
         self.service_lock = threading.Lock()
         self.genesis_sha256: str | None = None  # identity of this ledger file (bound into the LIVE flag)
         self._kill: dict[str, Any] = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
+        # Signer time of the latest owner-signed kill-switch RELEASE, replayed from the ledger (durable): every
+        # PLACE request created up to this instant is refused for good (owner decision 16-11-2026).
+        self._last_kill_release_at: int | None = None
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
         self._fd: int | None = None
@@ -833,9 +836,11 @@ class OrderLedger:
                 raise OrderStateError("LEDGER_KILL_SWITCH_INVALID")
         else:  # RELEASE: owner-signed, bound to the ENGAGE line it releases, release id single use
             if not self._kill["engaged"] or rec["engage_seq"] != self._kill["engage_seq"] \
-                    or rec["release_id"] in self._nonces:
+                    or rec["release_id"] in self._nonces or type(rec.get("released_at")) is not int \
+                    or rec["released_at"] <= 0:
                 raise OrderStateError("LEDGER_KILL_SWITCH_RELEASE_INVALID")
             self._nonces.add(rec["release_id"])
+            self._last_kill_release_at = max(self._last_kill_release_at or 0, rec["released_at"])
             self._kill = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
 
     @staticmethod
@@ -911,6 +916,10 @@ class OrderLedger:
     def kill_switch_state(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._kill)
+
+    def last_kill_release_at(self) -> int | None:
+        with self._lock:
+            return self._last_kill_release_at
 
     def orders_since(self, ts: int) -> int:
         with self._lock:
@@ -1059,7 +1068,8 @@ class OrderLedger:
     def record_kill_switch(self, action: str, **fields: Any) -> int:
         """One fsync'd KILL_SWITCH line (signer/killswitch.py builds the fields). Returns its seq."""
         allowed = {"ENGAGE": {"trigger", "source", "triggers"}, "CANCEL_INTENT": {"order_ids"},
-                   "CANCEL_VERIFIED": {"results"}, "RELEASE": {"release_id", "release_sha256", "engage_seq"}}
+                   "CANCEL_VERIFIED": {"results"},
+                   "RELEASE": {"release_id", "release_sha256", "engage_seq", "released_at"}}
         if action not in KILL_SWITCH_ACTIONS or set(fields) != allowed[action]:
             raise OrderStateError("KILL_SWITCH_FIELDS_INVALID")
         with self._lock:
@@ -1071,6 +1081,8 @@ class OrderLedger:
                     raise OrderStateError("KILL_SWITCH_RELEASE_MISMATCH")
                 if fields["release_id"] in self._nonces:
                     raise OrderStateError("KILL_SWITCH_RELEASE_REPLAYED")
+                if type(fields["released_at"]) is not int or fields["released_at"] <= 0:
+                    raise OrderStateError("KILL_SWITCH_FIELDS_INVALID")
             self._commit({"kind": "KILL_SWITCH", "action": action, **fields})
             return self._seq
 

@@ -272,16 +272,22 @@ def test_automatic_condition_still_holding_re_engages_after_release(tmp_path):
 def test_ledger_refuses_forged_kill_switch_lines(s):
     """A RELEASE line cannot be appended without matching the engagement (the ledger re-checks on write and
     on replay), and the release id is consumed in the same namespace as command ids."""
+    # Declared change (owner decision 16-11-2026): a RELEASE line now also carries released_at (durable instant).
     k = make_ks(s)
     with pytest.raises(od.OrderStateError) as e:
         s.ledger.record_kill_switch("RELEASE", release_id="release-forged-000001", release_sha256="sha256:" + "0" * 64,
-                                    engage_seq=1)
+                                    engage_seq=1, released_at=int(s.clock()))
     assert e.value.code == "KILL_SWITCH_NOT_ENGAGED"
     k.engage("OWNER_MANUAL_STOP")
     with pytest.raises(od.OrderStateError) as e:
         s.ledger.record_kill_switch("RELEASE", release_id="release-forged-000001", release_sha256="sha256:" + "0" * 64,
-                                    engage_seq=k.state()["engage_seq"] - 1)
+                                    engage_seq=k.state()["engage_seq"] - 1, released_at=int(s.clock()))
     assert e.value.code == "KILL_SWITCH_RELEASE_MISMATCH"
+    for bad in ({}, {"released_at": "1"}, {"released_at": 0}, {"released_at": True}):
+        with pytest.raises(od.OrderStateError) as e:
+            s.ledger.record_kill_switch("RELEASE", release_id="release-forged-000002",
+                                        release_sha256="sha256:" + "0" * 64, engage_seq=k.state()["engage_seq"], **bad)
+        assert e.value.code == "KILL_SWITCH_FIELDS_INVALID", bad
     with pytest.raises(od.OrderStateError):
         s.ledger.record_kill_switch("ENGAGE", trigger="X")                       # missing fields
     assert s.ledger.kill_switch_engaged
