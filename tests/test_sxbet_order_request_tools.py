@@ -1208,3 +1208,68 @@ def test_review_c8926cc_p3_1_growth_never_below_a_recorded_amount(events, r):
 def test_review_c8926cc_p3_3_full_stake_on_an_inactive_ledger_state_is_filled_not_partial(ledger):
     v = oreq.queue_view("PLACE", _done(state=ledger, filled="5000000"), intent_total="5000000")
     assert v["state"] == "FILLED" and v["final"] is False and v["code"] == "FULL_STAKE_MATCHED_LEDGER_" + ledger
+
+
+# ---------------------------------------------------------------- review of 3f296db (NOT SAFE): regressions
+FULL = "5000000"
+
+
+@pytest.mark.parametrize("ledger, r", [
+    ("CANCELLED", row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0")),     # CANCELLED -> FILLED
+    ("CANCELLED", row(remainingSize="0")),                                                # refused row (ACTIVE rem 0)
+    ("CANCELLED", row(status="PENDING", remainingSize="0")),
+    ("CANCELLED", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="0")),    # refused: full, not FILLED
+    ("EXPIRED", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="0")),
+])
+def test_review_3f296db_p2_1_full_stake_on_an_inactive_ledger_never_drops_reconciliation(ledger, r):
+    out = _read(_done(state=ledger, filled=FULL), r)
+    assert out["state"] == "UNKNOWN" and out["final"] is False
+    assert triple(contract(out))[1:] == ("YES", "YES")
+
+
+@pytest.mark.parametrize("ledger", ["CANCELLED", "EXPIRED"])
+def test_review_3f296db_p2_1_full_stake_relabel_alone_requires_reconciliation(ledger):
+    v = oreq.queue_view("PLACE", _done(state=ledger, filled=FULL), intent_total=FULL)
+    out = oreq.merge_exchange(v, None)                          # 404 / no key / unreadable fills: snapshot only
+    assert out["state"] == "FILLED" and out["final"] is False
+    assert triple(contract(out)) == ("NO", "YES", "YES")
+
+
+def test_review_3f296db_p2_1_expired_full_then_filled_row_agrees_but_still_reconciles():
+    out = _read(_done(state="EXPIRED", filled=FULL), row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0"))
+    assert out["state"] == "FILLED" and out.get("evidence") != "CONFLICT"            # EXPIRED -> FILLED is allowed
+    assert triple(contract(out))[1:] == ("YES", "YES")
+
+
+@pytest.mark.parametrize("ledger, filled, r", [
+    ("CANCELLED", "3000000", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="2000000")),
+    ("CANCELLED", "3000000", row(status="INACTIVE", inactiveReason="FILLED", remainingSize="2000000")),
+    ("EXPIRED", "3000000", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2000000")),
+    ("FILLED", "3000000", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="2000000")),
+    ("FILLED", "3000000", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2000000")),
+])
+def test_review_3f296db_p3_1_refused_moves_are_conflicts_even_at_equal_amounts(ledger, filled, r):
+    out = _read(_done(state=ledger, filled=filled), r)
+    assert out["state"] == "UNKNOWN" and out["evidence"] == "CONFLICT"
+
+
+@pytest.mark.parametrize("ledger, reason", [("CANCELLED", "USER_REQUESTED"), ("EXPIRED", "EXPIRED"),
+                                            ("FILLED", "FILLED")])
+def test_review_3f296db_p3_1_same_label_equal_amount_still_agrees(ledger, reason):
+    out = _read(_done(state=ledger, filled="3000000"),
+                row(status="INACTIVE", inactiveReason=reason, remainingSize="2000000"))
+    assert out["state"] == "PARTIALLY_FILLED" and out.get("evidence") != "CONFLICT"
+
+
+def test_review_3f296db_end_to_end_full_stake_cancelled_without_key_requires_reconciliation(s):
+    q = MemoryQueue()
+    t, _ = tools(s, q, api_key="")
+    text, _ = owner_text(s, "order-key-S7901")
+    res = place(t, s, "order-key-S7901", text)
+    svc = signer_service(s, q)
+    svc.process_once()
+    s.ledger.transition("order-key-S7901", "CANCELLED", reason="TEST_FULL_STAKE_CANCELLED", filled=5 * USDC)
+    svc.sync_outcomes()
+    st = status(t, res["request_id"])
+    assert st["state"] == "FILLED" and st["final"] is False
+    assert (st["reconciliation_required"], st["evidence_insufficient"]) == ("YES", "YES")

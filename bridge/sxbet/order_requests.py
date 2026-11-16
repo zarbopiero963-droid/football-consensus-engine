@@ -463,6 +463,20 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
                    row_filled_unaccepted: int | None = None, row_target: str | None = None) -> dict[str, Any]:
     ledger_amount = _units(view.get("filled_base_units"))
     queue_max = _units(view.get("queue_max_filled_base_units"))
+    if view.get("ledger_final") and view["state"] != "SETTLED":
+        # A final ledger state against fresh exchange evidence the signer would not record (review of 3f296db):
+        # - a well-formed row of this order refused as evidence (e.g. full stake, not marked FILLED);
+        # - a conclusive row still resting;
+        # - an inactive row whose reason maps to a move signer/orders.py TRANSITIONS refuses, WHATEVER the amount.
+        move = (view.get("ledger_state"), row_target)
+        refused_row = lookup_state is None and row_filled_unaccepted is not None
+        bad_move = (lookup_state is not None and row_target is not None and move[0] != move[1]
+                    and move not in _LATE_FILL_MOVES)
+        if refused_row or ex_resting is True or bad_move:
+            out = dict(view)
+            out["exchange_state"] = lookup_state
+            return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE" if refused_row
+                             else "QUEUE_AND_EXCHANGE_DISAGREE")
     if (view.get("ledger_final") and view["state"] in ("CANCELLED", "EXPIRED", "PARTIALLY_FILLED")
             and lookup_state in ("PARTIALLY_FILLED", "FILLED") and ex_resting is False and row_filled is not None
             and ledger_amount is not None and row_filled > ledger_amount):
@@ -670,7 +684,10 @@ def status_contract(result: Mapping[str, Any], kind: str, *, row_resting: bool |
     elif state == "REFUSED":
         c = (NO, NO, NO)
     elif state in ("FILLED", "SETTLED"):
-        c = (NO, YES, YES) if fills_inconsistent else (NO, NO, NO)
+        # FILLED relabelled from a ledger CANCELLED / EXPIRED holding the whole stake: the ledger label still
+        # disagrees with "filled", so it is never reported as settled evidence (review of 3f296db, P2-1).
+        relabelled = str(result.get("code") or "").startswith("FULL_STAKE_MATCHED_LEDGER_")
+        c = (NO, YES, YES) if fills_inconsistent or relabelled else (NO, NO, NO)
     elif state in ("ACCEPTED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED"):
         # A conclusive row decides "open" first (review 03828f9 P2-1). Anything ambiguous (snapshot or
         # inconclusive read, past the expiry, a live row past its expiry, fills that disagree with the row)

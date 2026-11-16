@@ -328,7 +328,11 @@ Inoltre:
 - un importo **maggiore** sulla riga rispetto al ledger è un fill tardivo legittimo (il signer ammette la crescita): viene riportato l'importo della riga (`filled_source: EXCHANGE_ORDER_ROW`), quello del ledger resta in `queue_filled_base_units`; un importo **minore** è un conflitto;
 - quando decide la riga, l'importo riportato è quello della riga;
 - un fill tardivo dopo uno stato finale del ledger è riportato dalla riga, **non finale**, solo per le transizioni che il signer stesso registra (`CANCELLED` → `CANCELLED`, `EXPIRED` → `EXPIRED`, `EXPIRED` → `FILLED`, `FILLED` → `FILLED`) e mai sotto un importo che il signer ha già registrato. Qualunque altra coppia (per esempio `CANCELLED` → `FILLED`) è per il signer un `EVIDENCE_CONFLICT`, quindi qui è un conflitto: `UNKNOWN`, riconciliazione richiesta (review indipendente di `c8926cc`);
-- `CANCELLED` o `EXPIRED` del ledger con l'intero stake abbinato è `FILLED`, non finale (`FULL_STAKE_MATCHED_LEDGER_*`).
+- `CANCELLED` o `EXPIRED` del ledger con l'intero stake abbinato è `FILLED`, non finale (`FULL_STAKE_MATCHED_LEDGER_*`). Poiché l'etichetta del ledger non corrisponde a "eseguito", la riconciliazione è **sempre** richiesta (review indipendente di `3f296db`);
+- contro uno stato finale del ledger (escluso `SETTLED`) è conflitto qualunque evidenza fresca che il signer non registrerebbe:
+  - una riga ben formata di questo ordine, ma scartata come evidenza;
+  - una riga ancora attiva;
+  - una riga inattiva il cui motivo corrisponde a una transizione che il signer rifiuta, **anche a parità di importo**.
 
 **Importo rivendicato contro i fill letti** (review indipendente di `dc45c5f`). Quando la lettura dei fill di questo ordine è completa, qualunque sia l'esito della lettura della riga (anche un 404), l'importo dichiarato si confronta con la somma dei fill contati (tutti tranne `FAILED`). Per `FILLED` l'importo è lo stake; per `PARTIALLY_FILLED` e `SETTLED` è `filled_base_units`.
 - Un importo maggiore di zero con **nessun** fill contato è una contraddizione: `UNKNOWN` / `FILLS_DO_NOT_CONFIRM_FILL`, mai finale.
