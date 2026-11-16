@@ -309,6 +309,7 @@ def test_guard_errors_are_refusals_before_send(toronto_signer):
 # ---------------------------------------------------------------- owner decision 2: gateway / cancel preflight
 class _RefusingSender:
     """Wraps the simulated exchange; its preflight refuses everything (a local guard), its send would deliver."""
+    PREFLIGHT_IS_PURE = True
 
     def __init__(self, sim):
         self.sim = sim
@@ -346,3 +347,48 @@ def test_cancel_refused_locally_does_not_consume_the_owner_command(tmp_path):
     assert e.value.code == "SENDER_REFUSED_BEFORE_SEND_TEST_LOCAL_GUARD"
     assert not s.ledger.command_consumed(auth.command_id)              # the owner's command stays usable
     assert [r for r in s.sim.writes() if r.method == "DELETE"] == []
+
+
+# ---------------------------------------------------------------- review 9ddcfbf (SAFE, P3 hardening)
+class _ImpurePreflightSender:
+    """A sender whose preflight SENDS and then fails, and that does not declare a pure preflight."""
+
+    def __init__(self, sim):
+        self.sim = sim
+
+    def preflight(self, request):
+        self.sim.send(request)
+        raise ValueError("boom")
+
+    def send(self, request):
+        return self.sim.send(request)
+
+
+def test_review_9ddcfbf_p3_1_an_undeclared_preflight_is_never_trusted_as_not_sent(tmp_path):
+    from sxbet_e2e_kit import Stack
+    s = Stack(tmp_path)
+    i = s.intent("order-key-PF03")
+    signed = s.sign(i)
+    s.adapter._sender = _ImpurePreflightSender(s.sim)
+    s.gw.submit(signed, i)                                   # preflight ignored: normal write-ahead + send path
+    assert s.state("order-key-PF03") != "SIGNED"             # never recorded as "signed, never sent"
+
+
+def test_review_9ddcfbf_p3_5_query_must_be_a_tuple(toronto_signer):
+    s = make(toronto_signer)
+    with pytest.raises(TorontoGuardError) as e:
+        s.preflight(ra.RestRequest("GET", "/fills-v3", iter([("orderId", OID)]), None))
+    assert e.value.code == "QUERY_MALFORMED"
+
+
+def test_review_9ddcfbf_p3_3_cancel_refusal_is_audited_with_the_exact_code(tmp_path):
+    from signer import cancellation as cx
+    from sxbet_e2e_kit import Stack
+    s = Stack(tmp_path)
+    _, sg, _ = s.place("order-key-PF04")
+    auth = s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[sg["order_id"]])
+    s.adapter._sender = _RefusingSender(s.sim)
+    with pytest.raises(cx.CancelRefused):
+        s.cx.cancel_orders([sg["order_id"]], auth)
+    audit = (tmp_path / "gw-audit.jsonl").read_text()
+    assert "CANCEL_NOT_SENT" in audit and "SENDER_REFUSED_BEFORE_SEND_TEST_LOCAL_GUARD" in audit

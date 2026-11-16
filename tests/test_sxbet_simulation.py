@@ -513,7 +513,14 @@ def test_toronto_sender_is_the_only_concrete_sender_and_cannot_reach_mainnet():
     # send() = the pure _prepare() guards (also exposed as preflight()) + the injected transport, nothing else.
     assert calls <= {"self._prepare", "self._transport", "SenderTimeout", "type", "RestResponse"}, calls
     (prep,) = [f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "_prepare"]
-    assert "self._transport" not in {ast.unparse(c.func) for c in ast.walk(prep) if isinstance(c, ast.Call)}
+    prep_calls = {ast.unparse(c.func) for c in ast.walk(prep) if isinstance(c, ast.Call)}
+    # _prepare is pure: an allowlist of guard helpers and JSON, no transport, no send (review 9ddcfbf P3-2).
+    assert {c for c in prep_calls if not c.startswith("json.dumps(")} <= {
+        "type", "TorontoGuardError", "verify_toronto_config", "_route", "all", "json.dumps", "json.loads",
+        "_no_mainnet", "_mainnet_chain", "_check_body"}, prep_calls
+    assert cls.body and any(isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PREFLIGHT_IS_PURE"
+                            for n in cls.body)
+
     # "POST" / "DELETE" appear ONLY inside the ROUTES allowlist (review 151b2ed P3).
     routes = next(n for n in tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "ROUTES")
     inside = {id(c) for c in ast.walk(routes) if isinstance(c, ast.Constant)}
@@ -529,6 +536,19 @@ def test_toronto_sender_is_the_only_concrete_sender_and_cannot_reach_mainnet():
     init = next(f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "__init__")
     default = {a.arg: d for a, d in zip(init.args.kwonlyargs, init.args.kw_defaults)}["writes_enabled"]
     assert isinstance(default, ast.Constant) and default.value is False
+
+
+def test_gateway_submit_is_called_only_by_the_signer_service():
+    """Review 9ddcfbf P3-4: a SIGNED order (e.g. after a local refusal) could be sent again by calling the gateway
+    directly; the invariant is that only signer/service.py does, once per consumed owner command."""
+    callers = set()
+    for p in (ROOT / "signer").rglob("*.py"):
+        if p.name == "gateway.py":
+            continue
+        src = p.read_text(encoding="utf-8")
+        if ".submit(" in src or ".submit_batch(" in src:
+            callers.add(p.name)
+    assert callers <= {"service.py"}, callers
 
 
 def test_no_submission_code_in_signer_or_sxbet_module():

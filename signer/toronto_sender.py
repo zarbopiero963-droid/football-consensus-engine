@@ -152,6 +152,8 @@ class TorontoRestSender:
     Python cannot stop code running inside the signer process from mutating private attributes; the writes flag is
     name-mangled and documented as such (review 151b2ed P3)."""
 
+    PREFLIGHT_IS_PURE = True   # _prepare() does no I/O (pinned by tests/test_sxbet_simulation.py)
+
     def __init__(self, signer: Any, transport: Callable[..., tuple[int, Any]], *, api_key: str,
                  live_maker: str, writes_enabled: bool = False):
         from .core import Signer, SignerConfig
@@ -202,8 +204,10 @@ class TorontoRestSender:
         _, _, write = _route(request)
         if write and not self.__writes:
             raise TorontoGuardError("SENDER_WRITES_DISABLED")        # nothing leaves: no testnet order authorized
+        if type(request.query) is not tuple:
+            raise TorontoGuardError("QUERY_MALFORMED")      # no iterators: the same tuple is checked and sent
+        query = request.query
         try:
-            query = tuple(request.query)
             ok = all(type(k) is str and type(v) is str for k, v in query)
         except (TypeError, ValueError):
             raise TorontoGuardError("QUERY_MALFORMED") from None

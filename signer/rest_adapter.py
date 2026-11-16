@@ -127,7 +127,9 @@ class RestResponse:
 
 
 class RestSender(Protocol):
-    """Abstract. No implementation exists in this repository (see module docstring)."""
+    """Abstract. The only concrete sender in the repository is signer/toronto_sender.TorontoRestSender (testnet
+    only, S8). Optional `preflight(request)`: the sender's guards with NO I/O; it is honoured only when the sender
+    class declares `PREFLIGHT_IS_PURE = True` (review 9ddcfbf P3-1), otherwise there is no preflight at all."""
 
     def send(self, request: RestRequest) -> RestResponse: ...
 
@@ -418,6 +420,10 @@ class OfficialRestAdapter:
     def preflight(self, request: RestRequest) -> None:
         """Run the sender's own guards WITHOUT any I/O, before anything is recorded as attempted. Raises
         SenderRefusedBeforeSend when they refuse; a sender without a preflight accepts (nothing to check)."""
+        # Only a sender that DECLARES a pure preflight is trusted to mean "nothing left" on refusal: a preflight that
+        # could do I/O would turn a possible send into a false "not sent" (§2.6, review 9ddcfbf P3-1).
+        if getattr(type(self._sender), "PREFLIGHT_IS_PURE", False) is not True:
+            return
         check = getattr(self._sender, "preflight", None)
         if check is None:
             return

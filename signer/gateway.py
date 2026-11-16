@@ -394,7 +394,7 @@ class SubmissionGateway:
                 self._transport.preflight(request)
             except SenderRefusedBeforeSend as exc:
                 for o in orders:
-                    self._log(SIGNED, "SENDER_REFUSED_BEFORE_SEND", o)
+                    self._log(SIGNED, "SENDER_REFUSED_BEFORE_SEND_" + exc.code, o)   # exact guard code (P3-3)
                 raise GatewayRefused("SENDER_REFUSED_BEFORE_SEND_" + exc.code) from None
         # Write-ahead: a crash from here on leaves UNKNOWN, never "not placed".
         written = []

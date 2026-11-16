@@ -262,7 +262,7 @@ class CancellationService:
         except (OrderStateError, LedgerError) as exc:
             raise CancelRefused(exc.code) from None  # nothing was sent
 
-    def _preflight(self, request: RestRequest) -> None:
+    def _preflight(self, request: RestRequest, scope: str) -> None:
         """The sender's own guards, before the command is consumed: a local refusal is provably "not sent" and the
         owner's command stays usable (never recorded as a cancel of unknown outcome)."""
         check = getattr(self._adapter, "preflight", None)
@@ -271,6 +271,8 @@ class CancellationService:
         try:
             check(request)
         except SenderRefusedBeforeSend as exc:
+            # Audited (review 9ddcfbf P3-3): the command was not consumed, so no command hash is recorded.
+            self._log("CANCEL_NOT_SENT", scope, reason="SENDER_REFUSED_BEFORE_SEND_" + exc.code)
             raise CancelRefused("SENDER_REFUSED_BEFORE_SEND_" + exc.code) from None
 
     def _before_send(self, auth: cmd.OwnerCommandAuthorization, scope: str) -> None:
@@ -328,7 +330,7 @@ class CancellationService:
             if not to_send:
                 return {"scope": SCOPE_ORDER_IDS, "sent": False, "orders": report}  # command not consumed
             request = build_cancel_by_ids(to_send, limits=self._adapter.limits)
-            self._preflight(request)                      # before the command is consumed (owner decision 16-11)
+            self._preflight(request, SCOPE_ORDER_IDS)     # before the command is consumed (owner decision 16-11)
             self._consume(auth, fp, binding, SCOPE_ORDER_IDS, to_send)
             self._log("CANCEL_REQUESTED", SCOPE_ORDER_IDS, auth=auth)
             self._before_send(auth, SCOPE_ORDER_IDS)
@@ -368,7 +370,7 @@ class CancellationService:
                     report[o.order_id] = {"client_order_id": o.client_order_id,
                                           "state_before": self._reconcile(o.client_order_id)}
                     targets.append(o.order_id)
-            self._preflight(request)
+            self._preflight(request, scope)
             self._consume(auth, fp, binding, scope, sorted(targets), market_hash=market_hash, event_id=event_id)
             self._log("CANCEL_REQUESTED", scope, auth=auth)
             self._before_send(auth, scope)
