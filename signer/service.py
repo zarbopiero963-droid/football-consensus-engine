@@ -33,6 +33,7 @@ DEFAULT_MAX_REQUEST_AGE_SECONDS = 120   # never above the owner-signed command w
 # REJECTED is not final: a rejected order whose signature left can still turn out executed (signer/orders.py H3).
 _FINAL_ORDER_STATES = frozenset({"FILLED", "CANCELLED", "EXPIRED", "SETTLED"})
 _log = logging.getLogger(__name__)
+_MAX_REFUSAL_ROUNDS = 100
 
 
 class QueueClaimUnavailable(RuntimeError):
@@ -63,6 +64,8 @@ class SignerService:
         # One process per signer_id; processing, recovery and sync never run concurrently, also across several
         # service objects built on the same signer (lock shared per Signer: review 67e80eb P3-3).
         self._lock = signer._ledger.service_lock
+        # Requests claimed for a kill-switch refusal whose REFUSED event is not recorded yet (in this process).
+        self._kill_refusals: set[str] = set()
 
     # ---------------------------------------------------------------- loop
     def process_once(self, limit: int = 10, kinds: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
@@ -95,18 +98,34 @@ class SignerService:
         """While the kill switch is ENGAGED: every pending PLACE request is closed for good with REFUSED
         KILL_SWITCH_ENGAGED, never signed (review a046ad9 P2-2): a placement queued around an engagement can never
         run after a later release. A new placement after the release needs a new owner command."""
+        # The whole backlog, not one batch (review 348362c P3-b): a release before the next cycle must find no
+        # PLACE left. Bounded so one cycle cannot spin forever on a queue that keeps failing.
         with self._lock:
-            out = []
-            for req in self._q.pending(self._network, limit, ("PLACE",)):
-                try:
-                    if not self._q.claim(req["request_id"], self._signer_id):
+            out: list[dict[str, Any]] = []
+            for _ in range(_MAX_REFUSAL_ROUNDS):
+                batch = self._q.pending(self._network, limit, ("PLACE",))
+                if not batch:
+                    break
+                progressed = False
+                for req in batch:
+                    rid = req["request_id"]
+                    try:
+                        claimed = self._q.claim(rid, self._signer_id)
+                    except Exception as exc:
+                        # The claim may have committed before the error: recover() must refuse it, never sign it.
+                        self._kill_refusals.add(rid)
+                        _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
+                        out.append({"request_id": rid, "event": "CLAIM_FAILED",
+                                    "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
                         continue
-                except Exception as exc:
-                    _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
-                    out.append({"request_id": req["request_id"], "event": "CLAIM_FAILED",
-                                "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
-                    continue
-                out.append(self._refuse(req["request_id"], "KILL_SWITCH_ENGAGED"))
+                    if not claimed:
+                        continue
+                    progressed = True
+                    self._kill_refusals.add(rid)          # until REFUSED is recorded (append may fail)
+                    out.append(self._refuse(rid, "KILL_SWITCH_ENGAGED"))
+                    self._kill_refusals.discard(rid)
+                if not progressed:
+                    break
             return out
 
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
@@ -226,7 +245,12 @@ class SignerService:
             command_id = (p.get("command") or {}).get("command_id") if isinstance(p.get("command"), Mapping) else None
             ours = (o is not None and isinstance(command_id, str)
                     and self._signer._ledger.order_of_command(command_id) == cid)  # review 6c74d55 P3-1
-            if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
+            if p.get("kind") == "PLACE" and o is None and last == "CLAIMED" and rid in self._kill_refusals:
+                # Claimed to be refused while the kill switch was engaged, refusal not recorded: refuse it now,
+                # even if the switch has been released since (review 348362c P3-b). Never signed.
+                out.append(self._refuse(rid, "KILL_SWITCH_ENGAGED"))
+                self._kill_refusals.discard(rid)
+            elif p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
             elif o is not None and not ours:
                 # The ledger order belongs to ANOTHER request with the same key (a duplicate claimed before a

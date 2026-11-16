@@ -125,7 +125,7 @@ class SignerWorker:
             report["kill_switch_engaged"] = "UNKNOWN"
             report["stages"]["kill_switch_read"] = {"ok": False, "error_type": type(exc).__name__}
         if engaged is True and report["kill_switch_engaged"] is True:
-            # Known ENGAGED: cancels only (they reduce risk); new placements stay pending.
+            # Known ENGAGED: cancels are processed (they reduce risk); every pending PLACE is refused for good.
             processed = self._stage(report, "process_once",
                                     lambda: self._service.process_once(self._batch, kinds=("CANCEL",)))
             report["stages"]["process_once"].update(mode="CANCEL_ONLY_KILL_SWITCH_ENGAGED", only_kinds=["CANCEL"])

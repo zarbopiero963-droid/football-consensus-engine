@@ -304,3 +304,46 @@ def test_row_kind_must_match_the_payload_kind(tmp_path):
     (res,) = svc.process_once(10, kinds=("CANCEL",))
     assert res["event"] == "REFUSED" and res["detail"]["code"] == "REQUEST_KIND_MISMATCH"
     assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+class _FlakyAppendQueue(MemoryQueue):
+    """The REFUSED append fails once after the claim committed (DB error between the two writes)."""
+    def __init__(self):
+        super().__init__()
+        self.fail_refused = True
+
+    def append_event(self, request_id, state, detail, signer_id):
+        if state == "REFUSED" and self.fail_refused:
+            self.fail_refused = False
+            raise ConnectionError("db")
+        return super().append_event(request_id, state, detail, signer_id)
+
+
+def test_a_kill_refusal_interrupted_after_the_claim_is_refused_by_recover_even_after_release(tmp_path):
+    """Review 348362c P3-b: the claim committed, the REFUSED write failed, the owner released: never signed."""
+    s = Stack(tmp_path)
+    q = _FlakyAppendQueue()
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    i = s.intent("order-key-W030")
+    ctx = s.context(i)
+    s.signer.config.market_data.world = ctx
+    p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
+    q.insert(p)
+    with pytest.raises(ConnectionError):
+        svc.refuse_pending_places(10)
+    assert q.states(p["request_id"]) == ["CLAIMED"]
+    (res,) = svc.recover()                                       # kill switch NOT engaged (released) here
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+def test_kill_refusal_drains_the_whole_backlog(tmp_path):
+    s = Stack(tmp_path)
+    q = MemoryQueue()
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    for n in range(5):
+        i = s.intent(f"order-key-W04{n}")
+        ctx = s.context(i)
+        s.signer.config.market_data.world = ctx
+        q.insert(place_request(i, s.command(i, ctx), created_at=int(s.clock())))
+    assert len(svc.refuse_pending_places(2)) == 5 and q.pending("mainnet", 10) == []
