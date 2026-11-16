@@ -88,7 +88,7 @@ def test_the_g02_gates_are_the_first_steps_and_the_phrase_is_exact():
 
 def test_the_pinned_target_ca_tls_and_toolchain_mirror_the_roles_workflow():
     for key in ("EXPECTED_HOST_SHA256", "EXPECTED_PORT", "EXPECTED_PORT_SHA256", "EXPECTED_COUNTS",
-                "EXPECTED_STRUCTURE_0008", "EXPECTED_DB", "FCB_DB_URL_VAR", "PGCONNECT_TIMEOUT"):
+                "EXPECTED_STRUCTURE_0008", "EXPECTED_DB", "FCB_DB_URL_VAR", "PGCONNECT_TIMEOUT", "PGPORT"):
         assert JOB["env"][key] == ROLES_JOB["env"][key], key
     ca = "Materialize and authenticate the Aiven project CA"
     assert _step(ca)["run"] == _step(ca, ROLES_JOB["steps"])["run"]

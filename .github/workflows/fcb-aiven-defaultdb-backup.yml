@@ -67,6 +67,8 @@ jobs:
       EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
       EXPECTED_PORT: '14274'
       EXPECTED_PORT_SHA256: e7c3aa32557c7cac5c20f5d28cfa30de75572446ff444407b33670df74475b04
+      # aiven_pg18_diag.py target/check-raw require PGPORT == EXPECTED_PORT (as in the roles workflow).
+      PGPORT: '14274'
       PG18_BINDIR: /usr/lib/postgresql/18/bin
     steps:
       - uses: actions/checkout@v4
