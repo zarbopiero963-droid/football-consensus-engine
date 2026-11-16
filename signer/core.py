@@ -207,6 +207,18 @@ class Signer:
         except Exception:
             raise SignerRefused("RISK_CONTEXT_MALFORMED") from None
 
+    def _void_for_kill_switch(self, auth: Any) -> None:
+        """Every PLACE refused because of the kill switch voids its owner command for good, whatever path reached
+        the signer (queue, recover, concurrent engagement): review dccb44a P1-1/P2-1. Hashes computed here."""
+        try:
+            self._ledger.void_command(command_id=auth.command_id, command_text_sha256=cmd.text_sha256(auth.command_text),
+                                      operation_sha256=cmd.operation_sha256(auth.command_text), request_id=None,
+                                      reason="KILL_SWITCH_ENGAGED")
+        except (OrderStateError, LedgerError):
+            # Unwritable ledger: the refusal still stands; nothing can be authorised either (AUTHORIZE needs the
+            # ledger). Declared residual in signer/README.md.
+            self._log("COMMAND_VOID_NOT_RECORDED", "KILL_SWITCH_ENGAGED", None, None, None, None, auth=auth)
+
     def sign_order(self, intent: Mapping[str, Any], authorization: cmd.OwnerCommandAuthorization, *,
                    post_only: bool = False) -> dict[str, Any]:
         """There is no context parameter (review P1-1, intentional change): market data, event markets, events
@@ -239,7 +251,14 @@ class Signer:
                     raise SignerRefused("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_INTENT"
                                         if known.intent_hash != ihash
                                         else "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST")
+                if self._ledger.command_text_voided(cmd.text_sha256(auth.command_text)) \
+                        or self._ledger.operation_voided(cmd.operation_sha256(auth.command_text)):
+                    # Voided because a PLACE with it was refused by the kill switch (owner decision 16-11-2026):
+                    # neither the same text nor any spelling of the same operation authorises a later order; the
+                    # owner writes a new command with a new reference, e.g. "(rif. 2)".
+                    raise SignerRefused("COMMAND_VOIDED_BY_KILL_SWITCH")
                 if self._ledger.kill_switch_engaged:
+                    self._void_for_kill_switch(auth)
                     raise SignerRefused("KILL_SWITCH_ENGAGED")
                 self._check_config(clean)
                 if type(post_only) is not bool:
@@ -302,6 +321,7 @@ class Signer:
                         self._ledger.transition(key, REJECTED, reason="KILL_SWITCH_ENGAGED")
                     except LedgerError:
                         pass  # stays AUTHORIZED (reserved, never signed): abandon_unsigned after restart
+                    self._void_for_kill_switch(auth)
                     raise SignerRefused("KILL_SWITCH_ENGAGED")
 
                 # 4. sign; persist SIGNED before the signature leaves this function

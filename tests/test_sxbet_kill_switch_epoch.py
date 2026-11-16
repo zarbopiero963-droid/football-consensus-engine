@@ -68,31 +68,20 @@ def test_mcp_clock_skew_never_revives_an_old_placement(tmp_path, skew):
     p, _, _ = _place(s, q, f"order-key-K{skew + 1000:04d}", mcp_skew=skew)
     _release(s, kill)
     (res,) = _svc(s, q).process_once(10)
-    assert res["event"] == "REFUSED" and _code(res) in ("PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE", "REQUEST_EXPIRED")
-    assert _posts(s) == []
+    # Review dccb44a P2-2/P3-2: decided by the DATABASE ordering (checked before freshness), and voided.
+    assert res["event"] == "REFUSED" and _code(res) == "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE"
+    assert s.ledger.command_text_voided(p["command"]["command_text_sha256"]) and _posts(s) == []
 
 
 @pytest.mark.parametrize("skew", [*SKEWS, *(-x for x in SKEWS)])
 def test_mcp_clock_skew_never_bypasses_an_engaged_kill_switch(tmp_path, skew):
     s, q, kill = _stack(tmp_path)
     kill.engage("OWNER_TEST", source="MANUAL")
-    _place(s, q, f"order-key-B{skew + 1000:04d}", mcp_skew=skew)
+    p, _, _ = _place(s, q, f"order-key-B{skew + 1000:04d}", mcp_skew=skew)
     svc = _svc(s, q)
-    svc.refuse_pending_places(10)
-    assert svc.process_once(10) == [] and _posts(s) == []
-
-
-@pytest.mark.parametrize("skew", [*SKEWS, *(-x for x in SKEWS)])
-def test_the_ordering_rule_alone_ignores_the_mcp_clock(tmp_path, skew):
-    """Even with a created_at that LOOKS newer than the release, queue_seq decides (no timestamp in the rule)."""
-    s, q, kill = _stack(tmp_path)
-    kill.engage("OWNER_TEST", source="MANUAL")
-    p, _, _ = _place(s, q, f"order-key-O{skew + 1000:04d}", mcp_skew=0)
-    _release(s, kill)
-    q.requests = [(r[0], r[1], {**r[2], "created_at": r[2]["created_at"] + skew} if r[0] == p["request_id"] else r[2],
-                   r[3], r[4]) for r in q.requests]                 # payload hash no longer matches either: refused
-    (res,) = _svc(s, q).process_once(10)
-    assert res["event"] == "REFUSED" and _posts(s) == []
+    (r,) = svc.process_once(10)                                       # even the all-kinds path refuses (P1-1)
+    assert _code(r) == "KILL_SWITCH_ENGAGED" and _posts(s) == []
+    assert s.ledger.command_text_voided(p["command"]["command_text_sha256"])
 
 
 # ---------------------------------------------------------------- concurrency: release vs processing
@@ -104,13 +93,14 @@ def test_release_during_processing_is_deterministic_refused_by_the_engaged_switc
     p, _, _ = _place(s, q, "order-key-C001")
     svc = _svc(s, q)
     inside, go = threading.Event(), threading.Event()
-    real = svc._place
+    from signer import service as service_mod
+    real = service_mod.validate_request
 
-    def slow_place(*a, **k):
+    def slow_validate(payload):                                   # first step of _handle, under the service lock
         inside.set()
         go.wait(5)
-        return real(*a, **k)
-    monkeypatch.setattr(svc, "_place", slow_place)
+        return real(payload)
+    monkeypatch.setattr(service_mod, "validate_request", slow_validate)
     out = {}
     t1 = threading.Thread(target=lambda: out.setdefault("res", svc.process_once(10)))
     t1.start()
@@ -125,6 +115,7 @@ def test_release_during_processing_is_deterministic_refused_by_the_engaged_switc
     (res,) = out["res"]
     assert res["event"] == "REFUSED" and _code(res) == "KILL_SWITCH_ENGAGED"
     assert out["rel"]["engaged"] is False and _posts(s) == []
+    assert s.ledger.command_text_voided(p["command"]["command_text_sha256"])     # voided before the release
 
 
 def test_release_first_then_processing_is_refused_by_the_watermark(tmp_path):
@@ -200,7 +191,7 @@ def test_unrecorded_engagement_is_restored_after_restart(tmp_path, monkeypatch):
     assert svc.process_once(10) == [] and _posts(s) == []
 
 
-def test_unreadable_audit_engages_at_startup(tmp_path):
+def test_a_broken_audit_chain_stops_the_start(tmp_path):
     s, q, kill = _stack(tmp_path)
     kill._log("KILL_SWITCH_TEST", reason="X")
     with open(tmp_path / "ks.jsonl", "a", encoding="ascii") as fh:
@@ -262,3 +253,98 @@ def test_unreachable_queue_keeps_the_switch_engaged(tmp_path):
     with pytest.raises(ks.KillSwitchError) as e:
         _release(s, k)
     assert e.value.code == "KILL_SWITCH_RELEASE_QUEUE_WATERMARK_UNAVAILABLE" and s.ledger.kill_switch_engaged
+
+
+# ---------------------------------------------------------------- review dccb44a: every refusal voids the operation
+def _resend(s, q, p, ctx, key, text=None, same_id=False):
+    i2 = s.intent(key)
+    auth = s.command(i2, ctx, text=text or p["command"]["command_text"],
+                     command_id=p["command"]["command_id"] if same_id else None)
+    p2 = place_request(i2, auth, created_at=int(s.clock()))
+    q.insert(p2)
+    return p2
+
+
+def test_p1_recover_while_engaged_voids_and_a_resend_after_release_is_refused(tmp_path):
+    s, q, kill = _stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p, _, ctx = _place(s, q, "order-key-PA01")
+    assert q.claim(p["request_id"], SIGNER_ID)                        # claim committed, the call "failed"
+    svc = _svc(s, q)
+    (r,) = svc.recover()                                              # worker stage 1, still engaged
+    assert _code(r) == "KILL_SWITCH_ENGAGED"
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    for n, same_id in enumerate((True, False)):
+        _resend(s, q, p, ctx, f"order-key-PA1{n}", same_id=same_id)
+        (res,) = svc.process_once(10)
+        assert res["event"] == "REFUSED" and _code(res) in ("COMMAND_VOIDED_BY_KILL_SWITCH",
+                                                            "COMMAND_ID_ALREADY_CONSUMED")
+    assert _posts(s) == []
+
+
+def test_p2_engagement_during_processing_voids_and_a_resend_after_release_is_refused(tmp_path, monkeypatch):
+    s, q, kill = _stack(tmp_path)
+    p, _, ctx = _place(s, q, "order-key-PB01")
+    svc = _svc(s, q)
+    real = svc._place
+
+    def place_then_engage(*a, **k):
+        kill.engage("OWNER_TEST", source="MANUAL")                   # engagement lands inside processing
+        return real(*a, **k)
+    monkeypatch.setattr(svc, "_place", place_then_engage)
+    (r,) = svc.process_once(10)
+    assert _code(r) == "KILL_SWITCH_ENGAGED"
+    monkeypatch.undo()
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    _resend(s, q, p, ctx, "order-key-PB02")                           # new command id, identical owner text
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and _code(res) == "COMMAND_VOIDED_BY_KILL_SWITCH" and _posts(s) == []
+
+
+@pytest.mark.parametrize("variant", [lambda t: t + " ", lambda t: t + ".", lambda t: t.replace(" ", "  ", 1),
+                                     lambda t: t.upper()], ids=["space", "dot", "double-space", "upper"])
+def test_p2_any_spelling_of_a_voided_operation_is_refused(tmp_path, variant):
+    s, q, kill = _stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p, _, ctx = _place(s, q, "order-key-PC01")
+    svc = _svc(s, q)
+    svc.refuse_pending_places(10)
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    _resend(s, q, p, ctx, "order-key-PC02", text=variant(p["command"]["command_text"]))
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and _code(res) == "COMMAND_VOIDED_BY_KILL_SWITCH" and _posts(s) == []
+
+
+@pytest.mark.parametrize("skew", [10, 60, -300])
+def test_p2_a_skewed_request_is_voided_by_the_ordering_not_expired(tmp_path, skew):
+    s, q, kill = _stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p, _, ctx = _place(s, q, "order-key-PD01", mcp_skew=skew)
+    _release(s, kill)
+    svc = _svc(s, q)
+    (r,) = svc.process_once(10)
+    assert _code(r) == "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE"
+    s.signer.config.market_data.world = ctx
+    _resend(s, q, p, ctx, "order-key-PD02", same_id=True)             # MCP clock corrected, same command
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and _posts(s) == []
+
+
+def test_a_deliberate_new_reference_is_a_new_operation(tmp_path):
+    """After the release the owner may repeat the operation on purpose with a new reference "(rif. N)"."""
+    s, q, kill = _stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p, i, ctx = _place(s, q, "order-key-PE01")
+    _svc(s, q).refuse_pending_places(10)
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    text = p["command"]["command_text"]
+    import re
+    new_text = re.sub(r"\(rif\. ?\d+\)", "(rif. 99999)", text)
+    assert new_text != text
+    _resend(s, q, p, ctx, "order-key-PE02", text=new_text)
+    (res,) = _svc(s, q).process_once(10)
+    assert res["event"] == "SUBMITTED" and len(_posts(s)) == 1

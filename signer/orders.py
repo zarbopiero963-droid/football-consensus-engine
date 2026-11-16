@@ -164,6 +164,22 @@ TERMINAL = frozenset({SETTLED, REJECTED})
 CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
 KILL_SWITCH_ACTIONS = frozenset({"ENGAGE", "CANCEL_INTENT", "CANCEL_VERIFIED", "RELEASE"})
 COMMAND_VOID_REASONS = frozenset({"KILL_SWITCH_ENGAGED", "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE"})
+_VOID_SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
+_VOID_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_VOID_REQUEST = re.compile(r"^[0-9a-f]{32}$")
+_LEDGER_META_FIELDS = frozenset({"seq", "ts", "prev_sha256", "line_sha256"})   # added by _append
+
+
+def _void_fields_ok(rec: Mapping[str, Any]) -> bool:
+    """Bounded, well-formed COMMAND_VOID fields (review dccb44a P3-1), checked on write and on replay."""
+    op, req = rec.get("operation_sha256"), rec.get("request_id")
+    required = {"kind", "command_id", "command_text_sha256", "operation_sha256", "request_id", "reason"}
+    return (required <= set(rec) and not (set(rec) - required - _LEDGER_META_FIELDS)
+            and isinstance(rec.get("command_id"), str) and bool(_VOID_ID.fullmatch(rec["command_id"]))
+            and isinstance(rec.get("command_text_sha256"), str) and bool(_VOID_SHA.fullmatch(rec["command_text_sha256"]))
+            and (op is None or (isinstance(op, str) and bool(_VOID_SHA.fullmatch(op))))
+            and (req is None or (isinstance(req, str) and bool(_VOID_REQUEST.fullmatch(req))))
+            and rec.get("reason") in COMMAND_VOID_REASONS)
 COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_fingerprint_sha256", "client_ref_sha256",
                             "command_received_at"})
 
@@ -489,8 +505,10 @@ class OrderLedger:
         # PLACE request whose DB-assigned queue_seq is <= it existed before the release and is refused for good.
         self._last_kill_release_at: int | None = None
         self._queue_watermark: int | None = None
-        # Owner commands voided because their PLACE was refused by the kill switch: never usable again.
+        # Owner commands voided because their PLACE was refused by the kill switch: never usable again, by exact
+        # text hash and by canonical parsed-operation hash (any spelling of the same operation).
         self._voided_command_texts: set[str] = set()
+        self._voided_operations: set[str] = set()
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
         self._fd: int | None = None
@@ -824,11 +842,12 @@ class OrderLedger:
             self._apply_kill(rec, seq)
         elif kind == "COMMAND_VOID":
             # A PLACE refused because of the kill switch: its owner command can never authorise anything later.
-            if not (isinstance(rec.get("command_id"), str) and isinstance(rec.get("command_text_sha256"), str)
-                    and isinstance(rec.get("request_id"), str) and rec.get("reason") in COMMAND_VOID_REASONS):
+            if not _void_fields_ok(rec):
                 raise OrderStateError("LEDGER_COMMAND_VOID_INVALID")
             self._nonces.add(rec["command_id"])
             self._voided_command_texts.add(rec["command_text_sha256"])
+            if rec["operation_sha256"] is not None:
+                self._voided_operations.add(rec["operation_sha256"])
         else:
             raise OrderStateError("LEDGER_UNKNOWN_RECORD")
 
@@ -944,17 +963,24 @@ class OrderLedger:
         with self._lock:
             return command_text_sha256 in self._voided_command_texts
 
-    def void_command(self, *, command_id: str, command_text_sha256: str, request_id: str, reason: str) -> None:
-        """One fsync'd COMMAND_VOID line (idempotent): the command id and its text hash are never usable again."""
-        if not (isinstance(command_id, str) and command_id and isinstance(command_text_sha256, str)
-                and command_text_sha256 and isinstance(request_id, str) and reason in COMMAND_VOID_REASONS):
+    def operation_voided(self, operation_sha256: str | None) -> bool:
+        with self._lock:
+            return operation_sha256 is not None and operation_sha256 in self._voided_operations
+
+    def void_command(self, *, command_id: str, command_text_sha256: str, operation_sha256: str | None,
+                     request_id: str | None, reason: str) -> None:
+        """One fsync'd COMMAND_VOID line (idempotent): the command id, its text hash and its parsed-operation hash
+        are never usable again. The hashes are computed by the signer from the text, never taken from a payload."""
+        rec = {"kind": "COMMAND_VOID", "command_id": command_id, "command_text_sha256": command_text_sha256,
+               "operation_sha256": operation_sha256, "request_id": request_id, "reason": reason}
+        if not _void_fields_ok(rec):
             raise OrderStateError("COMMAND_VOID_FIELDS_INVALID")
         with self._lock:
             self._writable()
-            if command_id in self._nonces and command_text_sha256 in self._voided_command_texts:
+            if command_id in self._nonces and command_text_sha256 in self._voided_command_texts \
+                    and (operation_sha256 is None or operation_sha256 in self._voided_operations):
                 return
-            self._commit({"kind": "COMMAND_VOID", "command_id": command_id,
-                          "command_text_sha256": command_text_sha256, "request_id": request_id, "reason": reason})
+            self._commit(rec)
 
     def orders_since(self, ts: int) -> int:
         with self._lock:

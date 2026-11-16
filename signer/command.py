@@ -129,6 +129,28 @@ def text_sha256(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def operation_sha256(text: Any) -> str | None:
+    """Canonical hash of the PARSED command (operation, every parsed field and the reference token), computed by
+    the signer: equivalent spellings (spaces, case, a trailing dot) give the same hash. None when the text does not
+    parse (nothing to void: such a text can never authorise anything). Used to void a kill-switch-refused
+    operation for good (owner decision 16-11-2026); a deliberate new order needs a new reference "(rif. N)"."""
+    try:
+        parsed = parse(text)
+    except CommandRefused:
+        return None
+
+    def norm(v: Any) -> Any:
+        if isinstance(v, Decimal):
+            return format(v.normalize(), "f")
+        if isinstance(v, (tuple, list)):
+            return [norm(x) for x in v]
+        if isinstance(v, str):
+            return " ".join(v.casefold().split())       # case/whitespace never make a new operation (broader void)
+        return v
+    body = {k: norm(getattr(parsed, k)) for k in parsed.__dataclass_fields__}
+    return _fingerprint({"op_parsed": type(parsed).__name__, **body})
+
+
 def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 

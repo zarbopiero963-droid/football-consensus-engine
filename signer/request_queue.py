@@ -202,8 +202,15 @@ class PostgresRequestQueue:
                  "last_state": r[4], "queue_seq": r[5]} for r in rows]
 
     def release_watermark(self) -> int:
-        rows = self._run("SELECT nextval('signer_order_requests_queue_seq')")
-        value = rows[0][0] if rows else None
+        """nextval of the queue sequence, refused unless the sequence has CACHE 1 (no per-session caching) and
+        never cycles. Production `connect` must set a connect timeout: this runs under the signer service lock."""
+        rows = self._run("SELECT nextval('signer_order_requests_queue_seq'), s.seqcache, s.seqcycle "
+                         "FROM pg_catalog.pg_sequence s WHERE s.seqrelid = 'signer_order_requests_queue_seq'::regclass")
+        if len(rows) != 1:
+            raise QueueError("QUEUE_WATERMARK_INVALID")
+        value, cache, cycle = rows[0]
+        if cache != 1 or cycle is not False:
+            raise QueueError("QUEUE_SEQUENCE_NOT_STRICT")
         if type(value) is not int or value <= 0:
             raise QueueError("QUEUE_WATERMARK_INVALID")
         return value

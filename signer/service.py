@@ -121,20 +121,24 @@ class SignerService:
                     if not claimed:
                         continue
                     progressed = True
-                    out.append(self._void_and_refuse(rid, req.get("payload"), "KILL_SWITCH_ENGAGED"))
+                    try:
+                        valid = validate_request(req.get("payload"))
+                    except QueueError as exc:
+                        out.append(self._refuse(rid, exc.code))     # malformed: nothing trustworthy to void
+                        continue
+                    out.append(self._void_and_refuse(rid, valid, "KILL_SWITCH_ENGAGED"))
                 if not progressed:
                     break
             return out
 
-    def _void_and_refuse(self, rid: str, payload: Any, code: str) -> dict[str, Any]:
-        """Void the owner command durably (ledger COMMAND_VOID) BEFORE the terminal REFUSED event: a crash between
-        the two leaves a voided command, never a usable one. A malformed payload has no command to void."""
-        c = payload.get("command") if isinstance(payload, Mapping) else None
-        if isinstance(c, Mapping) and isinstance(c.get("command_id"), str) \
-                and isinstance(c.get("command_text_sha256"), str):
-            self._signer._ledger.void_command(command_id=c["command_id"],
-                                              command_text_sha256=c["command_text_sha256"],
-                                              request_id=rid, reason=code)
+    def _void_and_refuse(self, rid: str, p: Mapping[str, Any], code: str) -> dict[str, Any]:
+        """`p` is a VALIDATED request. Void the owner command durably (ledger COMMAND_VOID) BEFORE the terminal
+        REFUSED event: a crash between the two leaves a voided command, never a usable one. The text hash and the
+        parsed-operation hash are computed here from the text, never taken from the payload (review dccb44a P3-1)."""
+        text = p["command"]["command_text"]
+        self._signer._ledger.void_command(command_id=p["command"]["command_id"],
+                                          command_text_sha256=cmd.text_sha256(text),
+                                          operation_sha256=cmd.operation_sha256(text), request_id=rid, reason=code)
         return self._refuse(rid, code)
 
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
@@ -158,20 +162,22 @@ class SignerService:
             return self._refuse(rid, "REQUEST_KIND_MISMATCH")
         if p["network"] != self._network:
             return self._refuse(rid, "REQUEST_NETWORK_MISMATCH")
-        now = int(self._clock())
-        if not (p["created_at"] <= now + 5 and now - p["created_at"] <= self._max_age):
-            return self._refuse(rid, "REQUEST_EXPIRED")
         if p["kind"] == "PLACE":
-            # Owner decision 16-11-2026: a placement that existed while the kill switch was engaged stays refused
-            # after the release, whatever happened in between. Clock-free ordering (review 48a22c6 P2-1): the
-            # request's queue_seq is assigned by the DATABASE at insert (never by the MCP); the owner-signed
-            # RELEASE records a watermark taken from the same sequence under the service lock, durably in the
-            # ledger. queue_seq <= watermark => it was queued before the release => refused for good, and its
-            # owner command is voided so the same text can never authorise a later order.
+            # Owner decision 16-11-2026, checked BEFORE any other refusal of a PLACE (review dccb44a P2-2), so every
+            # kill-switch-related refusal voids the operation:
+            # 1. switch ENGAGED (any path: queue, recover, concurrent engagement) -> void + refuse;
+            # 2. clock-free ordering: queue_seq is assigned by the DATABASE at insert; the owner-signed RELEASE
+            #    records a watermark from the same sequence under the service lock; queue_seq <= watermark =>
+            #    queued before the release => void + refuse for good.
+            if self._signer._ledger.kill_switch_engaged:
+                return self._void_and_refuse(rid, p, "KILL_SWITCH_ENGAGED")
             wm = self._signer._ledger.queue_watermark()
             seq = req.get("queue_seq")
             if wm is not None and (type(seq) is not int or seq <= wm):
                 return self._void_and_refuse(rid, p, "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE")
+        now = int(self._clock())
+        if not (p["created_at"] <= now + 5 and now - p["created_at"] <= self._max_age):
+            return self._refuse(rid, "REQUEST_EXPIRED")
         c = p["command"]
         auth = cmd.OwnerCommandAuthorization(c["command_id"], c["command_text"], c["command_text_sha256"],
                                              c["received_at"], c["client_ref_sha256"])

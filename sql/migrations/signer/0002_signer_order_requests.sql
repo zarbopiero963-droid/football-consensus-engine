@@ -11,7 +11,9 @@
 -- Clock-free ordering (owner decision 16-11-2026): every request gets a queue_seq from this DATABASE sequence at
 -- insert, by trigger (a value supplied by the writer is overwritten). A kill-switch release records a value taken
 -- from the same sequence; requests with a smaller queue_seq were queued before the release and are refused.
-CREATE SEQUENCE IF NOT EXISTS signer_order_requests_queue_seq AS BIGINT MINVALUE 1 NO CYCLE;
+-- CACHE 1 is required: with per-session caching a request queued before a release could get a larger value
+-- (the signer re-checks seqcache = 1 every time it takes a watermark, review dccb44a P3-3).
+CREATE SEQUENCE IF NOT EXISTS signer_order_requests_queue_seq AS BIGINT MINVALUE 1 CACHE 1 NO CYCLE;
 CREATE TABLE IF NOT EXISTS signer_order_requests (
     request_id TEXT PRIMARY KEY CHECK (request_id ~ '^[0-9a-f]{32}$'),
     queue_seq BIGINT NOT NULL UNIQUE CHECK (queue_seq > 0),

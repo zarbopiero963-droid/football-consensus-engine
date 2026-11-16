@@ -124,3 +124,16 @@ def test_queue_seq_is_assigned_by_the_database_and_the_watermark_is_above_every_
     with pytest.raises(psycopg.Error):
         with connect() as conn:
             conn.execute("UPDATE signer_order_requests SET queue_seq = 1")
+
+
+def test_watermark_refused_unless_the_sequence_is_strict(connect):
+    """Review dccb44a P3-3: per-session caching would let a pre-release request get a larger queue_seq."""
+    from signer.request_queue import PostgresRequestQueue, QueueError
+    migrations.apply_migrations(connect, series=migrations.SIGNER)
+    q = PostgresRequestQueue(connect)
+    assert q.release_watermark() > 0                                  # CACHE 1, NO CYCLE as shipped
+    with connect() as conn:
+        conn.execute("ALTER SEQUENCE signer_order_requests_queue_seq CACHE 20")
+    with pytest.raises(QueueError) as e:
+        q.release_watermark()
+    assert e.value.code == "QUEUE_SEQUENCE_NOT_STRICT"
