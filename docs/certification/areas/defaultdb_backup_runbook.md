@@ -47,6 +47,8 @@ La transazione dello snapshot è aperta in modo esplicito (connessione in autoco
 ### Ruoli
 `pg_dumpall --roles-only --no-role-passwords` esporta ruoli, attributi, membership e impostazioni `ALTER ROLE … SET`, **senza password né hash**. Se nel file compare `PASSWORD`, un verifier `SCRAM-SHA-256$…` o un hash `md5…`, il job fallisce.
 
+`roles.sql` è salvato nel pacchetto **completo e identico byte per byte** all'output di `pg_dumpall`: contiene anche i ruoli di servizio di Aiven, le loro membership e le loro impostazioni (vedi "Ruoli gestiti da Aiven" sotto). Nessun filtro tocca il file salvato.
+
 Le proprietà del database vanno in `database.sql`, prodotto con `pg_dump --create --schema-only --exclude-schema=*`:
 - `CREATE DATABASE … LOCALE` e owner;
 - `ALTER DATABASE … SET …`;
@@ -61,7 +63,7 @@ Il restore-test gira in un cluster PostgreSQL 18 **isolato sul runner**:
 - la connessione alla sorgente è già chiusa.
 
 I passi sono:
-1. `roles.sql` viene applicato. L'unico errore ammesso è `role "<bootstrap>" already exists`.
+1. `roles.sql` viene applicato, **meno** le sole impostazioni dei ruoli gestiti da Aiven in allowlist (sezione seguente). L'unico errore ammesso è `role "<bootstrap>" already exists`.
 2. Si crea il database `defaultdb` con l'owner sorgente.
 3. Le istruzioni a livello di database di `database.sql` (`ALTER DATABASE … SET`, `ALTER ROLE … IN DATABASE … SET`, `GRANT`/`REVOKE … ON DATABASE`) vengono rieseguite sul database ripristinato, con `ON_ERROR_STOP`. `CREATE DATABASE` e `CREATE`/`COMMENT ON EXTENSION` non vengono rieseguiti; qualunque altra istruzione inattesa fa fallire il job (`DATABASE_SQL_UNEXPECTED_STATEMENT`).
 4. `pg_restore --exit-on-error --single-transaction`.
@@ -77,6 +79,33 @@ Un exit code 0 di `pg_restore` **non basta**. Il job fallisce, prima di cifrare,
 - database: owner, ACL e tutte le impostazioni `pg_db_role_setting` (`ALTER DATABASE … SET` e `ALTER ROLE … IN DATABASE … SET`);
 - ruoli (nomi e attributi `LOGIN`, `CREATEROLE`, …) e membership, confrontati con il catalogo sorgente;
 - per ogni tabella: `SELECT` reale, numero di righe e hash del contenuto (SHA-256 delle righe ordinate).
+
+### Ruoli gestiti da Aiven nel restore-test (FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX)
+Il run 43870519736 (main `5e6bc1d`) è fallito con `ROLES_SQL_APPLY_FAILED class=INVALID_SETTING`: `roles.sql` di Aiven contiene `ALTER ROLE _aiven|_aiven_repl|postgres SET avn_wal_sender_stop_timeout TO …`, un parametro che esiste solo nella build di Aiven. Un PostgreSQL 18 standard lo rifiuta (`unrecognized configuration parameter`). I nomi con il punto (`pgaudit.log`, `pg_stat_statements.track`, `timescaledb.disable_load`, `extwlist.extensions`, …) invece sono accettati come placeholder quando il modulo non è caricato (verificato su PostgreSQL 18.6).
+
+**Solo nel restore-test isolato**, e solo per coppie esatte (ruolo, parametro), l'istruzione `ALTER ROLE <ruolo> SET <parametro> TO …;` **non viene rieseguita**. L'allowlist (`AIVEN_MANAGED_ROLE_SETTINGS` in `scripts/fcb_db_backup.py`) usa nomi esatti, mai prefissi:
+
+| ruolo | parametri saltati |
+|---|---|
+| `_aiven`, `_aiven_repl`, `postgres` | `avn_wal_sender_stop_timeout`, `default_transaction_isolation`, `default_transaction_read_only`, `pg_stat_monitor.pgsm_track`, `pg_stat_plans.track`, `pg_stat_statements.track`, `pgaudit.log`, `timescaledb.disable_load` |
+| `_avnadmin_monitor` | `extwlist.extensions`, `pg_stat_monitor.pgsm_track`, `pg_stat_plans.track`, `pg_stat_statements.track`, `pgaudit.log` |
+
+Sono le impostazioni osservate in sola lettura sul servizio di produzione. Si saltano tutte, non solo quella che fallisce: sono configurazione del provider, e `default_transaction_*` su `postgres` cambierebbe le sessioni del bootstrap del cluster di restore stesso.
+
+Cosa viene **ricreato e confrontato** come prima:
+- **ogni** ruolo, compresi quelli di Aiven (`_aiven`, `_aiven_repl`, `_aiven_rewind`, `_avnadmin_auditing`, `_avnadmin_managed`, `_avnadmin_monitor`, `postgres`), con i suoi attributi;
+- tutte le membership con grantor e opzioni (per esempio `avnadmin` ∈ `avnadmin_group` ∈ `_avnadmin_managed`), owner, ACL e dipendenze che citano un ruolo gestito;
+- tutte le altre impostazioni di ruolo, comprese quelle di un ruolo gestito su un parametro fuori allowlist.
+
+Cosa viene **saltato**: solo le istruzioni delle coppie in tabella. Il confronto dei ruoli toglie le stesse coppie, in modo simmetrico, dalla `rolconfig` di sorgente e restore; il `manifest.json` cifrato conserva la `rolconfig` completa della sorgente (`roles`) e l'elenco delle coppie saltate (`restore_test_skipped_role_settings`). La riga di summary `roles_sql_aiven_managed_settings_skipped_in_restore_test` riporta **solo** `skipped=<N> sha256=<digest>` (ratifica dell'owner FCB-WP009-PR204-F5-RUNBOOK): nessun nome di ruolo, nessun nome di parametro, nessun valore. L'elenco delle coppie sta solo nel `manifest.json` cifrato (`restore_test_skipped_role_settings`, più `restore_test_skipped_role_settings_sha256`); il leak check rifiuta un summary che nomini un parametro dell'allowlist o i ruoli `_aiven`/`_aiven_repl` (`SUMMARY_NAMES_MANAGED_ROLE_SETTINGS`).
+
+**Digest.** `sha256` è lo SHA-256 (esadecimale) dei byte UTF-8 di `json.dumps(sorted([[ruolo, parametro], …]), ensure_ascii=True, separators=(",", ":"))`, per esempio `[["_aiven","avn_wal_sender_stop_timeout"],["_aiven","default_transaction_isolation"],…]`; senza coppie è lo SHA-256 di `[]` (`skipped=0 sha256=4f53cda1…`). Non dipende dall'ordine e cambia se una coppia viene aggiunta, tolta o modificata. Sul servizio osservato: `skipped=29`.
+
+Decisioni di progetto:
+- `avnadmin` è il ruolo applicativo (owner di `defaultdb` e delle tabelle): le sue impostazioni non si saltano mai.
+- `avnadmin_group`, `_aiven_rewind`, `_avnadmin_auditing` e `_avnadmin_managed` non hanno impostazioni osservate, quindi non sono nell'allowlist delle impostazioni: un'impostazione che compaia su di loro viene rieseguita e confrontata come quella di un ruolo applicativo.
+- Un nome simile (`_aiven_x`, `_avnadmin_evil`, `"_AIVEN"`), una grafia diversa da quella di `pg_dumpall` (`"_aiven"` tra virgolette), una variante `IN DATABASE` o un parametro fuori allowlist non vengono mai saltati: se il parametro è sconosciuto il job fallisce con `ROLES_SQL_APPLY_FAILED class=INVALID_SETTING`, come prima.
+- `roles.sql` viene letto con un lexer esatto delle istruzioni (stringhe `'…'` ed `E'…'`, identificatori `"…"`, commenti `--`, righe `\restrict`/`\unrestrict`): un valore con `;` o a capo non sposta mai il confine di un'istruzione. Quello che il lexer non sa classificare (dollar quoting, commenti `/* */`, backslash fuori da una stringa, istruzione o stringa non terminata, impostazione duplicata) fa fallire il job con `ROLES_SQL_UNPARSEABLE`.
 
 ### Pacchetto
 Il pacchetto è un tar con:
@@ -133,7 +162,7 @@ Gli altri segreti sono quelli già usati dai workflow di `defaultdb`: `FCB_DEFAU
 - `## FCB defaultdb encrypted backup: PASS`;
 - una tabella in cui **ogni** riga è `PASS`, tra cui:
   - `source_guard_catalog_only`, `sequences_stable_during_dump`;
-  - `roles_sql_without_passwords`, `roles_names_attributes_match_source`, `role_memberships_match_source`;
+  - `roles_sql_without_passwords`, `roles_sql_aiven_managed_settings_skipped_in_restore_test` (in produzione: `skipped=29 …`), `roles_names_attributes_match_source`, `role_memberships_match_source`;
   - `pg_restore_exit_on_error`, `restore_catalog_counts`, `restore_structure`, `restore_schema_migrations_1_8`;
   - `restore_functions`, `restore_sequences_last_value_is_called`, `restore_owners`, `restore_acls_normalized`;
   - `database_sql_applied`, `restore_database_owner_acl_settings`;
@@ -141,7 +170,7 @@ Gli altri segreti sono quelli già usati dai workflow di `defaultdb`: `FCB_DEFAU
   - `decrypt_roundtrip_plaintext_sha256`, `tampered_ciphertext_rejected`;
   - `plaintext_deleted_before_upload`, `artifact_dir_only_ciphertext_and_sha256`;
 - in fondo: `encrypted_file`, `encrypted_sha256`, `encrypted_bytes`, `plaintext_sha256`, `plaintext_bytes`, `excluded_schemas` (un numero), `extensions` (un numero), versioni, `source_commit`, `created_at_utc`;
-- il summary non contiene conteggi per tabella né nomi di schema o di ruolo: i conteggi e gli hash per tabella stanno solo nel `manifest.json` cifrato. In caso di differenza il summary riporta solo i **nomi** delle tabelle (`mismatched=…`);
+- il summary non contiene conteggi per tabella né nomi di schema o di ruolo (le impostazioni gestite saltate compaiono solo come `skipped=N sha256=…`): i conteggi e gli hash per tabella stanno solo nel `manifest.json` cifrato. In caso di differenza il summary riporta solo i **nomi** delle tabelle (`mismatched=…`);
 - lo step "Leak check" stampa `leak check: PASS (summary and artifact directory)`;
 - un artifact `fcb-defaultdb-backup-<run_id>-<attempt>` con esattamente due file.
 
@@ -154,9 +183,27 @@ Qualunque `FAIL` significa nessun artifact e plaintext già eliminato. Il summar
 - `PUBLIC_OBJECT_NOT_OWNED_BY_SESSION_USER`;
 - `UNEXPECTED_SCHEMA`;
 - `SEQUENCE_MOVED_DURING_DUMP`: rilancia in un momento senza scritture;
-- `ROLES_SQL_APPLY_FAILED class=…`;
+- i codici dei ruoli, in tre famiglie (dettaglio in "Errori dei ruoli" qui sotto): `ROLES_SQL_UNPARSEABLE`, `ROLES_SQL_APPLY_FAILED class=INVALID_SETTING|META_COMMAND_REFUSED|OTHER|…`;
 - `EXTENSION_OUTSIDE_PUBLIC`;
 - `restore_rows_per_table … mismatched=<tabella>`.
+
+### Errori dei ruoli
+**(a) Errore nel file esportato** (`roles.sql` non ha la forma di `pg_dumpall`; nessun comando arriva a psql): `ROLES_SQL_UNPARSEABLE`. Motivi:
+- meta-comandi psql diversi dalla coppia di `pg_dumpall` (`\!`, `\i`, `\set`, `\c`, `\connect`, …) o un separatore `\\` su una riga meta;
+- coppia `\restrict <key>` / `\unrestrict <key>` mancante, doppia, con chiavi diverse, con una chiave che non è di 63 caratteri alfanumerici, con testo in più sulla riga, o con istruzioni prima di `\restrict` o dopo `\unrestrict`;
+- un'istruzione che nomina `standard_conforming_strings` diversa da esattamente `SET standard_conforming_strings = on;`;
+- sintassi non supportata dal lexer: dollar quoting, commenti `/* */`, backslash fuori da una stringa, stringa, identificatore o istruzione non terminati, una stessa impostazione gestita ripetuta.
+
+**(b) Compatibilità con Aiven** (il file è corretto, ma il PostgreSQL standard del restore-test non accetta qualcosa del provider): `ROLES_SQL_APPLY_FAILED class=INVALID_SETTING`, per un parametro sconosciuto fuori allowlist (per esempio un nuovo parametro `avn_*`, o un parametro sconosciuto su un ruolo applicativo o su un nome simile come `_aiven_x`). Richiede una PR dell'owner che aggiorni l'allowlist, mai un aggiramento.
+
+**(c) Fallimento del restore isolato** (psql rifiuta o non esegue qualcosa nel cluster di restore):
+- `ROLES_SQL_APPLY_FAILED class=META_COMMAND_REFUSED`: psql ha rifiutato un comando backslash (`backslash commands are restricted`, `invalid command`); qualunque riga `error:` del client psql fa fallire il job anche con exit code 0;
+- `ROLES_SQL_APPLY_FAILED class=OTHER` (o un'altra classe fissa, per esempio `PERMISSION_DENIED`, `ALREADY_EXISTS`): qualunque altro errore; l'unico ammesso è `role "<bootstrap>" already exists`;
+- `ROLES_MISMATCH`, `ROLES_SQL_INCOMPLETE`: ruoli, attributi o membership ripristinati diversi dalla sorgente.
+
+**P3 residui accettati dall'owner:**
+- il controllo su `standard_conforming_strings` è testuale: un aggiramento con `U&'…'` o `set_config(…)` richiederebbe un'istruzione di primo livello iniettata nel file, che `pg_dumpall` non produce; il file viene comunque dal `pg_dumpall` del workflow nella stessa esecuzione;
+- un valore in allowlist che contenga un backslash (scritto `E'…'`) non ha la forma attesa: non viene saltato, viene rieseguito e, se il parametro è sconosciuto, il job fallisce in modo chiuso (`INVALID_SETTING`).
 
 Gli errori di `pg_dump`, `pg_dumpall`, `pg_restore` e `psql` non vengono **mai** stampati: possono citare righe di produzione (`DETAIL`, `CONTEXT`, `Command was`). Il log mostra solo il codice e una classe fissa, per esempio `PG_RESTORE_FAILED class=ALREADY_EXISTS`, `class=PERMISSION_DENIED`, `class=UNIQUE_VIOLATION`, `class=OTHER`. Per la diagnosi serve un'indagine dell'owner fuori dal workflow.
 
@@ -200,13 +247,27 @@ umask 077; mkdir restore && tar -xf fcb-defaultdb-<run>.tar -C restore
 #    -> defaultdb.dump  roles.sql  database.sql  manifest.json
 ```
 
+**Confronto del digest pubblico con il manifest** (impostazioni gestite saltate nel restore-test). Ricalcola il digest dall'elenco cifrato con la codifica canonica documentata sopra; i due numeri devono essere uguali a `skipped=N sha256=…` della riga `roles_sql_aiven_managed_settings_skipped_in_restore_test` del summary del run e a `restore_test_skipped_role_settings_sha256` del manifest. Se differiscono, il pacchetto non corrisponde al run: fermati e annota sulla #130.
+
+```
+python3 -I -c 'import json,hashlib; m=json.load(open("restore/manifest.json")); l=m["restore_test_skipped_role_settings"]; c=json.dumps(sorted(x.split(" ",1) for x in l),ensure_ascii=True,separators=(",",":")); print(f"skipped={len(l)} sha256={hashlib.sha256(c.encode()).hexdigest()}", m["restore_test_skipped_role_settings_sha256"])'
+```
+
+L'elenco stampa nomi di ruoli e parametri solo sulla macchina fidata: non incollarlo in issue, PR o chat.
+
 **A. Restore su un PostgreSQL 18 di cui sei superuser** (verifica o recovery locale). È la procedura dei test.
 
 ```
 # il bootstrap del cluster ha lo stesso nome del bootstrap sorgente (di solito postgres)
 initdb -D ./pgdata -U postgres -E UTF8 --locale=C.UTF-8 --auth=trust
 pg_ctl -D ./pgdata -o "-c listen_addresses='' -c unix_socket_directories=$PWD" start
-psql -h "$PWD" -U postgres -X -f restore/roles.sql
+# roles.sql di Aiven: togli SOLO le impostazioni gestite in allowlist (come il restore-test)
+grep -v -E '^ALTER ROLE (_aiven|_aiven_repl|postgres|_avnadmin_monitor) SET ' restore/roles.sql > restore/roles_local.sql
+diff restore/roles.sql restore/roles_local.sql | grep -c '^<'
+#    deve essere uguale al numero di voci di restore_test_skipped_role_settings nel manifest
+#    e allo skipped=N del summary del run
+#    (29 sul servizio osservato); se è diverso, fermati: c'è un valore su più righe o un parametro nuovo
+psql -h "$PWD" -U postgres -X -f restore/roles_local.sql
 #    unico errore atteso: role "postgres" already exists
 createdb -h "$PWD" -U postgres -T template0 -E UTF8 -O avnadmin defaultdb
 # istruzioni a livello di database (vedi sotto), poi gli oggetti
@@ -217,8 +278,10 @@ pg_restore --exit-on-error --single-transaction --no-statistics -h "$PWD" -U pos
 
 `-O avnadmin` indica l'owner del database sorgente. Lo trovi in `database.sql` (`ALTER DATABASE … OWNER TO …`). Se ripristini con un nome di database diverso da `defaultdb`, sostituisci il nome in `database_replay.sql`.
 
+Su un PostgreSQL standard le impostazioni saltate non hanno effetto (moduli Aiven assenti); `default_transaction_*` di `postgres` non va riapplicato al bootstrap locale.
+
 **B. Restore su un nuovo servizio Aiven** (`avnadmin` non è superuser; ASSUMED, non testato su Aiven):
-1. Come `avnadmin` crea solo i ruoli applicativi che il dump referenzia e che non esistono, per esempio `fcb_app`, `fcb_migrator` e `fcb_signer`, con gli attributi indicati in `roles.sql`. Non eseguire `roles.sql` per intero: i ruoli gestiti da Aiven esistono già o non sono creabili.
+1. Come `avnadmin` crea solo i ruoli applicativi che il dump referenzia e che non esistono, per esempio `fcb_app`, `fcb_migrator` e `fcb_signer`, con gli attributi indicati in `roles.sql`. **Non eseguire `roles.sql` per intero.** Su un servizio Aiven i ruoli `_aiven`, `_aiven_repl`, `_aiven_rewind`, `_avnadmin_auditing`, `_avnadmin_managed`, `_avnadmin_monitor`, `postgres`, `avnadmin` e `avnadmin_group` esistono già e appartengono al provider: le loro `CREATE ROLE`/`ALTER ROLE … WITH`, le loro impostazioni `ALTER ROLE … SET` e le membership tra di loro (per esempio `GRANT _avnadmin_managed TO avnadmin_group`) **non si rieseguono** (fallirebbero o modificherebbero la configurazione del provider). Estrai da `roles.sql` solo le istruzioni il cui ruolo **non** è in quell'elenco (nome esatto, non prefisso), più le `GRANT` che hanno un ruolo applicativo come membro o come ruolo concesso; rileggile e applicale con `ON_ERROR_STOP=1`. Poi confronta le membership con `memberships` del manifest.
 2. Applica `database_replay.sql` (come in A) per le istruzioni che `avnadmin` può eseguire: `ALTER DATABASE … SET`, `GRANT`/`REVOKE … ON DATABASE`, `ALTER ROLE … IN DATABASE … SET` sui ruoli che amministra.
 3. Lancia `pg_restore --exit-on-error --single-transaction --no-statistics -d defaultdb restore/defaultdb.dump` come `avnadmin`, con `PGSSLMODE=verify-full` e la CA del nuovo servizio.
 4. Imposta **nuove password** con il workflow dei ruoli WP-009 (fase 1 o rotazione), mai a mano in chat.
@@ -236,10 +299,14 @@ Alla fine **elimina** tar, cartella `restore/` e cluster locale. Il `.tar.age` s
 ## 5. Limiti del rollback (da leggere prima di contarci)
 
 - **Nessuna password dei ruoli.** `--no-role-passwords` esclude password e hash. Dopo un restore servono password nuove: workflow ruoli, segreti, Render.
-- **Ruoli gestiti da Aiven** (`avnadmin`, `_avnadmin_monitor`, `postgres` e gli altri interni):
-  - compaiono in `roles.sql` solo come riferimento;
+- **Ruoli gestiti da Aiven** (`_aiven`, `_aiven_repl`, `_aiven_rewind`, `_avnadmin_auditing`, `_avnadmin_managed`, `_avnadmin_monitor`, `postgres`, e `avnadmin`/`avnadmin_group` creati dal provider):
+  - compaiono in `roles.sql` completi, con attributi, membership e impostazioni;
   - su Aiven non si ricreano né si modificano;
   - lo schema `_avnadmin_monitor` è escluso dal dump.
+- **Limiti della verifica dei ruoli gestiti.** Il restore-test gira su PostgreSQL standard:
+  - attributi e membership dei ruoli gestiti sono ricreati e confrontati, ma le **impostazioni in allowlist non sono verificate** (non rieseguite, escluse dal confronto su entrambi i lati): il backup dimostra solo che sono nel `roles.sql` salvato;
+  - il restore-test non può dimostrare che quelle impostazioni si riapplichino su un nuovo servizio Aiven, né che i ruoli gestiti abbiano lì gli stessi attributi: li crea il provider;
+  - un nuovo parametro o un nuovo ruolo di servizio che Aiven aggiunga in futuro **non** è in allowlist: il job fallisce in modo chiuso (`INVALID_SETTING`) finché l'owner non approva un aggiornamento esplicito dell'allowlist con una PR.
 - **Cosa non è catturato:**
   - stato del servizio Aiven (piano, `ip_filter`, termination protection, utenti del pannello);
   - estensioni fuori da `public`: il backup le rifiuta (`EXTENSION_OUTSIDE_PUBLIC`); un'estensione in `public` è nel dump ma deve essere disponibile sul server di destinazione;
@@ -255,3 +322,4 @@ Alla fine **elimina** tar, cartella `restore/` e cluster locale. Il `.tar.age` s
 - Il backup dopo la fase 2 di WP-009, cioè con il bridge di `fcb_migrator` (stati 0009 e 0010), richiede un'identità diversa (`fcb_migrator`) e nuovi valori fissati: serve una nuova decisione.
 - Il test di integrazione PG18 richiede i binari server di PostgreSQL 18 (`initdb`), che la CI attuale non installa. Senza una modifica alla CI, decisa dall'owner, in CI viene saltato.
 - Frequenza dei backup, numero di copie su Drive e rotazione della passphrase.
+- Ruoli gestiti da Aiven: un helper che produca la versione filtrata di `roles.sql` per la recovery (oggi un `grep` manuale con controllo del conteggio) è una possibile evoluzione.
