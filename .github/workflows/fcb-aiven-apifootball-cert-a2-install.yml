@@ -7,10 +7,13 @@ name: FCB Aiven API-FOOTBALL cert ledger A2 install (owner-gated)
 #   step 1 (defaultdb, one tx, administrator): roles fcb_cert_owner NOLOGIN and fcb_cert_runner LOGIN
 #          (SCRAM verifier computed here, never the cleartext on the server) + the runner's explicit
 #          USAGE on schema public (WP-009 phase 1 revoked it from PUBLIC);
+#   step 1a (defaultdb, one tx, administrator): the EMPTY schema fcb_cert_quota owned by the owner of
+#          the coordinator tables (variant R1, owner decision D2);
 #   step 1b (defaultdb, one tx, AS fcb_migrator = owner of the coordinator tables after WP-009
-#          phase 2): EXACTLY the runner's quota coordinator grant (9 privileges on the 3
-#          api_football_quota_* tables), asserted. Post-WP-009 only: the precheck refuses unless
-#          FCB_MIGRATOR_DB_URL logs in as fcb_migrator and fcb_migrator owns the coordinator tables;
+#          phase 2): the four SECURITY DEFINER quota functions fcb_cert_quota.* (EXECUTE and schema
+#          USAGE to fcb_cert_runner only; NO table or column privilege of the runner), asserted.
+#          Post-WP-009 only: the precheck refuses unless FCB_MIGRATOR_DB_URL logs in as fcb_migrator
+#          and fcb_migrator owns the coordinator tables;
 #   step 2: CREATE DATABASE fcb_cert OWNER fcb_cert_owner (temporary SET grant revoked in finally);
 #   step 3 (fcb_cert, one tx): bridge 0010 byte-for-byte AS fcb_cert_owner, runner grants, asserts,
 #          the administrator's temporary SET grant revoked and asserted before COMMIT.
@@ -21,7 +24,7 @@ name: FCB Aiven API-FOOTBALL cert ledger A2 install (owner-gated)
 # superuser, CREATEROLE, not an fcb_cert role). apply runs the installer TWICE: the second run must
 # leave the catalog evidence unchanged (no-op). mode=rotate-runner (phrase ROTATE fcb_cert_runner
 # PASSWORD) re-runs step 1 only with the new FCB_CERT_RUNNER_DB_PASSWORD (no re-grant) and asserts
-# the exact grant set in the same transaction. No DROP anywhere; rollback = stop dispatching the
+# the exact R1 state in the same transaction. No DROP anywhere; rollback = stop dispatching the
 # campaign workflow (the append-only ledger stays as evidence). Nothing dispatches this automatically.
 on:
   workflow_dispatch:
@@ -59,12 +62,13 @@ jobs:
       # SHA-256 of every file this workflow runs (tests/test_apifootball_cert_a2_workflows.py).
       EXPECTED_FILE_SHA256: |
         sql/aiven/apifootball_cert_path_a_roles.sql=ae7f11c4e88d458b5e46ac28d915019b6d0ee495ecb86c2fe53a141f8c4ed6c2
-        sql/aiven/apifootball_cert_path_a_coordinator_grants.sql=e95765f8abaed49c95e132fb29d9d1cd3af8fe2b3db266e5509137563e9378b1
-        sql/aiven/apifootball_cert_path_a_coordinator_assert.sql=6c944e6a274153a12a208abe5951b9c3ee4e32b76b8014bf3a147cc07e119095
+        sql/aiven/apifootball_cert_path_a_quota_schema.sql=b323793b5839c52f3b81b6e52f49b3a86231d3bb87f8cdce9c6ca7d8b5d40c9c
+        sql/aiven/apifootball_cert_path_a_quota_functions.sql=ee6140d09927b9f2535b51e22b4fc4fb4149cab4f910ac746d06941a162384d3
+        sql/aiven/apifootball_cert_path_a_quota_assert.sql=7339a9ffcd1ac60b2a21bd6dbf832d8bdb08292ce1b878537ed08619363f3682
         sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
         sql/aiven/apifootball_cert_path_a_ledger_post.sql=8d9bf2565fa11864bb9a0a48a07fbf425111cbfa8077c9ae8048c356072d0fdc
         sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql=64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8
-        scripts/apifootball_cert_path_a.py=59d34dd6bc0b98672bad51951a79f0500360f5d92c801e195604916138346ace
+        scripts/apifootball_cert_path_a.py=d8809f3df52edcdb6c8b40b1c6b43dfd2d9a746c0567fa5e9ffff143abfdd553
         scripts/fcb_db_roles.py=1a48c678934f91d14acfb10711884e64b3ba4c06578c3473eca28cebdce349b9
         scripts/aiven_pg18_diag.py=825235c2b70126f438343efd61ab6805b1b498848cb294ee1efa494e8812d8e6
       PGCONNECT_TIMEOUT: '15'
@@ -123,7 +127,7 @@ jobs:
             test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" || { echo "::error::pinned SHA-256 mismatch: $path"; exit 1; }
             n=$((n + 1))
           done <<< "$EXPECTED_FILE_SHA256"
-          test "$n" -eq 9
+          test "$n" -eq 10
           python3 -m pip install --quiet 'psycopg[binary]==3.3.6'
 
       - name: Fail closed if a protected input is missing
