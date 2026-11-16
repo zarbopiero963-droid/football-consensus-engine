@@ -197,3 +197,14 @@ def test_metadata_chain_id_must_be_an_exact_int(value):
     meta = json.loads(json.dumps(META))
     meta["data"]["domain"]["chainId"] = value
     assert cert.preflight(env_for(), lambda url: meta)["results"]["toronto_metadata"]["outcome"] == "FAIL"
+
+
+
+def test_exit_code_requires_the_exact_check_set():
+    """Review b7dc624 P3-7: a 'ready' report with missing checks is never 0."""
+    assert cert.exit_code({"ready_for_send": True, "results": {}}) != 0
+    ok = cert.preflight(env_for(), lambda url: META)
+    partial = dict(ok, results={k: v for k, v in ok["results"].items() if k != "risk_config"})
+    assert cert.exit_code(partial) != 0
+    wf = WORKFLOW.read_text(encoding="utf-8")
+    assert '{"toronto_metadata","makers","risk_config"}' in wf

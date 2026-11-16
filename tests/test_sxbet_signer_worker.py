@@ -81,7 +81,11 @@ def test_unknown_kill_switch_state_fails_closed(tmp_path):
             raise OSError("ledger")
     svc = FakeService()
     r = worker(tmp_path, svc, kill=Broken()).run_cycle()
-    assert "process_once" not in svc.calls and r["kill_switch_engaged"] is True
+    assert "process_once" not in svc.calls
+    # review 44583a5 P3-1 (declared change): an unreadable switch is UNKNOWN and a failed stage, not "engaged"
+    assert r["kill_switch_engaged"] == "UNKNOWN"
+    assert r["stages"]["kill_switch_read"] == {"ok": False, "error_type": "OSError"}
+    assert r["consecutive_failures"] == 1
 
 
 def test_a_failing_stage_is_isolated_and_reported_by_type_only(tmp_path):
@@ -177,3 +181,50 @@ def test_end_to_end_worker_places_reconciles_and_stops_on_kill_switch(tmp_path):
     posts = [x for x in s.sim.writes() if x.method == "POST"]
     assert len(posts) == 1                                     # only the first order ever left
     w.close()
+
+
+# ---------------------------------------------------------------- review 44583a5 P3 fixes
+@pytest.mark.parametrize("kw", [{"interval_seconds": True}, {"interval_seconds": 5, "max_cycles": 0},
+                                {"interval_seconds": 5, "max_cycles": -1}, {"interval_seconds": 5, "max_cycles": True}])
+def test_scheduler_settings_are_exact(tmp_path, kw):
+    with worker(tmp_path) as w, pytest.raises(WorkerError):
+        w.run(**kw)
+
+
+def test_unopenable_lock_path_is_a_fixed_code_without_the_path(tmp_path):
+    with pytest.raises(WorkerError) as e:
+        SignerWorker(FakeService(), FakeMonitor(), FakeKill(), lock_path=str(tmp_path / "missing" / "w.lock"))
+    assert e.value.code == "WORKER_LOCK_UNAVAILABLE" and "missing" not in str(e.value)
+
+
+def test_context_manager_releases_the_lock(tmp_path):
+    with worker(tmp_path):
+        pass
+    worker(tmp_path).close()
+
+
+def test_non_bool_kill_state_fails_closed(tmp_path):
+    svc = FakeService()
+    r = worker(tmp_path, svc, kill=FakeKill(engaged="no")).run_cycle()
+    assert "process_once" not in svc.calls and r["kill_switch_engaged"] == "UNKNOWN"
+
+
+def test_kill_switch_on_another_ledger_is_refused(tmp_path):
+    class L:
+        def __init__(self, i):
+            self.ledger_id = i
+
+    class K(FakeKill):
+        _ledger = L("a")
+
+    class S(FakeService):
+        class _signer:
+            _ledger = L("b")
+
+    class M(FakeMonitor):
+        _ledger = L("a")
+    with pytest.raises(WorkerError) as e:
+        worker(tmp_path, S(), M(), K())
+    assert e.value.code == "WORKER_LEDGER_MISMATCH"
+    S._signer._ledger = L("a")
+    worker(tmp_path, S(), M(), K()).close()

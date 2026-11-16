@@ -8,7 +8,12 @@ One `SignerWorker.run_cycle()` composes the existing, already-reviewed parts in 
    only READ the exchange (by construction);
 3. `SignerService.sync_outcomes()`: final states learnt by step 2 are mirrored to the request queue;
 4. `SignerService.process_once()`: new owner requests. This step is SKIPPED while the persistent kill switch
-   is engaged; steps 1-3 keep running so open exposure is still reconciled.
+   is engaged or unreadable; steps 1-3 keep running so open exposure is still reconciled.
+
+Note on step 1: `recover()` may re-run a PLACE request that was claimed but never reached the ledger. That path
+still goes through `Signer.sign_order` and the gateway, which re-check the kill switch under their own locks:
+while it is engaged such a request is refused (KILL_SWITCH_ENGAGED), never sent. The worker's own check is
+defence in depth, not the only barrier.
 
 Each step is isolated: an exception in one is recorded with its type only and the others still run. After
 `max_consecutive_failures` cycles in a row with a failing step, the worker ENGAGES the persistent kill switch
@@ -57,12 +62,22 @@ class SignerWorker:
         self._batch = batch
         self._failures = 0
         self._stop = False
-        self._lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        _same_ledger(service, monitor, kill_switch)
+        try:
+            self._lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            raise WorkerError("WORKER_LOCK_UNAVAILABLE") from None          # fixed code, no path (§2.1)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             os.close(self._lock_fd)
             raise WorkerError("WORKER_ALREADY_RUNNING") from None
+
+    def __enter__(self) -> "SignerWorker":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
     def close(self) -> None:
         if self._lock_fd is not None:
@@ -94,10 +109,15 @@ class SignerWorker:
         tick = self._stage(report, "monitor_tick", self._monitor.tick)
         synced = self._stage(report, "sync_outcomes", self._service.sync_outcomes)
         try:
-            engaged = bool(self._kill.engaged)
-        except Exception:
+            engaged = self._kill.engaged
+            if type(engaged) is not bool:
+                raise TypeError("kill switch state is not a bool")
+            report["kill_switch_engaged"] = engaged
+            report["stages"]["kill_switch_read"] = {"ok": True}
+        except Exception as exc:
             engaged = True                    # unknown kill-switch state: fail closed, no new order
-        report["kill_switch_engaged"] = engaged
+            report["kill_switch_engaged"] = "UNKNOWN"
+            report["stages"]["kill_switch_read"] = {"ok": False, "error_type": type(exc).__name__}
         if engaged:
             report["stages"]["process_once"] = {"ok": True, "skipped": "KILL_SWITCH_ENGAGED"}
             processed = []
@@ -123,8 +143,10 @@ class SignerWorker:
     def run(self, *, interval_seconds: float, max_cycles: int | None = None,
             on_cycle: Callable[[dict[str, Any]], None] | None = None) -> int:
         """Scheduler: one cycle every `interval_seconds` until stop() or `max_cycles`. Returns cycles run."""
-        if not (isinstance(interval_seconds, (int, float)) and 1 <= interval_seconds <= 3600):
+        if type(interval_seconds) not in (int, float) or not 1 <= interval_seconds <= 3600:
             raise WorkerError("WORKER_INTERVAL_INVALID")
+        if max_cycles is not None and (type(max_cycles) is not int or max_cycles < 1):
+            raise WorkerError("WORKER_MAX_CYCLES_INVALID")
         cycles = 0
         while not self._stop and (max_cycles is None or cycles < max_cycles):
             report = self.run_cycle()
@@ -135,6 +157,17 @@ class SignerWorker:
                 break
             self._sleep(interval_seconds)
         return cycles
+
+
+def _same_ledger(service: Any, monitor: Any, kill_switch: Any) -> None:
+    """The kill switch the worker engages must be the one the signer and the monitor enforce (review P3-5)."""
+    kill_ledger = getattr(kill_switch, "_ledger", None)
+    if kill_ledger is None:
+        return                                        # test doubles without a ledger
+    others = (getattr(getattr(service, "_signer", None), "_ledger", None), getattr(monitor, "_ledger", None))
+    ids = {getattr(x, "ledger_id", None) for x in (kill_ledger, *others)}
+    if None in ids or len(ids) != 1:
+        raise WorkerError("WORKER_LEDGER_MISMATCH")
 
 
 __all__ = ["DEFAULT_MAX_CONSECUTIVE_FAILURES", "STAGES", "SignerWorker", "WorkerError"]

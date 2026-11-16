@@ -133,10 +133,13 @@ def main() -> int:
     return exit_code(report)
 
 
+CHECKS = ("toronto_metadata", "makers", "risk_config")
+
+
 def exit_code(report: dict) -> int:
     """0 ONLY when every check PASSed (ready_for_send). 1 on any FAIL, 2 when something is NOT_CONFIGURED.
     A non-ready preflight must never let a dependent job run (fail closed)."""
-    if report.get("ready_for_send") is True and all(
+    if report.get("ready_for_send") is True and set(report["results"]) == set(CHECKS) and all(
             r.get("outcome") == "PASS" for r in report["results"].values()):
         return 0
     if any(r.get("outcome") == "FAIL" for r in report["results"].values()):
