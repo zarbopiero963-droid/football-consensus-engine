@@ -511,7 +511,15 @@ def test_toronto_sender_is_the_only_concrete_sender_and_cannot_reach_mainnet():
     (send,) = [f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "send"]
     calls = {ast.unparse(c.func) for c in ast.walk(send) if isinstance(c, ast.Call)}
     assert calls <= {"_route", "TorontoGuardError", "_no_mainnet", "_check_body", "self._transport", "tuple",
-                     "SenderTimeout", "type", "RestResponse"}, calls
+                     "SenderTimeout", "type", "RestResponse", "verify_toronto_config", "all", "json.dumps",
+                     "json.dumps(request.body, sort_keys=True, separators=(',', ':'), ensure_ascii=True, "
+                     "allow_nan=False).encode", "json.loads", "_mainnet_chain"}, calls
+    # "POST" / "DELETE" appear ONLY inside the ROUTES allowlist (review 151b2ed P3).
+    routes = next(n for n in tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "ROUTES")
+    inside = {id(c) for c in ast.walk(routes) if isinstance(c, ast.Constant)}
+    stray = [c.value for c in ast.walk(tree) if isinstance(c, ast.Constant) and c.value in ("POST", "DELETE")
+             and id(c) not in inside and c.value is not None]
+    assert stray.count("POST") <= 1 and "DELETE" not in stray, stray       # the one POST is the body-check branch
     urls = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
             and n.value.startswith("http")}
     assert urls == {"https://api.toronto.sx.bet"}, urls
@@ -531,9 +539,10 @@ def test_no_submission_code_in_signer_or_sxbet_module():
     # exempt from the "heartbeat" word ONLY; every other needle still applies to it, and it must not build or
     # send any request at all (stricter than the builders): no RestRequest(, no .send(, no POST/DELETE.
     builders = {ROOT / "signer" / "rest_adapter.py", ROOT / "signer" / "cancellation.py"}
-    # Intentional change (S8): signer/toronto_sender.py names "POST"/"DELETE" only in its route ALLOWLIST. It
-    # builds no request (no RestRequest() and calls no client library: the transport is injected; every other
-    # needle still applies, including "heartbeat").
+    # Intentional change (S8): signer/toronto_sender.py names "POST"/"DELETE" only in its route ALLOWLIST (checked
+    # structurally in test_toronto_sender_is_the_only_concrete_sender_and_cannot_reach_mainnet). It builds exactly
+    # one request, its own guarded GET /metadata/obv3, and calls no client library: the transport is injected;
+    # every other needle still applies, including "heartbeat".
     route_table = {ROOT / "signer" / "toronto_sender.py"}
     policy_only = {ROOT / "signer" / "monitor.py"}
     files = list((ROOT / "signer").rglob("*.py")) + list((ROOT / "bridge" / "sxbet").rglob("*.py"))
@@ -545,7 +554,9 @@ def test_no_submission_code_in_signer_or_sxbet_module():
         else:
             needles += ["RestRequest(", ".send(", "submit_orders(", "send_heartbeat"]
         if p in route_table:
-            needles += ["RestRequest(", "'POST'", "'DELETE'"]
+            needles += ["'POST'", "'DELETE'"]
+            # Exactly one request is built there: its own guarded GET /metadata/obv3 (review 151b2ed P2 fix).
+            assert src.count("RestRequest(") == 1 and 'RestRequest("GET", "/metadata/obv3", (), None)' in src
         elif p not in builders:
             needles += ['"POST"', '"DELETE"', "'POST'", "'DELETE'"]
         for needle in needles:

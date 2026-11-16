@@ -20,6 +20,7 @@ host, a method, query pairs, a JSON body and the API key header it adds itself.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Callable, Mapping
 
@@ -98,14 +99,32 @@ def _route(request: RestRequest) -> tuple[str, str, bool]:
 
 
 def _no_mainnet(value: Any) -> None:
-    text = repr(value).lower()
-    if any(m in text for m in MAINNET_MARKERS):
+    """Defence in depth only (the host and the order token are pinned): mainnet host / addresses, also without
+    0x or URL-encoded, and the mainnet chain id anywhere in the serialized request."""
+    text = _unquote(repr(value)).lower()
+    if any(m in text or m.removeprefix("0x") in text for m in MAINNET_MARKERS):
         raise TorontoGuardError("MAINNET_VALUE_IN_REQUEST")
 
 
-def _check_body(request: RestRequest, maker: str) -> None:
-    if request.method == "POST":
-        body = request.body if isinstance(request.body, Mapping) else None
+def _unquote(text: str) -> str:
+    return re.sub(r"%([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _mainnet_chain(obj: Any, depth: int = 0) -> bool:
+    """A `chainId` field equal to the mainnet chain anywhere in the body (structured: no false hits in hex)."""
+    if depth > 16:
+        return True
+    if isinstance(obj, Mapping):
+        return any((k == "chainId" and v in (MAINNET_CHAIN_ID, str(MAINNET_CHAIN_ID))) or _mainnet_chain(v, depth + 1)
+                   for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(_mainnet_chain(v, depth + 1) for v in obj)
+    return False
+
+
+def _check_body(method: str, body: Any, maker: str) -> None:
+    if method == "POST":
+        body = body if isinstance(body, Mapping) else None
         orders = body.get("orders") if body else None
         if not isinstance(orders, list) or not orders:
             raise TorontoGuardError("ORDER_BODY_MALFORMED")
@@ -119,42 +138,80 @@ def _check_body(request: RestRequest, maker: str) -> None:
 
 
 class TorontoRestSender:
-    """`transport(method, url, query, json_body, headers) -> (http_status, parsed_json_or_None)`; it raises
-    `TimeoutError` (or any exception) when it cannot tell whether the request arrived -> SenderTimeout."""
+    """Built ONLY from the signer process's own `Signer` (review 151b2ed P2): the domain checked is the one the signer
+    signs with (re-checked on every send, so a later config change stops the sender), the maker is the signer's
+    own EOA (SX Bet: the maker is the signing EOA), and /metadata/obv3 is fetched by the sender itself through the
+    guarded read path, never handed in by the caller.
 
-    def __init__(self, transport: Callable[..., tuple[int, Any]], *, config: Any, metadata: Any, maker: str,
-                 api_key: str, writes_enabled: bool = False):
-        verify_toronto_config(config)
-        verify_toronto_metadata(metadata)
-        if not isinstance(maker, str) or not _ADDRESS.fullmatch(maker.lower()):
+    Transport contract `transport(method, url, query, body_bytes, headers) -> (http_status, parsed_json_or_None)`:
+    - `url` is always "https://api.toronto.sx.bet" + a path that passed the route allowlist;
+    - `body_bytes` is the JSON body serialized ONCE here and checked in that exact form (or None);
+    - the transport must NOT follow redirects (the API key travels in a custom header) and must raise when it
+      cannot tell whether the request arrived (-> SenderTimeout, never "not sent").
+    Python cannot stop code running inside the signer process from mutating private attributes; the writes flag is
+    name-mangled and documented as such (review 151b2ed P3)."""
+
+    def __init__(self, signer: Any, transport: Callable[..., tuple[int, Any]], *, api_key: str,
+                 writes_enabled: bool = False, live_maker: str | None = None):
+        from .core import Signer, SignerConfig
+        if not isinstance(signer, Signer) or not isinstance(signer.config, SignerConfig):
+            raise TorontoGuardError("NOT_A_SIGNER")
+        verify_toronto_config(signer.config)
+        maker = str(signer.address).lower()
+        if not _ADDRESS.fullmatch(maker):
             raise TorontoGuardError("MAKER_INVALID")
-        _no_mainnet(maker)
+        if live_maker is not None and str(live_maker).lower() == maker:
+            # §2.6: the testnet key is never the live key (review 151b2ed P3).
+            raise TorontoGuardError("TESTNET_SIGNER_IS_THE_LIVE_MAKER")
         if not isinstance(api_key, str) or not api_key.strip():
             raise TorontoGuardError("API_KEY_MISSING")
         if writes_enabled is not True and writes_enabled is not False:
             raise TorontoGuardError("WRITES_FLAG_INVALID")
+        self._signer = signer
         self._transport = transport
-        self._maker = maker.lower()
+        self._maker = maker
         self._api_key = api_key
-        self._writes = writes_enabled
+        self.__writes = False
+        reply = self.send(RestRequest("GET", "/metadata/obv3", (), None))   # guarded read, writes still off
+        body = reply.body if isinstance(reply.body, Mapping) else {}
+        if reply.http_status != 200 or body.get("status") != "success":
+            raise TorontoGuardError("METADATA_UNAVAILABLE")
+        verify_toronto_metadata(body.get("data"))
+        self.__writes = writes_enabled
 
     @property
     def writes_enabled(self) -> bool:
-        return self._writes
+        return self.__writes
+
+    @property
+    def maker(self) -> str:
+        return self._maker
 
     def __repr__(self) -> str:  # never the key
-        return f"TorontoRestSender(base={TORONTO['base_url']!r}, writes_enabled={self._writes})"
+        return f"TorontoRestSender(base={TORONTO['base_url']!r}, writes_enabled={self.__writes})"
 
     def send(self, request: RestRequest) -> RestResponse:
+        if type(request.method) is not str or type(request.path) is not str:
+            raise TorontoGuardError("REQUEST_FIELDS_NOT_PLAIN_STRINGS")   # no str subclass tricks (P3)
+        verify_toronto_config(self._signer.config)                       # still the Toronto domain
         _, _, write = _route(request)
-        if write and not self._writes:
+        if write and not self.__writes:
             raise TorontoGuardError("SENDER_WRITES_DISABLED")        # nothing leaves: no testnet order authorized
-        _no_mainnet((request.path, request.query, request.body))
-        _check_body(request, self._maker)
-        url = TORONTO["base_url"] + request.path                       # only the pinned host, ever
-        headers = {"x-sx-api-key": self._api_key, "Accept": "application/json"}
+        query = tuple(request.query)
+        if not all(type(k) is str and type(v) is str for k, v in query):
+            raise TorontoGuardError("REQUEST_FIELDS_NOT_PLAIN_STRINGS")
+        body_bytes = None if request.body is None else json.dumps(
+            request.body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+        _no_mainnet((request.path, query, body_bytes))
+        parsed = json.loads(body_bytes) if body_bytes is not None else None
+        if _mainnet_chain(parsed):
+            raise TorontoGuardError("MAINNET_VALUE_IN_REQUEST")
+        _check_body(request.method, parsed, self._maker)
+        url = f"{TORONTO['base_url']}{request.path}"                     # only the pinned host, ever
+        headers = {"x-sx-api-key": self._api_key, "Accept": "application/json",
+                   "Content-Type": "application/json"}
         try:
-            status, body = self._transport(request.method, url, tuple(request.query), request.body, headers)
+            status, body = self._transport(request.method, url, query, body_bytes, headers)
         except Exception:
             # Cannot tell whether the exchange received it: never "not sent" (signer reconciles first).
             raise SenderTimeout() from None

@@ -8,12 +8,19 @@ import json
 
 import pytest
 
-from signer import rest_adapter as ra
-from signer.toronto_sender import (MAINNET_CHAIN_ID, TORONTO, TorontoGuardError, TorontoRestSender,
-                                   verify_toronto_config, verify_toronto_metadata)
-from sxbet_signer_kit import signer_config
+pytest.importorskip("eth_account")
+pytest.importorskip("cryptography")
 
-MAKER = "0x" + "4c" * 20
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
+from eth_account import Account  # noqa: E402
+
+from signer import rest_adapter as ra  # noqa: E402
+from signer.audit import AuditLog  # noqa: E402
+from signer.core import KEY_ENV, Signer  # noqa: E402
+from signer.toronto_sender import (MAINNET_CHAIN_ID, TORONTO, TorontoGuardError, TorontoRestSender,  # noqa: E402
+                                   verify_toronto_config, verify_toronto_metadata)
+from sxbet_signer_kit import Clock, load_limits, open_or_create_ledger, pub, signer_config  # noqa: E402
+
 KEY = "TORONTO-FAKE-KEY-0123456789"
 OID = "0x" + "ab" * 32
 META = {"chainId": TORONTO["chain_id"],
@@ -29,24 +36,36 @@ def toronto_config(**kw):
                                         "verifying_contract": TORONTO["escrow"], "base_token": TORONTO["usdc"], **kw})
 
 
+@pytest.fixture
+def toronto_signer(tmp_path):
+    """A REAL Signer bound to the Toronto domain, with a THROWAWAY key and owner (never funded, never used)."""
+    acct, owner, clock = Account.create(), Ed25519PrivateKey.generate(), Clock()
+    return Signer(toronto_config(), owner_public_key=pub(owner),
+                  ledger=open_or_create_ledger(tmp_path / "ledger.jsonl", acct.address, clock),
+                  audit=AuditLog(str(tmp_path / "audit.jsonl")), risk_config=load_limits(tmp_path, owner, network="testnet"),
+                  env={KEY_ENV: acct.key.hex()}, clock=clock)
+
+
 class FakeTransport:
-    def __init__(self, reply=(200, {"status": "success", "data": {}}), raise_=None):
+    def __init__(self, reply=(200, {"status": "success", "data": {}}), raise_=None, meta=None):
         self.calls, self.reply, self.raise_ = [], reply, raise_
+        self.meta = META if meta is None else meta
 
     def __call__(self, method, url, query, body, headers):
         self.calls.append((method, url, query, body, headers))
+        if url.endswith("/metadata/obv3"):
+            return 200, {"status": "success", "data": self.meta}
         if self.raise_:
             raise self.raise_
         return self.reply
 
 
-def sender(transport=None, **kw):
-    return TorontoRestSender(transport or FakeTransport(), config=toronto_config(), metadata=META, maker=MAKER,
-                             api_key=KEY, **kw)
+def make(signer, transport=None, **kw):
+    return TorontoRestSender(signer, transport or FakeTransport(), api_key=KEY, **kw)
 
 
-def order(**kw):
-    o = {"marketHash": "0x" + "11" * 32, "maker": MAKER, "baseToken": TORONTO["usdc"], "totalBetSize": "1000000",
+def order(maker, **kw):
+    o = {"marketHash": "0x" + "11" * 32, "maker": maker, "baseToken": TORONTO["usdc"], "totalBetSize": "1000000",
          "percentageOdds": "50000000000000000000", "salt": "0x" + "00" * 32, "expiry": 2_000_000_000,
          "isMakerBettingOutcomeOne": True, "timeInForce": "GTC", "orderSignature": "0x" + "aa" * 65}
     o.update(kw)
@@ -93,20 +112,50 @@ def test_live_metadata_that_differs_from_the_pinned_toronto_domain_stops_the_sen
     assert e.value.code == code
 
 
-@pytest.mark.parametrize("kw, code", [({"maker": "0x123"}, "MAKER_INVALID"), ({"api_key": ""}, "API_KEY_MISSING"),
-                                      ({"writes_enabled": "yes"}, "WRITES_FLAG_INVALID")])
-def test_constructor_refuses_bad_settings(kw, code):
-    args = dict(config=toronto_config(), metadata=META, maker=MAKER, api_key=KEY)
-    args.update(kw)
+def test_only_a_real_signer_bound_to_toronto_can_build_the_sender(toronto_signer, tmp_path):
     with pytest.raises(TorontoGuardError) as e:
-        TorontoRestSender(FakeTransport(), **args)
+        TorontoRestSender(toronto_config(), FakeTransport(), api_key=KEY)
+    assert e.value.code == "NOT_A_SIGNER"
+    s = make(toronto_signer)
+    assert s.maker == toronto_signer.address.lower() and s.writes_enabled is False
+
+
+@pytest.mark.parametrize("kw, code", [({"api_key": ""}, "API_KEY_MISSING"), ({"writes_enabled": "yes"},
+                                      "WRITES_FLAG_INVALID")])
+def test_constructor_refuses_bad_settings(toronto_signer, kw, code):
+    with pytest.raises(TorontoGuardError) as e:
+        TorontoRestSender(toronto_signer, FakeTransport(), **{"api_key": KEY, **kw})
     assert e.value.code == code
 
 
-# ---------------------------------------------------------------- per-request guards
-def test_reads_go_only_to_the_pinned_host_with_the_key_header():
+def test_the_live_maker_can_never_be_the_testnet_signer(toronto_signer):
+    with pytest.raises(TorontoGuardError) as e:
+        make(toronto_signer, live_maker=toronto_signer.address.upper().replace("0X", "0x"))
+    assert e.value.code == "TESTNET_SIGNER_IS_THE_LIVE_MAKER"
+
+
+def test_metadata_is_fetched_by_the_sender_through_the_guarded_read(toronto_signer):
     t = FakeTransport()
-    s = sender(t)
+    make(toronto_signer, t)
+    assert t.calls[0][:2] == ("GET", "https://api.toronto.sx.bet/metadata/obv3")
+    bad = json.loads(json.dumps(META))
+    bad["chainId"] = 4162
+    with pytest.raises(TorontoGuardError) as e:
+        make(toronto_signer, FakeTransport(meta=bad))
+    assert e.value.code == "METADATA_CHAIN_NOT_TORONTO"
+
+
+def test_a_later_config_change_stops_the_sender(toronto_signer):
+    s = make(toronto_signer)
+    toronto_signer.config = dataclasses.replace(toronto_signer.config, chain_id=4162)
+    with pytest.raises(TorontoGuardError):
+        s.send(ra.RestRequest("GET", f"/orders-v3/{OID}", (), None))
+
+
+# ---------------------------------------------------------------- per-request guards
+def test_reads_go_only_to_the_pinned_host_with_the_key_header(toronto_signer):
+    t = FakeTransport()
+    s = make(toronto_signer, t)
     for req in (ra.RestRequest("GET", f"/orders-v3/{OID}", (), None),
                 ra.RestRequest("GET", "/orders-v3/client/order-key-1", (), None),
                 ra.RestRequest("GET", "/fills-v3", (("orderId", OID),), None)):
@@ -116,17 +165,19 @@ def test_reads_go_only_to_the_pinned_host_with_the_key_header():
 
 
 @pytest.mark.parametrize("req", [
-    ra.RestRequest("POST", "/orders-v3", (), {"orders": [order()]}),
+    ra.RestRequest("POST", "/orders-v3", (), {"orders": [{"x": 1}]}),
     ra.RestRequest("DELETE", "/orders-v3", (), {"orders": [{"orderId": OID}]}),
     ra.RestRequest("DELETE", "/orders-v3/market", (("marketHash", "0x" + "11" * 32),), None),
     ra.RestRequest("DELETE", "/orders-v3/event", (("eventId", "L1"),), None),
     ra.RestRequest("DELETE", "/orders-v3/all", (), None),
 ])
-def test_writes_are_refused_by_default_and_nothing_leaves(req):
+def test_writes_are_refused_by_default_and_nothing_leaves(toronto_signer, req):
     t = FakeTransport()
+    s = make(toronto_signer, t)
+    n = len(t.calls)
     with pytest.raises(TorontoGuardError) as e:
-        sender(t).send(req)
-    assert e.value.code == "SENDER_WRITES_DISABLED" and t.calls == []
+        s.send(req)
+    assert e.value.code == "SENDER_WRITES_DISABLED" and len(t.calls) == n
 
 
 @pytest.mark.parametrize("req, code", [
@@ -136,38 +187,59 @@ def test_writes_are_refused_by_default_and_nothing_leaves(req):
     (ra.RestRequest("GET", "/orders-v3/../user/withdraw", (), None), "ROUTE_NOT_ALLOWED"),
     (ra.RestRequest("GET", "//api.sx.bet/orders-v3", (), None), "ROUTE_NOT_ALLOWED"),
     (ra.RestRequest("GET", "/fills-v3", (("x", "https://api.sx.bet"),), None), "MAINNET_VALUE_IN_REQUEST"),
+    (ra.RestRequest("GET", "/fills-v3", (("x", "api%2Esx%2Ebet"),), None), "MAINNET_VALUE_IN_REQUEST"),
+    (ra.RestRequest("GET", "/fills-v3", (("x", "6629ce1cf35cc1329ebb4f63202f3f197b3f050b"),), None),
+     "MAINNET_VALUE_IN_REQUEST"),
+    (ra.RestRequest("GET", "/fills-v3", (("x", 1),), None), "REQUEST_FIELDS_NOT_PLAIN_STRINGS"),
 ])
-def test_anything_outside_the_documented_order_routes_or_pointing_to_mainnet_is_refused(req, code):
+def test_anything_outside_the_documented_order_routes_or_pointing_to_mainnet_is_refused(toronto_signer, req, code):
     t = FakeTransport()
+    s = make(toronto_signer, t)
+    n = len(t.calls)
     with pytest.raises(TorontoGuardError) as e:
-        sender(t).send(req)
-    assert e.value.code == code and t.calls == []
+        s.send(req)
+    assert e.value.code == code and len(t.calls) == n
 
 
-@pytest.mark.parametrize("o, code", [
-    (order(baseToken="0x6629Ce1Cf35Cc1329ebB4F63202F3f197b3F050B"), "MAINNET_VALUE_IN_REQUEST"),
-    (order(baseToken="0x" + "99" * 20), "ORDER_TOKEN_NOT_TORONTO_USDC"),
-    (order(maker="0x" + "77" * 20), "ORDER_MAKER_NOT_THE_TORONTO_MAKER"),
-])
-def test_even_with_writes_enabled_an_order_not_bound_to_toronto_never_leaves(o, code):
-    t = FakeTransport()
+def test_str_subclass_tricks_are_refused(toronto_signer):
+    class Evil(str):
+        def __radd__(self, other):
+            return "https://evil.example" + str(self)
+    s = make(toronto_signer)
     with pytest.raises(TorontoGuardError) as e:
-        sender(t, writes_enabled=True).send(ra.RestRequest("POST", "/orders-v3", (), {"orders": [o]}))
-    assert e.value.code == code and t.calls == []
+        s.send(ra.RestRequest("GET", Evil("/metadata/obv3"), (), None))
+    assert e.value.code == "REQUEST_FIELDS_NOT_PLAIN_STRINGS"
 
 
-def test_enabled_write_goes_to_toronto_only():
+def test_even_with_writes_enabled_an_order_not_bound_to_toronto_never_leaves(toronto_signer):
     t = FakeTransport()
-    sender(t, writes_enabled=True).send(ra.RestRequest("POST", "/orders-v3", (), {"orders": [order()]}))
-    assert t.calls[0][0] == "POST" and t.calls[0][1] == "https://api.toronto.sx.bet/orders-v3"
+    s = make(toronto_signer, t, writes_enabled=True)
+    m = s.maker
+    for o, code in ((order(m, baseToken="0x6629Ce1Cf35Cc1329ebB4F63202F3f197b3F050B"), "MAINNET_VALUE_IN_REQUEST"),
+                    (order(m, baseToken="0x" + "99" * 20), "ORDER_TOKEN_NOT_TORONTO_USDC"),
+                    (order("0x" + "77" * 20), "ORDER_MAKER_NOT_THE_TORONTO_MAKER"),
+                    (order(m, chainId=4162), "MAINNET_VALUE_IN_REQUEST")):
+        n = len(t.calls)
+        with pytest.raises(TorontoGuardError) as e:
+            s.send(ra.RestRequest("POST", "/orders-v3", (), {"orders": [o]}))
+        assert e.value.code == code and len(t.calls) == n
+
+
+def test_enabled_write_goes_to_toronto_only_with_the_body_serialized_once(toronto_signer):
+    t = FakeTransport()
+    s = make(toronto_signer, t, writes_enabled=True)
+    s.send(ra.RestRequest("POST", "/orders-v3", (), {"orders": [order(s.maker)]}))
+    method, url, _, body, _ = t.calls[-1]
+    assert (method, url) == ("POST", "https://api.toronto.sx.bet/orders-v3") and isinstance(body, bytes)
+    assert json.loads(body)["orders"][0]["maker"] == s.maker
 
 
 @pytest.mark.parametrize("raise_, reply", [(TimeoutError(), None), (ConnectionResetError(), None),
-                                           (None, ("200", {}))])
-def test_transport_failure_is_sender_timeout_never_not_sent(raise_, reply):
-    t = FakeTransport(reply=reply, raise_=raise_)
+                                           (None, ("200", {})), (None, (True, {}))])
+def test_transport_failure_is_sender_timeout_never_not_sent(toronto_signer, raise_, reply):
+    s = make(toronto_signer, FakeTransport(reply=reply, raise_=raise_), writes_enabled=True)
     with pytest.raises(ra.SenderTimeout):
-        sender(t, writes_enabled=True).send(ra.RestRequest("POST", "/orders-v3", (), {"orders": [order()]}))
+        s.send(ra.RestRequest("POST", "/orders-v3", (), {"orders": [order(s.maker)]}))
 
 
 def test_module_imports_no_network_library():
