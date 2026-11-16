@@ -422,3 +422,79 @@ def test_unknown_kill_state_is_refused_without_any_promise(live):
     out = s7.place(t, s, "order-key-P5U", text)
     assert out["status"] == "REFUSED_BEFORE_QUEUE" and out["error"]["code"] == "KILL_SWITCH_STATE_UNKNOWN"
     assert "never be executed" not in str(out) and q.requests == []
+
+
+def test_status_lag_a_place_queued_as_engaged_after_the_release_still_never_runs(live):
+    """The published status can lag a release (up to one cycle + the max age): the MCP saw ENGAGED, the signer
+    is already released and the request is above the watermark. The mark makes the signer refuse and void it."""
+    from signer.service import SignerService
+    s, q, t, w = live
+    w.signer_rows = [_row(kill_switch="ENGAGED")]                    # stale view; the signer is NOT engaged
+    text, _ = s7.owner_text(s, "order-key-P5L")
+    out = s7.place(t, s, "order-key-P5L", text)
+    assert out["status"] == "QUEUED" and "never be executed" in out["note"]
+    assert q.requests[-1][2]["kill_switch_observed"] == "ENGAGED"
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+    w.signer_rows = [_row()]
+    again = s7.place(t, s, "order-key-P5L", text)                    # identical call: the refused request
+    assert again["status"] == "ALREADY_QUEUED" and "note" in again and "never be executed" not in again["note"]
+
+
+def test_the_mark_cannot_loosen_anything(live):
+    """A forged or garbled mark is refused by validation; only the exact value 'ENGAGED' is accepted."""
+    from signer.request_queue import QueueError, validate_request
+    s, q, t, w = live
+    text, _ = s7.owner_text(s, "order-key-P5M")
+    s7.place(t, s, "order-key-P5M", text)
+    p = dict(q.requests[-1][2])
+    for bad in ("DISENGAGED", True, None, ""):
+        with pytest.raises(QueueError):
+            validate_request({**p, "kill_switch_observed": bad})
+
+
+def test_release_between_status_read_and_insert_still_never_runs(live, monkeypatch):
+    """Review 892237e P1b: even a 0 s old status can be overtaken by a release between the read and the INSERT."""
+    from signer.service import SignerService
+    s, q, t, w = live
+    w.signer_rows = [_row(kill_switch="ENGAGED", age_seconds=0.0)]
+    real_submit = w.submit
+
+    def release_then_insert(payload):
+        w.signer_rows = [_row()]                                     # the owner releases right now
+        return real_submit(payload)
+    monkeypatch.setattr(w, "submit", release_then_insert)
+    text, _ = s7.owner_text(s, "order-key-P5R")
+    assert s7.place(t, s, "order-key-P5R", text)["status"] == "QUEUED"
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+def test_already_queued_while_engaged_makes_no_promise(live):
+    """Review 892237e P2-1: an identical retry of an order queued (and sent) BEFORE the engagement gets no
+    'never executed' promise."""
+    from signer.service import SignerService
+    s, q, t, w = live
+    text, _ = s7.owner_text(s, "order-key-P5A2")
+    assert s7.place(t, s, "order-key-P5A2", text)["status"] == "QUEUED"
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    (res,) = svc.process_once(10)
+    assert res["event"] == "SUBMITTED"
+    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    again = s7.place(t, s, "order-key-P5A2", text)
+    assert again["status"] == "ALREADY_QUEUED" and "kill_switch" not in again
+    assert "never be executed" not in str(again)
+
+
+def test_a_void_kind_row_is_refused_by_validation(live):
+    from signer.request_queue import QueueError, validate_request
+    s, q, t, w = live
+    text, _ = s7.owner_text(s, "order-key-P5X")
+    s7.place(t, s, "order-key-P5X", text)
+    with pytest.raises(QueueError) as e:
+        validate_request({**q.requests[-1][2], "kind": "VOID"})
+    assert e.value.code == "REQUEST_KIND_INVALID"

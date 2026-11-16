@@ -76,7 +76,8 @@ def validate_request(payload: Any) -> dict[str, Any]:
     if payload["kind"] == "PLACE":
         _need(isinstance(payload.get("intent"), Mapping), "REQUEST_INTENT_MISSING")
         _need(isinstance(payload.get("post_only"), bool), "REQUEST_POST_ONLY_INVALID")
-        allowed |= {"intent", "post_only"}
+        _need(payload.get("kill_switch_observed", "ENGAGED") == "ENGAGED", "REQUEST_KILL_SWITCH_MARK_INVALID")
+        allowed |= {"intent", "post_only", "kill_switch_observed"}
     else:
         scope = payload.get("scope")
         _need(scope in CANCEL_SCOPES, "REQUEST_CANCEL_SCOPE_INVALID")

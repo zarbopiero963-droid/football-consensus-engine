@@ -171,7 +171,9 @@ class SignerService:
             # 2. clock-free ordering: queue_seq is assigned by the DATABASE at insert; the owner-signed RELEASE
             #    records a watermark from the same sequence under the service lock; queue_seq <= watermark =>
             #    queued before the release => void + refuse for good.
-            if self._signer._ledger.kill_switch_engaged:
+            if self._signer._ledger.kill_switch_engaged or p.get("kill_switch_observed") == "ENGAGED":
+                # ENGAGED now, or ENGAGED as the MCP saw it when it queued the order (the published status can lag a
+                # release): refused and voided for good either way.
                 return self._void_and_refuse(rid, p, "KILL_SWITCH_ENGAGED")
             wm = self._signer._ledger.queue_watermark()
             seq = req.get("queue_seq")

@@ -73,7 +73,7 @@ _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _EVENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDEMPOTENCY = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 # Fields that legitimately differ between two calls carrying the same order and the same command.
-_VOLATILE = ("request_id", "created_at")
+_VOLATILE = ("request_id", "created_at", "kill_switch_observed")   # the mark never changes the order
 _VOLATILE_COMMAND = ("command_id", "received_at")
 
 
@@ -128,15 +128,21 @@ def _command(text: str, now: int) -> dict[str, Any]:
 
 
 def build_place_request(*, network: str, intent: Mapping[str, Any], post_only: bool, command_text: str,
-                        now: int) -> dict[str, Any]:
+                        now: int, kill_switch_observed: bool = False) -> dict[str, Any]:
     _need(network in ("mainnet", "testnet"), "INVALID_NETWORK")
     _need(isinstance(intent, Mapping) and intent.get("network") == network, "INTENT_NETWORK_MISMATCH")
     _need(intent.get("maker") is not None and intent.get("salt") is not None, "INTENT_NOT_SIGNING_READY")
     _need(isinstance(post_only, bool), "INVALID_POST_ONLY")
     key = idempotency_key(intent.get("idempotency_key"))
-    return {"schema": REQUEST_SCHEMA, "request_id": request_id_for(network, "PLACE", key), "kind": "PLACE",
-            "network": network, "created_at": now, "command": _command(owner_command_text(command_text), now),
-            "intent": dict(intent), "post_only": post_only}
+    p = {"schema": REQUEST_SCHEMA, "request_id": request_id_for(network, "PLACE", key), "kind": "PLACE",
+         "network": network, "created_at": now, "command": _command(owner_command_text(command_text), now),
+         "intent": dict(intent), "post_only": post_only}
+    if kill_switch_observed:
+        # The MCP saw the kill switch ENGAGED when it queued this order: the signer refuses it and voids it for
+        # good, even if the switch was released in the meantime (the published status can lag). Can only make
+        # the outcome stricter.
+        p["kill_switch_observed"] = "ENGAGED"
+    return p
 
 
 def build_cancel_request(*, network: str, scope: Any, key: Any, command_text: str, now: int,

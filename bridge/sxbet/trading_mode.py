@@ -13,8 +13,9 @@ change merged by the owner (MAINNET_LIVE_TRADING_AUTHORIZED), never a variable.
 Before queueing, every trading request reads the signer's published status (signer/status.py) and is refused
 when: the status is missing, ambiguous or stale (signer unreachable), the kill switch state is unknown, the LIVE flag does not verify, or the signer's last
 cycle failed (PLACE only: a risk-reducing cancel is not blocked by a degraded cycle, e.g. after the automatic kill
-switch). With the kill switch ENGAGED a CANCEL is allowed and a PLACE is QUEUED (never refused here): the signer
-refuses it and voids its order for good (review 71e3625, owner decision 16-11-2026). The signer re-checks all.
+switch). With the kill switch ENGAGED a CANCEL is allowed and a PLACE is QUEUED with the mark
+kill_switch_observed=ENGAGED (never refused here): the signer refuses and voids every marked PLACE for good, also if
+the published status lagged a release (reviews 71e3625, 892237e; owner decision 16-11-2026). The signer re-checks all.
 """
 from __future__ import annotations
 

@@ -131,8 +131,10 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         DOWN on the odds ladder), stake_base_units in USDC base units (1000000 = 1 USDC), time_in_force GTC /
         IOC / FOK, expiry unix seconds, idempotency_key 8-64 chars [A-Za-z0-9_-] (new for every new owner
         command; repeating the identical call is safe). Reads GET /metadata/obv3 once. The maker address is
-        server configuration, never an argument. Result: QUEUED / ALREADY_QUEUED / REFUSED /
-        QUEUE_WRITE_OUTCOME_UNKNOWN; then poll sxbet_order_request_status.
+        server configuration, never an argument. Result: QUEUED (with kill_switch ENGAGED when the switch is
+        engaged: the signer will refuse it for good) / ALREADY_QUEUED / REFUSED / REFUSED_BEFORE_QUEUE /
+        QUEUE_WRITE_OUTCOME_UNKNOWN / PROVIDER_ERROR / METADATA_INVALID / INVALID_INPUT; then poll
+        sxbet_order_request_status.
 
         """
         out = base("sxbet_order_request_place")
@@ -189,7 +191,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 idempotency_key=key, now=now, maker=ors.maker,
                 salt=oreq.deterministic_salt(settings.network, ors.maker, key))
             payload = oreq.build_place_request(network=settings.network, intent=intent, post_only=post_only,
-                                               command_text=text, now=now)
+                                               command_text=text, now=now, kill_switch_observed=engaged)
         except sim.IntentError as exc:
             status = "METADATA_INVALID" if str(exc).startswith("METADATA_") else "INVALID_INPUT"
             return await refused({**out, "status": status, "error": {"code": str(exc)}})
@@ -200,7 +202,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                                       "rounded_down": intent["percentage_odds"]},
                     "command_text_sha256": payload["command"]["command_text_sha256"]})
         res = await enqueue(out, payload)
-        if engaged and res.get("status") in ("QUEUED", "ALREADY_QUEUED"):
+        if engaged and res.get("status") == "QUEUED":     # only a request THIS call wrote carries the mark
             res["kill_switch"] = "ENGAGED"
             res["note"] = ("Queued while the kill switch is engaged: the signer will refuse this order and void it "
                            "for good; it can never be executed, also after a release. After the owner's release a "
