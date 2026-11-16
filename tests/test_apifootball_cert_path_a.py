@@ -69,7 +69,11 @@ def test_defaultdb_gets_only_two_roles_and_the_minimal_coordinator_grant():
     # PATH A2 variant R1 (owner decision D2, intentional change): NO table or column GRANT to the runner;
     # step 1a (administrator) creates the empty schema, step 1b (tables' owner) the four functions.
     schema = _code("apifootball_cert_path_a_quota_schema.sql")
-    assert "CREATE SCHEMA fcb_cert_quota AUTHORIZATION %I" in schema and not re.search(r"\bGRANT\b", schema)
+    assert "CREATE SCHEMA fcb_cert_quota AUTHORIZATION %I" in schema
+    # post-WP-009 the administrator has only ADMIN on fcb_migrator: exactly one temporary self-grant of SET on
+    # the tables' owner, revoked in the same block and asserted; no other GRANT
+    assert re.findall(r"\bGRANT\b[^;']*", schema) == ["GRANT %I TO CURRENT_USER WITH INHERIT FALSE, SET TRUE"]
+    assert schema.count("REVOKE %I FROM CURRENT_USER") == 1 and "FCB_CERT_PATH_A_QUOTA_SCHEMA_TEMPORARY_GRANT_LEFT" in schema
     fns = _code("apifootball_cert_path_a_quota_functions.sql")
     assert not re.search(r"GRANT [^;]*\bON TABLE\b|GRANT [^;]*\bON (ALL|SEQUENCE)", fns)
     assert re.findall(r"^GRANT [^;]*?TO (\w+);", fns, re.M | re.S) == ["fcb_cert_runner", "fcb_cert_runner"]
