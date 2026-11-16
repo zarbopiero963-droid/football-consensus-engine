@@ -95,7 +95,9 @@ def env(tmp_path_factory):
         path_a.install_roles(ns.admin, scram_verifier(runner_pw))
         # step 1b AS the coordinator tables' owner: the administrator in this pre-WP-009 simulation
         # (fcb_migrator after WP-009 phase 2: test_wp009_roles_runtime_postgres.py, full sequence)
-        path_a.install_coordinator_grants(ns.admin)
+        # PATH A2 variant R1: step 1a (administrator) + step 1b (tables' owner: the administrator here)
+        path_a.install_quota_schema(ns.admin)
+        path_a.install_quota_functions(ns.admin)
         ns.db_state = path_a.create_database(lambda: ns.admin(autocommit=True))
         path_a.install_ledger(lambda: ns.admin("fcb_cert"))
         yield ns
@@ -147,6 +149,24 @@ def _ledger(ns):
     return batch.PostgresCampaignLedger(ns.runner, schema="public", owner_role=OWNER, pinned_plans=TEST_PINNED)
 
 
+def _reset_kit_key_quota(ns):
+    """Test hygiene (superuser): the kit KEY's shared quota rows start empty, so the pinned 8/min,
+    80/day and 2-lease limits of the R1 functions do not leak between tests (orphan leases of the
+    crash tests would otherwise hold the 2 concurrency slots for 180 s)."""
+    import hashlib as _h
+    key = _h.sha256(KEY.encode()).hexdigest()
+    with ns.su("defaultdb") as su:
+        for t in ("api_football_quota_counters", "api_football_quota_leases", "api_football_quota_attempts"):
+            su.execute(f"DELETE FROM public.{t} WHERE api_key_hash = %s", (key,))
+
+
+def _runner_quota(ns, reset=True):
+    """PATH A2 variant R1: the runner's coordinator is CertQuotaCoordinator (fcb_cert_quota.* only)."""
+    if reset:
+        _reset_kit_key_quota(ns)
+    return batch.CertQuotaCoordinator(connect=lambda: ns.runner("defaultdb"))
+
+
 @pytest.fixture(autouse=True)
 def owner_authorized(monkeypatch):
     monkeypatch.setenv(batch.AUTH_VAR, "true")
@@ -164,7 +184,8 @@ def test_install_is_idempotent_and_changes_no_existing_object(env):
         catalog = conn.execute("SELECT string_agg(c.relname || c.relacl::text, ',' ORDER BY c.relname) AS a "
                                "FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace").fetchone()
     path_a.install_roles(env.admin, scram_verifier(env.runner_pw))  # second run: no-op
-    path_a.install_coordinator_grants(env.admin)
+    path_a.install_quota_schema(env.admin)
+    path_a.install_quota_functions(env.admin)
     assert path_a.create_database(lambda: env.admin(autocommit=True)) == "ALREADY_PRESENT"
     path_a.install_ledger(lambda: env.admin("fcb_cert"))
     with env.su("fcb_cert") as conn:
@@ -211,23 +232,20 @@ def test_logins_are_scram_and_the_owner_cannot_log_in(env):
 
 # ------------------------------------------------------------------ runner least privilege
 
-def test_runner_cannot_touch_any_defaultdb_table_but_the_coordinator(env):
+def test_runner_cannot_touch_any_defaultdb_table_including_the_coordinator(env):
+    # PATH A2 variant R1 (owner decision D2, intentional change): the three coordinator tables are now
+    # refused like every other table: SELECT, INSERT, UPDATE, DELETE, TRUNCATE, ALTER, DROP.
     with env.admin() as conn:
         tables = [r["relname"] for r in conn.execute(
             "SELECT relname FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' ORDER BY 1")]
     assert len(tables) == 33 and COORDINATOR <= set(tables)
     refused = 0
     for t in tables:
-        statements = [f"UPDATE {t} SET {{c}} = {{c}}", f"TRUNCATE {t}", f"ALTER TABLE {t} ADD COLUMN x int",
-                      f"DROP TABLE {t}"]
-        if t not in COORDINATOR:
-            statements += [f"SELECT * FROM {t}", f"DELETE FROM {t}", f"INSERT INTO {t} DEFAULT VALUES"]
-        for statement in statements:
+        for statement in (f"UPDATE {t} SET {{c}} = {{c}}", f"TRUNCATE {t}", f"ALTER TABLE {t} ADD COLUMN x int",
+                          f"DROP TABLE {t}", f"SELECT * FROM {t}", f"DELETE FROM {t}", f"INSERT INTO {t} DEFAULT VALUES"):
             with env.runner("defaultdb") as conn:
                 col = conn.execute("SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass AND attnum = 1",
                                    (t,)).fetchone()["attname"]
-                if t == "api_football_quota_counters" and statement.startswith("UPDATE"):
-                    col = "api_key_hash"  # only `used` is updatable
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     conn.execute(statement.format(c=col))
                 refused += 1
@@ -237,12 +255,12 @@ def test_runner_cannot_touch_any_defaultdb_table_but_the_coordinator(env):
             with env.runner("defaultdb") as conn:
                 conn.execute(statement)
         refused += 1
-    assert refused == 30 * 7 + 3 * 4 + 5
+    assert refused == 33 * 7 + 5
 
 
-def test_the_real_coordinator_works_as_the_runner_and_still_enforces_the_day(env):
-    from bridge.api_football.quota import PostgresQuota, QuotaExceeded, QuotaLimits
-    quota = PostgresQuota(QuotaLimits(10, 2, 1), connect=lambda: env.runner("defaultdb"))
+def test_the_r1_coordinator_works_as_the_runner_and_still_enforces_the_day(env):
+    from bridge.api_football.quota import QuotaExceeded
+    quota = _runner_quota(env)
     key = "PATH-A-KEY-" + uuid.uuid4().hex
 
     async def go():
@@ -252,8 +270,10 @@ def test_the_real_coordinator_works_as_the_runner_and_still_enforces_the_day(env
         await quota.mark_exhausted(key + "x", "minute")
         lease = await quota.acquire(key)
         await quota.release(lease)
-        with pytest.raises(QuotaExceeded):  # day budget 2 reached: the shared counter refuses
+        await quota.mark_exhausted(key, "day")  # provider-reported zero for the UTC day
+        with pytest.raises(QuotaExceeded) as exc:  # the shared counter refuses
             await quota.acquire(key)
+        assert exc.value.window == "day"
         return await quota.snapshot(key)
     assert asyncio.run(go())["remaining_day"] == 0
 
@@ -529,7 +549,6 @@ def _crash_worker(runner_dsn, coordinator_dsn, plan_sha, where, marker, pinned=N
     sys.path.insert(0, str(ROOT / "tests"))
     import httpx as _httpx
     from apifootball_campaign_kit import Provider as _Provider, load as _load, settings as _settings
-    from bridge.api_football.quota import PostgresQuota, QuotaLimits
     mod = _load("apifootball_cert_batch1_pa_crash", "apifootball_cert_batch1.py")
     os.environ[mod.AUTH_VAR] = "true"
 
@@ -544,7 +563,7 @@ def _crash_worker(runner_dsn, coordinator_dsn, plan_sha, where, marker, pinned=N
         return _Provider().default(request)
     cls = DiesBeforeOutcome if where == "between_send_and_outcome" else mod.PostgresCampaignLedger
     ledger = cls(lambda: psycopg.connect(runner_dsn, row_factory=dict_row), schema="public", owner_role="fcb_cert_owner", pinned_plans=pinned)
-    quota = PostgresQuota(QuotaLimits(100, 1000, 8), connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
+    quota = mod.CertQuotaCoordinator(connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
     plan_text = mod.render_plan(mod.build_plan())
     asyncio.run(mod.execute(json.loads(plan_text), campaign_id="camp-crash-" + where.split("_")[1][:4], settings=_settings(),
                             ledger=ledger, inner_transport=_httpx.MockTransport(handler), quota=quota,
@@ -556,7 +575,7 @@ def _crash_worker(runner_dsn, coordinator_dsn, plan_sha, where, marker, pinned=N
 def test_inv3_killed_runner_full_stack_reserved_unknown_counted_and_never_retried(env, tmp_path, where):
     """The real runner, the real PostgresQuota (defaultdb) and the real ledger (fcb_cert), both as
     fcb_cert_runner. The batch-1 plan is approved once (78) and shared by both parametrizations."""
-    from bridge.api_football.quota import PostgresQuota, QuotaLimits
+    _reset_kit_key_quota(env)
     plan_text = batch.render_plan(batch.build_plan())
     sha = batch.plan_sha256(plan_text)
     _approve(env, 78, "batch1", sha=sha)
@@ -573,7 +592,7 @@ def test_inv3_killed_runner_full_stack_reserved_unknown_counted_and_never_retrie
         {"seq": asyncio.run(ledger.attempt_states(campaign))[0]["seq"], "call_id": first, "state": "RESERVED_UNKNOWN",
          "http_status": None}]
     again = Provider()
-    quota = PostgresQuota(QuotaLimits(1000, 100000, 8), connect=lambda: env.runner("defaultdb"))
+    quota = _runner_quota(env)
     run = asyncio.run(batch.execute(json.loads(plan_text), campaign_id=campaign, settings=settings(), ledger=ledger,
                                     inner_transport=again.transport(), quota=quota, plan_text=plan_text, source_sha="x"))
     assert next(c for c in run["calls"] if c["call_id"] == first)["ledger_state"] == "RESERVED_UNKNOWN"
@@ -752,20 +771,13 @@ def test_bridge_readiness_and_oauth_unchanged_with_the_admin_dsn(env, monkeypatc
 
 # ------------------------------------------------------------------ A2 (owner GO): coordinator grant, order, escalation
 
-COORDINATOR_PRIVILEGES = [  # (table, privilege, column or None): the EXACT runner grant, each one needed
-    ("api_football_quota_counters", "SELECT", None), ("api_football_quota_counters", "INSERT", None),
-    ("api_football_quota_counters", "UPDATE", "used"),
-    ("api_football_quota_leases", "SELECT", None), ("api_football_quota_leases", "INSERT", None),
-    ("api_football_quota_leases", "DELETE", None),
-    ("api_football_quota_attempts", "SELECT", None), ("api_football_quota_attempts", "INSERT", None),
-    ("api_football_quota_attempts", "DELETE", None)]
+R1_FUNCTIONS = ("reserve(text)", "release(text, text)", "snapshot(text)", "mark_exhausted(text, text)")
 
 
 def _coordinator_cycle(env):
     """Every coordinator operation the runner performs: prepare, acquire (+ expired cleanup), release,
-    provider-reported zero (mark_exhausted) and snapshot."""
-    from bridge.api_football.quota import PostgresQuota, QuotaLimits
-    quota = PostgresQuota(QuotaLimits(50, 1000, 4), connect=lambda: env.runner("defaultdb"))
+    provider-reported zero (mark_exhausted) and snapshot, through fcb_cert_quota.* only."""
+    quota = batch.CertQuotaCoordinator(connect=lambda: env.runner("defaultdb"))
     key = "PATH-A2-PRIV-" + uuid.uuid4().hex
 
     async def go():
@@ -779,37 +791,41 @@ def _coordinator_cycle(env):
     return asyncio.run(go())
 
 
-def test_a2_the_runner_coordinator_grant_is_exactly_nine_privileges(env):
+def test_a2_r1_the_runner_holds_no_table_privilege_only_execute_on_four_functions(env):
     with env.admin() as conn:
-        rows = conn.execute(
-            "SELECT c.relname, x.privilege_type, x.is_grantable, pg_get_userbyid(x.grantor) AS grantor FROM pg_class c, "
-            "LATERAL aclexplode(c.relacl) x WHERE c.relnamespace = 'public'::regnamespace AND x.grantee = %s::regrole "
-            "ORDER BY 1, 2", (RUNNER,)).fetchall()
-        cols = conn.execute(
-            "SELECT c.relname, a.attname, x.privilege_type FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid, "
-            "LATERAL aclexplode(a.attacl) x WHERE c.relnamespace = 'public'::regnamespace AND x.grantee = %s::regrole",
-            (RUNNER,)).fetchall()
-        schema = conn.execute("SELECT count(*) AS n FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x "
-                              "WHERE x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"]
-    got = {(r["relname"], r["privilege_type"], None) for r in rows} | {(c["relname"], c["privilege_type"], c["attname"]) for c in cols}
-    # post-WP-009 adaptation (intentional change): one EXPLICIT USAGE on public, no longer from PUBLIC
-    assert got == set(COORDINATOR_PRIVILEGES) and len(got) == 9 and schema == 1
-    assert all(r["is_grantable"] is False and r["grantor"] == ADMIN for r in rows)
+        rows = conn.execute("SELECT count(*) AS n FROM pg_class c, LATERAL aclexplode(c.relacl) x "
+                            "WHERE x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"]
+        cols = conn.execute("SELECT count(*) AS n FROM pg_attribute a, LATERAL aclexplode(a.attacl) x "
+                            "WHERE x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"]
+        fns = [r["f"] for r in conn.execute(
+            "SELECT p.oid::regprocedure::text AS f FROM pg_proc p WHERE has_function_privilege(%s, p.oid, 'EXECUTE') "
+            "AND p.pronamespace = 'fcb_cert_quota'::regnamespace ORDER BY 1", (RUNNER,))]
+        schemas = [r["s"] for r in conn.execute(
+            "SELECT n.nspname || ':' || x.privilege_type AS s FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x "
+            "WHERE x.grantee = %s::regrole ORDER BY 1", (RUNNER,))]
+        state = conn.execute(batch.quota_state_sql()).fetchone()["state"]
+    assert rows == 0 and cols == 0 and state == "EXACT"
+    assert fns == sorted("fcb_cert_quota." + f.replace(", ", ",") for f in R1_FUNCTIONS)
+    assert schemas == ["fcb_cert_quota:USAGE", "public:USAGE"]
     assert _coordinator_cycle(env)["remaining_day"] == 0  # the full cycle works with exactly these
 
 
-@pytest.mark.parametrize("table,priv,column", COORDINATOR_PRIVILEGES)
-def test_a2_each_coordinator_privilege_is_needed(env, table, priv, column):
-    target = f"{priv} ({column})" if column else priv
+@pytest.mark.parametrize("function", R1_FUNCTIONS)
+def test_a2_r1_each_function_execute_is_needed(env, function):
     with env.admin() as conn:
-        conn.execute(f"REVOKE {target} ON public.{table} FROM {RUNNER}")
+        conn.execute(f"REVOKE EXECUTE ON FUNCTION fcb_cert_quota.{function} FROM {RUNNER}")
     try:
         with pytest.raises(Exception) as exc:
             _coordinator_cycle(env)
-        assert isinstance(exc.value, psycopg.errors.InsufficientPrivilege) or "permission denied" in str(exc.value)
+        # prepare() refuses the drifted state; a direct call is denied
+        assert "NOT_EXACT" in str(exc.value) or isinstance(exc.value, psycopg.errors.InsufficientPrivilege)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with env.runner("defaultdb") as conn:
+                conn.execute(f"SELECT fcb_cert_quota.{function.split('(')[0]}" + "(%s" + ", %s" * function.count(",") + ")",
+                             ("0" * 64,) + ("minute",) * function.count(","))
     finally:
         with env.admin() as conn:
-            conn.execute(f"GRANT {target} ON public.{table} TO {RUNNER}")
+            conn.execute(f"GRANT EXECUTE ON FUNCTION fcb_cert_quota.{function} TO {RUNNER}")
     _coordinator_cycle(env)
 
 
@@ -836,9 +852,16 @@ def test_a2_runner_cannot_escalate(env):
     with env.admin() as conn:
         acl = conn.execute("SELECT relacl::text AS a FROM pg_class WHERE oid = 'public.api_football_quota_counters'::regclass").fetchone()
     for statement in ("GRANT SELECT ON public.api_football_quota_counters TO PUBLIC",
-                      f"GRANT DELETE, TRUNCATE ON public.api_football_quota_counters TO {RUNNER}"):
+                      f"GRANT DELETE, TRUNCATE ON public.api_football_quota_counters TO {RUNNER}",
+                      f"GRANT EXECUTE ON FUNCTION fcb_cert_quota.reserve(text) TO PUBLIC"):
+        # R1 (intentional change): no privilege at all on the table -> an error, not a warning; on the
+        # function EXECUTE without grant option -> a warning and no effect
         with env.runner("defaultdb") as conn:
-            conn.execute(statement)
+            if "FUNCTION" in statement:
+                conn.execute(statement)
+            else:
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    conn.execute(statement)
     with env.admin() as conn:
         assert conn.execute("SELECT relacl::text AS a FROM pg_class WHERE oid = 'public.api_football_quota_counters'::regclass").fetchone() == acl
     with env.su("fcb_cert") as conn:
@@ -873,8 +896,7 @@ def _plan_variant(env, budget, tag):
 
 
 def _recording_quota(env, events, after_acquire=None):
-    from bridge.api_football.quota import PostgresQuota, QuotaLimits
-    real = PostgresQuota(QuotaLimits(1000, 100000, 8), connect=lambda: env.runner("defaultdb"))
+    real = _runner_quota(env)
 
     class Q:
         async def prepare(self):
@@ -1075,7 +1097,7 @@ def _kill_between_insert_and_commit(runner_dsn, coordinator_dsn, plan_text, camp
         return _httpx.Response(200, json={})
     ledger = mod.PostgresCampaignLedger(lambda: Dies.connect(runner_dsn), schema="public",
                                         owner_role="fcb_cert_owner", pinned_plans=pinned)
-    quota = PostgresQuota(QuotaLimits(1000, 100000, 8), connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
+    quota = mod.CertQuotaCoordinator(connect=lambda: psycopg.connect(coordinator_dsn, row_factory=dict_row))
     plan = json.loads(plan_text)
     plan["calls"] = plan["calls"][:1]
     asyncio.run(mod.execute(plan, campaign_id=campaign, settings=_settings(), ledger=ledger,
@@ -1085,6 +1107,7 @@ def _kill_between_insert_and_commit(runner_dsn, coordinator_dsn, plan_text, camp
 
 def test_a2_process_killed_between_insert_and_commit_sends_nothing_and_consumes_nothing(env, tmp_path):
     text, sha = _plan_variant(env, 78, "killcommit")
+    _reset_kit_key_quota(env)
     campaign = "camp-kc-" + uuid.uuid4().hex[:8]
     with env.su("fcb_cert") as su:
         before = su.execute("SELECT used FROM api_football_cert_plan_usage WHERE plan_sha256 = %s", (sha,)).fetchone()["used"]
@@ -1135,7 +1158,14 @@ def test_a2_evidence_is_catalog_only_stable_and_free_of_secrets(env):
     assert env.admin_pw not in text and env.runner_pw not in text and "SCRAM" not in text
     assert "database fcb_cert owner=fcb_cert_owner acl_entries=3" in first
     assert "defaultdb bridge_versions=1,2,3,4,5,6,7,8" in first
-    assert sum(line.startswith("grant ") for line in first) == 8 and sum(line.startswith("column_grant ") for line in first) == 1
+    # R1 (intentional change): no table or column grant; four functions, the runner may execute each
+    assert sum(line.startswith("grant ") for line in first) == 0 and sum(line.startswith("column_grant ") for line in first) == 0
+    fns = [line for line in first if line.startswith("quota_function ")]
+    assert len(fns) == 4 and all("secdef=true" in f and "owner_is_tables_owner=true" in f and "runner_execute=true" in f
+                                 and 'config={"search_path=pg_catalog, pg_temp"}' in f for f in fns), fns
+    assert sorted(l for l in first if l.startswith("quota_schema_grant ")) == [
+        "quota_schema_grant fcb_cert_runner USAGE grantable=false", "quota_schema_grant owner CREATE grantable=false",
+        "quota_schema_grant owner USAGE grantable=false"]
     assert "schema_grant public USAGE grantable=false" in first
     assert "ledger triggers_enabled=13 triggers=13" in first
 
