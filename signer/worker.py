@@ -25,7 +25,8 @@ ledger's service lock (signer/service.py) and send lock (gateway, cancellation, 
 
 There is no keep-alive SENDER here: the monitor only reports when a renewal is due (policy). Renewing it
 is a write to the exchange and needs a separate, owner-reviewed decision.
-Nothing here enables LIVE trading: sending still needs the owner-signed LIVE flag in the gateway and, on
+With a `status_sink` (signer/status.py) the worker publishes, after every cycle, the status the MCP checks before
+queueing a trading request (P5). Nothing here enables LIVE trading: sending still needs the owner-signed LIVE flag in the gateway and, on
 Toronto, a sender built with writes enabled (signer/toronto_sender.py).
 """
 from __future__ import annotations
@@ -48,7 +49,8 @@ class WorkerError(RuntimeError):
 class SignerWorker:
     def __init__(self, service: Any, monitor: Any, kill_switch: Any, *, lock_path: str,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
-                 max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES, batch: int = 10):
+                 max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES, batch: int = 10,
+                 status_sink: Callable[[dict[str, Any]], None] | None = None):
         if type(max_consecutive_failures) is not int or not 1 <= max_consecutive_failures <= 100:
             raise WorkerError("WORKER_MAX_FAILURES_INVALID")
         if type(batch) is not int or not 1 <= batch <= 100:
@@ -62,6 +64,7 @@ class SignerWorker:
         self._batch = batch
         self._failures = 0
         self._stop = False
+        self._status_sink = status_sink
         _same_ledger(service, monitor, kill_switch)
         try:
             self._lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -138,6 +141,14 @@ class SignerWorker:
                 report["kill_switch_engaged_now"] = "WORKER_REPEATED_FAILURES"
             except Exception as exc:
                 report["kill_switch_engage_error"] = type(exc).__name__
+        if self._status_sink is not None:
+            # P5: publish the signer status for the MCP. A failure here only makes the status go stale, which the
+            # MCP treats as "signer unreachable" (fail closed); it is reported but not counted as a stage failure.
+            try:
+                self._status_sink(report)
+                report["status_published"] = True
+            except Exception as exc:
+                report["status_published"] = {"ok": False, "error_type": type(exc).__name__}
         return report
 
     def run(self, *, interval_seconds: float, max_cycles: int | None = None,

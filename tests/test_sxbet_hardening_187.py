@@ -341,7 +341,7 @@ def test_expiry_inside_betting_delay_refused_with_full_diagnostics_after_one_rea
 # ======================================================== 5. declared max cost per tool
 def test_cost_catalog_covers_exactly_the_registered_tools_and_is_in_health():
     t, _, names = make()
-    assert set(TOOL_COST_CATALOG) == set(names) and len(names) == 46
+    assert set(TOOL_COST_CATALOG) == set(names) and len(names) == 47
     assert all(type(v["max_provider_calls"]) is int and v["max_provider_calls"] >= 0 and v["basis"]
                for v in TOOL_COST_CATALOG.values())
     h = run(t["sxbet_health"]())
@@ -485,6 +485,7 @@ SIGNATURES = {
     "sxbet_public_trades": "market_hash=None, event_id=None, per_page=None, next_key=None",
     "sxbet_public_user_orders": "user_address, per_page=None, next_key=None",
     "sxbet_reconciliation_diagnostics": "market_hash=None, ws_messages=None",
+    "sxbet_trading_mode": "",
     "sxbet_resting_orders_scope": "order_ids=None, market_hash=None, event_id=None",
     "sxbet_risk_status": "",
     "sxbet_rules_evaluate": "market_hash, rules=None, max_slippage_percentage_odds='0'",
@@ -513,7 +514,7 @@ VALID = {
     "sxbet_proxy_funding_status": {"session_id": "s-1"}, "sxbet_proxy_wallet": {},
     "sxbet_public_market_orders": {"market_hash": H}, "sxbet_public_positions": {"user_address": ADDR, "status": ["SETTLED"]},
     "sxbet_public_trades": {}, "sxbet_public_user_orders": {"user_address": ADDR},
-    "sxbet_reconciliation_diagnostics": {}, "sxbet_resting_orders_scope": {"market_hash": H}, "sxbet_risk_status": {},
+    "sxbet_reconciliation_diagnostics": {}, "sxbet_trading_mode": {}, "sxbet_resting_orders_scope": {"market_hash": H}, "sxbet_risk_status": {},
     "sxbet_rules_evaluate": {"market_hash": H}, "sxbet_safe_info": {"safe_address": ADDR}, "sxbet_search": {"query": "inter"},
     "sxbet_simulate_order": {**_sim_args(check_balance=True, include_fees=True), "expiry": None},  # expiry set at run
     "sxbet_sports": {}, "sxbet_teams": {}, "sxbet_trade": {"trade_id": "t-1"}, "sxbet_trades": {},
@@ -550,7 +551,7 @@ def _sig(fn):
 
 def test_every_tool_schema_is_pinned():
     t, _, names = make()
-    assert sorted(names) == sorted(SIGNATURES) and len(names) == 46
+    assert sorted(names) == sorted(SIGNATURES) and len(names) == 47
     assert {n: _sig(t[n]) for n in names} == SIGNATURES
     assert set(VALID) == set(SIGNATURES) and set(INVALID) == {n for n, s in SIGNATURES.items() if s}
 

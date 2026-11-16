@@ -826,6 +826,14 @@ class PostgresRequestWriter:
         rows = self._run("SELECT payload::text FROM signer_order_requests WHERE request_id = %s", (request_id,))
         return json.loads(rows[0][0]) if rows else None
 
+    def signer_status(self, network: str) -> list[dict[str, Any]]:
+        """P5: the signer's published status rows for this network, age measured on the database clock."""
+        rows = self._run("SELECT signer_id, kill_switch, live_trading, live_reason, last_cycle_ok, "
+                         "EXTRACT(EPOCH FROM (clock_timestamp() - updated_at))::float8 "
+                         "FROM signer_status WHERE network = %s", (network,))
+        return [{"signer_id": r[0], "kill_switch": r[1], "live_trading": r[2], "live_reason": r[3],
+                 "last_cycle_ok": r[4], "age_seconds": r[5]} for r in rows]
+
     def events(self, request_id: str) -> list[dict[str, Any]]:
         rows = self._run("SELECT seq, state, detail::text, signer_id FROM signer_order_request_events "
                          "WHERE request_id = %s ORDER BY seq", (request_id,))

@@ -64,8 +64,9 @@ def test_every_official_get_is_exposed_and_no_write_is():
     assert set(tools) - mapped == {"sxbet_health", "sxbet_simulate_order", "sxbet_order_status",
                                    "sxbet_positions_summary", "sxbet_exposure_pnl", "sxbet_resting_orders_scope",
                                    "sxbet_hedge_simulation", "sxbet_close_position_preview", "sxbet_rules_evaluate",
-                                   "sxbet_risk_status", "sxbet_reconciliation_diagnostics"}
-    assert len(tools) == 46
+                                   "sxbet_risk_status", "sxbet_reconciliation_diagnostics",
+                                   "sxbet_trading_mode"}                 # P5: configuration only, no call
+    assert len(tools) == 47
 
 
 @pytest.mark.parametrize("tool,kwargs,path,params", [

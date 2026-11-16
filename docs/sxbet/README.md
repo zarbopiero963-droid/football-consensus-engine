@@ -403,3 +403,21 @@ Se il server riporta il conteggio atteso di `sxbet` e il client ne mostra 0, il 
    - i limiti reali e lo scope della chiave.
 
    Dettagli in [`signer/README.md`](../../signer/README.md). Ogni passo verso il trading reale si mergia solo dall'owner.
+
+## P5 — Doppia modalità del MCP (issue #187)
+
+| Modalità | Strumenti | Come si attiva |
+|---|---|---|
+| `READ_ONLY` (default) | lettura e simulazione; `sxbet_trading_mode` | nessuna variabile, o `SXBET_MCP_MODE=READ_ONLY` |
+| `LIVE_TRADING` | in più `sxbet_order_request_place`, `_cancel`, `_status` | `SXBET_MCP_MODE=LIVE_TRADING` impostato dall'owner lato server, con la configurazione delle richieste completa (S7) |
+
+- Nessun argomento di un tool cambia la modalità. Una configurazione incompleta o non valida ricade in `READ_ONLY` con un codice fisso (`sxbet_trading_mode`, `sxbet_health.mcp_mode`).
+- **Mainnet:** `LIVE_TRADING` è rifiutato dal codice (`MAINNET_LIVE_TRADING_AUTHORIZED = False`, decisione owner 16-11-2026). Lo sblocco richiede una modifica revisionata e mergiata dall'owner, mai una variabile.
+- Anche in `LIVE_TRADING` il MCP non firma e non invia: mette in coda una richiesta per il signer isolato.
+- Prima di scrivere in coda, `place` e `cancel` leggono lo stato pubblicato dal signer (`signer_status`, bozza `sql/drafts/signer/0003_signer_status.sql`, pubblicato dal worker con `signer/status.py`). Rifiutano con `REFUSED_BEFORE_QUEUE`, senza scrivere nulla, se:
+  - lo stato manca, è ambiguo o è più vecchio di `SXBET_SIGNER_STATUS_MAX_AGE_SECONDS` (default 120): `SIGNER_STATUS_*` / `SIGNER_UNREACHABLE`;
+  - il kill switch è attivo o il suo stato è ignoto: `KILL_SWITCH_ENGAGED` / `KILL_SWITCH_STATE_UNKNOWN`. Vale anche per le cancellazioni (decisione owner; il signer da solo le accetterebbe: punto da confermare);
+  - il flag LIVE firmato dall'owner non è valido ora: `LIVE_TRADING_NOT_AUTHORIZED`;
+  - l'ultimo ciclo del signer è fallito: `SIGNER_LAST_CYCLE_FAILED`.
+- È un rifiuto anticipato: il signer riverifica comando, limiti, kill switch e flag LIVE per conto proprio.
+- Chiusura e hedge di una posizione sono una nuova richiesta `place` con un nuovo comando dell'owner (anteprima: `sxbet_close_position_preview`, `sxbet_hedge_simulation`).

@@ -281,6 +281,14 @@ class SubmissionGateway:
         if self._ledger.kill_switch_engaged:
             raise GatewayRefused("KILL_SWITCH_ENGAGED")
 
+    def live_status(self) -> str | None:
+        """Read-only: None when the owner-signed LIVE flag verifies NOW (signature, binding, expiry), else its fixed
+        refusal code. Used only to publish the signer status (P5); every send still re-checks it under the lock."""
+        code = _verified_flag_body(self._flag, self._owner_key, signer_id=self._ledger.signer_id,
+                                   network=self._network, now=int(self._clock()),
+                                   ledger_genesis_sha256=self._ledger.genesis_sha256)
+        return code or None
+
     def _check_flag(self) -> None:
         # Re-verified on every financial operation: owner signature over the flag bytes, binding, expiry.
         code = _verified_flag_body(self._flag, self._owner_key, signer_id=self._ledger.signer_id,

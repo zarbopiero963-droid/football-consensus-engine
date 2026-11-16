@@ -133,7 +133,7 @@ def _no_secret(out):
 
 def test_new_tools_registered_and_named_without_write_verbs():
     t, _ = tools()
-    assert set(NEW) <= set(t) and len(t) == 46
+    assert set(NEW) <= set(t) and len(t) == 47        # +sxbet_trading_mode (P5)
     banned = re.compile(r"create|place|post|submit|cancel|approve|transfer|withdraw|deposit|sign|fill_order|heartbeat")
     assert not [n for n in t if banned.search(n)]
     for name in NEW:

@@ -15,6 +15,7 @@ pytest.importorskip("eth_account")
 pytest.importorskip("cryptography")
 
 from bridge.sxbet import order_requests as oreq  # noqa: E402
+from bridge.sxbet import trading_mode as tm  # noqa: E402
 from bridge.sxbet.client import Settings, SXBetError  # noqa: E402
 from bridge.sxbet.order_request_tools import TOOL_NAMES  # noqa: E402
 from bridge.sxbet.tools import ORDER_REQUEST_TOOLS, register_sxbet_tools  # noqa: E402
@@ -90,16 +91,34 @@ class MemoryWriter:
     def events(self, rid):
         return self.q.events_of(rid)
 
+    signer_rows = None              # None = the healthy default below
+
+    def signer_status(self, network):
+        return [dict(r) for r in (self.signer_rows if self.signer_rows is not None else [HEALTHY])]
+
 
 def ors_for(s):
     return oreq.OrderRequestSettings(enabled=True, queue_dsn="postgresql://unused", maker=s.maker)
+
+
+# P5 (declared test change): the S7 tools exist only in LIVE_TRADING mode, after a healthy signer status. These S7
+# tests keep exercising them on the simulated mainnet, so they lift the code-level mainnet block FOR THE TEST ONLY;
+# tests/test_sxbet_trading_mode.py proves the shipped value refuses mainnet.
+LIVE = tm.TradingMode(mode=tm.LIVE_TRADING)
+HEALTHY = {"signer_id": SIGNER_ID, "kill_switch": "DISENGAGED", "live_trading": "AUTHORIZED", "live_reason": None,
+           "last_cycle_ok": True, "age_seconds": 1.0}
+
+
+@pytest.fixture(autouse=True)
+def _s7_tests_run_on_simulated_mainnet(monkeypatch):
+    monkeypatch.setattr(tm, "MAINNET_LIVE_TRADING_AUTHORIZED", True)
 
 
 def tools(s, q, *, api_key="test-key", ors=None):
     reg = _Registry()
     writer = MemoryWriter(q)
     register_sxbet_tools(reg, Settings(enabled=True, network="mainnet", api_key=api_key), client=SimClient(s.sim),
-                         order_requests=ors or ors_for(s), order_request_writer=writer)
+                         order_requests=ors or ors_for(s), order_request_writer=writer, trading_mode=LIVE)
     return reg.tools, writer
 
 
@@ -508,7 +527,8 @@ def test_review_ce4a702_p3_6_the_same_database_spelled_differently_is_refused(br
 def test_review_ce4a702_p3_7_health_declares_the_cost_of_the_request_tools(s):
     reg = _Registry()
     register_sxbet_tools(reg, Settings(enabled=True, network="mainnet"), client=SimClient(s.sim),
-                         order_requests=ors_for(s), order_request_writer=MemoryWriter(MemoryQueue()))
+                         order_requests=ors_for(s), order_request_writer=MemoryWriter(MemoryQueue()),
+                         trading_mode=LIVE)
     costs = run(reg.tools["sxbet_health"]())["order_requests"]["tool_cost_catalog"]
     assert {k: v["max_provider_calls"] for k, v in costs.items()} == {
         "sxbet_order_request_place": 1, "sxbet_order_request_cancel": 0, "sxbet_order_request_status": 2}

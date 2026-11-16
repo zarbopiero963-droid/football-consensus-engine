@@ -70,14 +70,14 @@ def test_sxbet_enabled_catalogue_is_reported_by_healthz_and_startup_log():
     sx = [n for n in names if n.startswith("sxbet_")]
     af = [n for n in names if n.startswith("apifootball_")]
     browser = [n for n in names if n.startswith("browser_")]
-    assert len(sx) == 46 and len(names) == len(sx) + len(af) + len(browser)
+    assert len(sx) == 47 and len(names) == len(sx) + len(af) + len(browser)
     h = out["healthz"]
     assert h["mcp_tools_total"] == len(names)
-    assert h["mcp_tools_by_component"] == {"browser": len(browser), "apifootball": len(af), "sxbet": 46, "other": 0}
+    assert h["mcp_tools_by_component"] == {"browser": len(browser), "apifootball": len(af), "sxbet": 47, "other": 0}
     assert h["deploy_commit"] == "0123456789ab"
     assert h["sxbet_rate_coordinator"] == "LOCAL_PROCESS"  # no DATABASE_URL in this process
     lines = _registry_lines(logs)
-    assert lines and f"total={len(names)}" in lines[0] and "sxbet=46" in lines[0] and "commit=0123456789ab" in lines[0]
+    assert lines and f"total={len(names)}" in lines[0] and "sxbet=47" in lines[0] and "commit=0123456789ab" in lines[0]
     assert FAKE_KEY not in logs and FAKE_KEY not in json.dumps(out)
 
 
@@ -96,7 +96,7 @@ def test_healthz_reports_shared_postgres_coordinator_without_touching_the_databa
     out, logs = _run({"SXBET_ENABLED": "true", "SXBET_API_KEY": FAKE_KEY,
                       "DATABASE_URL": "postgresql://healthz_test:unused@127.0.0.1:9/none"})
     h = out["healthz"]
-    assert h["sxbet_rate_coordinator"] == "POSTGRES_SHARED" and h["mcp_tools_by_component"]["sxbet"] == 46
+    assert h["sxbet_rate_coordinator"] == "POSTGRES_SHARED" and h["mcp_tools_by_component"]["sxbet"] == 47
     assert h["sxbet_registration_error_type"] is None
     assert "unused@127.0.0.1" not in json.dumps(out) and FAKE_KEY not in logs
     # WP-006: the readiness check against the closed port is a fixed code, never the DSN.
@@ -132,7 +132,7 @@ sxbet_trades sxbet_order sxbet_order_by_client_id sxbet_trade sxbet_public_marke
 sxbet_public_positions sxbet_privacy sxbet_proxy_wallet sxbet_proxy_deploy_pending sxbet_proxy_funding_pending
 sxbet_proxy_funding_status sxbet_proxy_address_check sxbet_safe_info sxbet_simulate_order
 sxbet_order_status sxbet_positions_summary sxbet_exposure_pnl sxbet_resting_orders_scope sxbet_hedge_simulation
-sxbet_close_position_preview sxbet_rules_evaluate sxbet_risk_status sxbet_reconciliation_diagnostics""".split())
+sxbet_close_position_preview sxbet_rules_evaluate sxbet_risk_status sxbet_reconciliation_diagnostics sxbet_trading_mode""".split())
 
 
 def test_browser_and_sxbet_catalogues_are_pinned():
@@ -141,5 +141,5 @@ def test_browser_and_sxbet_catalogues_are_pinned():
                    "SXBET_ENABLED": "true", "SXBET_API_KEY": FAKE_KEY})
     names = out["tool_names"]
     assert sorted(n for n in names if n.startswith("browser_")) == BROWSER_TOOLS and len(BROWSER_TOOLS) == 34
-    assert sorted(n for n in names if n.startswith("sxbet_")) == SXBET_TOOLS and len(SXBET_TOOLS) == 46
+    assert sorted(n for n in names if n.startswith("sxbet_")) == SXBET_TOOLS and len(SXBET_TOOLS) == 47
     assert len([n for n in names if n.startswith("apifootball_")]) == 42

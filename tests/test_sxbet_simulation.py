@@ -361,7 +361,7 @@ def run(c):
 
 def test_tool_registered_once_in_simulation_mode():
     _, _, names = _tool(_router())
-    assert len(names) == 46 and names.count("sxbet_simulate_order") == 1
+    assert len(names) == 47 and names.count("sxbet_simulate_order") == 1
 
 
 def test_tool_simulates_without_signing_or_submitting():

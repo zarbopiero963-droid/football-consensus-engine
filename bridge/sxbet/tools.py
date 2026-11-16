@@ -227,6 +227,7 @@ TOOL_COST_CATALOG: dict[str, dict[str, Any]] = {
         "markets/find + metadata/obv3 + trades-v3 x2 (MATCHED, LOCKED) + orders-v3 + fees-v3 "
         "+ orderbook-v3/snapshot/market")}
        for name in ("sxbet_hedge_simulation", "sxbet_close_position_preview", "sxbet_rules_evaluate")},
+    "sxbet_trading_mode": {"max_provider_calls": 0, "basis": "none (server configuration only)"},
     "sxbet_reconciliation_diagnostics": {"max_provider_calls": 5, "basis": (
         "orders-v3 + (trades-v3 + fills-v3) x2 (MATCHED, LOCKED)")},
 }
@@ -234,13 +235,20 @@ TOOL_COST_CATALOG: dict[str, dict[str, Any]] = {
 
 def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadClient | None = None,
                          order_requests: oreq.OrderRequestSettings | None = None,
-                         order_request_writer: Any = None) -> tuple[str, ...]:
+                         order_request_writer: Any = None,
+                         trading_mode: Any = None) -> tuple[str, ...]:
     if not settings.enabled:
         return ()
     client = client or SXBetReadClient(settings)
     names: list[str] = []
     # S7: owner order-request tools, OFF by default (SXBET_ORDER_REQUESTS_ENABLED); never sign or send.
     ors = order_requests if order_requests is not None else oreq.OrderRequestSettings.from_env()
+    # P5: dual mode. READ_ONLY unless the owner's server configuration asks for a complete, permitted LIVE_TRADING.
+    from . import trading_mode as tm
+    mode = trading_mode if isinstance(trading_mode, tm.TradingMode) else tm.TradingMode.from_env(
+        settings.network, ors.enabled, ors.error)
+    if mode.live and settings.network == "mainnet" and tm.MAINNET_LIVE_TRADING_AUTHORIZED is not True:
+        mode = tm.TradingMode(error="LIVE_TRADING_MAINNET_NOT_AUTHORIZED")   # also for a mode passed in code
 
     def add(fn):
         server.tool()(fn)
@@ -287,7 +295,7 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
     async def sxbet_health() -> dict[str, Any]:
         """SX Bet module status; no provider call. Live trading is unavailable (read-only + simulation module)."""
         return {"provider": "SX_BET", "enabled": True, "network": settings.network,
-                "api_key_present": bool(settings.api_key), "mode": "READ_ONLY",
+                "api_key_present": bool(settings.api_key), "mode": mode.mode,
                 "available_modes": {"READ_ONLY": "AVAILABLE", "SIMULATION": "AVAILABLE", "LIVE_TRADING": "UNAVAILABLE"},
                 "live_trading": "UNAVAILABLE: no isolated signer with signer-verified per-order confirmation (governance 2.6)",
                 "write_tools": [], "simulation_tools": ["sxbet_simulate_order", "sxbet_hedge_simulation",
@@ -301,11 +309,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                 "tool_cost_catalog": {"label": "DECLARED_MAX_PROVIDER_CALLS_PER_TOOL_CALL",
                                       "unit": "GET requests (each = 1 slot of the global and of its route bucket)",
                                       "tools": {n: dict(TOOL_COST_CATALOG[n]) for n in sorted(TOOL_COST_CATALOG)}},
-                "source_contract": DOCS, "network_calls_made": 0,
+                "source_contract": DOCS, "network_calls_made": 0, "mcp_mode": mode.describe(),
                 **({} if not (ors.enabled or ors.error) else {"order_requests": {
-                    "status": "ENABLED" if ors.enabled else "DISABLED_MISCONFIGURED", "error": ors.error,
-                    "tools": list(ORDER_REQUEST_TOOLS) if ors.enabled else [],
-                    "tool_cost_catalog": ORDER_REQUEST_TOOL_COSTS if ors.enabled else {},
+                    "status": ("ENABLED" if ors.enabled and mode.live else
+                               "DISABLED_MCP_MODE_READ_ONLY" if ors.enabled else "DISABLED_MISCONFIGURED"),
+                    "error": ors.error if not ors.enabled else mode.error,
+                    "tools": list(ORDER_REQUEST_TOOLS) if ors.enabled and mode.live else [],
+                    "tool_cost_catalog": ORDER_REQUEST_TOOL_COSTS if ors.enabled and mode.live else {},
                     "note": ("The MCP only queues the owner's explicit command for the isolated signer, which "
                              "verifies it, applies the owner-signed limits, the kill switch and its own LIVE "
                              "flag. The MCP never signs or sends.")}})}
@@ -1358,9 +1368,17 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
                                 "otherwise CONFLICT: reported and excluded from every computation"],
                      "sources": list(pos_mod.SOURCES)})
 
-    if ors.enabled:
+    @add
+    async def sxbet_trading_mode() -> dict[str, Any]:
+        """The SX Bet MCP mode: READ_ONLY (read and simulation only) or LIVE_TRADING (owner order requests queued
+        for the isolated signer). Server configuration only; no provider call, no database read, no argument."""
+        return {"provider": "SX_BET", "tool": "sxbet_trading_mode", "network": settings.network,
+                "network_calls_made": 0, "status": "NO_ACTION", **mode.describe()}
+
+    if mode.live and ors.enabled:
         from .order_request_tools import register_order_request_tools
-        names.extend(register_order_request_tools(server, settings, client, ors, writer=order_request_writer))
+        names.extend(register_order_request_tools(server, settings, client, ors, mode=mode,
+                                                  writer=order_request_writer))
     return tuple(names)
 
 

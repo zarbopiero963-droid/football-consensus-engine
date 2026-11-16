@@ -16,6 +16,7 @@ from typing import Any
 
 from . import order_requests as oreq
 from . import simulation as sim
+from . import trading_mode as tm
 from .client import NO_NETWORK_CODES, SXBetError
 
 DOCS = ("https://docs.sx.bet/developers/posting-orders", "https://docs.sx.bet/developers/cancelling-orders",
@@ -40,8 +41,9 @@ def _wallclock() -> float:
 
 
 def register_order_request_tools(server: Any, settings: Any, client: Any, ors: oreq.OrderRequestSettings, *,
-                                 writer: Any = None, clock: Any = None) -> tuple[str, ...]:
-    if not ors.enabled:
+                                 mode: tm.TradingMode, writer: Any = None, clock: Any = None) -> tuple[str, ...]:
+    # P5: registered ONLY in LIVE_TRADING mode (server configuration), never in READ_ONLY.
+    if not ors.enabled or not isinstance(mode, tm.TradingMode) or not mode.live:
         return ()
     clock = clock if clock is not None else _wallclock
     writer = writer or oreq.PostgresRequestWriter(oreq.postgres_connect(ors.queue_dsn))
@@ -57,7 +59,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         return fn
 
     def base(tool: str) -> dict[str, Any]:
-        return {"provider": "SX_BET", "tool": tool, "network": settings.network, "mode": "ORDER_REQUEST",
+        return {"provider": "SX_BET", "tool": tool, "network": settings.network, "mode": "ORDER_REQUEST", "mcp_mode": mode.mode,
                 "retrieved_at_utc": datetime.now(timezone.utc).isoformat(), "network_calls_made": 0,
                 "signed_by_mcp": False, "sent_by_mcp": False,
                 "decided_by": "ISOLATED_SIGNER (owner command verified by the signer, owner-signed limits, "
@@ -76,6 +78,22 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
             return None, {"code": exc.code, "http_status": exc.http_status, "endpoint": path}
         out["network_calls_made"] += 1
         return reply["data"], None
+
+    async def signer_gate(out: dict[str, Any], kind: str) -> dict[str, Any] | None:
+        """P5: refuse BEFORE writing anything when the signer is silent, the kill switch is engaged or unknown,
+        LIVE is not authorized or its last cycle failed. Early refusal only: the signer re-checks everything."""
+        try:
+            rows = await asyncio.to_thread(writer.signer_status, settings.network)
+        except Exception:
+            rows = None
+        code = tm.precheck(rows, max_age_seconds=mode.status_max_age_seconds, kind=kind)
+        if code is None:
+            return None
+        return {**out, "status": "REFUSED_BEFORE_QUEUE", "state": "NOT_QUEUED", "error": {"code": code},
+                "queued": False,
+                "note": "Nothing was written: the signer cannot take trading requests now. Do not retry in a loop; "
+                        "report the code to the owner. Kill switch release and LIVE authorization are owner acts "
+                        "outside the MCP."}
 
     async def enqueue(out: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         rid = payload["request_id"]
@@ -170,6 +188,9 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     "odds_rounding": {"requested": intent["requested_percentage_odds"],
                                       "rounded_down": intent["percentage_odds"]},
                     "command_text_sha256": payload["command"]["command_text_sha256"]})
+        refusal = await signer_gate(out, "PLACE")
+        if refusal is not None:
+            return await refused(refusal)
         return await enqueue(out, payload)
 
     @add
@@ -193,6 +214,9 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
             return invalid(out, exc.code)
         out.update({"kind": "CANCEL", "scope": scope,
                     "command_text_sha256": payload["command"]["command_text_sha256"]})
+        refusal = await signer_gate(out, "CANCEL")
+        if refusal is not None:
+            return refusal
         return await enqueue(out, payload)
 
     @add
