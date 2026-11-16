@@ -1,6 +1,6 @@
 # S10 — Studio della custodia: EOA, proxy, Safe, chiave API (issue #187)
 
-Stato: **STUDIO**. Nessuna modifica a Safe o wallet, nessun fondo mosso, nessuna chiamata autenticata. Un verdetto SAFE della review riguarda l'accuratezza dello studio: **non** certifica che un Safe 2-di-2 funzioni su SX Bet. La custodia della chiave API (decisione owner `owner_commanded_execution.md` D6, distinta dalla D6 della tabella §3; lo stesso vale per D5) resta aperta, come la scelta della chiave (`owner_commanded_execution.md` D5).
+Stato: **STUDIO**. Nessuna modifica a Safe o wallet, nessun fondo mosso, nessuna chiamata autenticata. Un verdetto SAFE della review riguarda l'accuratezza dello studio: **non** certifica che un Safe 2-di-2 funzioni su SX Bet. La custodia della chiave API (decisione owner D6 di `owner_commanded_execution.md`; le decisioni owner D5 e D6 sono distinte dalle righe D5/D6 della tabella §3) resta aperta, come la scelta della chiave (`owner_commanded_execution.md` D5).
 
 Fonte: documentazione ufficiale https://docs.sx.bet, letta il 16-11-2026: `llms-full.txt`, `developers/accounts`, `developers/funding`, `developers/migrate-to-v3`, `developers/new-in-v3`, `developers/api-key-permissions`, `api-reference/auth-matrix`, `api-reference/api-key`, `user-guides/deposit-withdraw/large-withdrawals`, `get-user-proxy`, `post-user-transfer-to-proxy`, `get-user-multisig-info` e tutte le pagine `post-user-multisig-*`. Ciò che la documentazione non prova è marcato `DOCS_UNVERIFIED` e va provato su Toronto.
 
@@ -84,7 +84,7 @@ Solo con autorizzazione scritta dell'owner, fondi di test ottenuti dal supporto 
 
 ## 5. Raccomandazione
 
-**A. Se T0 e T3–T6 riescono (Safe 2-di-2 utilizzabile):** EOA di trading dedicato, generato nel signer (non Magic; raccomandazione, `owner_commanded_execution.md` D5 aperta), proxy proprio, Safe 2-di-2 con la seconda chiave dell'owner offline; chiave API con soli scope Orders e lettura, custodita secondo la decisione owner `owner_commanded_execution.md` D6 (raccomandato: solo nel signer; D9 resta da risolvere); nel proxy solo il capitale di rischio.
+**A. Se T0 e T3–T6 riescono (Safe 2-di-2 utilizzabile):** EOA di trading dedicato, generato nel signer (non Magic; raccomandazione, `owner_commanded_execution.md` D5 aperta), proxy proprio, Safe 2-di-2 con la seconda chiave dell'owner offline; chiave API con soli scope Orders e lettura, custodita secondo la decisione owner `owner_commanded_execution.md` D6 (raccomandato: solo nel signer; resta da risolvere la D9 della tabella §3); nel proxy solo il capitale di rischio.
 
 **B. Se T0 fallisce o il Safe non segrega (esito conservativo da assumere finché T0 e T3–T6 non sono provati; oggi né il 2-di-2 né la segregazione sono dimostrati):** conto di trading dedicato con capitale minimo; il limite economico è il saldo del proxy più le posizioni aperte, accettato come perdita massima in caso di furto della chiave. Raccomandato (`owner_commanded_execution.md` D5 aperta): non usare il conto principale (wallet Magic, Safe 1-di-1) per gli ordini comandati dall'owner.
 
