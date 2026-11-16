@@ -7,7 +7,7 @@ Fonte: documentazione ufficiale https://docs.sx.bet, letta il 16-11-2026: `llms-
 ## 0. Sintesi
 
 1. **Oggi (mainnet, Safe 1 owner / soglia 1) un EOA compromesso controlla tutto da solo**: ordini, cancellazioni, prelievo verso qualunque indirizzo, trasferimento ad altri proxy, aggiunta di firmatari e cambio della soglia (§2).
-2. **Non è dimostrato che un Safe 2-di-2 sia utilizzabile tramite l'API** (`DOCS_UNVERIFIED`, §3 D1). La documentazione dà indizi in entrambe le direzioni: prevede firmatari multipli ("you can add multiple signers to your wallet to approve withdrawals") e una firma "di chi deve ancora firmare", ma ogni `*/execute` richiede che `signerAddress` sia l'indirizzo autenticato e restituisce 403 se "The Safe is not on your account". Ipotesi da provare: un secondo firmatario con un indirizzo proprio potrebbe non riuscire a inviare la sua firma. Decide la prova T0.
+2. **Non è dimostrato che un Safe 2-di-2 sia utilizzabile tramite l'API** (`DOCS_UNVERIFIED`, §3 riga D1). La documentazione dà indizi in entrambe le direzioni: prevede firmatari multipli ("you can add multiple signers to your wallet to approve withdrawals") e una firma "di chi deve ancora firmare", ma ogni `*/execute` richiede che `signerAddress` sia l'indirizzo autenticato e restituisce 403 se "The Safe is not on your account". Ipotesi da provare: un secondo firmatario con un indirizzo proprio potrebbe non riuscire a inviare la sua firma. Decide la prova T0.
 3. Anche se fosse realizzabile, il Safe **non** protegge dagli ordini dannosi firmati dall'EOA, né dalle cancellazioni e dal blocco dei prelievi con ordini aperti (§2).
 4. Il limite economico che regge anche con la chiave rubata è uno solo: **il saldo del proxy di trading più il valore delle posizioni aperte che vi si regolano**. Il capitale non deve mai sostare nell'EOA di trading (§5).
 
@@ -71,7 +71,7 @@ Solo con autorizzazione scritta dell'owner, fondi di test ottenuti dal supporto 
 
 | # | Prova | Esito atteso | Stop se |
 |---|---|---|---|
-| **T0** | **Go/no-go D1**: aggiunta di un secondo firmatario (altro indirizzo), soglia 2, poi un `withdraw` di test firmato da entrambi | il secondo firmatario riesce a firmare e la transazione viene eseguita | **impossibile → stop**: il 2-di-2 non è utilizzabile, si adotta il §5 opzione B |
+| **T0** | **Go/no-go riga D1**: aggiunta di un secondo firmatario (altro indirizzo), soglia 2, poi un `withdraw` di test firmato da entrambi | il secondo firmatario riesce a firmare e la transazione viene eseguita | **impossibile → stop**: il 2-di-2 non è utilizzabile, si adotta il §5 opzione B |
 | T1 | EOA dedicato, proxy **nuovo**, `GET /user/proxy` | `multisigSafeAddress` non null | null → stop |
 | T2 | Ordine firmato dalla sola EOA | accettato | rifiutato → stop (il trading richiederebbe il Safe) |
 | T3 | `withdraw` con la sola EOA, soglia 2 | `isReadyToExecute=false`, `signedCount 1 < requiredThreshold 2`, `isExecuted` resta false, saldo invariato | eseguito → stop |
