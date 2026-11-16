@@ -1218,7 +1218,7 @@ FULL = "5000000"
     ("CANCELLED", row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0")),     # CANCELLED -> FILLED
     ("CANCELLED", row(remainingSize="0")),                                                # refused row (ACTIVE rem 0)
     ("CANCELLED", row(status="PENDING", remainingSize="0")),
-    ("CANCELLED", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="0")),    # refused: full, not FILLED
+    ("CANCELLED", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="0")),    # refused, other label
     ("EXPIRED", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="0")),
 ])
 def test_review_3f296db_p2_1_full_stake_on_an_inactive_ledger_never_drops_reconciliation(ledger, r):
@@ -1273,3 +1273,19 @@ def test_review_3f296db_end_to_end_full_stake_cancelled_without_key_requires_rec
     st = status(t, res["request_id"])
     assert st["state"] == "FILLED" and st["final"] is False
     assert (st["reconciliation_required"], st["evidence_insufficient"]) == ("YES", "YES")
+
+
+# ---------------------------------------------------------------- review of 88058d3 (SAFE, P3 hardening)
+@pytest.mark.parametrize("r", [row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="0"),
+                               row(remainingSize="0"), row(status="PENDING", remainingSize="0"),
+                               row(status="INACTIVE", inactiveReason="FILLED")])
+def test_review_88058d3_p3_1_settled_against_a_refused_row_with_another_amount_is_a_conflict(r):
+    out = _read(_done(state="SETTLED", filled="1000000"), r)
+    assert out["state"] == "UNKNOWN" and out["evidence"] == "CONFLICT" and out["final"] is False
+
+
+@pytest.mark.parametrize("ledger, reason", [("CANCELLED", "USER_REQUESTED"), ("EXPIRED", "EXPIRED")])
+def test_review_88058d3_p3_2_full_stake_ledger_and_its_own_row_agree_but_still_reconcile(ledger, reason):
+    out = _read(_done(state=ledger, filled=FULL), row(status="INACTIVE", inactiveReason=reason, remainingSize="0"))
+    assert out["state"] == "FILLED" and out["final"] is False and out.get("evidence") != "CONFLICT"
+    assert triple(contract(out)) == ("NO", "YES", "YES")

@@ -333,6 +333,8 @@ Inoltre:
   - una riga ben formata di questo ordine, ma scartata come evidenza;
   - una riga ancora attiva;
   - una riga inattiva il cui motivo corrisponde a una transizione che il signer rifiuta, **anche a parità di importo**.
+  - eccezione: la stessa riga da cui il signer ha registrato un `CANCELLED` o `EXPIRED` con l'intero stake (stessa etichetta, importo uguale allo stake) è coerente; il `FILLED` rietichettato richiede comunque la riconciliazione;
+- `SETTLED` contro una riga fresca, accettata o scartata ma ben formata, che risulta attiva o mostra un altro importo è un conflitto (review indipendente di `88058d3`).
 
 **Importo rivendicato contro i fill letti** (review indipendente di `dc45c5f`). Quando la lettura dei fill di questo ordine è completa, qualunque sia l'esito della lettura della riga (anche un 404), l'importo dichiarato si confronta con la somma dei fill contati (tutti tranne `FAILED`). Per `FILLED` l'importo è lo stake; per `PARTIALLY_FILLED` e `SETTLED` è `filled_base_units`.
 - Un importo maggiore di zero con **nessun** fill contato è una contraddizione: `UNKNOWN` / `FILLS_DO_NOT_CONFIRM_FILL`, mai finale.

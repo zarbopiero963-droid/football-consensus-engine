@@ -393,7 +393,10 @@ def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[st
         return none("EVIDENCE_STATUS_UNKNOWN", filled)
     if filled == total and not (status == "INACTIVE" and reason == "FILLED"):
         # Whole stake matched but not reported as FILLED: the signer records no evidence either (review P3-5).
-        return none("EVIDENCE_FULL_FILL_NOT_MARKED_FILLED", filled)
+        out = none("EVIDENCE_FULL_FILL_NOT_MARKED_FILLED", filled)
+        if status == "INACTIVE" and (reason == "EXPIRED" or reason in _CANCEL_REASONS):
+            out["target"] = "EXPIRED" if reason == "EXPIRED" else "CANCELLED"   # label of the refused row only
+        return out
     if status in ("PENDING", "ACTIVE"):
         return {"state": "PARTIALLY_FILLED" if filled else "SUBMITTED", "reason": "EXCHANGE_ORDER_" + status,
                 "resting": True, "filled": filled}
@@ -469,7 +472,12 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
         # - a conclusive row still resting;
         # - an inactive row whose reason maps to a move signer/orders.py TRANSITIONS refuses, WHATEVER the amount.
         move = (view.get("ledger_state"), row_target)
-        refused_row = lookup_state is None and row_filled_unaccepted is not None
+        # The very row a full-stake CANCELLED / EXPIRED ledger was recorded from (same label, amount = stake) is
+        # consistent, not a conflict; the relabelled FILLED still always requires reconciliation (review of
+        # 88058d3, P3-2).
+        same_full_row = (str(view.get("code") or "").startswith("FULL_STAKE_MATCHED_LEDGER_")
+                         and row_target == view.get("ledger_state") and row_filled_unaccepted == ledger_amount)
+        refused_row = lookup_state is None and row_filled_unaccepted is not None and not same_full_row
         bad_move = (lookup_state is not None and row_target is not None and move[0] != move[1]
                     and move not in _LATE_FILL_MOVES)
         if refused_row or ex_resting is True or bad_move:
@@ -513,12 +521,15 @@ def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_s
             return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")      # the signer recorded a fill
         if any(a > 0 for a in shown):
             return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE")
-    if state == "SETTLED" and lookup_state is not None:
-        # A settled ledger against a fresh accepted row that rests, or shows another matched amount: never a final
-        # SETTLED on contradicting evidence (review 03828f9 P2-2).
+    if state == "SETTLED":
+        # A settled ledger against a fresh row (accepted or refused but well formed) that rests, or shows another
+        # matched amount: never a final SETTLED on contradicting evidence (reviews 03828f9 P2-2, 88058d3 P3-1).
         settled = _units(out.get("filled_base_units"))
-        if ex_resting is True or (row_filled is not None and settled is not None and row_filled != settled):
+        if lookup_state is not None and (ex_resting is True or (row_filled is not None and settled is not None
+                                                                and row_filled != settled)):
             return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
+        if lookup_state is None and row_filled_unaccepted is not None and row_filled_unaccepted != settled:
+            return _conflict(out, view, "ROW_SHOWS_FILL_NOT_ACCEPTED_AS_EVIDENCE")
     if state == "PARTIALLY_FILLED":
         ledger_amount = _units(out.get("filled_base_units")) if out.get("evidence") == "QUEUE_EVENTS" else None
         for a in shown:
