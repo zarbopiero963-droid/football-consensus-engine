@@ -363,8 +363,6 @@ def test_runner_cannot_create_alter_replace_or_drop_anything(env):
         "ALTER FUNCTION fcb_cert_quota.reserve(text) RENAME TO r2",
         "DROP FUNCTION fcb_cert_quota.reserve(text)", "DROP SCHEMA fcb_cert_quota CASCADE",
         f"ALTER SCHEMA fcb_cert_quota OWNER TO {RUNNER}",
-        f"GRANT CREATE ON SCHEMA fcb_cert_quota TO {RUNNER}",
-        "ALTER DEFAULT PRIVILEGES IN SCHEMA fcb_cert_quota GRANT EXECUTE ON FUNCTIONS TO PUBLIC",
         "COMMENT ON FUNCTION fcb_cert_quota.reserve(text) IS 'x'",
         "SECURITY LABEL ON FUNCTION fcb_cert_quota.reserve(text) IS 'x'",
     ]
@@ -373,6 +371,27 @@ def test_runner_cannot_create_alter_replace_or_drop_anything(env):
             with env.runner() as conn:
                 conn.execute(statement)
         assert exc.value.sqlstate in ("42501", "22023", "0LP01", "42704", "22P02"), (statement, exc.value.sqlstate)
+    assert _state(env) == "EXACT"
+
+
+def test_self_scoped_statements_the_runner_may_issue_change_nothing_or_fail_closed(env):
+    # GRANT without grant option: PostgreSQL only warns; nothing changes
+    with env.runner() as conn:
+        conn.execute(f"GRANT CREATE ON SCHEMA fcb_cert_quota TO {RUNNER}")
+        conn.execute(f"GRANT EXECUTE ON FUNCTION fcb_cert_quota.reserve(text) TO {OTHER}")
+    assert _state(env) == "EXACT"
+    # a default privilege for the runner's OWN future objects in fcb_cert_quota (it can create none):
+    # no effect on any object, but the exact state is no longer met -> the runner and the assert refuse
+    # (fail closed; self-inflicted unavailability, like R2). Removed here by the superuser.
+    with env.runner() as conn:
+        conn.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA fcb_cert_quota GRANT EXECUTE ON FUNCTIONS TO PUBLIC")
+    try:
+        assert _state(env) == "DRIFT"
+    finally:
+        with env.su() as su:
+            su.execute(f"ALTER DEFAULT PRIVILEGES FOR ROLE {RUNNER} IN SCHEMA fcb_cert_quota REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
+    with env.su() as su:
+        assert su.execute("SELECT count(*) AS n FROM pg_default_acl WHERE defaclrole = %s::regrole", (RUNNER,)).fetchone()["n"] == 0
     assert _state(env) == "EXACT"
 
 
