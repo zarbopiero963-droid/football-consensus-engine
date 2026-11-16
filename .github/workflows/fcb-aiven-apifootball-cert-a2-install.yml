@@ -62,7 +62,7 @@ jobs:
       # SHA-256 of every file this workflow runs (tests/test_apifootball_cert_a2_workflows.py).
       EXPECTED_FILE_SHA256: |
         sql/aiven/apifootball_cert_path_a_roles.sql=bcbc46d31de63e023a9a57490859971729f576c6bedc77848482e0de2488eb8f
-        sql/aiven/apifootball_cert_path_a_quota_schema.sql=b323793b5839c52f3b81b6e52f49b3a86231d3bb87f8cdce9c6ca7d8b5d40c9c
+        sql/aiven/apifootball_cert_path_a_quota_schema.sql=7c04a8a0f503cdfbbd0bda1f67564ec555df9c188beedabed1c0cdb05e1f4684
         sql/aiven/apifootball_cert_path_a_quota_functions.sql=ee6140d09927b9f2535b51e22b4fc4fb4149cab4f910ac746d06941a162384d3
         sql/aiven/apifootball_cert_path_a_quota_assert.sql=83a60a6e00d775b3fbd93763fe5738ae41e459b45699280173200f7312ea1042
         sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
