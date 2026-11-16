@@ -8,8 +8,13 @@
 -- on requests is needed by the S7 idempotent insert, ON CONFLICT ... RETURNING and the payload comparison;
 -- signer: SELECT requests + SELECT, INSERT events) are an explicit owner step coordinated with WP-009:
 -- sql/owner_steps/signer_roles_0002_0003.sql (never run by the migration runner).
+-- Clock-free ordering (owner decision 16-11-2026): every request gets a queue_seq from this DATABASE sequence at
+-- insert, by trigger (a value supplied by the writer is overwritten). A kill-switch release records a value taken
+-- from the same sequence; requests with a smaller queue_seq were queued before the release and are refused.
+CREATE SEQUENCE IF NOT EXISTS signer_order_requests_queue_seq AS BIGINT MINVALUE 1 NO CYCLE;
 CREATE TABLE IF NOT EXISTS signer_order_requests (
     request_id TEXT PRIMARY KEY CHECK (request_id ~ '^[0-9a-f]{32}$'),
+    queue_seq BIGINT NOT NULL UNIQUE CHECK (queue_seq > 0),
     kind TEXT NOT NULL CHECK (kind IN ('PLACE', 'CANCEL')),
     payload JSONB NOT NULL,
     payload_sha256 TEXT NOT NULL CHECK (payload_sha256 ~ '^sha256:[0-9a-f]{64}$'),
@@ -33,6 +38,15 @@ CREATE TABLE IF NOT EXISTS signer_order_request_events (
 -- One claim per request: a second signer instance (or a restart) can never process the same request twice.
 CREATE UNIQUE INDEX IF NOT EXISTS signer_order_request_events_one_claim
     ON signer_order_request_events (request_id) WHERE state = 'CLAIMED';
+CREATE OR REPLACE FUNCTION signer_order_requests_assign_queue_seq() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    NEW.queue_seq := nextval('signer_order_requests_queue_seq');
+    RETURN NEW;
+END;
+$fn$;
+CREATE OR REPLACE TRIGGER signer_order_requests_queue_seq_on_insert
+    BEFORE INSERT ON signer_order_requests
+    FOR EACH ROW EXECUTE FUNCTION signer_order_requests_assign_queue_seq();
 CREATE OR REPLACE FUNCTION signer_order_requests_append_only() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
     RAISE EXCEPTION 'SIGNER_ORDER_REQUESTS_APPEND_ONLY';

@@ -48,10 +48,14 @@ def schema_and_roles():
         conn.execute(f"GRANT SELECT ON signer_order_request_events TO {MCP}")
         conn.execute(f"GRANT SELECT ON signer_order_requests TO {SIG}")
         conn.execute(f"GRANT SELECT, INSERT ON signer_order_request_events TO {SIG}")
+        # Declared (owner decision 16-11-2026): queue_seq is assigned by trigger from a sequence, as in
+        # sql/owner_steps/signer_roles_0002_0003.sql.
+        conn.execute(f"GRANT USAGE ON SEQUENCE signer_order_requests_queue_seq TO {MCP}, {SIG}")
     yield
     with _connect(autocommit=True) as conn:
         for role in (MCP, SIG):
             conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
+            conn.execute(f"REVOKE ALL ON SEQUENCE signer_order_requests_queue_seq FROM {role}")
             conn.execute(f"DROP ROLE {role}")
 
 

@@ -4,6 +4,7 @@ the shared CI test database (review a046ad9 P2-1). Additive, idempotent, tracked
 import os
 import shutil
 import uuid
+os.environ.setdefault("SXBET_SIGNER_PROCESS", "1")
 
 import pytest
 
@@ -92,3 +93,34 @@ def test_row_kind_and_network_must_match_the_payload(connect):
     with connect() as conn:                                                # a consistent row is accepted
         conn.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
                      "VALUES (%s, 'PLACE', %s::jsonb, %s, 'testnet')", ("f" * 32, json.dumps(body), "sha256:" + "0" * 64))
+
+
+def test_queue_seq_is_assigned_by_the_database_and_the_watermark_is_above_every_insert(connect):
+    """Owner decision 16-11-2026: clock-free ordering. The writer cannot choose queue_seq (overwritten by trigger)
+    and cannot change it (append-only); a release watermark is greater than every request inserted before."""
+    import json
+    import psycopg
+    from signer.request_queue import PostgresRequestQueue
+    migrations.apply_migrations(connect, series=migrations.SIGNER)
+
+    def ins(rid, forced_seq=None):
+        body = {"kind": "PLACE", "network": "testnet"}
+        with connect() as conn:
+            if forced_seq is None:
+                conn.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
+                             "VALUES (%s, 'PLACE', %s::jsonb, %s, 'testnet')", (rid, json.dumps(body), "sha256:" + "0" * 64))
+            else:
+                conn.execute("INSERT INTO signer_order_requests (request_id, queue_seq, kind, payload, payload_sha256, "
+                             "network) VALUES (%s, %s, 'PLACE', %s::jsonb, %s, 'testnet')",
+                             (rid, forced_seq, json.dumps(body), "sha256:" + "0" * 64))
+            return conn.execute("SELECT queue_seq FROM signer_order_requests WHERE request_id = %s", (rid,)).fetchone()[0]
+
+    a = ins("1" * 32)
+    b = ins("2" * 32, forced_seq=10 ** 15)                       # a forged, "newer" value is overwritten
+    assert b == a + 1
+    wm = PostgresRequestQueue(connect).release_watermark()
+    assert wm > b
+    assert ins("3" * 32) > wm
+    with pytest.raises(psycopg.Error):
+        with connect() as conn:
+            conn.execute("UPDATE signer_order_requests SET queue_seq = 1")

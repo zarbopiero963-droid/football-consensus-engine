@@ -11,17 +11,26 @@ class MemoryQueue:
     def __init__(self):
         self.requests = []        # (request_id, kind, payload, payload_sha256, network)
         self.events = {}          # request_id -> [{"seq", "state", "detail", "signer_id"}]
+        self.queue_seqs = {}      # request_id -> queue_seq (the database sequence, assigned at insert)
+        self._next_seq = 0
 
     def insert(self, payload, *, sha=None, row_request_id=None, row_network=None):
         rid = row_request_id or payload["request_id"]
         assert rid not in {r[0] for r in self.requests}, "duplicate request_id"
         self.requests.append((rid, payload["kind"], json.loads(json.dumps(payload)),
                               sha or canonical_sha256(payload), row_network or payload["network"]))
+        self._next_seq += 1
+        self.queue_seqs[rid] = self._next_seq
+
+    def release_watermark(self):
+        self._next_seq += 1
+        return self._next_seq
 
     def pending(self, network, limit, kinds=None):
         kinds = ("PLACE", "CANCEL") if kinds is None else tuple(kinds)
         assert kinds and set(kinds) <= {"PLACE", "CANCEL"}
-        return [{"request_id": r[0], "kind": r[1], "payload": json.loads(json.dumps(r[2])), "payload_sha256": r[3]}
+        return [{"request_id": r[0], "kind": r[1], "payload": json.loads(json.dumps(r[2])), "payload_sha256": r[3],
+                 "queue_seq": self.queue_seqs[r[0]]}
                 for r in self.requests if r[4] == network and r[1] in kinds and r[0] not in self.events][:limit]
 
     def claim(self, request_id, signer_id):
@@ -49,7 +58,8 @@ class MemoryQueue:
                 continue
             if any(e["state"] == "CLAIMED" and e["signer_id"] == signer_id for e in evs):
                 out.append({"request_id": r[0], "kind": r[1], "payload": json.loads(json.dumps(r[2])),
-                            "payload_sha256": r[3], "last_state": evs[-1]["state"]})
+                            "payload_sha256": r[3], "last_state": evs[-1]["state"],
+                            "queue_seq": self.queue_seqs[r[0]]})
         return out
 
     def events_of(self, request_id):

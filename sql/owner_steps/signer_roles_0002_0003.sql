@@ -10,6 +10,9 @@ GRANT SELECT, INSERT ON signer_order_requests TO :"mcp_role";
 GRANT SELECT ON signer_order_request_events TO :"mcp_role";
 GRANT SELECT ON signer_order_requests TO :"signer_role";
 GRANT SELECT, INSERT ON signer_order_request_events TO :"signer_role";
+-- queue_seq: the insert trigger calls nextval as the inserting role (MCP); the signer takes release watermarks.
+GRANT USAGE ON SEQUENCE signer_order_requests_queue_seq TO :"mcp_role";
+GRANT USAGE ON SEQUENCE signer_order_requests_queue_seq TO :"signer_role";
 -- 0003: the signer publishes its status (upsert of its own row); the MCP only reads it.
 GRANT SELECT ON signer_status TO :"mcp_role";
 GRANT SELECT, INSERT, UPDATE ON signer_status TO :"signer_role";

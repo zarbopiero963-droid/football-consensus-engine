@@ -117,7 +117,7 @@ def load_release_file(path: str) -> KillSwitchRelease:
 
 class KillSwitch:
     def __init__(self, ledger: OrderLedger, audit: AuditLog, *, owner_public_key: Ed25519PublicKey, network: str,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, queue_watermark: Callable[[], int] | None = None):
         if not isinstance(ledger, OrderLedger):
             raise KillSwitchError("KILL_SWITCH_LEDGER_INVALID")
         if not isinstance(owner_public_key, Ed25519PublicKey):
@@ -128,6 +128,31 @@ class KillSwitch:
         self._network = network
         self._clock = clock
         self._volatile: str | None = None  # engaged while the ledger could not record it
+        # Source of the release watermark: the request queue's DATABASE sequence (PostgresRequestQueue.
+        # release_watermark). Without it no release is possible (fail closed).
+        self._queue_watermark = queue_watermark
+        self._restore_unrecorded_engagement()
+
+    def _restore_unrecorded_engagement(self) -> None:
+        """Review 48a22c6 P2-2: an engagement the ledger could not record (volatile, audit
+        KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE) must survive a restart: if no owner release followed it in the audit,
+        it is engaged again, durably, now. An unreadable audit also engages (fail closed)."""
+        if self._ledger.kill_switch_engaged:
+            return
+        try:
+            pending = False
+            for rec in self._audit.records():
+                if rec.get("event") != "KILL_SWITCH":
+                    continue
+                if rec.get("decision") == "KILL_SWITCH_ENGAGED_LEDGER_UNWRITABLE":
+                    pending = True
+                elif rec.get("decision") == "KILL_SWITCH_RELEASED":
+                    pending = False
+        except Exception:
+            self.engage("AUDIT_UNREADABLE_AT_STARTUP", source="AUTOMATIC")
+            return
+        if pending:
+            self.engage("RESTORED_UNRECORDED_ENGAGEMENT", source="AUTOMATIC")
 
     # ---- state ----
     @property
@@ -232,10 +257,24 @@ class KillSwitch:
             # Serialized with request processing (the signer service lock, taken before the ledger lock as the
             # service does): a PLACE being handled is either checked against this release or fully refused by the
             # engaged switch first. Never both unseen (owner decision 16-11-2026, persistent refusal).
+            if self._queue_watermark is None:
+                raise KillSwitchError("KILL_SWITCH_RELEASE_NEEDS_QUEUE_WATERMARK")
             with self._ledger.service_lock:
+                # Re-checked under the lock: the wait for the service lock must not stretch a release past its
+                # own expiry (review 48a22c6 P3-2).
+                if int(self._clock()) >= rel.expires_at:
+                    raise KillSwitchError("KILL_SWITCH_RELEASE_EXPIRED")
+                # The watermark comes from the request queue's DATABASE sequence (never from the MCP clock): every
+                # request inserted before this point has a smaller queue_seq. Unreachable queue: no release.
+                try:
+                    wm = self._queue_watermark()
+                except Exception:
+                    raise KillSwitchError("KILL_SWITCH_RELEASE_QUEUE_WATERMARK_UNAVAILABLE") from None
+                if type(wm) is not int or wm <= 0:
+                    raise KillSwitchError("KILL_SWITCH_RELEASE_QUEUE_WATERMARK_UNAVAILABLE")
                 self._ledger.record_kill_switch("RELEASE", release_id=rel.release_id,
                                                 release_sha256="sha256:" + _sha(rel), engage_seq=rel.engage_seq,
-                                                released_at=int(self._clock()))
+                                                released_at=int(self._clock()), queue_watermark=wm)
         except KillSwitchError as exc:
             self._log("KILL_SWITCH_RELEASE_REFUSED", reason=exc.code)
             raise

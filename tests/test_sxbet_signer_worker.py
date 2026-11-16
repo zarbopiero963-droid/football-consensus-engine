@@ -284,7 +284,9 @@ def test_a_placement_queued_while_engaged_can_never_run_after_a_release(tmp_path
     s.signer.config.market_data.world = ctx
     p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
     q.insert(p)
+    s.ledger.engage_volatile_kill("TEST")                          # declared: refusal now needs an engaged switch
     assert [r["event"] for r in svc.refuse_pending_places(10)] == ["REFUSED"]
+    s.ledger.clear_volatile_kill()
     assert svc.process_once(10) == []                              # after a release nothing is left to run
     assert [x for x in s.sim.writes() if x.method == "POST"] == []
 
@@ -328,7 +330,10 @@ def test_kill_refusal_drains_the_whole_backlog(tmp_path):
         ctx = s.context(i)
         s.signer.config.market_data.world = ctx
         q.insert(place_request(i, s.command(i, ctx), created_at=int(s.clock())))
+    s.ledger.engage_volatile_kill("TEST")                          # declared: refusal now needs an engaged switch
     assert len(svc.refuse_pending_places(2)) == 5 and q.pending("mainnet", 10) == []
+    s.ledger.clear_volatile_kill()
+    assert svc.refuse_pending_places(2) == []                      # not engaged: nothing refused (P3-1)
 
 
 class _FlakyClaimQueue(MemoryQueue):
@@ -352,7 +357,7 @@ def _kill_stack(tmp_path, queue=None):
     s = Stack(tmp_path)
     q = queue if queue is not None else MemoryQueue()
     kill = ks.KillSwitch(s.ledger, AuditLog(str(tmp_path / "ks.jsonl")), owner_public_key=s.owner.public_key(),
-                         network="mainnet", clock=s.clock)
+                         network="mainnet", clock=s.clock, queue_watermark=q.release_watermark)
     return s, q, kill
 
 
@@ -388,7 +393,7 @@ def test_placement_never_refused_in_time_is_refused_after_release(tmp_path):
     p = _queue_place(s, q, "order-key-W060")
     _owner_release(s, kill)
     (res,) = _svc(s, q).process_once(10)
-    assert res["event"] == "REFUSED" and res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE"
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE"
     assert _posts(s) == []
 
 
@@ -401,7 +406,7 @@ def test_refusal_survives_a_restart_after_release(tmp_path):
     s.restart()                                                   # ledger replayed from disk
     assert s.ledger.last_kill_release_at() is not None
     (res,) = _svc(s, q).process_once(10)
-    assert res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE" and _posts(s) == []
+    assert res["detail"]["code"] == "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE" and _posts(s) == []
 
 
 def test_claim_committed_refusal_lost_then_restart_and_release(tmp_path):
@@ -415,7 +420,7 @@ def test_claim_committed_refusal_lost_then_restart_and_release(tmp_path):
     _owner_release(s, kill)
     s.restart()
     (res,) = _svc(s, q).recover()
-    assert res["event"] == "REFUSED" and res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE"
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE"
     assert _posts(s) == []
 
 
@@ -428,7 +433,7 @@ def test_claim_failed_uncommitted_then_restart_and_release(tmp_path):
     _owner_release(s, kill)
     s.restart()
     (res,) = _svc(s, q).process_once(10)
-    assert res["detail"]["code"] == "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE" and _posts(s) == []
+    assert res["detail"]["code"] == "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE" and _posts(s) == []
 
 
 def test_a_new_command_after_the_release_is_processed_normally(tmp_path):

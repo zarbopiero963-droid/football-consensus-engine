@@ -163,6 +163,7 @@ OPEN_ORDER_STATES = RESERVING
 TERMINAL = frozenset({SETTLED, REJECTED})
 CANCEL_SCOPES = frozenset({"ORDER_IDS", "MARKET", "EVENT", "ALL"})
 KILL_SWITCH_ACTIONS = frozenset({"ENGAGE", "CANCEL_INTENT", "CANCEL_VERIFIED", "RELEASE"})
+COMMAND_VOID_REASONS = frozenset({"KILL_SWITCH_ENGAGED", "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE"})
 COMMAND_FIELDS = frozenset({"command_id", "command_text_sha256", "command_fingerprint_sha256", "client_ref_sha256",
                             "command_received_at"})
 
@@ -482,9 +483,14 @@ class OrderLedger:
         self.service_lock = threading.Lock()
         self.genesis_sha256: str | None = None  # identity of this ledger file (bound into the LIVE flag)
         self._kill: dict[str, Any] = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
-        # Signer time of the latest owner-signed kill-switch RELEASE, replayed from the ledger (durable): every
-        # PLACE request created up to this instant is refused for good (owner decision 16-11-2026).
+        # Latest owner-signed kill-switch RELEASE, replayed from the ledger (durable). `released_at` is the signer
+        # time, kept for audit only. `queue_watermark` is the ordering that decides (owner decision 16-11-2026):
+        # a value taken from the request queue's DATABASE sequence under the service lock at the release; every
+        # PLACE request whose DB-assigned queue_seq is <= it existed before the release and is refused for good.
         self._last_kill_release_at: int | None = None
+        self._queue_watermark: int | None = None
+        # Owner commands voided because their PLACE was refused by the kill switch: never usable again.
+        self._voided_command_texts: set[str] = set()
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
         self._fd: int | None = None
@@ -816,6 +822,13 @@ class OrderLedger:
             self._consume(rec, "LEDGER_CANCEL_REQUEST_INVALID")
         elif kind == "KILL_SWITCH":
             self._apply_kill(rec, seq)
+        elif kind == "COMMAND_VOID":
+            # A PLACE refused because of the kill switch: its owner command can never authorise anything later.
+            if not (isinstance(rec.get("command_id"), str) and isinstance(rec.get("command_text_sha256"), str)
+                    and isinstance(rec.get("request_id"), str) and rec.get("reason") in COMMAND_VOID_REASONS):
+                raise OrderStateError("LEDGER_COMMAND_VOID_INVALID")
+            self._nonces.add(rec["command_id"])
+            self._voided_command_texts.add(rec["command_text_sha256"])
         else:
             raise OrderStateError("LEDGER_UNKNOWN_RECORD")
 
@@ -837,10 +850,12 @@ class OrderLedger:
         else:  # RELEASE: owner-signed, bound to the ENGAGE line it releases, release id single use
             if not self._kill["engaged"] or rec["engage_seq"] != self._kill["engage_seq"] \
                     or rec["release_id"] in self._nonces or type(rec.get("released_at")) is not int \
-                    or rec["released_at"] <= 0:
+                    or rec["released_at"] <= 0 or type(rec.get("queue_watermark")) is not int \
+                    or rec["queue_watermark"] <= 0:
                 raise OrderStateError("LEDGER_KILL_SWITCH_RELEASE_INVALID")
             self._nonces.add(rec["release_id"])
             self._last_kill_release_at = max(self._last_kill_release_at or 0, rec["released_at"])
+            self._queue_watermark = max(self._queue_watermark or 0, rec["queue_watermark"])
             self._kill = {"engaged": False, "engage_seq": None, "trigger": None, "intent_ids": ()}
 
     @staticmethod
@@ -920,6 +935,26 @@ class OrderLedger:
     def last_kill_release_at(self) -> int | None:
         with self._lock:
             return self._last_kill_release_at
+
+    def queue_watermark(self) -> int | None:
+        with self._lock:
+            return self._queue_watermark
+
+    def command_text_voided(self, command_text_sha256: str) -> bool:
+        with self._lock:
+            return command_text_sha256 in self._voided_command_texts
+
+    def void_command(self, *, command_id: str, command_text_sha256: str, request_id: str, reason: str) -> None:
+        """One fsync'd COMMAND_VOID line (idempotent): the command id and its text hash are never usable again."""
+        if not (isinstance(command_id, str) and command_id and isinstance(command_text_sha256, str)
+                and command_text_sha256 and isinstance(request_id, str) and reason in COMMAND_VOID_REASONS):
+            raise OrderStateError("COMMAND_VOID_FIELDS_INVALID")
+        with self._lock:
+            self._writable()
+            if command_id in self._nonces and command_text_sha256 in self._voided_command_texts:
+                return
+            self._commit({"kind": "COMMAND_VOID", "command_id": command_id,
+                          "command_text_sha256": command_text_sha256, "request_id": request_id, "reason": reason})
 
     def orders_since(self, ts: int) -> int:
         with self._lock:
@@ -1069,7 +1104,7 @@ class OrderLedger:
         """One fsync'd KILL_SWITCH line (signer/killswitch.py builds the fields). Returns its seq."""
         allowed = {"ENGAGE": {"trigger", "source", "triggers"}, "CANCEL_INTENT": {"order_ids"},
                    "CANCEL_VERIFIED": {"results"},
-                   "RELEASE": {"release_id", "release_sha256", "engage_seq", "released_at"}}
+                   "RELEASE": {"release_id", "release_sha256", "engage_seq", "released_at", "queue_watermark"}}
         if action not in KILL_SWITCH_ACTIONS or set(fields) != allowed[action]:
             raise OrderStateError("KILL_SWITCH_FIELDS_INVALID")
         with self._lock:
@@ -1081,7 +1116,9 @@ class OrderLedger:
                     raise OrderStateError("KILL_SWITCH_RELEASE_MISMATCH")
                 if fields["release_id"] in self._nonces:
                     raise OrderStateError("KILL_SWITCH_RELEASE_REPLAYED")
-                if type(fields["released_at"]) is not int or fields["released_at"] <= 0:
+                if type(fields["released_at"]) is not int or fields["released_at"] <= 0 \
+                        or type(fields["queue_watermark"]) is not int or fields["queue_watermark"] <= 0 \
+                        or fields["queue_watermark"] < (self._queue_watermark or 0):
                     raise OrderStateError("KILL_SWITCH_FIELDS_INVALID")
             self._commit({"kind": "KILL_SWITCH", "action": action, **fields})
             return self._seq

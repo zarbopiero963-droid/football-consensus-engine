@@ -34,7 +34,6 @@ DEFAULT_MAX_REQUEST_AGE_SECONDS = 120   # never above the owner-signed command w
 _FINAL_ORDER_STATES = frozenset({"FILLED", "CANCELLED", "EXPIRED", "SETTLED"})
 _log = logging.getLogger(__name__)
 _MAX_REFUSAL_ROUNDS = 100
-_CREATED_AT_SKEW_SECONDS = 5          # same tolerance as the freshness check (created_at <= now + 5)
 
 
 class QueueClaimUnavailable(RuntimeError):
@@ -101,6 +100,8 @@ class SignerService:
         # PLACE left. Bounded so one cycle cannot spin forever on a queue that keeps failing.
         with self._lock:
             out: list[dict[str, Any]] = []
+            if not self._signer._ledger.kill_switch_engaged:
+                return out                    # released meanwhile (review 48a22c6 P3-1): nothing to refuse
             for _ in range(_MAX_REFUSAL_ROUNDS):
                 batch = self._q.pending(self._network, limit, ("PLACE",))
                 if not batch:
@@ -120,10 +121,21 @@ class SignerService:
                     if not claimed:
                         continue
                     progressed = True
-                    out.append(self._refuse(rid, "KILL_SWITCH_ENGAGED"))
+                    out.append(self._void_and_refuse(rid, req.get("payload"), "KILL_SWITCH_ENGAGED"))
                 if not progressed:
                     break
             return out
+
+    def _void_and_refuse(self, rid: str, payload: Any, code: str) -> dict[str, Any]:
+        """Void the owner command durably (ledger COMMAND_VOID) BEFORE the terminal REFUSED event: a crash between
+        the two leaves a voided command, never a usable one. A malformed payload has no command to void."""
+        c = payload.get("command") if isinstance(payload, Mapping) else None
+        if isinstance(c, Mapping) and isinstance(c.get("command_id"), str) \
+                and isinstance(c.get("command_text_sha256"), str):
+            self._signer._ledger.void_command(command_id=c["command_id"],
+                                              command_text_sha256=c["command_text_sha256"],
+                                              request_id=rid, reason=code)
+        return self._refuse(rid, code)
 
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
         d = event_detail(**detail)
@@ -151,12 +163,15 @@ class SignerService:
             return self._refuse(rid, "REQUEST_EXPIRED")
         if p["kind"] == "PLACE":
             # Owner decision 16-11-2026: a placement that existed while the kill switch was engaged stays refused
-            # after the release, whatever happened in between (crash, restart, lost write, concurrency). The rule
-            # is durable: the RELEASE instant is in the fsync'd, anchored ledger; a request created up to it
-            # (plus the clock tolerance accepted above) is refused for good. A new order needs a new command.
-            released_at = self._signer._ledger.last_kill_release_at()
-            if released_at is not None and p["created_at"] <= released_at + _CREATED_AT_SKEW_SECONDS:
-                return self._refuse(rid, "PLACE_CREATED_BEFORE_KILL_SWITCH_RELEASE")
+            # after the release, whatever happened in between. Clock-free ordering (review 48a22c6 P2-1): the
+            # request's queue_seq is assigned by the DATABASE at insert (never by the MCP); the owner-signed
+            # RELEASE records a watermark taken from the same sequence under the service lock, durably in the
+            # ledger. queue_seq <= watermark => it was queued before the release => refused for good, and its
+            # owner command is voided so the same text can never authorise a later order.
+            wm = self._signer._ledger.queue_watermark()
+            seq = req.get("queue_seq")
+            if wm is not None and (type(seq) is not int or seq <= wm):
+                return self._void_and_refuse(rid, p, "PLACE_QUEUED_BEFORE_KILL_SWITCH_RELEASE")
         c = p["command"]
         auth = cmd.OwnerCommandAuthorization(c["command_id"], c["command_text"], c["command_text_sha256"],
                                              c["received_at"], c["client_ref_sha256"])

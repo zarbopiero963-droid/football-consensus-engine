@@ -124,6 +124,11 @@ class RequestQueue(Protocol):
     def events(self, request_id: str) -> list[dict[str, Any]]:
         ...
 
+    def release_watermark(self) -> int:
+        """A fresh value of the queue's DATABASE sequence: every request inserted before has a smaller queue_seq
+        (kill-switch release ordering, owner decision 16-11-2026)."""
+        ...
+
 
 class PostgresRequestQueue:
     """Signer-side queue on the signer database (migration signer/0002). `connect()` returns a DB-API connection
@@ -154,11 +159,12 @@ class PostgresRequestQueue:
         if not kinds or any(k not in KINDS for k in kinds):
             raise QueueError("REQUEST_KINDS_INVALID")
         rows = self._run(
-            "SELECT r.request_id, r.kind, r.payload::text, r.payload_sha256 FROM signer_order_requests r "
+            "SELECT r.request_id, r.kind, r.payload::text, r.payload_sha256, r.queue_seq FROM signer_order_requests r "
             "WHERE r.network = %s AND r.kind = ANY(%s) AND NOT EXISTS (SELECT 1 FROM signer_order_request_events e "
-            "WHERE e.request_id = r.request_id) ORDER BY r.created_at, r.request_id LIMIT %s",
+            "WHERE e.request_id = r.request_id) ORDER BY r.queue_seq LIMIT %s",
             (network, kinds, limit))
-        return [{"request_id": r[0], "kind": r[1], "payload": json.loads(r[2]), "payload_sha256": r[3]} for r in rows]
+        return [{"request_id": r[0], "kind": r[1], "payload": json.loads(r[2]), "payload_sha256": r[3],
+                 "queue_seq": r[4]} for r in rows]
 
     def claim(self, request_id: str, signer_id: str) -> bool:
         try:
@@ -185,14 +191,22 @@ class PostgresRequestQueue:
 
     def unfinished(self, network: str, signer_id: str) -> list[dict[str, Any]]:
         rows = self._run(
-            "SELECT r.request_id, r.kind, r.payload::text, r.payload_sha256, last.state FROM signer_order_requests r "
+            "SELECT r.request_id, r.kind, r.payload::text, r.payload_sha256, last.state, r.queue_seq "
+            "FROM signer_order_requests r "
             "JOIN LATERAL (SELECT e.state FROM signer_order_request_events e WHERE e.request_id = r.request_id "
             "ORDER BY e.seq DESC LIMIT 1) last ON true "
             "WHERE r.network = %s AND EXISTS (SELECT 1 FROM signer_order_request_events c "
             "WHERE c.request_id = r.request_id AND c.state = 'CLAIMED' AND c.signer_id = %s) "
-            "AND last.state NOT IN ('REFUSED', 'DONE') ORDER BY r.created_at, r.request_id", (network, signer_id))
+            "AND last.state NOT IN ('REFUSED', 'DONE') ORDER BY r.queue_seq", (network, signer_id))
         return [{"request_id": r[0], "kind": r[1], "payload": json.loads(r[2]), "payload_sha256": r[3],
-                 "last_state": r[4]} for r in rows]
+                 "last_state": r[4], "queue_seq": r[5]} for r in rows]
+
+    def release_watermark(self) -> int:
+        rows = self._run("SELECT nextval('signer_order_requests_queue_seq')")
+        value = rows[0][0] if rows else None
+        if type(value) is not int or value <= 0:
+            raise QueueError("QUEUE_WATERMARK_INVALID")
+        return value
 
     def events(self, request_id: str) -> list[dict[str, Any]]:
         rows = self._run("SELECT seq, state, detail::text, signer_id FROM signer_order_request_events "

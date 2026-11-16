@@ -266,6 +266,10 @@ class Signer:
                     raise SignerRefused(exc.code) from None
                 if self._ledger.command_consumed(auth.command_id):
                     raise SignerRefused("COMMAND_ID_ALREADY_CONSUMED")
+                if self._ledger.command_text_voided(auth.command_text_sha256):
+                    # Voided because its PLACE was refused by the kill switch (owner decision 16-11-2026): the same
+                    # text never authorises a later order; the owner writes a new command, e.g. "(rif. 2)".
+                    raise SignerRefused("COMMAND_VOIDED_BY_KILL_SWITCH")
                 context = self._reads(clean, now)
                 verified, reference = self._verify_command(auth, clean, context, post_only, limits)
                 # Replay fingerprint of the PARSED, resolved operation + its reference token (review P2-2).

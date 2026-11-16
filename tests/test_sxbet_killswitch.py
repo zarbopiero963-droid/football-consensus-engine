@@ -9,6 +9,8 @@ import ast
 import json
 import pathlib
 
+import itertools
+
 import pytest
 
 pytest.importorskip("eth_account")
@@ -29,8 +31,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def make_ks(s):
+    # Declared (owner decision 16-11-2026): a release needs the queue's DB watermark; a counter stands in here.
+    counter = itertools.count(1)
     return ks.KillSwitch(s.ledger, AuditLog(str(s.tmp / "ks-audit.jsonl")), owner_public_key=s.owner.public_key(),
-                         network="mainnet", clock=s.clock)
+                         network="mainnet", clock=s.clock, queue_watermark=lambda: next(counter))
 
 
 def release(s, k, *, key=None, ttl=60, issued=None, engage_seq=None, release_id=None, ledger_id=None):
@@ -276,14 +280,17 @@ def test_ledger_refuses_forged_kill_switch_lines(s):
     k = make_ks(s)
     with pytest.raises(od.OrderStateError) as e:
         s.ledger.record_kill_switch("RELEASE", release_id="release-forged-000001", release_sha256="sha256:" + "0" * 64,
-                                    engage_seq=1, released_at=int(s.clock()))
+                                    engage_seq=1, released_at=int(s.clock()), queue_watermark=1)
     assert e.value.code == "KILL_SWITCH_NOT_ENGAGED"
     k.engage("OWNER_MANUAL_STOP")
     with pytest.raises(od.OrderStateError) as e:
         s.ledger.record_kill_switch("RELEASE", release_id="release-forged-000001", release_sha256="sha256:" + "0" * 64,
-                                    engage_seq=k.state()["engage_seq"] - 1, released_at=int(s.clock()))
+                                    engage_seq=k.state()["engage_seq"] - 1, released_at=int(s.clock()),
+                                    queue_watermark=1)
     assert e.value.code == "KILL_SWITCH_RELEASE_MISMATCH"
-    for bad in ({}, {"released_at": "1"}, {"released_at": 0}, {"released_at": True}):
+    for bad in ({}, {"released_at": "1", "queue_watermark": 1}, {"released_at": 0, "queue_watermark": 1},
+                {"released_at": True, "queue_watermark": 1}, {"released_at": 1}, {"released_at": 1, "queue_watermark": 0},
+                {"released_at": 1, "queue_watermark": True}):
         with pytest.raises(od.OrderStateError) as e:
             s.ledger.record_kill_switch("RELEASE", release_id="release-forged-000002",
                                         release_sha256="sha256:" + "0" * 64, engage_seq=k.state()["engage_seq"], **bad)

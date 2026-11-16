@@ -150,6 +150,7 @@ def test_review_least_privilege_roles_on_a_throwaway_database():
         conn.execute("GRANT SELECT ON signer_order_request_events TO fce_it_mcp_queue")
         conn.execute("GRANT SELECT ON signer_order_requests TO fce_it_signer_queue")
         conn.execute("GRANT SELECT, INSERT ON signer_order_request_events TO fce_it_signer_queue")
+        conn.execute("GRANT USAGE ON SEQUENCE signer_order_requests_queue_seq TO fce_it_mcp_queue, fce_it_signer_queue")  # declared
     try:
         with _connect() as conn, conn.cursor() as cur:
             cur.execute("SET ROLE fce_it_mcp_queue")
@@ -166,6 +167,7 @@ def test_review_least_privilege_roles_on_a_throwaway_database():
         with _connect(autocommit=True) as conn:
             for role in ("fce_it_mcp_queue", "fce_it_signer_queue"):
                 conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
+                conn.execute(f"REVOKE ALL ON SEQUENCE signer_order_requests_queue_seq FROM {role}")
                 conn.execute(f"DROP ROLE {role}")
 
 
@@ -180,6 +182,7 @@ def test_review_67e80eb_p2_a_queue_works_under_the_least_privilege_roles():
         conn.execute(f"GRANT INSERT ON signer_order_requests TO {mcp}")
         conn.execute(f"GRANT SELECT ON signer_order_request_events TO {mcp}")
         conn.execute(f"GRANT SELECT ON signer_order_requests TO {sig}")
+        conn.execute(f"GRANT USAGE ON SEQUENCE signer_order_requests_queue_seq TO {mcp}, {sig}")  # declared: queue_seq trigger
         conn.execute(f"GRANT SELECT, INSERT ON signer_order_request_events TO {sig}")
 
     def as_role(role):
@@ -210,6 +213,7 @@ def test_review_67e80eb_p2_a_queue_works_under_the_least_privilege_roles():
         with _connect(autocommit=True) as conn:
             for role in (mcp, sig):
                 conn.execute(f"REVOKE ALL ON signer_order_requests, signer_order_request_events FROM {role}")
+                conn.execute(f"REVOKE ALL ON SEQUENCE signer_order_requests_queue_seq FROM {role}")
                 conn.execute(f"DROP ROLE {role}")
 
 
