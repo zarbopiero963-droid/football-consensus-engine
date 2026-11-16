@@ -165,16 +165,16 @@ def test_place_and_cancel_are_refused_before_queue(live, rows, code):
     text, _ = s7.owner_text(s, "order-key-P5A")
     out = s7.place(t, s, "order-key-P5A", text)
     if code == "KILL_SWITCH_ENGAGED":
-        # Declared (review 0bcbae6 P1-A): refused, and a VOID is queued so the signer voids the operation.
-        assert out["status"] == "REFUSED_KILL_SWITCH_ENGAGED" and out["queued_by_this_call"] is False
-        assert out["operation_void_queued"] is True and [r[1] for r in q.requests] == ["VOID"]
+        # Declared (review 71e3625): queued like any PLACE; the signer refuses and voids it (it can never run).
+        assert out["status"] == "QUEUED" and out["kill_switch"] == "ENGAGED" and "never be executed" in out["note"]
+        assert [r[1] for r in q.requests] == ["PLACE"]
     else:
         assert out["status"] == "REFUSED_BEFORE_QUEUE" and out["error"]["code"] == code
         assert out["queued_by_this_call"] is False and out["request_with_this_key_exists"] is False and q.requests == []
     c = run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
                                             idempotency_key="cancel-key-P5A"))
     if code == "KILL_SWITCH_ENGAGED":       # declared change: owner decision 16-11, cancels allowed while ENGAGED
-        assert c["status"] == "QUEUED" and [r[1] for r in q.requests] == ["VOID", "CANCEL"]
+        assert c["status"] == "QUEUED" and [r[1] for r in q.requests] == ["PLACE", "CANCEL"]
     else:
         assert c["status"] == "REFUSED_BEFORE_QUEUE" and c["error"]["code"] == code and q.requests == []
 
@@ -279,8 +279,13 @@ def test_end_to_end_signer_status_drives_the_mcp_refusal(tmp_path, monkeypatch):
     writer.signer_rows = [{**HEALTHY, **published, "age_seconds": 1.0}]
     text, _ = s7.owner_text(s, "order-key-P5E")
     out = s7.place(t, s, "order-key-P5E", text)
-    assert out["error"]["code"] == "KILL_SWITCH_ENGAGED"
-    assert [r[1] for r in q.requests] == ["VOID"]          # declared (review 0bcbae6 P1-A): only a VOID, no order
+    # Declared (review 71e3625): the MCP queues it; the real signer (switch engaged) refuses and voids it.
+    assert out["status"] == "QUEUED" and out["kill_switch"] == "ENGAGED"
+    posts_before = len([x for x in s.sim.writes() if x.method == "POST"])
+    svc2 = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    (r,) = svc2.process_once(10)
+    assert r["event"] == "REFUSED" and r["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert len([x for x in s.sim.writes() if x.method == "POST"]) == posts_before
 
 
 def test_gateway_live_status_is_none_only_for_a_valid_flag(tmp_path):
@@ -303,10 +308,11 @@ def test_p2_1_refused_cancel_reports_an_already_queued_identical_request(live):
 
 def test_p3_1_refused_place_spends_no_provider_read(live):
     s, q, t, w = live
-    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    # Declared (review 71e3625): an ENGAGED switch now queues the PLACE; the no-read refusal is shown on a silent signer.
+    w.signer_rows = [_row(age_seconds=10_000.0)]
     text, _ = s7.owner_text(s, "order-key-P5F")
     out = s7.place(t, s, "order-key-P5F", text)
-    assert out["error"]["code"] == "KILL_SWITCH_ENGAGED" and out["network_calls_made"] == 0
+    assert out["error"]["code"] == "SIGNER_UNREACHABLE" and out["network_calls_made"] == 0
 
 
 def test_p3_2_kill_switch_engaged_at_the_end_of_the_cycle_is_published_engaged():
@@ -362,21 +368,57 @@ def test_p3_refusal_does_not_claim_nothing_is_queued(live):
     assert c["state"] == "NOT_QUEUED_BY_THIS_CALL" and "queued" not in c
 
 
-def test_p1_mcp_gate_kill_refusal_voids_the_operation_end_to_end(live):
-    """Review 0bcbae6 P1-A: refused by the MCP gate while ENGAGED -> VOID queued -> signer voids -> after the
-    release the identical tool call (same text, same key) is queued but refused by the signer, never sent."""
+def test_mcp_queues_while_engaged_and_the_signer_refuses_for_good(live):
+    """Review 71e3625 (owner decision 16-11-2026): queued while ENGAGED -> the signer refuses and voids it -> after
+    the release the identical call (same key) reports the refused request; a new key is refused as voided."""
     from signer.service import SignerService
     s, q, t, w = live
     w.signer_rows = [_row(kill_switch="ENGAGED")]
     text, _ = s7.owner_text(s, "order-key-P5V")
     out = s7.place(t, s, "order-key-P5V", text)
-    assert out["status"] == "REFUSED_KILL_SWITCH_ENGAGED" and out["operation_void_includes_order"] is True
+    assert out["status"] == "QUEUED" and out["kill_switch"] == "ENGAGED"
+    s.ledger.engage_volatile_kill("TEST")
     svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
     (v,) = svc.process_once(10)
     assert v["event"] == "REFUSED" and v["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    s.ledger.clear_volatile_kill()
     w.signer_rows = [_row()]                                         # released, signer healthy
     again = s7.place(t, s, "order-key-P5V", text)
-    assert again["status"] == "QUEUED"
+    assert again["status"] == "ALREADY_QUEUED"                       # the same request: already refused for good
+    other = s7.place(t, s, "order-key-P5W", text)
+    assert other["status"] == "QUEUED"
     (res,) = svc.process_once(10)
     assert res["event"] == "REFUSED" and res["detail"]["code"] == "COMMAND_VOIDED_BY_KILL_SWITCH"
     assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+def test_same_key_different_order_while_engaged_is_not_a_kill_switch_promise(live):
+    """Review 71e3625 P1-1: a second, different command under a used key is refused for the KEY (nothing written),
+    never reported as refused-by-kill-switch."""
+    s, q, t, w = live
+    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    text, _ = s7.owner_text(s, "order-key-P5K")
+    assert s7.place(t, s, "order-key-P5K", text)["status"] == "QUEUED"
+    text2, _ = s7.owner_text(s, "order-key-P5K", stake=7 * s7.USDC)
+    out = s7.place(t, s, "order-key-P5K", text2, stake=7 * s7.USDC)
+    assert out["status"] == "REFUSED" and out["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
+    assert "kill_switch" not in out and len(q.requests) == 1
+
+
+def test_write_failure_while_engaged_promises_nothing(live):
+    """Review 71e3625 P2-1: a failed write is QUEUE_WRITE_OUTCOME_UNKNOWN, never a kill-switch refusal promise."""
+    s, q, t, w = live
+    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    w.fail_next = "before"
+    text, _ = s7.owner_text(s, "order-key-P5F2")
+    out = s7.place(t, s, "order-key-P5F2", text)
+    assert out["status"] == "QUEUE_WRITE_OUTCOME_UNKNOWN" and "never be executed" not in str(out)
+
+
+def test_unknown_kill_state_is_refused_without_any_promise(live):
+    s, q, t, w = live
+    w.signer_rows = [_row(kill_switch="UNKNOWN")]
+    text, _ = s7.owner_text(s, "order-key-P5U")
+    out = s7.place(t, s, "order-key-P5U", text)
+    assert out["status"] == "REFUSED_BEFORE_QUEUE" and out["error"]["code"] == "KILL_SWITCH_STATE_UNKNOWN"
+    assert "never be executed" not in str(out) and q.requests == []

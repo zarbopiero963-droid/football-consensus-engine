@@ -164,9 +164,6 @@ class SignerService:
             return self._refuse(rid, "REQUEST_KIND_MISMATCH")
         if p["network"] != self._network:
             return self._refuse(rid, "REQUEST_NETWORK_MISMATCH")
-        if p["kind"] == "VOID":
-            # The MCP refused a PLACE because the kill switch was engaged: void its operation, never place it.
-            return self._void_and_refuse(rid, p, "KILL_SWITCH_ENGAGED")
         if p["kind"] == "PLACE":
             # Owner decision 16-11-2026, checked BEFORE any other refusal of a PLACE (review dccb44a P2-2), so every
             # kill-switch-related refusal voids the operation:
@@ -276,9 +273,7 @@ class SignerService:
             command_id = (p.get("command") or {}).get("command_id") if isinstance(p.get("command"), Mapping) else None
             ours = (o is not None and isinstance(command_id, str)
                     and self._signer._ledger.order_of_command(command_id) == cid)  # review 6c74d55 P3-1
-            if p.get("kind") == "VOID" and last == "CLAIMED":
-                out.append(self._handle(req))
-            elif p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
+            if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
             elif o is not None and not ours:
                 # The ledger order belongs to ANOTHER request with the same key (a duplicate claimed before a

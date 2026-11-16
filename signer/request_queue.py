@@ -27,9 +27,7 @@ import re
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 REQUEST_SCHEMA = "sxbet.order_request.v1"
-# VOID (owner decision 16-11-2026, review 0bcbae6 P1-A): written by the MCP when its kill-switch gate refuses a
-# PLACE; the signer only voids the command's operation. A VOID can never produce an order.
-KINDS = ("PLACE", "CANCEL", "VOID")
+KINDS = ("PLACE", "CANCEL")
 _COMMAND_ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")    # same rule as signer/command.py (review 0bcbae6 P2-3)
 CANCEL_SCOPES = ("ORDER_IDS", "MARKET", "EVENT", "ALL")
 EVENT_STATES = ("CLAIMED", "REFUSED", "SIGNED", "SUBMITTED", "UNKNOWN", "DONE")
@@ -77,11 +75,6 @@ def validate_request(payload: Any) -> dict[str, Any]:
     allowed = {"schema", "request_id", "kind", "network", "created_at", "command"}
     if payload["kind"] == "PLACE":
         _need(isinstance(payload.get("intent"), Mapping), "REQUEST_INTENT_MISSING")
-        _need(isinstance(payload.get("post_only"), bool), "REQUEST_POST_ONLY_INVALID")
-        allowed |= {"intent", "post_only"}
-    elif payload["kind"] == "VOID":
-        # The intent is optional (the MCP may not have built it); without it only the text hashes are voided.
-        _need("intent" not in payload or isinstance(payload["intent"], Mapping), "REQUEST_INTENT_MISSING")
         _need(isinstance(payload.get("post_only"), bool), "REQUEST_POST_ONLY_INVALID")
         allowed |= {"intent", "post_only"}
     else:

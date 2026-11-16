@@ -27,8 +27,8 @@ class MemoryQueue:
         return self._next_seq
 
     def pending(self, network, limit, kinds=None):
-        kinds = ("PLACE", "CANCEL", "VOID") if kinds is None else tuple(kinds)
-        assert kinds and set(kinds) <= {"PLACE", "CANCEL", "VOID"}
+        kinds = ("PLACE", "CANCEL") if kinds is None else tuple(kinds)
+        assert kinds and set(kinds) <= {"PLACE", "CANCEL"}
         return [{"request_id": r[0], "kind": r[1], "payload": json.loads(json.dumps(r[2])), "payload_sha256": r[3],
                  "queue_seq": self.queue_seqs[r[0]]}
                 for r in self.requests if r[4] == network and r[1] in kinds and r[0] not in self.events][:limit]

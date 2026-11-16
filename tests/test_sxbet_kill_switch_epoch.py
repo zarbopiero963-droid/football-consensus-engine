@@ -412,12 +412,3 @@ def test_p2_malformed_command_id_never_wedges_the_service(tmp_path):
     (r,) = svc.refuse_pending_places(10)
     assert r["event"] == "REFUSED" and _code(r) == "REQUEST_COMMAND_ID_INVALID"
     assert svc.recover() == [] and q.states(p["request_id"])[-1] == "REFUSED"
-
-
-def test_a_void_request_never_places_an_order(tmp_path):
-    from sxbet_queue_kit import MemoryQueue as _Q  # noqa: F401
-    s, q, kill = _stack(tmp_path)
-    p, i, ctx = _place(s, q, "order-key-V100")
-    q.requests = [(r[0], "VOID", {**r[2], "kind": "VOID"}, r[3], r[4]) for r in q.requests]
-    (res,) = _svc(s, q).process_once(10)
-    assert res["event"] == "REFUSED" and _posts(s) == []          # hash mismatch or voided: never an order
