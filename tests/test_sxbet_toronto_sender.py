@@ -60,7 +60,11 @@ class FakeTransport:
         return self.reply
 
 
+LIVE = "0x" + "5e" * 20     # stands for the owner's LIVE maker address (never the testnet signer)
+
+
 def make(signer, transport=None, **kw):
+    kw.setdefault("live_maker", LIVE)
     return TorontoRestSender(signer, transport or FakeTransport(), api_key=KEY, **kw)
 
 
@@ -114,7 +118,7 @@ def test_live_metadata_that_differs_from_the_pinned_toronto_domain_stops_the_sen
 
 def test_only_a_real_signer_bound_to_toronto_can_build_the_sender(toronto_signer, tmp_path):
     with pytest.raises(TorontoGuardError) as e:
-        TorontoRestSender(toronto_config(), FakeTransport(), api_key=KEY)
+        TorontoRestSender(toronto_config(), FakeTransport(), api_key=KEY, live_maker=LIVE)
     assert e.value.code == "NOT_A_SIGNER"
     s = make(toronto_signer)
     assert s.maker == toronto_signer.address.lower() and s.writes_enabled is False
@@ -124,7 +128,7 @@ def test_only_a_real_signer_bound_to_toronto_can_build_the_sender(toronto_signer
                                       "WRITES_FLAG_INVALID")])
 def test_constructor_refuses_bad_settings(toronto_signer, kw, code):
     with pytest.raises(TorontoGuardError) as e:
-        TorontoRestSender(toronto_signer, FakeTransport(), **{"api_key": KEY, **kw})
+        TorontoRestSender(toronto_signer, FakeTransport(), **{"api_key": KEY, "live_maker": LIVE, **kw})
     assert e.value.code == code
 
 
@@ -250,3 +254,95 @@ def test_module_imports_no_network_library():
     mods = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     mods |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not mods & {"httpx", "requests", "urllib", "socket", "websockets", "aiohttp", "http"}
+
+
+# ---------------------------------------------------------------- review d9ca299 P3 + owner decision 2 (16-11)
+@pytest.mark.parametrize("live", [None, "", "0x123"])
+def test_live_maker_is_mandatory(toronto_signer, live):
+    with pytest.raises(TorontoGuardError) as e:
+        TorontoRestSender(toronto_signer, FakeTransport(), api_key=KEY, live_maker=live)
+    assert e.value.code == "LIVE_MAKER_REQUIRED"
+
+
+@pytest.mark.parametrize("req, code", [
+    (ra.RestRequest("GET", "/fills-v3", (("a", "b", "c"),), None), "QUERY_MALFORMED"),
+    (ra.RestRequest("POST", "/orders-v3", (), {"orders": [{"x": float("nan")}]}), "BODY_NOT_SERIALIZABLE"),
+    (ra.RestRequest("POST", "/orders-v3", (), {"orders": [{"x": {1, 2}}]}), "BODY_NOT_SERIALIZABLE"),
+])
+def test_refusal_codes_are_fixed_guard_codes(toronto_signer, req, code):
+    s = make(toronto_signer, writes_enabled=True)
+    with pytest.raises(TorontoGuardError) as e:
+        s.preflight(req)
+    assert e.value.code == code
+
+
+def test_deeply_nested_body_is_body_too_deep(toronto_signer):
+    s = make(toronto_signer, writes_enabled=True)
+    deep = {}
+    cur = deep
+    for _ in range(30):
+        cur["a"] = {}
+        cur = cur["a"]
+    with pytest.raises(TorontoGuardError) as e:
+        s.preflight(ra.RestRequest("DELETE", "/orders-v3", (), {"orders": [], "x": deep}))
+    assert e.value.code == "BODY_TOO_DEEP"
+
+
+def test_cancel_body_with_a_foreign_maker_is_refused(toronto_signer):
+    s = make(toronto_signer, writes_enabled=True)
+    with pytest.raises(TorontoGuardError) as e:
+        s.preflight(ra.RestRequest("DELETE", "/orders-v3", (), {"orders": [{"orderId": OID}],
+                                                                "maker": "0x" + "77" * 20}))
+    assert e.value.code == "CANCEL_MAKER_NOT_THE_TORONTO_MAKER"
+
+
+def test_guard_errors_are_refusals_before_send(toronto_signer):
+    assert issubclass(TorontoGuardError, ra.SenderRefusedBeforeSend)
+    t = FakeTransport()
+    s = make(toronto_signer, t)
+    n = len(t.calls)
+    with pytest.raises(ra.SenderRefusedBeforeSend):
+        s.preflight(ra.RestRequest("POST", "/orders-v3", (), {"orders": [order(s.maker)]}))
+    assert len(t.calls) == n                                           # preflight never does I/O
+
+
+# ---------------------------------------------------------------- owner decision 2: gateway / cancel preflight
+class _RefusingSender:
+    """Wraps the simulated exchange; its preflight refuses everything (a local guard), its send would deliver."""
+
+    def __init__(self, sim):
+        self.sim = sim
+
+    def preflight(self, request):
+        raise ra.SenderRefusedBeforeSend("TEST_LOCAL_GUARD")
+
+    def send(self, request):
+        return self.sim.send(request)
+
+
+def test_gateway_records_a_local_refusal_as_signed_never_sent_not_unknown(tmp_path):
+    from signer.gateway import GatewayRefused
+    from sxbet_e2e_kit import Stack
+    s = Stack(tmp_path)
+    i = s.intent("order-key-PF01")
+    signed = s.sign(i)
+    s.adapter._sender = _RefusingSender(s.sim)
+    with pytest.raises(GatewayRefused) as e:
+        s.gw.submit(signed, i)
+    assert e.value.code == "SENDER_REFUSED_BEFORE_SEND_TEST_LOCAL_GUARD"
+    assert s.state("order-key-PF01") == "SIGNED"                      # not UNKNOWN: provably not sent
+    assert [r for r in s.sim.writes() if r.method == "POST"] == []
+
+
+def test_cancel_refused_locally_does_not_consume_the_owner_command(tmp_path):
+    from signer import cancellation as cx
+    from sxbet_e2e_kit import Stack
+    s = Stack(tmp_path)
+    _, sg, _ = s.place("order-key-PF02")
+    auth = s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[sg["order_id"]])
+    s.adapter._sender = _RefusingSender(s.sim)
+    with pytest.raises(cx.CancelRefused) as e:
+        s.cx.cancel_orders([sg["order_id"]], auth)
+    assert e.value.code == "SENDER_REFUSED_BEFORE_SEND_TEST_LOCAL_GUARD"
+    assert not s.ledger.command_consumed(auth.command_id)              # the owner's command stays usable
+    assert [r for r in s.sim.writes() if r.method == "DELETE"] == []

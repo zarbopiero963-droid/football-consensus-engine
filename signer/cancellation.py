@@ -55,7 +55,7 @@ from .gateway import GatewayRefused, SubmissionGateway
 from .risk import RiskLimits
 from .orders import (CANCELLED as ST_CANCELLED, EXPIRED, EXPIRED_UNCONFIRMED, FILLED, OPEN, PARTIALLY_FILLED,
                      REJECTED, SETTLED, SUBMITTED, UNKNOWN as ST_UNKNOWN, LedgerError, OrderStateError)
-from .rest_adapter import ExchangeLimits, RestRequest, RestResponse
+from .rest_adapter import ExchangeLimits, RestRequest, RestResponse, SenderRefusedBeforeSend
 
 CANCEL_BINDING_SCHEMA = "sxbet.cancel_binding.v1"
 SCOPE_ORDER_IDS, SCOPE_MARKET, SCOPE_EVENT, SCOPE_ALL = "ORDER_IDS", "MARKET", "EVENT", "ALL"
@@ -262,6 +262,17 @@ class CancellationService:
         except (OrderStateError, LedgerError) as exc:
             raise CancelRefused(exc.code) from None  # nothing was sent
 
+    def _preflight(self, request: RestRequest) -> None:
+        """The sender's own guards, before the command is consumed: a local refusal is provably "not sent" and the
+        owner's command stays usable (never recorded as a cancel of unknown outcome)."""
+        check = getattr(self._adapter, "preflight", None)
+        if check is None:
+            return
+        try:
+            check(request)
+        except SenderRefusedBeforeSend as exc:
+            raise CancelRefused("SENDER_REFUSED_BEFORE_SEND_" + exc.code) from None
+
     def _before_send(self, auth: cmd.OwnerCommandAuthorization, scope: str) -> None:
         """Last check right before the request leaves. The command is already consumed (fail closed: a refusal
         here sends nothing and a retry needs a new owner command)."""
@@ -317,6 +328,7 @@ class CancellationService:
             if not to_send:
                 return {"scope": SCOPE_ORDER_IDS, "sent": False, "orders": report}  # command not consumed
             request = build_cancel_by_ids(to_send, limits=self._adapter.limits)
+            self._preflight(request)                      # before the command is consumed (owner decision 16-11)
             self._consume(auth, fp, binding, SCOPE_ORDER_IDS, to_send)
             self._log("CANCEL_REQUESTED", SCOPE_ORDER_IDS, auth=auth)
             self._before_send(auth, SCOPE_ORDER_IDS)
@@ -356,6 +368,7 @@ class CancellationService:
                     report[o.order_id] = {"client_order_id": o.client_order_id,
                                           "state_before": self._reconcile(o.client_order_id)}
                     targets.append(o.order_id)
+            self._preflight(request)
             self._consume(auth, fp, binding, scope, sorted(targets), market_hash=market_hash, event_id=event_id)
             self._log("CANCEL_REQUESTED", scope, auth=auth)
             self._before_send(auth, scope)

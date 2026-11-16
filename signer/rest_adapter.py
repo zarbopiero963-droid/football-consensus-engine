@@ -98,6 +98,16 @@ class SenderTimeout(Exception):
     """Raised by a sender when it cannot tell whether the exchange received the request."""
 
 
+class SenderRefusedBeforeSend(RuntimeError):
+    """Raised by a sender's PREFLIGHT when its own guards refuse a request: provably nothing was sent. The gateway
+    and the cancellation service run the preflight before the write-ahead / command consumption, so such a
+    refusal is recorded as "signed, never sent" (or "cancel not sent"), never as UNKNOWN (owner decision 16-11)."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 # Kept for the gateway's legacy transports: same meaning as SenderTimeout.
 TransportTimeout = SenderTimeout
 
@@ -404,6 +414,19 @@ class OfficialRestAdapter:
     @property
     def wait_for_outcome(self) -> bool:
         return self.options.wait_for_outcome
+
+    def preflight(self, request: RestRequest) -> None:
+        """Run the sender's own guards WITHOUT any I/O, before anything is recorded as attempted. Raises
+        SenderRefusedBeforeSend when they refuse; a sender without a preflight accepts (nothing to check)."""
+        check = getattr(self._sender, "preflight", None)
+        if check is None:
+            return
+        try:
+            check(request)
+        except SenderRefusedBeforeSend:
+            raise
+        except Exception:
+            raise SenderRefusedBeforeSend("SENDER_PREFLIGHT_ERROR") from None  # pure check: nothing left
 
     def send(self, request: RestRequest) -> RestResponse | None:
         """None = timeout or transport failure (the caller must treat it as 'unknown')."""

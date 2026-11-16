@@ -366,3 +366,19 @@ Il signer legge la chiave una sola volta, all'avvio, dalla propria variabile d'a
 ## Cosa manca prima di `LIVE_TRADING` (decisioni owner)
 
 Vedi la checklist in [`docs/sxbet/wallet_and_signing.md`](../docs/sxbet/wallet_and_signing.md#checklist-di-attivazione-tutte-decisioni-dellowner).
+
+
+## S8 — Sender solo Toronto (issue #187; codice di trading, merge riservato all'owner)
+
+`signer/toronto_sender.py` è il primo sender concreto e raggiunge **solo** la testnet Toronto:
+- host, chain 79479957, escrow OBv3 e USDC di Toronto sono fissati nel codice;
+- si costruisce soltanto dal `Signer` reale. Il dominio viene ricontrollato a ogni invio, il maker è l'EOA del signer e `/metadata/obv3` lo legge il sender stesso con la lettura protetta;
+- l'indirizzo maker **live** dell'owner è un parametro obbligatorio e non può coincidere con il signer di testnet (§2.6);
+- le scritture sono **disattivate** per default.
+
+**Rifiuto locale e esito incerto** (decisione owner 16-11-2026). Le guardie del sender sono esposte come `preflight()`, che non fa alcun I/O:
+- il gateway la esegue **prima** del write-ahead, quindi un rifiuto locale lascia l'ordine `SIGNED` (firmato, mai inviato), con il codice `SENDER_REFUSED_BEFORE_SEND_*`;
+- il servizio di cancellazione la esegue prima di consumare il comando dell'owner, quindi il comando resta utilizzabile;
+- solo un errore **dopo** il write-ahead (trasporto, timeout) resta `UNKNOWN`.
+
+In entrambi i casi non ci sono nuovi invii senza un nuovo comando.

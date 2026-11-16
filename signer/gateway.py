@@ -77,7 +77,7 @@ from .audit import AuditLog
 from .intent import IntentInvalid, intent_hash, validate
 from .orders import (REJECTED, SIGNED, UNKNOWN, LedgerError, OrderLedger, OrderStateError,
                      evidence_from_exchange)
-from .rest_adapter import (AdapterRefused, ExchangeLimits, ExpectedOrder, OfficialRestAdapter,
+from .rest_adapter import (AdapterRefused, SenderRefusedBeforeSend, ExchangeLimits, ExpectedOrder, OfficialRestAdapter,
                            TransportTimeout, parse_create_orders)
 
 LIVE_FLAG_DOMAIN = "sxbet.live_trading_flag.v1"
@@ -388,6 +388,14 @@ class SubmissionGateway:
                     payload, post_only=frozenset(o.client_order_id for o in orders if o.post_only))
             except AdapterRefused as exc:
                 raise GatewayRefused(exc.code) from None
+            try:
+                # The sender's own guards, BEFORE the write-ahead: a local refusal is provably "not sent" and the
+                # ledger stays SIGNED (owner decision 16-11: never every refusal as UNKNOWN).
+                self._transport.preflight(request)
+            except SenderRefusedBeforeSend as exc:
+                for o in orders:
+                    self._log(SIGNED, "SENDER_REFUSED_BEFORE_SEND", o)
+                raise GatewayRefused("SENDER_REFUSED_BEFORE_SEND_" + exc.code) from None
         # Write-ahead: a crash from here on leaves UNKNOWN, never "not placed".
         written = []
         for o in orders:

@@ -510,16 +510,19 @@ def test_toronto_sender_is_the_only_concrete_sender_and_cannot_reach_mainnet():
     cls = next(c for c in ast.walk(tree) if isinstance(c, ast.ClassDef) and c.name == "TorontoRestSender")
     (send,) = [f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "send"]
     calls = {ast.unparse(c.func) for c in ast.walk(send) if isinstance(c, ast.Call)}
-    assert calls <= {"_route", "TorontoGuardError", "_no_mainnet", "_check_body", "self._transport", "tuple",
-                     "SenderTimeout", "type", "RestResponse", "verify_toronto_config", "all", "json.dumps",
-                     "json.dumps(request.body, sort_keys=True, separators=(',', ':'), ensure_ascii=True, "
-                     "allow_nan=False).encode", "json.loads", "_mainnet_chain"}, calls
+    # send() = the pure _prepare() guards (also exposed as preflight()) + the injected transport, nothing else.
+    assert calls <= {"self._prepare", "self._transport", "SenderTimeout", "type", "RestResponse"}, calls
+    (prep,) = [f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "_prepare"]
+    assert "self._transport" not in {ast.unparse(c.func) for c in ast.walk(prep) if isinstance(c, ast.Call)}
     # "POST" / "DELETE" appear ONLY inside the ROUTES allowlist (review 151b2ed P3).
     routes = next(n for n in tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "ROUTES")
     inside = {id(c) for c in ast.walk(routes) if isinstance(c, ast.Constant)}
-    stray = [c.value for c in ast.walk(tree) if isinstance(c, ast.Constant) and c.value in ("POST", "DELETE")
-             and id(c) not in inside and c.value is not None]
-    assert stray.count("POST") <= 1 and "DELETE" not in stray, stray       # the one POST is the body-check branch
+    check_body = next(f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name == "_check_body")
+    in_check = {id(c) for c in ast.walk(check_body) if isinstance(c, ast.Constant)}
+    stray = [c for c in ast.walk(tree) if isinstance(c, ast.Constant) and c.value in ("POST", "DELETE")
+             and id(c) not in inside]
+    # Outside ROUTES: once each, and only as the method tests of the body checks (review d9ca299 P3-3).
+    assert sorted(c.value for c in stray) == ["DELETE", "POST"] and all(id(c) in in_check for c in stray)
     urls = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
             and n.value.startswith("http")}
     assert urls == {"https://api.toronto.sx.bet"}, urls

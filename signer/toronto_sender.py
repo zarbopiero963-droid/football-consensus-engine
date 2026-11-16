@@ -24,7 +24,7 @@ import json
 import re
 from typing import Any, Callable, Mapping
 
-from .rest_adapter import RestRequest, RestResponse, SenderTimeout
+from .rest_adapter import RestRequest, RestResponse, SenderRefusedBeforeSend, SenderTimeout
 
 TORONTO = {
     "network": "testnet",
@@ -56,10 +56,8 @@ ROUTES = (
 _ADDRESS = re.compile(r"^0x[0-9a-f]{40}$")
 
 
-class TorontoGuardError(RuntimeError):
-    def __init__(self, code: str):
-        super().__init__(code)
-        self.code = code
+class TorontoGuardError(SenderRefusedBeforeSend):
+    """A guard refused the request before anything left (subclass of SenderRefusedBeforeSend)."""
 
 
 def verify_toronto_config(config: Any) -> None:
@@ -113,7 +111,7 @@ def _unquote(text: str) -> str:
 def _mainnet_chain(obj: Any, depth: int = 0) -> bool:
     """A `chainId` field equal to the mainnet chain anywhere in the body (structured: no false hits in hex)."""
     if depth > 16:
-        return True
+        raise TorontoGuardError("BODY_TOO_DEEP")
     if isinstance(obj, Mapping):
         return any((k == "chainId" and v in (MAINNET_CHAIN_ID, str(MAINNET_CHAIN_ID))) or _mainnet_chain(v, depth + 1)
                    for k, v in obj.items())
@@ -123,6 +121,9 @@ def _mainnet_chain(obj: Any, depth: int = 0) -> bool:
 
 
 def _check_body(method: str, body: Any, maker: str) -> None:
+    if method == "DELETE" and isinstance(body, Mapping) and "maker" in body and \
+            str(body.get("maker", "")).lower() != maker:
+        raise TorontoGuardError("CANCEL_MAKER_NOT_THE_TORONTO_MAKER")   # review d9ca299 P3-3
     if method == "POST":
         body = body if isinstance(body, Mapping) else None
         orders = body.get("orders") if body else None
@@ -152,7 +153,7 @@ class TorontoRestSender:
     name-mangled and documented as such (review 151b2ed P3)."""
 
     def __init__(self, signer: Any, transport: Callable[..., tuple[int, Any]], *, api_key: str,
-                 writes_enabled: bool = False, live_maker: str | None = None):
+                 live_maker: str, writes_enabled: bool = False):
         from .core import Signer, SignerConfig
         if not isinstance(signer, Signer) or not isinstance(signer.config, SignerConfig):
             raise TorontoGuardError("NOT_A_SIGNER")
@@ -160,7 +161,10 @@ class TorontoRestSender:
         maker = str(signer.address).lower()
         if not _ADDRESS.fullmatch(maker):
             raise TorontoGuardError("MAKER_INVALID")
-        if live_maker is not None and str(live_maker).lower() == maker:
+        if not isinstance(live_maker, str) or not _ADDRESS.fullmatch(live_maker.lower()):
+            # Mandatory (review d9ca299 P3-1): the owner's LIVE maker address, so the check can never be skipped.
+            raise TorontoGuardError("LIVE_MAKER_REQUIRED")
+        if live_maker.lower() == maker:
             # §2.6: the testnet key is never the live key (review 151b2ed P3).
             raise TorontoGuardError("TESTNET_SIGNER_IS_THE_LIVE_MAKER")
         if not isinstance(api_key, str) or not api_key.strip():
@@ -190,18 +194,27 @@ class TorontoRestSender:
     def __repr__(self) -> str:  # never the key
         return f"TorontoRestSender(base={TORONTO['base_url']!r}, writes_enabled={self.__writes})"
 
-    def send(self, request: RestRequest) -> RestResponse:
+    def _prepare(self, request: RestRequest) -> tuple[str, tuple, bytes | None, dict[str, str]]:
+        """Every guard, no I/O. Raises TorontoGuardError (a SenderRefusedBeforeSend): provably nothing sent."""
         if type(request.method) is not str or type(request.path) is not str:
             raise TorontoGuardError("REQUEST_FIELDS_NOT_PLAIN_STRINGS")   # no str subclass tricks (P3)
         verify_toronto_config(self._signer.config)                       # still the Toronto domain
         _, _, write = _route(request)
         if write and not self.__writes:
             raise TorontoGuardError("SENDER_WRITES_DISABLED")        # nothing leaves: no testnet order authorized
-        query = tuple(request.query)
-        if not all(type(k) is str and type(v) is str for k, v in query):
+        try:
+            query = tuple(request.query)
+            ok = all(type(k) is str and type(v) is str for k, v in query)
+        except (TypeError, ValueError):
+            raise TorontoGuardError("QUERY_MALFORMED") from None
+        if not ok:
             raise TorontoGuardError("REQUEST_FIELDS_NOT_PLAIN_STRINGS")
-        body_bytes = None if request.body is None else json.dumps(
-            request.body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+        try:
+            body_bytes = None if request.body is None else json.dumps(
+                request.body, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                allow_nan=False).encode("ascii")
+        except (TypeError, ValueError, RecursionError):
+            raise TorontoGuardError("BODY_NOT_SERIALIZABLE") from None
         _no_mainnet((request.path, query, body_bytes))
         parsed = json.loads(body_bytes) if body_bytes is not None else None
         if _mainnet_chain(parsed):
@@ -210,6 +223,14 @@ class TorontoRestSender:
         url = f"{TORONTO['base_url']}{request.path}"                     # only the pinned host, ever
         headers = {"x-sx-api-key": self._api_key, "Accept": "application/json",
                    "Content-Type": "application/json"}
+        return url, query, body_bytes, headers
+
+    def preflight(self, request: RestRequest) -> None:
+        """The same guards as send(), without any I/O: lets the gateway refuse BEFORE its write-ahead."""
+        self._prepare(request)
+
+    def send(self, request: RestRequest) -> RestResponse:
+        url, query, body_bytes, headers = self._prepare(request)
         try:
             status, body = self._transport(request.method, url, query, body_bytes, headers)
         except Exception:
