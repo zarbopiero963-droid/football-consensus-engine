@@ -2,12 +2,14 @@
 ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-009.
 
 * No ownership change of any existing object, no change to the Render DATABASE_URL, no new service.
-* defaultdb only gains two roles, the runner's explicit USAGE on public and its minimal grant on the
-  three shared quota-coordinator tables (CLAUDE.md §2.4).
+* defaultdb only gains two roles, the runner's explicit USAGE on public and (variant R1, owner decision
+  D2) the schema fcb_cert_quota with four SECURITY DEFINER functions that are the runner's ONLY access to
+  the three shared quota-coordinator tables (CLAUDE.md §2.4): no table or column privilege at all.
 * Post-WP-009 (owner decision: A2 is installed only after WP-009 phase 2, when fcb_migrator owns the
-  bridge): step 1 (roles, runner password, USAGE on public) runs as the administrator; step 1b (the
-  9 coordinator grants) runs as the OWNER of the coordinator tables (fcb_migrator; the workflow
-  requires that identity). A runner password rotation re-runs step 1 only (no re-grant) and then
+  bridge): step 1 (roles, runner password, USAGE on public) runs as the administrator; step 1a (the
+  empty schema fcb_cert_quota, owned by the tables' owner) runs as the administrator; step 1b (the four
+  quota functions and their EXECUTE grant) runs as the OWNER of the coordinator tables (fcb_migrator;
+  the workflow requires that identity). A runner password rotation re-runs step 1 only (no re-grant) and then
   asserts the exact grant set, in the same transaction.
 * fcb_cert is OWNED by the NOLOGIN role fcb_cert_owner, which also owns every ledger object and the
   SECURITY DEFINER budget trigger. The ledger DDL is bridge migration 0010 byte-for-byte (pinned).
@@ -20,7 +22,7 @@ ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-
   revokes in `finally` and asserts the end state.
 
 Nothing here prints a password, a verifier, a DSN or a host. Usage (owner-gated workflows only):
-  install        ADMIN_DSN_VAR GRANTOR_DSN_VAR RUNNER_PASSWORD_VAR   steps 1, 1b, 2, 3 (idempotent)
+  install        ADMIN_DSN_VAR GRANTOR_DSN_VAR RUNNER_PASSWORD_VAR   steps 1, 1a, 1b, 2, 3 (idempotent)
   rotate-runner  ADMIN_DSN_VAR RUNNER_PASSWORD_VAR                   step 1 only + exact-grant assert
   approve        ADMIN_DSN_VAR SHA KIND BUDGET ACTOR RUN_ID
   evidence       ADMIN_DSN_VAR [BRIDGE_DSN_VAR]                      read-only catalog evidence; the
@@ -81,27 +83,35 @@ def install_roles(connect_defaultdb, runner_verifier: str) -> None:
         conn.execute(_sql("apifootball_cert_path_a_roles.sql"))
 
 
-def install_coordinator_grants(connect_owner) -> None:
-    """Step 1b, one transaction in defaultdb AS the owner of the coordinator tables: the 9 grants,
-    then the exact-set assertion."""
-    with connect_owner() as conn:
-        conn.execute(_sql("apifootball_cert_path_a_coordinator_grants.sql"))
-        conn.execute(_sql("apifootball_cert_path_a_coordinator_assert.sql"))
-
-
-def assert_coordinator_grants(connect_defaultdb) -> None:
-    """Read-only: the runner holds exactly the 9 coordinator privileges and USAGE on public."""
+def install_quota_schema(connect_defaultdb) -> None:
+    """Step 1a (variant R1), one transaction in defaultdb AS the administrator: the EMPTY schema
+    fcb_cert_quota, owned by the owner of the coordinator tables (fcb_migrator after phase 2)."""
     with connect_defaultdb() as conn:
-        conn.execute(_sql("apifootball_cert_path_a_coordinator_assert.sql"))
+        conn.execute(_sql("apifootball_cert_path_a_quota_schema.sql"))
+
+
+def install_quota_functions(connect_owner) -> None:
+    """Step 1b (variant R1), one transaction in defaultdb AS the owner of the coordinator tables: the four
+    SECURITY DEFINER quota functions, EXECUTE + schema USAGE to fcb_cert_runner only, then the exact-state
+    assertion (no table, column or sequence privilege of the runner anywhere in public)."""
+    with connect_owner() as conn:
+        conn.execute(_sql("apifootball_cert_path_a_quota_functions.sql"))
+        conn.execute(_sql("apifootball_cert_path_a_quota_assert.sql"))
+
+
+def assert_quota_functions(connect_defaultdb) -> None:
+    """Read-only: the R1 end state (apifootball_cert_path_a_quota_assert.sql)."""
+    with connect_defaultdb() as conn:
+        conn.execute(_sql("apifootball_cert_path_a_quota_assert.sql"))
 
 
 def rotate_runner(connect_defaultdb, runner_verifier: str) -> None:
-    """Runner password rotation: step 1 only (administrator; NO coordinator re-grant, which only the
-    table owner could issue after WP-009 phase 2), then the exact-grant assertion, one transaction."""
+    """Runner password rotation: step 1 only (administrator; NO re-definition or re-grant, which only the
+    table owner could issue after WP-009 phase 2), then the exact R1 state assertion, one transaction."""
     with connect_defaultdb() as conn:
         conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)", (runner_verifier,))
         conn.execute(_sql("apifootball_cert_path_a_roles.sql"))
-        conn.execute(_sql("apifootball_cert_path_a_coordinator_assert.sql"))
+        conn.execute(_sql("apifootball_cert_path_a_quota_assert.sql"))
 
 
 def create_database(connect_defaultdb_autocommit) -> str:
@@ -171,6 +181,17 @@ SELECT 'schema_grant public ' || x.privilege_type || ' grantable=' || x.is_grant
 FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) x
 WHERE n.nspname = 'public' AND x.grantee = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'fcb_cert_runner')
 UNION ALL
+SELECT 'quota_function ' || p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ') secdef=' || p.prosecdef
+       || ' owner_is_tables_owner=' || (p.proowner = (SELECT c.relowner FROM pg_catalog.pg_class c
+                                         WHERE c.oid = 'public.api_football_quota_counters'::pg_catalog.regclass))
+       || ' config=' || COALESCE(p.proconfig::text, '-') || ' body_md5=' || pg_catalog.md5(p.prosrc)
+       || ' runner_execute=' || pg_catalog.has_function_privilege('fcb_cert_runner', p.oid, 'EXECUTE')
+FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'fcb_cert_quota'
+UNION ALL
+SELECT 'quota_schema_grant ' || CASE WHEN x.grantee = n.nspowner THEN 'owner' WHEN x.grantee = 0 THEN 'PUBLIC'
+       ELSE pg_catalog.pg_get_userbyid(x.grantee)::text END || ' ' || x.privilege_type || ' grantable=' || x.is_grantable
+FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) x WHERE n.nspname = 'fcb_cert_quota'
+UNION ALL
 SELECT 'database fcb_cert owner=' || pg_catalog.pg_get_userbyid(d.datdba) || ' acl_entries=' || pg_catalog.cardinality(d.datacl)
 FROM pg_catalog.pg_database d WHERE d.datname = 'fcb_cert'
 ORDER BY 1"""
@@ -239,7 +260,8 @@ def _main(argv: list[str]) -> int:
         from fcb_db_roles import scram_verifier
         install_roles(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row),
                       scram_verifier(password))
-        install_coordinator_grants(lambda: psycopg.connect(grantor, dbname=COORDINATOR_DATABASE, row_factory=dict_row))
+        install_quota_schema(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row))
+        install_quota_functions(lambda: psycopg.connect(grantor, dbname=COORDINATOR_DATABASE, row_factory=dict_row))
         state = create_database(lambda: psycopg.connect(dsn, dbname=COORDINATOR_DATABASE, row_factory=dict_row,
                                                         autocommit=True))
         install_ledger(lambda: psycopg.connect(dsn, dbname=LEDGER_DATABASE, row_factory=dict_row))

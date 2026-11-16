@@ -12,7 +12,9 @@ Budget model (owner conditions A and C, 2026-11-11):
     are therefore always counted;
   * a restart or re-run with the same campaign_id continues the SAME budget, never a new one;
   * RetryPolicy(max_attempts=1): one attempt per planned call, no automatic retry;
-  * every request also takes a lease of the shared quota coordinator (PostgresQuota, CLAUDE.md §2.4).
+  * every request also takes a lease of the shared quota coordinator (CLAUDE.md §2.4): PATH A2 variant R1,
+    the SAME counters/leases/attempts as the bridge's PostgresQuota, reached ONLY through the SECURITY
+    DEFINER functions fcb_cert_quota.* (CertQuotaCoordinator); the runner has no table privilege.
   * every request needs the owner authorization variable APIFOOTBALL_CERT_CAMPAIGN_AUTHORIZED=true,
     checked by the transport itself before the reservation.
 The campaign ledger is bridge migration 0010 (dedicated tables). PATH A (owner mandate
@@ -112,6 +114,113 @@ COORDINATOR_TABLES_SQL = (
     "SELECT (pg_catalog.count(*) OPERATOR(pg_catalog.=) 3 AND NOT pg_catalog.bool_or(" + RELATION_HAZARDS_SQL + ")) AS ok "
     "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
     "WHERE n.nspname OPERATOR(pg_catalog.=) 'public' AND c.relname OPERATOR(pg_catalog.=) ANY (%(tables)s)")
+# PATH A2 variant R1 (owner decision D2): the runner has NO privilege on the three shared quota tables. Its
+# only access is the four SECURITY DEFINER functions of schema fcb_cert_quota
+# (sql/aiven/apifootball_cert_path_a_quota_functions.sql), whose exact definitions, owner and ACLs the
+# read-only state query below must report EXACT before any request (CertQuotaCoordinator).
+QUOTA_STATE_SQL_PATH = ROOT / "sql" / "aiven" / "apifootball_cert_quota_state.sql"
+
+
+def quota_state_sql() -> str:
+    return QUOTA_STATE_SQL_PATH.read_text(encoding="utf-8")
+
+
+_CERT_QUOTA_ERROR = re.compile(r"^FCB_CERT_QUOTA_(BUSY|DAY ([0-9]+)|MINUTE (rolling|provider_zero|bucket) ([0-9]+|-))$")
+_MINUTE_MESSAGES = {"rolling": "rolling provider request budget exhausted",
+                    "provider_zero": "provider reported a zero per-minute budget",
+                    "bucket": "shared provider budget exhausted"}
+
+
+class CertQuotaCoordinator:
+    """The shared quota coordinator for the certification runner, through fcb_cert_quota.* only.
+
+    Same async interface as bridge.api_football.quota.PostgresQuota (prepare/acquire/release/snapshot/
+    mark_exhausted) and the same semantics: the functions replicate PostgresQuota statement by statement
+    on the same rows under the same per-key advisory lock, with the bridge default limits (8/80/2, 180 s
+    lease) pinned in the database, never passed by the caller. Only the SHA-256 key hash leaves this
+    process. Each call is ONE statement in its own transaction, committed before acquire() returns (the
+    lease is durable before the provider request). Limit codes raised by the functions become the same
+    QuotaExceeded / QuotaConcurrencyBusy as PostgresQuota; any other error propagates (the resilience
+    client reports QUOTA_COORDINATOR_UNAVAILABLE and sends nothing)."""
+
+    def __init__(self, connect=None):
+        if connect is None:
+            def connect():
+                from app.db import connect as _connect
+                return _connect()
+        self._connect = connect
+        self._ready = False
+
+    @staticmethod
+    def _key(secret: str) -> str:
+        from bridge.api_football.quota import _key_hash
+        return _key_hash(secret)
+
+    def _call(self, sql: str, params: tuple):
+        import psycopg
+        from bridge.api_football.quota import QuotaConcurrencyBusy, _day_exceeded, _minute_exceeded
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+                conn.commit()
+                return rows
+        except psycopg.errors.RaiseException as exc:
+            m = _CERT_QUOTA_ERROR.match(exc.diag.message_primary or "")
+            if m is None:
+                raise
+            if m.group(1) == "BUSY":
+                raise QuotaConcurrencyBusy("shared concurrency budget exhausted") from None
+            if m.group(2) is not None:
+                raise _day_exceeded(int(m.group(2))) from None
+            raise _minute_exceeded(_MINUTE_MESSAGES[m.group(3)],
+                                   None if m.group(4) == "-" else int(m.group(4))) from None
+
+    def _prepare(self) -> None:
+        if self._ready:
+            return
+        with self._connect() as conn:
+            row = conn.execute(quota_state_sql()).fetchone()
+        if (row["state"] if isinstance(row, dict) else row[0]) != "EXACT":
+            raise RuntimeError("APIFOOTBALL_CERT_QUOTA_FUNCTIONS_NOT_EXACT")
+        self._ready = True
+
+    async def prepare(self) -> None:
+        await asyncio.to_thread(self._prepare)
+
+    def _reserve(self, secret: str):
+        from bridge.api_football.quota import QuotaLease
+        key = self._key(secret)
+        self._prepare()
+        row = self._call("SELECT fcb_cert_quota.reserve(%s) AS lease", (key,))[0]
+        return QuotaLease(lease_id=row["lease"] if isinstance(row, dict) else row[0], key_hash=key)
+
+    async def acquire(self, secret: str):
+        return await asyncio.to_thread(self._reserve, secret)
+
+    async def release(self, lease) -> None:
+        await asyncio.to_thread(self._call, "SELECT fcb_cert_quota.release(%s, %s)", (lease.key_hash, lease.lease_id))
+
+    def _snapshot(self, secret: str) -> dict[str, int]:
+        key = self._key(secret)
+        self._prepare()
+        row = self._call("SELECT s.remaining_minute, s.remaining_day, s.active_leases FROM fcb_cert_quota.snapshot(%s) s",
+                         (key,))[0]
+        get = (lambda k, i: row[k]) if isinstance(row, dict) else (lambda k, i: row[i])
+        return {"remaining_minute": int(get("remaining_minute", 0)), "remaining_day": int(get("remaining_day", 1)),
+                "active_leases": int(get("active_leases", 2))}
+
+    async def snapshot(self, secret: str) -> dict[str, int]:
+        return await asyncio.to_thread(self._snapshot, secret)
+
+    def _mark_exhausted(self, secret: str, kind: str) -> None:
+        if kind not in ("minute", "day"):
+            raise ValueError("unsupported budget window")
+        self._call("SELECT fcb_cert_quota.mark_exhausted(%s, %s)", (self._key(secret), kind))
+
+    async def mark_exhausted(self, secret: str, kind: str) -> None:
+        await asyncio.to_thread(self._mark_exhausted, secret, kind)
+
+
 # Review #201: per-RUN in-memory request caps (one process run = one execute), independent of the
 # database, counting every reserved attempt (first send, retry, ambiguous outcome). The persistent
 # per-plan budget in the ledger stays the shared budget across runs, restarts and campaign_ids.
@@ -1277,6 +1386,9 @@ def main(argv: list[str] | None = None) -> int:
             if identity is None and not conn.execute(COORDINATOR_TABLES_SQL,
                                                      {"tables": list(COORDINATOR_TABLES)}).fetchone()["ok"]:
                 identity = "COORDINATOR_TABLES_TAMPERED"
+            # PATH A2 R1: the runner's only access to the coordinator is the exact fcb_cert_quota variant
+            if identity is None and conn.execute(quota_state_sql()).fetchone()["state"] != "EXACT":
+                identity = "COORDINATOR_FUNCTIONS_NOT_EXACT"
     except LookupError:
         identity = "COORDINATOR_DATABASE_WRONG"
     except Exception:  # noqa: BLE001 - fixed code only, never the message or the DSN
@@ -1288,7 +1400,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             report = asyncio.run(execute_snapshot(snapshot_id=args.campaign_id, fixture_id=args.fixture_id,
                                                   settings=settings, ledger=PostgresCampaignLedger(),
-                                                  inner_transport=httpx.AsyncHTTPTransport()))
+                                                  inner_transport=httpx.AsyncHTTPTransport(),
+                                                  quota=CertQuotaCoordinator()))
         except (LedgerUnavailable, ValueError) as exc:
             print(f"CAMPAIGN_REFUSED {exc.args[0] if exc.args and isinstance(exc.args[0], str) else 'UNKNOWN'}")
             return 2
@@ -1305,7 +1418,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run = asyncio.run(execute(json.loads(text), campaign_id=args.campaign_id, settings=settings,
                                   ledger=PostgresCampaignLedger(), inner_transport=httpx.AsyncHTTPTransport(),
-                                  plan_text=text, source_sha=os.environ.get("GITHUB_SHA", "UNKNOWN")[:40]))
+                                  quota=CertQuotaCoordinator(), plan_text=text, source_sha=os.environ.get("GITHUB_SHA", "UNKNOWN")[:40]))
     except (LedgerUnavailable, ValueError) as exc:
         print(f"CAMPAIGN_REFUSED {exc.args[0] if exc.args and isinstance(exc.args[0], str) else 'UNKNOWN'}")
         return 2
