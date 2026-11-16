@@ -817,6 +817,13 @@ R1_BACKUP_TAMPER = {
     "extra_object": "CREATE TABLE fcb_cert_quota.t (a int)",
     "runner_table_privilege": "GRANT SELECT ON public.api_football_quota_counters TO fcb_cert_runner",
     "runner_schema_create": "GRANT CREATE ON SCHEMA fcb_cert_quota TO fcb_cert_runner",
+    # review #201 P1: routines of every kind and every other object kind
+    "p1_procedure": "CREATE PROCEDURE fcb_cert_quota.reset_counters() LANGUAGE sql SECURITY DEFINER AS 'DELETE FROM public.api_football_quota_counters'",
+    "p1_aggregate": 'CREATE AGGREGATE fcb_cert_quota.agg(int) (SFUNC = int4pl, STYPE = int)',
+    "p1_overload": "CREATE FUNCTION fcb_cert_quota.reserve(p_key_hash text, p_x int) RETURNS text LANGUAGE sql AS 'select 1::text'",
+    "p1_extra_view": 'CREATE VIEW fcb_cert_quota.v AS SELECT 1 AS a',
+    "p1_extra_sequence": 'CREATE SEQUENCE fcb_cert_quota.s',
+    "p1_extra_type": 'CREATE TYPE fcb_cert_quota.c AS (a int)',
 }
 
 

@@ -99,7 +99,7 @@ def env(tmp_path_factory):
         # (fcb_migrator after WP-009 phase 2: test_wp009_roles_runtime_postgres.py, full sequence)
         # PATH A2 variant R1: step 1a (administrator) + step 1b (tables' owner: the administrator here)
         path_a.install_quota_schema(ns.admin)
-        path_a.install_quota_functions(ns.admin)
+        path_a.install_quota_functions(ns.admin, path_a.pinned_key_hash_of(KEY))
         ns.db_state = path_a.create_database(lambda: ns.admin(autocommit=True))
         path_a.install_ledger(lambda: ns.admin("fcb_cert"))
         yield ns
@@ -187,7 +187,7 @@ def test_install_is_idempotent_and_changes_no_existing_object(env):
                                "FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace").fetchone()
     path_a.install_roles(env.admin, scram_verifier(env.runner_pw))  # second run: no-op
     path_a.install_quota_schema(env.admin)
-    path_a.install_quota_functions(env.admin)
+    path_a.install_quota_functions(env.admin, path_a.pinned_key_hash_of(KEY))
     assert path_a.create_database(lambda: env.admin(autocommit=True)) == "ALREADY_PRESENT"
     path_a.install_ledger(lambda: env.admin("fcb_cert"))
     with env.su("fcb_cert") as conn:
@@ -267,13 +267,14 @@ def test_runner_cannot_touch_any_defaultdb_table_including_the_coordinator(env):
 def test_the_r1_coordinator_works_as_the_runner_and_still_enforces_the_day(env):
     from bridge.api_football.quota import QuotaExceeded
     quota = _runner_quota(env)
-    key = "PATH-A-KEY-" + uuid.uuid4().hex
+    key = KEY  # review #201 P2: the runner may use the pinned key only
 
     async def go():
         await quota.prepare()
         lease = await quota.acquire(key)
         await quota.release(lease)
-        await quota.mark_exhausted(key + "x", "minute")
+        with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_QUOTA_KEY_REFUSED"):
+            await quota.mark_exhausted(key + "x", "minute")  # review #201 P2: any other key is refused
         lease = await quota.acquire(key)
         await quota.release(lease)
         await quota.mark_exhausted(key, "day")  # provider-reported zero for the UTC day
@@ -783,8 +784,8 @@ R1_FUNCTIONS = ("reserve(text)", "release(text, text)", "snapshot(text)", "mark_
 def _coordinator_cycle(env):
     """Every coordinator operation the runner performs: prepare, acquire (+ expired cleanup), release,
     provider-reported zero (mark_exhausted) and snapshot, through fcb_cert_quota.* only."""
-    quota = batch.CertQuotaCoordinator(connect=lambda: env.runner("defaultdb"))
-    key = "PATH-A2-PRIV-" + uuid.uuid4().hex
+    quota = _runner_quota(env)  # the pinned kit KEY, rows reset (review #201 P2)
+    key = KEY
 
     async def go():
         await quota.prepare()
@@ -829,7 +830,7 @@ def test_a2_r1_each_function_execute_is_needed(env, function):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             with env.runner("defaultdb") as conn:
                 conn.execute(f"SELECT fcb_cert_quota.{function.split('(')[0]}" + "(%s" + ", %s" * function.count(",") + ")",
-                             ("0" * 64,) + ("minute",) * function.count(","))
+                             (path_a.pinned_key_hash_of(KEY),) + ("minute",) * function.count(","))
     finally:
         with env.admin() as conn:
             conn.execute(f"GRANT EXECUTE ON FUNCTION fcb_cert_quota.{function} TO {RUNNER}")
@@ -1168,6 +1169,10 @@ def test_a2_evidence_is_catalog_only_stable_and_free_of_secrets(env):
     # R1 (intentional change): no table or column grant; four functions, the runner may execute each
     assert sum(line.startswith("grant ") for line in first) == 0 and sum(line.startswith("column_grant ") for line in first) == 0
     fns = [line for line in first if line.startswith("quota_function ")]
+    # review #201 P2 (intentional change): a fifth routine, the key pin, SECURITY INVOKER, owner only
+    pin = [f for f in fns if f.startswith("quota_function pinned_key_hash() ")]
+    fns = [f for f in fns if f not in pin]
+    assert len(pin) == 1 and "secdef=false" in pin[0] and "runner_execute=false" in pin[0], pin
     assert len(fns) == 4 and all("secdef=true" in f and "owner_is_tables_owner=true" in f and "runner_execute=true" in f
                                  and 'config={"search_path=pg_catalog, pg_temp"}' in f for f in fns), fns
     assert sorted(l for l in first if l.startswith("quota_schema_grant ")) == [

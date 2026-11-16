@@ -23,6 +23,7 @@ Every role created here has a random password (CI authenticates with passwords) 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -1903,6 +1904,9 @@ def test_workflow_bash_password_gate_fails_closed_without_echoing(fresh, tmp_pat
 # direct privileges and the runner's USAGE on public are gone: intentional change of the earlier tests);
 # verify_bridge_roles.sql admits fcb_cert_quota only ABSENT or EXACT (check cert_quota_state).
 
+R1_SECRET = "WP009-R1-" + uuid.uuid4().hex  # the runner's (pinned) API key in these tests
+
+
 def _a2_sql(env, name):
     sql = (AIVEN / name).read_text(encoding="utf-8")
     assert sql.count("'defaultdb'::pg_catalog.name") == 1, name
@@ -1925,6 +1929,9 @@ def _a2_quota(env, owner):
     with psycopg.connect(env.admin_dsn, options=ADMIN_OPTIONS) as conn:
         conn.execute(_a2_sql(env, "apifootball_cert_path_a_quota_schema.sql"))
     with psycopg.connect(env.admin_dsn if owner == "admin" else env.dsn(owner)) as conn:
+        # review #201 P2: the one key the runner may use, pinned by step 1b
+        conn.execute("SELECT pg_catalog.set_config('fcb_cert.pinned_key_hash', %s, true)",
+                     (hashlib.sha256(R1_SECRET.encode()).hexdigest(),))
         conn.execute(_a2_sql(env, "apifootball_cert_path_a_quota_functions.sql"))
         conn.execute(_a2_sql(env, "apifootball_cert_path_a_quota_assert.sql"))
 
@@ -2038,6 +2045,13 @@ R1_VERIFY_TAMPER = [
     ("GRANT CREATE ON SCHEMA public TO fcb_cert_runner", "schema_acl"),
     ("ALTER ROLE fcb_cert_runner CREATEDB", "cert_quota_state"),
     ("GRANT fcb_cert_runner TO {x} WITH INHERIT FALSE, SET TRUE", "cert_quota_state"),
+    # review #201 P1: routines of every kind and every other object kind
+    ("CREATE PROCEDURE fcb_cert_quota.reset_counters() LANGUAGE sql SECURITY DEFINER AS 'DELETE FROM public.api_football_quota_counters'", "cert_quota_state"),
+    ('CREATE AGGREGATE fcb_cert_quota.agg(int) (SFUNC = int4pl, STYPE = int)', "cert_quota_state"),
+    ("CREATE FUNCTION fcb_cert_quota.reserve(p_key_hash text, p_x int) RETURNS text LANGUAGE sql AS 'select 1::text'", "cert_quota_state"),
+    ('CREATE VIEW fcb_cert_quota.v AS SELECT 1 AS a', "cert_quota_state"),
+    ('CREATE SEQUENCE fcb_cert_quota.s', "cert_quota_state"),
+    ('CREATE TYPE fcb_cert_quota.c AS (a int)', "cert_quota_state"),
 ]
 
 
@@ -2170,7 +2184,7 @@ def _runner_coordinator_cycle(env, password):
     batch = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(batch)
     quota = batch.CertQuotaCoordinator(connect=lambda: _runner_connect(env, password))
-    key = "WP009-A2-" + uuid.uuid4().hex
+    key = R1_SECRET  # review #201 P2: the pinned key only
 
     async def go():
         await quota.prepare()
@@ -2247,7 +2261,7 @@ def test_full_sequence_wp009_then_a2_as_migrator_runner_rotation_and_fcb_app_iso
         assert _a2_runner_privileges(fresh) == (0, 0, 0) and fresh.roles_state() == "HARDENED"
         with pytest.raises(psycopg.OperationalError):
             _runner_connect(fresh, pw1).close()
-        assert _runner_coordinator_cycle(fresh, pw2)["remaining_day"] == 78  # a fresh key per cycle
+        assert _runner_coordinator_cycle(fresh, pw2)["remaining_day"] == 76  # same pinned key: 4 used
         # G3: fcb_app against the fcb_cert_* roles and the fcb_cert database
         with fresh.connect("fcb_app", autocommit=True) as conn:
             for stmt in ("SET ROLE fcb_cert_owner", "SET ROLE fcb_cert_runner", "SET SESSION AUTHORIZATION fcb_cert_runner",

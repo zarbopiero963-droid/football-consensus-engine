@@ -63,12 +63,12 @@ jobs:
       EXPECTED_FILE_SHA256: |
         sql/aiven/apifootball_cert_path_a_roles.sql=bcbc46d31de63e023a9a57490859971729f576c6bedc77848482e0de2488eb8f
         sql/aiven/apifootball_cert_path_a_quota_schema.sql=7c04a8a0f503cdfbbd0bda1f67564ec555df9c188beedabed1c0cdb05e1f4684
-        sql/aiven/apifootball_cert_path_a_quota_functions.sql=ee6140d09927b9f2535b51e22b4fc4fb4149cab4f910ac746d06941a162384d3
-        sql/aiven/apifootball_cert_path_a_quota_assert.sql=83a60a6e00d775b3fbd93763fe5738ae41e459b45699280173200f7312ea1042
+        sql/aiven/apifootball_cert_path_a_quota_functions.sql=7ff34b97ddf0c1ae0cad061c0ac83df9135b7cc8999ffb40e95f5acc7a6b606c
+        sql/aiven/apifootball_cert_path_a_quota_assert.sql=c04deda9ef6364bc7f342e0080f647f1fb7ab598ccb58b75d1e924e4e4f0f678
         sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
         sql/aiven/apifootball_cert_path_a_ledger_post.sql=8d9bf2565fa11864bb9a0a48a07fbf425111cbfa8077c9ae8048c356072d0fdc
         sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql=64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8
-        scripts/apifootball_cert_path_a.py=6ba14b0f3884511dc1858803f34583930512d6e48397160e643f360e0eac7631
+        scripts/apifootball_cert_path_a.py=26f957bbd972655bf06708a943a5fc3697e1acd583725349106e8e450f29ee3c
         scripts/fcb_db_roles.py=63e4e23ff7fadcb978a9ac960aff7f17032cbe895028316d94735fddfb1b8da6
         scripts/aiven_pg18_diag.py=825235c2b70126f438343efd61ab6805b1b498848cb294ee1efa494e8812d8e6
       PGCONNECT_TIMEOUT: '15'
