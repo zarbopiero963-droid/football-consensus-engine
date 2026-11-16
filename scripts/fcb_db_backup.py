@@ -166,7 +166,28 @@ def source_params(env=None, *, expected_db: str, require_tls: bool) -> dict:
         raise BackupError("SOURCE_SSLMODE_NOT_VERIFY_FULL")
     if require_tls and env.get("PGSSLMODE") != "verify-full":
         raise BackupError("SOURCE_PGSSLMODE_NOT_VERIFY_FULL")
-    params = {"host": u.hostname, "port": str(port or 5432), "user": unquote(u.username or ""),
+    # Port resolution (review #203 F1). The secret may carry no port or an empty one ("host:").
+    # The port is taken from libpq's own parse of the URI (psycopg.conninfo), so the target check,
+    # psycopg and pg_dump/pg_dumpall (which get it explicitly) use one and the same value:
+    # an explicit port must equal EXPECTED_PORT exactly; an absent/empty one uses PGPORT only if it
+    # equals EXPECTED_PORT; anything else is SOURCE_URL_PORT. Never an implicit 5432.
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+        libpq_port = conninfo_to_dict(raw).get("port")
+    except Exception:
+        raise BackupError("SOURCE_URL_UNPARSEABLE") from None
+    expected_port = env.get("EXPECTED_PORT") or ""
+    if libpq_port not in (None, ""):
+        resolved_port = libpq_port
+        if (expected_port and libpq_port != expected_port) or str(port) != libpq_port:
+            raise BackupError("SOURCE_URL_PORT")
+    elif env.get("PGPORT") and (not expected_port or env["PGPORT"] == expected_port):
+        resolved_port = env["PGPORT"]
+    else:
+        raise BackupError("SOURCE_URL_PORT")
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", resolved_port) or int(resolved_port) > 65535:
+        raise BackupError("SOURCE_URL_PORT")
+    params = {"host": u.hostname, "port": resolved_port, "user": unquote(u.username or ""),
               "password": unquote(u.password or ""), "dbname": expected_db}
     if sslmode:
         params["sslmode"] = sslmode
