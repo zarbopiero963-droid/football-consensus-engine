@@ -137,6 +137,35 @@ SCRIPT = textwrap.dedent(r'''
             return total + 1, by
         srv._tool_registry_counts = _more
 
+    # WP6 RED controls: a deployed surface that drifts from the pinned one, and a server that no
+    # longer refuses a pinned zero-call negative locally (it reaches the provider instead).
+    if MODE in ("af_tool_renamed", "af_schema_drift"):
+        _list_tools = srv.mcp.list_tools
+        async def _drifted():
+            out = []
+            for t in await _list_tools():
+                if MODE == "af_tool_renamed" and t.name == "apifootball_bets":
+                    t = t.model_copy(update={"name": "apifootball_bets_v2"})
+                if MODE == "af_schema_drift" and t.name == "apifootball_odds":
+                    schema = json.loads(json.dumps(t.input_schema))
+                    schema["properties"].pop("page")
+                    t = t.model_copy(update={"input_schema": schema})
+                out.append(t)
+            return out
+        srv.mcp.list_tools = _drifted
+    if MODE == "af_negative_accepted":
+        import bridge.api_football.tools as _aft
+        from bridge.api_football.contracts import ENDPOINTS as _EP, ParameterError as _PE
+        _validate = _aft.validate
+        def _lenient(name, values):
+            try:
+                return _validate(name, values)
+            except _PE:
+                if name != "apifootball_bets":
+                    raise
+                return _EP[name], {}  # the refusal is lost: the call goes to the provider
+        _aft.validate = _lenient
+
     # Server-side record of every tools/call the bridge actually executed (review of #179, P2-1).
     server_tools_called = []
     _call_tool = srv.mcp.call_tool
@@ -241,6 +270,12 @@ def test_full_flow_passes_and_the_report_holds_no_secret(tmp_path):
                  "refreshed_access_token_works"):
         assert must in passed, must
     assert report["facts"]["tools_listed"] > 0 and report["provider_or_order_calls_attempted"] == 0
+    # WP6: the exact 42 apifootball_* names and their schemas are checked on every run; the
+    # zero-call negatives need a verified deployed commit, so here they are NOT_TESTED, unsent.
+    assert {"mcp_apifootball_tools_exact", "mcp_apifootball_input_schemas_match"} <= passed
+    neg = report["apifootball_zero_call_negatives"]
+    assert neg["state"] == "NOT_TESTED_DEPLOYED_COMMIT_NOT_VERIFIED" and neg["provider_requests_charged"] == 0
+    assert set(neg["verdicts"]) == {"NOT_TESTED"}
     # Review of #179, P2-1: what the SERVER executed, not what the client says it called.
     assert sorted(res["server_tools_called"]) == ["apifootball_health", "sxbet_health"]
     assert sorted(report["tools_called"]) == ["apifootball_health", "sxbet_health"]
@@ -618,3 +653,99 @@ def test_the_budget_input_cannot_exceed_the_owner_ceiling(tmp_path, monkeypatch)
                         client=object()) == 2
     assert e2e.APIFOOTBALL_BUDGET_CEILING == 45 and e2e.APIFOOTBALL_DEFAULT_BUDGET == 45
     assert e2e.SUITE_BUDGET_CEILING == {"apifootball": 20, "apifootball_full": 20, "apifootball_completion": 45}
+
+
+# ---- WP6 (E-G1, E-G3): exact apifootball_* surface and zero-provider-call negatives ------------
+
+COMMIT_ENV = {"RENDER_GIT_COMMIT": "d" * 40, "E2E_EXPECTED_COMMIT": "d" * 40}
+
+
+def _pinned():
+    return e2e.load_expected_mcp_schema()
+
+
+def test_zero_call_negatives_reach_no_provider_with_live_requests_authorized(tmp_path):
+    """GREEN, the strongest setting: live requests authorized, a fake provider that counts every
+    request, the real tools.py, MCP SDK and OAuth. Every pinned negative comes back as its pinned
+    local refusal; the provider receives nothing and the runner charges nothing."""
+    pinned = _pinned()
+    env = {**COMMIT_ENV, "E2E_FAKE_APIFOOTBALL": "1", "APIFOOTBALL_API_KEY": FAKE_KEY,
+           "APIFOOTBALL_LIVE_AUTHORIZED": "true", "E2E_FAKE_BY_PATH": "{}",
+           "PYTHONPATH": os.pathsep.join([os.getcwd(), TESTS_DIR])}
+    res, report_text, _ = _run(tmp_path, extra_env=env)
+    report = json.loads(report_text)
+    assert res["rc"] == 0 and report["verdict"] == "PASS", report.get("failed_check")
+    passed = {c["check"] for c in report["checks"] if c["outcome"] == "PASS"}
+    assert {"mcp_apifootball_tools_exact", "mcp_apifootball_input_schemas_match",
+            "apifootball_zero_call_negatives"} <= passed
+    assert report["facts"]["apifootball_tools_listed"] == 42
+    sha = report["facts"]["apifootball_schema_set_sha256"]
+    assert sha["observed"] == sha["expected"] == pinned["schema_set_sha256"]
+    # Zero provider requests and zero quota: what the fake provider saw, and the runner's accounting.
+    assert res["provider_requests"] == 0
+    assert report["provider_or_order_calls_attempted"] == 0
+    neg = report["apifootball_zero_call_negatives"]
+    n = len(pinned["zero_call_negatives"])
+    assert neg["state"] == "RUN" and neg["provider_requests_charged"] == 0
+    assert neg["verdicts"] == {"PASS": n, "NOT_TESTED": len(pinned["zero_call_not_testable"])}
+    passes = [r for r in neg["records"] if r["verdict"] == "PASS"]
+    assert all(r["charged"] == 0 for r in neg["records"])
+    assert {r["settlement"] for r in passes} == {"CODE_PATH_NO_REQUEST", "REFUSED_BEFORE_TOOL"}
+    by_id = {c["id"]: c for c in pinned["zero_call_negatives"]}
+    for r in passes:
+        if by_id[r["id"]]["expect"] == "INVALID_INPUT":
+            assert r["observed"] == "INVALID_INPUT" and r["observed_code"] == by_id[r["id"]]["code"]
+            assert r["network_calls_made_reported"] == 0
+        else:
+            assert r["observed"] == "MCP_SCHEMA_REJECTED"
+    # What the SERVER executed: the two health tools plus exactly one call per pinned negative.
+    called = res["server_tools_called"]
+    assert len(called) == 2 + n
+    assert sorted(called[2:]) == sorted(c["tool"] for c in pinned["zero_call_negatives"])
+    assert set(pinned["zero_call_not_testable"]).isdisjoint(called)
+
+
+@pytest.mark.parametrize("mode,failed", [
+    ("af_tool_renamed", "mcp_apifootball_tools_exact"),
+    ("af_schema_drift", "mcp_apifootball_input_schemas_match"),
+])
+def test_a_drifted_apifootball_surface_fails_the_run(tmp_path, mode, failed):
+    """RED controls: the tool count alone (== /healthz) would not catch either drift."""
+    res, report_text, _ = _run(tmp_path, mode=mode)
+    report = json.loads(report_text)
+    assert res["rc"] == 1 and report["failed_check"] == failed
+    assert "mcp_tools_list_matches_healthz" in {c["check"] for c in report["checks"] if c["outcome"] == "PASS"}
+    check = next(c for c in report["checks"] if c["check"] == failed)
+    if mode == "af_tool_renamed":
+        assert check["missing"] == ["apifootball_bets"] and check["unexpected"] == ["apifootball_bets_v2"]
+    else:
+        assert check["mismatched_tools"] == ["apifootball_odds"]
+        assert check["mismatch_detail"] == {"apifootball_odds": ["page"]}
+        assert report["facts"]["apifootball_schema_set_sha256"]["observed"] != _pinned()["schema_set_sha256"]
+    # The surface is checked right after tools/list: the run stopped before any tools/call.
+    assert res["server_tools_called"] == [] and report["provider_or_order_calls_attempted"] == 0
+
+
+def test_a_negative_the_server_no_longer_refuses_is_charged_its_worst_case_and_stops_the_probes(tmp_path):
+    """RED control: the first pinned negative reaches the (fake) provider. The runner cannot tell
+    how many attempts the server made, so it charges the worst case, fails, and sends no other probe."""
+    pinned = _pinned()
+    first = pinned["zero_call_negatives"][0]
+    assert first["tool"] == "apifootball_bets"  # the tool the tampered server stops refusing
+    env = {**COMMIT_ENV, "E2E_FAKE_APIFOOTBALL": "1", "APIFOOTBALL_API_KEY": FAKE_KEY,
+           "APIFOOTBALL_LIVE_AUTHORIZED": "true", "E2E_FAKE_BY_PATH": "{}",
+           "PYTHONPATH": os.pathsep.join([os.getcwd(), TESTS_DIR])}
+    res, report_text, _ = _run(tmp_path, mode="af_negative_accepted", extra_env=env)
+    report = json.loads(report_text)
+    assert res["rc"] == 1 and report["failed_check"] == "apifootball_zero_call_negatives"
+    neg = report["apifootball_zero_call_negatives"]
+    assert res["provider_requests"] == 1  # what really reached the provider ...
+    assert neg["provider_requests_charged"] == e2e.APIFOOTBALL_WORST_CASE_PER_CALL == 3  # ... bounded by the charge
+    assert report["provider_or_order_calls_attempted"] == 3
+    rec = {r["id"]: r for r in neg["records"]}
+    assert rec[first["id"]]["verdict"] == "FAIL" and rec[first["id"]]["settlement"] == "WORST_CASE"
+    assert neg["failed_cases"] == [first["id"]]
+    rest = [r for r in neg["records"] if r["id"] not in ("-", first["id"])]
+    assert rest and all(r["verdict"] == "NOT_TESTED" and r["reason"] == "STOPPED_AFTER_UNEXPECTED_REPLY"
+                        and r["charged"] == 0 for r in rest)
+    assert res["server_tools_called"].count("apifootball_bets") == 1 and len(res["server_tools_called"]) == 3

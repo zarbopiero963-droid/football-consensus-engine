@@ -7,8 +7,13 @@ It plays a public PKCE client against the pinned production origin:
   -> DCR registration (+ refused foreign redirect) -> consent page headers
   -> one wrong password (401) -> code #1: wrong PKCE verifier burns it (+ replay refused)
   -> code #2: token exchange (+ replay refused)
-  -> MCP initialize, tools/list (paginated, == /healthz count), tools/call on an allowlist of
-     zero-cost local tools only (no provider request, no browser, no order)
+  -> MCP initialize, tools/list (paginated, == /healthz count; the apifootball_* names are exactly
+     the 42 pinned ones and each inputSchema matches the pinned projection and hash),
+     tools/call on an allowlist of zero-cost local tools only (no provider request, no browser,
+     no order)
+  -> zero-call negatives (only when the deployed commit was verified to be main HEAD): pinned
+     argument sets the server refuses locally (MCP schema, or INVALID_INPUT with a fixed code)
+     before any quota reservation; worst case charged on any other reply, first one stops them
   -> refresh: wrong client refused, rotation, old refresh replay refused, new access works.
 
 Secrets: the password is read from the environment once and sent only in the consent POST body
@@ -67,6 +72,73 @@ ISSUED_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{1,512}$")
 COMMIT_PREFIX_RE = re.compile(r"^[0-9a-f]{12}$")
 USER_AGENT = "fcb-mcp-e2e/1"
+
+# ---- WP6 (E-G1, E-G3): pinned MCP surface of the 42 apifootball_* tools ----------------------
+# Generated from the server's own registry by scripts/apifootball_mcp_schema.py and kept current
+# by its --check in CI (tests/test_apifootball_mcp_schema.py): this client is standard-library
+# only and cannot import the bridge, so the committed file is the expected side.
+MCP_SCHEMA_FORMAT = "fcb-apifootball-mcp-schema/1"
+MCP_SCHEMA_PATH = "docs/certification/apifootball/mcp_schema_v1.json"
+APIFOOTBALL_TOOL_COUNT = 42
+# A tool without parameters has no argument set refused before the provider: the MCP SDK drops
+# unknown arguments instead of refusing them (verified offline), so such a call would be real.
+NO_LOCAL_REJECTION_REASON = "NO_PARAMETERS_UNKNOWN_ARGUMENTS_DROPPED_BY_SDK"
+NEGATIVE_EXPECTS = ("INVALID_INPUT", "MCP_SCHEMA_REJECTED")
+_TOOL_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+
+def _json_types(prop: Any) -> list[str]:
+    if not isinstance(prop, dict):
+        return ["UNRECOGNISED"]
+    if "type" in prop:
+        t = prop["type"]
+        types = t if isinstance(t, list) else [t]
+    elif isinstance(prop.get("anyOf"), list):
+        types = [x.get("type") if isinstance(x, dict) else None for x in prop["anyOf"]]
+    else:
+        return ["UNRECOGNISED"]
+    return sorted({t if isinstance(t, str) else "UNRECOGNISED" for t in types})
+
+
+def schema_projection(schema: Any) -> dict[str, Any]:
+    """What a client can rely on in a tool's inputSchema: property names, JSON types, defaults,
+    required and additionalProperties. Titles and descriptions are documentation and excluded.
+    The single implementation, used by the generator and by the live comparison."""
+    schema = schema if isinstance(schema, dict) else {}
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    out: dict[str, Any] = {}
+    for name, prop in props.items():
+        p: dict[str, Any] = {"types": _json_types(prop)}
+        if isinstance(prop, dict) and "default" in prop:
+            p["default"] = prop["default"]
+        out[str(name)] = p
+    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    return {"type": schema.get("type"), "properties": out,
+            "required": sorted(str(r) for r in required),
+            "additionalProperties": schema.get("additionalProperties")}
+
+
+def load_expected_mcp_schema(path: str | None = None) -> dict[str, Any]:
+    """The committed expected surface; any structural defect is a fixed failure."""
+    p = path or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), MCP_SCHEMA_PATH)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        raise Fail("expected_mcp_schema_unavailable") from None
+    tools = data.get("tools") if isinstance(data, dict) else None
+    negatives = data.get("zero_call_negatives") if isinstance(data, dict) else None
+    ok = (isinstance(tools, dict) and data.get("format") == MCP_SCHEMA_FORMAT
+          and len(tools) == data.get("tool_count") == APIFOOTBALL_TOOL_COUNT
+          and all(isinstance(n, str) and n.startswith("apifootball_") and isinstance(t, dict)
+                  and t.get("projection_sha256") == _sha256(t.get("projection")) for n, t in tools.items())
+          and data.get("schema_set_sha256") == _sha256({n: t["projection"] for n, t in tools.items()})
+          and isinstance(negatives, list)
+          and all(isinstance(c, dict) and c.get("tool") in tools and isinstance(c.get("arguments"), dict)
+                  and c.get("expect") in NEGATIVE_EXPECTS and isinstance(c.get("id"), str) for c in negatives))
+    if not ok:
+        raise Fail("expected_mcp_schema_invalid")
+    return data
 
 
 class Response:
@@ -131,6 +203,10 @@ class StdlibClient:
 _json_dumps = json.dumps
 
 
+def _canonical(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
 class Fail(Exception):
     """A check failed; the message is a fixed code, never a server or exception text."""
 
@@ -139,8 +215,15 @@ class Run:
     def __init__(self, client: Any, base: str, password: str, *,
                  expected_commit: str | None, mask: Callable[[str], None], sleep=time.sleep,
                  expected_db_identity: str | None = None, suite: str = "health",
-                 apifootball_budget: int = 0, now: Callable[[], float] = time.time):
+                 apifootball_budget: int = 0, now: Callable[[], float] = time.time,
+                 expected_mcp_schema: dict[str, Any] | None = None):
         self.c, self.base, self._password = client, base.rstrip("/"), password
+        # WP6: the pinned apifootball_* surface (loaded from MCP_SCHEMA_PATH when not given).
+        self._expected_schema = expected_mcp_schema
+        self._negative_open: tuple[str, str] | None = None  # (tool, canonical arguments) of the open probe
+        self.negatives_charged = 0
+        self.negative_records: list[dict[str, Any]] = []
+        self.negatives_state = "NOT_REACHED"
         self.expected_commit = expected_commit
         self.expected_db_identity = expected_db_identity
         self._mask, self._sleep, self._now = mask, sleep, now
@@ -187,9 +270,12 @@ class Run:
 
     def rpc(self, method: str, params: dict[str, Any] | None, token: str | None,
             notification: bool = False) -> Any:
-        if method == "tools/call" and (params or {}).get("name") not in self.allowed_tools:
+        # WP6: a zero-call negative probe opens exactly one (tool, pinned arguments) pair.
+        probe = (method == "tools/call" and self._negative_open is not None
+                 and self._negative_open == ((params or {}).get("name"), _canonical((params or {}).get("arguments"))))
+        if method == "tools/call" and (params or {}).get("name") not in self.allowed_tools and not probe:
             raise Fail("tool_not_allowlisted")  # enforced for every path, not only call_tool()
-        if method == "tools/call" and params["name"] in APIFOOTBALL_PROVIDER_TOOLS:
+        if method == "tools/call" and params["name"] in APIFOOTBALL_PROVIDER_TOOLS and not probe:
             # A provider tool runs only inside its own open budget reservation (hard stop).
             if self.af_budget is None or self.af_budget.open is None or self.af_budget.open[0] != params["name"]:
                 raise Fail("provider_call_without_reservation")
@@ -364,13 +450,15 @@ class Run:
         self.check("mcp_initialized_notification_accepted", note.status_code in (200, 202), http=note.status_code)
 
         names: list[str] = []
+        listed_tools: list[Any] = []
         cursor = None
         for _ in range(20):
             r = self.rpc("tools/list", {"cursor": cursor} if cursor else {}, access)
             page_res = self.rpc_result(r)
             self.check("mcp_tools_list_page", page_res is not None and isinstance(page_res.get("tools"), list),
                        http=r.status_code)
-            names += [t.get("name") for t in page_res["tools"]]
+            listed_tools += page_res["tools"]
+            names += [t.get("name") if isinstance(t, dict) else None for t in page_res["tools"]]
             cursor = page_res.get("nextCursor")
             if not cursor:
                 break
@@ -379,6 +467,7 @@ class Run:
                    len(names) == len(set(names)) == h.get("mcp_tools_total") and len(names) > 0,
                    listed=len(names), healthz=h.get("mcp_tools_total"))
         self.check("mcp_allowlisted_tools_present", ALLOWED_TOOL_CALLS <= set(names))
+        self.check_apifootball_surface(listed_tools)
 
         sx = self.call_tool("sxbet_health", access)
         self.check("tools_call_sxbet_health_read_only",
@@ -397,6 +486,8 @@ class Run:
                        ident.get("status") == "OK" and ident.get("current_user") == self.expected_db_identity
                        and ident.get("session_user") == self.expected_db_identity,
                        expected=self.expected_db_identity, observed=self.facts["database_identity"])
+
+        self.run_zero_call_negatives(access)
 
         if self.suite != "health":
             self.run_apifootball(access, af)
@@ -417,6 +508,127 @@ class Run:
         self.check("refresh_token_is_not_a_bearer", r.status_code == 401, http=r.status_code)
         r = self.rpc("tools/list", {}, access2)
         self.check("refreshed_access_token_works", self.rpc_result(r) is not None, http=r.status_code)
+
+    # ---- WP6: exact apifootball_* surface and zero-provider-call negatives ------------------
+    def expected_schema(self) -> dict[str, Any]:
+        if self._expected_schema is None:
+            self._expected_schema = load_expected_mcp_schema()
+        return self._expected_schema
+
+    def check_apifootball_surface(self, listed_tools: list[Any]) -> None:
+        """E-G1 (0 provider calls): the deployed tools/list holds exactly the 42 pinned
+        apifootball_* names, and each inputSchema projects to the pinned one."""
+        exp = self.expected_schema()
+        expected_names = sorted(exp["tools"])
+        by_name = {t.get("name"): t for t in listed_tools
+                   if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"].startswith("apifootball_")}
+        listed = sorted(by_name)
+        missing = [n for n in expected_names if n not in by_name]
+        unexpected = [n if _TOOL_NAME_RE.fullmatch(n) else "INVALID_NAME" for n in listed if n not in exp["tools"]]
+        self.facts["apifootball_tools_listed"] = len(listed)
+        self.check("mcp_apifootball_tools_exact", listed == expected_names and len(listed) == APIFOOTBALL_TOOL_COUNT,
+                   listed=len(listed), expected=len(expected_names), missing=missing[:APIFOOTBALL_TOOL_COUNT],
+                   unexpected=unexpected[:10])
+        observed = {n: schema_projection(by_name[n].get("inputSchema")) for n in expected_names}
+        mismatched: dict[str, list[str]] = {}
+        for n in expected_names:
+            want, got = exp["tools"][n]["projection"], observed[n]
+            if _sha256(got) != exp["tools"][n]["projection_sha256"]:
+                diff = sorted({k for k in set(want["properties"]) | set(got["properties"])
+                               if want["properties"].get(k) != got["properties"].get(k)})
+                diff = [k if _TOOL_NAME_RE.fullmatch(k) else "INVALID_NAME" for k in diff]
+                diff += [f"<{k}>" for k in ("type", "required", "additionalProperties") if want.get(k) != got.get(k)]
+                mismatched[n] = diff[:16]
+        observed_set = _sha256(observed)
+        self.facts["apifootball_schema_set_sha256"] = {"expected": exp["schema_set_sha256"], "observed": observed_set}
+        self.check("mcp_apifootball_input_schemas_match",
+                   observed_set == exp["schema_set_sha256"] and not mismatched,
+                   mismatched_tools=sorted(mismatched), mismatch_detail=mismatched)
+
+    def run_zero_call_negatives(self, token: str) -> None:
+        """E-G3: argument sets the deployed server refuses LOCALLY (MCP schema, or
+        contracts.validate with a fixed INVALID_INPUT code), before any quota reservation or
+        provider request. They are pinned and proven offline against the same code; they run only
+        when the deployed commit was verified to be the dispatched main HEAD, so the deployed code
+        is the code that proof covers. Accounting: 0 per probe that came back as the pinned local
+        refusal; any other reply is charged the worst case (it may have reached the provider), the
+        case is FAIL and no further probe is sent."""
+        exp = self.expected_schema()
+        cases = exp["zero_call_negatives"]
+        untestable = sorted(exp.get("zero_call_not_testable") or {})
+        if not self.expected_commit:
+            self.negatives_state = "NOT_TESTED_DEPLOYED_COMMIT_NOT_VERIFIED"
+            self.negative_records = [{"id": c["id"], "tool": c["tool"], "verdict": "NOT_TESTED",
+                                      "reason": "DEPLOYED_COMMIT_NOT_VERIFIED", "charged": 0} for c in cases]
+            self.results.append({"check": "apifootball_zero_call_negatives", "outcome": "NOT_TESTED",
+                                 "reason": "DEPLOYED_COMMIT_NOT_VERIFIED"})
+            self.facts["apifootball_zero_call_negatives"] = self.negatives_summary()
+            return
+        self.negatives_state = "RUN"
+        stopped = None
+        for c in cases:
+            rec: dict[str, Any] = {"id": c["id"], "tool": c["tool"], "class": c.get("class"),
+                                   "expect": c["expect"], "expected_code": c.get("code")}
+            if stopped:
+                rec.update(verdict="NOT_TESTED", reason=stopped, charged=0)
+                self.negative_records.append(rec)
+                continue
+            rec.update(self._negative_probe(c, token))
+            self.negatives_charged += rec["charged"]
+            if rec["verdict"] != "PASS":
+                stopped = "STOPPED_AFTER_UNEXPECTED_REPLY"
+            self.negative_records.append(rec)
+        for n in untestable:
+            self.negative_records.append({"id": "-", "tool": n, "verdict": "NOT_TESTED",
+                                          "reason": exp["zero_call_not_testable"][n], "charged": 0})
+        summary = self.facts["apifootball_zero_call_negatives"] = self.negatives_summary()
+        self.check("apifootball_zero_call_negatives",
+                   summary["verdicts"].get("FAIL", 0) == 0 and summary["provider_requests_charged"] == 0
+                   and summary["verdicts"].get("PASS", 0) == len(cases),
+                   failed_cases=summary["failed_cases"])
+
+    def _negative_probe(self, case: dict[str, Any], token: str) -> dict[str, Any]:
+        worst = APIFOOTBALL_WORST_CASE_PER_CALL
+        self._negative_open = (case["tool"], _canonical(case["arguments"]))
+        try:
+            r = self.rpc("tools/call", {"name": case["tool"], "arguments": case["arguments"]}, token)
+            res = self.rpc_result(r)
+        except (OSError, ValueError, http.client.HTTPException):
+            return {"verdict": "FAIL", "observed": "NO_REPLY", "charged": worst, "settlement": "WORST_CASE_NO_REPLY"}
+        finally:
+            self._negative_open = None
+        if not isinstance(res, dict):
+            return {"verdict": "FAIL", "observed": "NO_RESULT", "charged": worst, "settlement": "WORST_CASE_NO_REPLY"}
+        payload = res.get("structuredContent")
+        if payload is None and not res.get("isError"):
+            try:
+                payload = json.loads(res["content"][0]["text"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                payload = None
+        if res.get("isError") and not isinstance(payload, dict):
+            # Refused by the MCP argument schema before the tool body ran (the text is never kept).
+            ok = case["expect"] == "MCP_SCHEMA_REJECTED"
+            return {"verdict": "PASS" if ok else "FAIL", "observed": "MCP_SCHEMA_REJECTED", "charged": 0,
+                    "settlement": "REFUSED_BEFORE_TOOL"}
+        if not isinstance(payload, dict):
+            return {"verdict": "FAIL", "observed": "UNPARSEABLE", "charged": worst, "settlement": "WORST_CASE"}
+        status, code = _code(payload.get("status")), _error_code(payload)
+        nc = payload.get("network_calls_made")
+        out = {"observed": status or "UNKNOWN", "observed_code": code,
+               "network_calls_made_reported": nc if _is_int(nc) else None}
+        if status in NO_NETWORK_STATUSES and nc == 0:
+            charged, basis = 0, "CODE_PATH_NO_REQUEST"
+        else:
+            charged, basis = worst, "WORST_CASE"
+        ok = case["expect"] == "INVALID_INPUT" and status == "INVALID_INPUT" and code == case.get("code") and nc == 0
+        return {**out, "verdict": "PASS" if ok else "FAIL", "charged": charged, "settlement": basis}
+
+    def negatives_summary(self) -> dict[str, Any]:
+        verdicts = [r["verdict"] for r in self.negative_records]
+        return {"state": self.negatives_state, "cases": len(self.negative_records),
+                "verdicts": {v: verdicts.count(v) for v in sorted(set(verdicts))},
+                "provider_requests_charged": self.negatives_charged,
+                "failed_cases": [r["id"] for r in self.negative_records if r["verdict"] == "FAIL"][:10]}
 
     def call_tool(self, name: str, token: str) -> dict[str, Any]:
         if name not in ALLOWED_TOOL_CALLS:
@@ -481,9 +693,13 @@ class Run:
                "checks": self.results, "facts": self.facts, "suite": self.suite,
                "tools_called": list(self.tools_called),
                # Upper bound of real provider HTTP attempts: every provider call charged its worst case.
-               "provider_or_order_calls_attempted": self.af_budget.committed if self.af_budget else 0,
+               "provider_or_order_calls_attempted": (self.af_budget.committed if self.af_budget else 0)
+               + self.negatives_charged,
                # The OAuth flow itself writes rows in production (DCR client, codes, tokens):
                "oauth_rows_written_per_run": "1 DCR client, 2 codes, 2 token pairs (hashes only)"}
+        out["apifootball_zero_call_negatives"] = {
+            **self.negatives_summary(), "verdict_set": ["PASS", "FAIL", "NOT_TESTED"],
+            "accounting": "ZERO_ONLY_FOR_THE_PINNED_LOCAL_REFUSAL_ELSE_WORST_CASE", "records": self.negative_records}
         af = self.apifootball_report()
         if af is not None:
             out["apifootball_suite"] = af

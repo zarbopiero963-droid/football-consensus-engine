@@ -21,6 +21,13 @@ python scripts/apifootball_cert_batch1.py --write-plan   # rigenera batch1_plan.
 
 `--check` dipende anche dai test. Se si modifica un test API-FOOTBALL, la matrice va rigenerata.
 
+`mcp_schema_v1.json` (WP6) è la superficie MCP attesa dei 42 tool `apifootball_*` per l'E2E live (`scripts/mcp_e2e_render.py`): nomi esatti, proiezione e SHA-256 di ogni `inputSchema`, e i casi negativi a 0 chiamate al provider. È generato dal registry del server (`register_tools` su `MCPServer`) e verificato in CI da `tests/test_apifootball_mcp_schema.py`. Dettagli in `docs/certification/areas/mcp_e2e.md`.
+
+```bash
+python scripts/apifootball_mcp_schema.py          # rigenera mcp_schema_v1.json
+python scripts/apifootball_mcp_schema.py --check  # exit 1 se il file committato non è aggiornato
+```
+
 ## Gate
 
 | Gate | Cosa verifica | Dove gira | Stato |

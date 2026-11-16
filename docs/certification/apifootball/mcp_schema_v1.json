@@ -1,0 +1,1925 @@
+{
+  "format": "fcb-apifootball-mcp-schema/1",
+  "generated_by": "scripts/apifootball_mcp_schema.py",
+  "projection": "scripts/mcp_e2e_render.schema_projection (types, defaults, required, additionalProperties; no titles or descriptions)",
+  "schema_set_sha256": "f21143976bc08ebf6c0c0acf682718b76354520350e81b035902e728af0aadab",
+  "source": "bridge/api_football/tools.py register_tools on mcp.server.MCPServer; contracts.ENDPOINTS",
+  "tool_count": 42,
+  "tools": {
+    "apifootball_bets": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "ad8bfb69a1c61bf9b61e44a84c840c95b745580a2ba903b16b776ff46e202ab2"
+    },
+    "apifootball_bookmakers": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "ad8bfb69a1c61bf9b61e44a84c840c95b745580a2ba903b16b776ff46e202ab2"
+    },
+    "apifootball_coaches": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "0d53d3daf1f0d34190f4bf268d06e98eedd741ffe4439231a289df7379fa83aa"
+    },
+    "apifootball_countries": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "code": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "name": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "8d08738adf8ca182e9ba3e815af0af72dab1ac959f3144ccb3cd1ae640a4c760"
+    },
+    "apifootball_coverage_report": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "id": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "7e3d6d324840fd728718f57de6367ce4a4d8e52e53d4010a5fad619fc13d404f"
+    },
+    "apifootball_fixture_events": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "fixture": {
+            "types": [
+              "integer"
+            ]
+          },
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "fixture"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "7abeef91f7c66e7a8e5713650afda1770dd50c276d99561c902d0d0ba43ed94c"
+    },
+    "apifootball_fixture_headtohead": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "from_date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "h2h": {
+            "types": [
+              "string"
+            ]
+          },
+          "last": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "next": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "timezone": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "to_date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "venue": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "h2h"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "b697ed7a89d20846a9401e2c1fa78ea8be8273921a47d3dfef8e2b8b50750b83"
+    },
+    "apifootball_fixture_lineups": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "fixture": {
+            "types": [
+              "integer"
+            ]
+          },
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "fixture"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "7abeef91f7c66e7a8e5713650afda1770dd50c276d99561c902d0d0ba43ed94c"
+    },
+    "apifootball_fixture_players": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "fixture": {
+            "types": [
+              "integer"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fixture"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "2353425c0c3a5d03520c0a0a132f5f87a65a10a8610670555a72215cdf317358"
+    },
+    "apifootball_fixture_rounds": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "current": {
+            "default": null,
+            "types": [
+              "boolean",
+              "null"
+            ]
+          },
+          "dates": {
+            "default": null,
+            "types": [
+              "boolean",
+              "null"
+            ]
+          },
+          "league": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          },
+          "timezone": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "league",
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "3233f1b5a9688d50f2d2a7acbcf0426f7f416e208b9843dc1cdab10a1b932940"
+    },
+    "apifootball_fixture_statistics": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "fixture": {
+            "types": [
+              "integer"
+            ]
+          },
+          "half": {
+            "default": null,
+            "types": [
+              "boolean",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "fixture"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "82efa92a580e8b251e398e291726a1ed46f827f430f4b413a354f3ea1b5d0402"
+    },
+    "apifootball_fixtures": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "from_date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "ids": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "last": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "live": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "next": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "round": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "timezone": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "to_date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "venue": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "597feaf1a6a47c30a39ceff76fdfcf060a826a2b89b9dac8de0f8bcbe8a78065"
+    },
+    "apifootball_health": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4a11d4f52ce4156885e39ee5a4ab6fbdbf24c5aadc9135b1e2250b805698b69"
+    },
+    "apifootball_injuries": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "fixture": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "ids": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "timezone": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "9d3c298bbd2acdd2d9e4a08bbfe3dae4ee36102cb8c61ab0a00d856923fd3aae"
+    },
+    "apifootball_leagues": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "code": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "country": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "current": {
+            "default": null,
+            "types": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "last": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "32e108902a6eb2500d64854f7c0d1a8e1d992651e7dcc500883ec6fa963a8fc1"
+    },
+    "apifootball_live_bets": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "id": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "245f2471d4faa87be4a985aeafc2d0265169b5c653be8289f7a965811ce0585b"
+    },
+    "apifootball_live_odds": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "bet": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "fixture": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "93d8f3c6d3c066c63ff1f865ee210402fea75b3db272d7ad93f7e1d49ba08075"
+    },
+    "apifootball_odds": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "bet": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "bookmaker": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "fixture": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "page": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "timezone": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "63c5d369c151ecdc1700f5fa18a83c78309001708ef3503dbbab2cc9ea42dfd1"
+    },
+    "apifootball_odds_mapping": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "page": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "304506ef1607313bded610949066726441b581f95a333e08ae61c45ac3848c8e"
+    },
+    "apifootball_player_profiles": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "page": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "b4207e014417db34f94b5bdc764aa965311c6b28018fb38166c4b13599eb9b26"
+    },
+    "apifootball_player_seasons": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "256670ca85fba072f5b407081028f14ad348539b6f4e472eb3725e811046318c"
+    },
+    "apifootball_player_squads": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "8c3ed141924725e1c50d9609a0ae9a8f77f5b17bad1f45b8c3ed872aeebc6597"
+    },
+    "apifootball_player_teams": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "player": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "player"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "3d0c100465fdfaa507a2dc2ec3575379b8b5b97f4486eeae4d90237d7fe80ca1"
+    },
+    "apifootball_players": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "page": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "d40a21aaa8ebbe8f4a1794ab4a58f6cb5b5a3a50260bd7fa9f58ca888d234447"
+    },
+    "apifootball_predictions": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "fixture": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "fixture"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "c66d6a24ccd3e3a6b5c30e091048b822c7bca1abd171b6ee75c42bbd2b7fa6e8"
+    },
+    "apifootball_quota_report": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4a11d4f52ce4156885e39ee5a4ab6fbdbf24c5aadc9135b1e2250b805698b69"
+    },
+    "apifootball_seasons": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4a11d4f52ce4156885e39ee5a4ab6fbdbf24c5aadc9135b1e2250b805698b69"
+    },
+    "apifootball_sidelined": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "coach": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "coachs": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "players": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4448ee71f1e49eebf8b18e0f221681b029b169090033200c1ed9742cbdc9bbc"
+    },
+    "apifootball_standings": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "f998931d2997a3d377e273b7a2b5915ac64e644280bc112138ecf67c66b65257"
+    },
+    "apifootball_status": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4a11d4f52ce4156885e39ee5a4ab6fbdbf24c5aadc9135b1e2250b805698b69"
+    },
+    "apifootball_team_countries": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4a11d4f52ce4156885e39ee5a4ab6fbdbf24c5aadc9135b1e2250b805698b69"
+    },
+    "apifootball_team_seasons": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "team": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "team"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "4f32e576b423dd7d1bd26713edc5b885c70ea603ae4bce129681338374a9b103"
+    },
+    "apifootball_team_statistics": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "date": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "league": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          },
+          "team": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "league",
+          "season",
+          "team"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "e2fd031f152df34f872c502e2d89800a8278c811efc4dcb17db0a45cd9244e26"
+    },
+    "apifootball_teams": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "code": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "country": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "league": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "season": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "venue": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "d4ee52397cd581734532e28b47606fe464d279c94e7a161c99fd4e2d4d83c2a7"
+    },
+    "apifootball_timezones": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4a11d4f52ce4156885e39ee5a4ab6fbdbf24c5aadc9135b1e2250b805698b69"
+    },
+    "apifootball_top_assists": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "league": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "league",
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "a00331be758f3093df460adf617b0322b2e7579878a1b04710f5c40235989284"
+    },
+    "apifootball_top_red_cards": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "league": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "league",
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "a00331be758f3093df460adf617b0322b2e7579878a1b04710f5c40235989284"
+    },
+    "apifootball_top_scorers": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "league": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "league",
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "a00331be758f3093df460adf617b0322b2e7579878a1b04710f5c40235989284"
+    },
+    "apifootball_top_yellow_cards": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "league": {
+            "types": [
+              "integer"
+            ]
+          },
+          "season": {
+            "types": [
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "league",
+          "season"
+        ],
+        "type": "object"
+      },
+      "projection_sha256": "a00331be758f3093df460adf617b0322b2e7579878a1b04710f5c40235989284"
+    },
+    "apifootball_transfers": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "team": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "8c3ed141924725e1c50d9609a0ae9a8f77f5b17bad1f45b8c3ed872aeebc6597"
+    },
+    "apifootball_trophies": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "coach": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "coachs": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "player": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "players": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "f4448ee71f1e49eebf8b18e0f221681b029b169090033200c1ed9742cbdc9bbc"
+    },
+    "apifootball_venues": {
+      "projection": {
+        "additionalProperties": null,
+        "properties": {
+          "city": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "country": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "default": null,
+            "types": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          },
+          "search": {
+            "default": null,
+            "types": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "projection_sha256": "24aa0bf3016ca370c03f67caeca6c432058773a4c24dfa6685a72bbd5579f383"
+    }
+  },
+  "zero_call_negatives": [
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z001",
+      "tool": "apifootball_bets"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z002",
+      "tool": "apifootball_bookmakers"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z003",
+      "tool": "apifootball_coaches"
+    },
+    {
+      "arguments": {
+        "name": ""
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_TEXT_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z004",
+      "tool": "apifootball_countries"
+    },
+    {
+      "arguments": {
+        "id": 0,
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z005",
+      "tool": "apifootball_coverage_report"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z006",
+      "tool": "apifootball_coverage_report"
+    },
+    {
+      "arguments": {
+        "id": "not-an-integer",
+        "season": 1
+      },
+      "class": "WRONG_TYPE",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z007",
+      "tool": "apifootball_coverage_report"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z008",
+      "tool": "apifootball_fixture_events"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z009",
+      "tool": "apifootball_fixture_events"
+    },
+    {
+      "arguments": {
+        "h2h": ""
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_HEAD_TO_HEAD_FILTER",
+      "expect": "INVALID_INPUT",
+      "id": "Z010",
+      "tool": "apifootball_fixture_headtohead"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z011",
+      "tool": "apifootball_fixture_headtohead"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z012",
+      "tool": "apifootball_fixture_lineups"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z013",
+      "tool": "apifootball_fixture_lineups"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z014",
+      "tool": "apifootball_fixture_players"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z015",
+      "tool": "apifootball_fixture_players"
+    },
+    {
+      "arguments": {
+        "league": 0,
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z016",
+      "tool": "apifootball_fixture_rounds"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z017",
+      "tool": "apifootball_fixture_rounds"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z018",
+      "tool": "apifootball_fixture_statistics"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z019",
+      "tool": "apifootball_fixture_statistics"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z020",
+      "tool": "apifootball_fixtures"
+    },
+    {
+      "arguments": {
+        "league": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z021",
+      "tool": "apifootball_injuries"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z022",
+      "tool": "apifootball_leagues"
+    },
+    {
+      "arguments": {
+        "id": ""
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_TEXT_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z023",
+      "tool": "apifootball_live_bets"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z024",
+      "tool": "apifootball_live_odds"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z025",
+      "tool": "apifootball_odds"
+    },
+    {
+      "arguments": {
+        "page": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z026",
+      "tool": "apifootball_odds_mapping"
+    },
+    {
+      "arguments": {
+        "player": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z027",
+      "tool": "apifootball_player_profiles"
+    },
+    {
+      "arguments": {
+        "player": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z028",
+      "tool": "apifootball_player_seasons"
+    },
+    {
+      "arguments": {
+        "team": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z029",
+      "tool": "apifootball_player_squads"
+    },
+    {
+      "arguments": {
+        "player": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z030",
+      "tool": "apifootball_player_teams"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z031",
+      "tool": "apifootball_player_teams"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z032",
+      "tool": "apifootball_players"
+    },
+    {
+      "arguments": {
+        "fixture": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z033",
+      "tool": "apifootball_predictions"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z034",
+      "tool": "apifootball_predictions"
+    },
+    {
+      "arguments": {
+        "player": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z035",
+      "tool": "apifootball_sidelined"
+    },
+    {
+      "arguments": {
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z036",
+      "tool": "apifootball_standings"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z037",
+      "tool": "apifootball_standings"
+    },
+    {
+      "arguments": {
+        "team": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z038",
+      "tool": "apifootball_team_seasons"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z039",
+      "tool": "apifootball_team_seasons"
+    },
+    {
+      "arguments": {
+        "league": 0,
+        "season": 0,
+        "team": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z040",
+      "tool": "apifootball_team_statistics"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z041",
+      "tool": "apifootball_team_statistics"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z042",
+      "tool": "apifootball_teams"
+    },
+    {
+      "arguments": {
+        "league": 0,
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z043",
+      "tool": "apifootball_top_assists"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z044",
+      "tool": "apifootball_top_assists"
+    },
+    {
+      "arguments": {
+        "league": 0,
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z045",
+      "tool": "apifootball_top_red_cards"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z046",
+      "tool": "apifootball_top_red_cards"
+    },
+    {
+      "arguments": {
+        "league": 0,
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z047",
+      "tool": "apifootball_top_scorers"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z048",
+      "tool": "apifootball_top_scorers"
+    },
+    {
+      "arguments": {
+        "league": 0,
+        "season": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z049",
+      "tool": "apifootball_top_yellow_cards"
+    },
+    {
+      "arguments": {},
+      "class": "MISSING_REQUIRED",
+      "code": null,
+      "expect": "MCP_SCHEMA_REJECTED",
+      "id": "Z050",
+      "tool": "apifootball_top_yellow_cards"
+    },
+    {
+      "arguments": {
+        "player": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z051",
+      "tool": "apifootball_transfers"
+    },
+    {
+      "arguments": {
+        "player": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z052",
+      "tool": "apifootball_trophies"
+    },
+    {
+      "arguments": {
+        "id": 0
+      },
+      "class": "INVALID_VALUE",
+      "code": "INVALID_INTEGER_PARAMETER",
+      "expect": "INVALID_INPUT",
+      "id": "Z053",
+      "tool": "apifootball_venues"
+    }
+  ],
+  "zero_call_not_testable": {
+    "apifootball_seasons": "NO_PARAMETERS_UNKNOWN_ARGUMENTS_DROPPED_BY_SDK",
+    "apifootball_status": "NO_PARAMETERS_UNKNOWN_ARGUMENTS_DROPPED_BY_SDK",
+    "apifootball_team_countries": "NO_PARAMETERS_UNKNOWN_ARGUMENTS_DROPPED_BY_SDK",
+    "apifootball_timezones": "NO_PARAMETERS_UNKNOWN_ARGUMENTS_DROPPED_BY_SDK"
+  }
+}
