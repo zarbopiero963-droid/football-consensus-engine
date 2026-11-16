@@ -36,20 +36,22 @@ Stato riportato dall'owner per il conto mainnet (audit in sola lettura del 16-11
 | **Solo chiave API**: piazzare ordini | no: serve la firma EIP-712 dell'EOA | no |
 | **EOA**: ordini dannosi (quote pessime contro una controparte complice) che drenano il proxy | possibile | **possibile**: il Safe non interviene sugli ordini |
 | **EOA**: generare una nuova chiave API da sx.bet (la nostra viene revocata, gli scope li sceglie l'attaccante) | possibile | possibile |
-| **EOA**: `withdraw` con `to`/`amount` arbitrari, anche via bridge (`glideSessionId`) | **possibile** (soglia 1) | serve la seconda firma, se la co-firma funziona e l'EOA non ha altre vie (`DOCS_UNVERIFIED`, D1, D2, D4) |
-| **EOA**: `transfer` verso un altro proxy | **possibile** | la soglia lo copre? `DOCS_UNVERIFIED` (D3) |
+| **EOA**: `withdraw` con `to`/`amount` arbitrari, anche via bridge (`glideSessionId`) | **possibile** (soglia 1) | serve la seconda firma, se la co-firma funziona e l'EOA non ha altre vie (`DOCS_UNVERIFIED`, righe D1, D2, D4) |
+| **EOA**: `transfer` verso un altro proxy | **possibile** | la soglia lo copre? `DOCS_UNVERIFIED` (riga D3) |
 | **EOA**: transazione Safe `approveAsset` (allowance verso terzi) | possibile? (`DOCS_UNVERIFIED`, riga D6 della tabella §3) | la soglia lo copre? `DOCS_UNVERIFIED` |
-| **EOA**: `add-signer` / `set-threshold` | **possibile**: può prendere il Safe | serve la soglia corrente? `DOCS_UNVERIFIED` (D3) |
+| **EOA**: `add-signer` / `set-threshold` | **possibile**: può prendere il Safe | serve la soglia corrente? `DOCS_UNVERIFIED` (riga D3) |
 | **EOA**: `HAS_OPEN_ORDERS` come ostacolo | nessun ostacolo: cancella prima tutto con la chiave API | può **bloccare il recupero** tenendo ordini aperti |
-| **EOA**: prelievo dalla UI ("Transfer funds from your betting wallet into your EOA on the Account Page") | possibile | passa dal Safe? `DOCS_UNVERIFIED` (D4) |
+| **EOA**: prelievo dalla UI ("Transfer funds from your betting wallet into your EOA on the Account Page") | possibile | passa dal Safe? `DOCS_UNVERIFIED` (riga D4) |
 | **Account email/Google** del wallet Magic: esportazione della chiave privata | possibile: aggira del tutto il signer | idem |
 
 **Conseguenza.** Nella configurazione mainnet attuale **non esiste alcuna protezione contro la compromissione dell'EOA**. Il Safe 2-di-2, anche se realizzabile, è al massimo una protezione dei prelievi, non del capitale esposto al trading. Le protezioni reali sono:
-1. la chiave di trading custodita **solo** nel signer isolato, mai nel MCP né nel modello (§2.6); decisione owner `owner_commanded_execution.md` D5 (ratificata il 16-11-2026): un EOA dedicato al trading, generato nel signer, non una chiave Magic/email esportata;
+1. la chiave di trading custodita **solo** nel signer isolato, mai nel MCP né nel modello (§2.6); decisione owner `owner_commanded_execution.md` D5 (ratificata il 16-11-2026): un EOA dedicato al trading, non una chiave Magic/email esportata; raccomandato (non deciso): generarlo nel signer, vedi la riga D9 della tabella §3;
 2. i limiti firmati dall'owner e il kill switch del signer, che valgono finché la chiave resta nel signer;
 3. **nel proxy di trading solo il capitale che si accetta di perdere**: è l'unico limite che regge anche con la chiave rubata.
 
 ## 3. Domande aperte (`DOCS_UNVERIFIED`)
+
+In questo documento "riga Dn" indica una riga di questa tabella; le decisioni dell'owner sono sempre citate come "decisione owner Dn" di `owner_commanded_execution.md`.
 
 | # | Domanda | Indizio della documentazione |
 |---|---|---|
@@ -74,17 +76,17 @@ Solo con autorizzazione scritta dell'owner, fondi di test ottenuti dal supporto 
 | T2 | Ordine firmato dalla sola EOA | accettato | rifiutato → stop (il trading richiederebbe il Safe) |
 | T3 | `withdraw` con la sola EOA, soglia 2 | `isReadyToExecute=false`, `signedCount 1 < requiredThreshold 2`, `isExecuted` resta false, saldo invariato | eseguito → stop |
 | T4 | `set-threshold 1`, `remove-signer`, `add-signer`, `transfer` con la sola EOA | non eseguiti | uno eseguito → stop |
-| T5 | Chiamata diretta dell'EOA al proxy (D2) | impossibile | possibile → stop |
-| T6 | Prelievo dalla UI e via bridge con la sola EOA (D4) | non eseguiti senza la seconda firma | eseguiti → stop |
+| T5 | Chiamata diretta dell'EOA al proxy (riga D2) | impossibile | possibile → stop |
+| T6 | Prelievo dalla UI e via bridge con la sola EOA (riga D4) | non eseguiti senza la seconda firma | eseguiti → stop |
 | T7 | Chiave API con soli scope Orders: `withdraw/prepare` e `multisig/*` | 401/403 | accettati → stop |
 | T8 | Nuova chiave API generata dall'EOA: la vecchia smette di funzionare | 401 sulla vecchia | — (documenta il rischio) |
 | T9 | Attaccante con l'EOA: ordini aperti + sostituzione/cancellazione della transazione pendente durante un recupero | il recupero è comunque possibile entro un tempo noto | recupero impossibile → stop: si accetta che il capitale nel proxy sia perso in caso di furto |
-| T10 | `transfer-to-proxy` con `proxyAddress` del proxy di trading, firmato dall'EOA di finanziamento dell'owner (D7) | fondi nel proxy di trading senza passare dall'EOA di trading | — |
+| T10 | `transfer-to-proxy` con `proxyAddress` del proxy di trading, firmato dall'EOA di finanziamento dell'owner (riga D7) | fondi nel proxy di trading senza passare dall'EOA di trading | — |
 | T11 | Rotazione: nuovo conto + `transfer` (riga D5 della tabella §3) | documentata e riuscita | — |
 
 ## 5. Raccomandazione
 
-**A. Se T0 e T3–T6 riescono (Safe 2-di-2 utilizzabile):** EOA di trading dedicato, generato nel signer (non Magic; decisione owner D5 ratificata), proxy proprio, Safe 2-di-2 con la seconda chiave dell'owner offline; chiave API con soli scope Orders e lettura, custodita esclusivamente nel signer isolato (decisione owner D6 ratificata; resta da risolvere la riga D9 della tabella §3); nel proxy solo il capitale di rischio.
+**A. Se T0 e T3–T6 riescono (Safe 2-di-2 utilizzabile):** EOA di trading dedicato, generato nel signer (decisione owner D5 ratificata: EOA dedicato; raccomandato: generato nel signer), proxy proprio, Safe 2-di-2 con la seconda chiave dell'owner offline; chiave API con soli scope Orders e lettura, custodita esclusivamente nel signer isolato (decisione owner D6 ratificata; resta da risolvere la riga D9 della tabella §3); nel proxy solo il capitale di rischio.
 
 **B. Se T0 fallisce o il Safe non segrega (esito conservativo da assumere finché T0 e T3–T6 non sono provati; oggi né il 2-di-2 né la segregazione sono dimostrati):** conto di trading dedicato con capitale minimo; il limite economico è il saldo del proxy più le posizioni aperte, accettato come perdita massima in caso di furto della chiave. Coerente con la decisione owner D5 (EOA dedicato al trading): il conto principale (wallet Magic, Safe 1-di-1) non si usa per gli ordini comandati dall'owner.
 

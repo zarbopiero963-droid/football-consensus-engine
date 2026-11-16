@@ -88,7 +88,7 @@ Certificazione prima del GO: suite verdi, checklist testnet con evidenze, almeno
 - **D4** Hosting del signer (servizio privato Render ~7,25 $/mese, hardware dell'owner, VPS) e KMS sì/no.
 - **D5** Chiave: EOA dedicato con saldo ridotto (consigliato) o chiave Magic esportata. **Decisa dall'owner il 16-11-2026: EOA dedicato al trading.**
 - **D6** Chiave API con permessi di ordine/cancellazione solo nel signer (consigliato) o anche nel MCP. **Decisa dall'owner il 16-11-2026: esclusivamente nel signer isolato.**
-- **D7** Kill switch: solo blocco o blocco + cancellazione di tutto; heartbeat per gli ordini GTC. **Parzialmente decisa dall'owner il 16-11-2026:** con il kill switch attivo le cancellazioni di ordini già aperti restano ammesse, con autenticazione, idempotenza, audit e riconciliazione (implementato in P5); il resto resta aperto.
+- **D7** Kill switch: solo blocco o blocco + cancellazione di tutto; heartbeat per gli ordini GTC. **Parzialmente decisa dall'owner il 16-11-2026:** con il kill switch attivo le cancellazioni di ordini già aperti restano ammesse, con autenticazione, idempotenza, audit e riconciliazione (implementato offline nel branch P5, non ancora mergiato); il resto resta aperto.
 - **D8** Impostazione di approvazione dei tool nel client (chiedi / consenti sempre): non è un controllo del signer.
 - **D9** Connettore di trading separato e client OAuth dedicato.
 - **D10** Testnet: account, proxy, USDC di test, chiave API e chiave di firma di test.
