@@ -567,6 +567,7 @@ async def _ws_session(token: str, subs: dict[str, dict[str, Any]], seconds: floa
     results: dict[str, dict[str, Any]] = {}
     pubs: dict[str, list[dict[str, Any]]] = {ch: [] for ch in subs}
     ids: dict[int, str] = {}
+    connected = False
     async with asyncio.timeout(seconds + 45):
         async with websockets.connect(WS_ENDPOINT, open_timeout=15, max_size=2 ** 21) as ws:
             await ws.send(json.dumps({"id": 1, "connect": {"token": token, "name": "fce-readonly-consistency"}}))
@@ -583,6 +584,7 @@ async def _ws_session(token: str, subs: dict[str, dict[str, Any]], seconds: floa
                     elif frame.get("id") == 1:
                         if "connect" not in frame:
                             return {"connected": False, "results": {}, "pubs": pubs}
+                        connected = True
                         for n, (ch, opts) in enumerate(subs.items(), start=2):
                             ids[n] = ch
                             await ws.send(json.dumps({"id": n, "subscribe": {"channel": ch, **opts}}))
@@ -604,7 +606,8 @@ async def _ws_session(token: str, subs: dict[str, dict[str, Any]], seconds: floa
                             pubs[ch].append(_pub(frame["push"]["pub"]))
                 if deadline is not None and time.monotonic() >= deadline:
                     break
-    return {"connected": True, "results": results, "pubs": pubs}
+    # No connect reply at all (timeout) is never "connected" (review 9729fe1 P3).
+    return {"connected": connected, "results": results, "pubs": pubs}
 
 
 async def _rest_get(path: str, params: dict[str, Any] | None = None, api_key: str | None = None) -> Any:
@@ -659,47 +662,68 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
     if book_ch:
         subs[book_ch] = {"recoverable": True}
     window_start = datetime.now(timezone.utc)
-    first = await _ws_session(token, subs, seconds)
-    if not first["connected"]:
-        rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", reason="CONNECT_REFUSED")
-        return
-    for ch in subs:
-        label = "orderbook_v3:<probe market>" if ch == book_ch else ch
-        out = rcx.analyze_channel(first["pubs"][ch])
-        rec.add(f"realtime_stream_integrity {label}", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+    before: list[dict[str, Any]] = []
+    first: dict[str, Any] = {"connected": False, "results": {}, "pubs": {ch: [] for ch in subs}}
+    try:
+        first = await _ws_session(token, subs, seconds)
+    except Exception as exc:  # isolated: the REST and on-chain checks still run (review 9729fe1 P3)
+        rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
+    if first["connected"]:
+        for ch in subs:
+            label = "orderbook_v3:<probe market>" if ch == book_ch else ch
+            sub_res = first["results"].get(ch) or {}
+            if sub_res.get("subscribed") is not True:
+                # A refused or unanswered subscription is never "no publication" (review 9729fe1 P3).
+                rec.add(f"realtime_stream_integrity {label}", "REAL_CONSISTENCY",
+                        "FAIL" if sub_res.get("subscribed") is False else "NOT_TESTED",
+                        reason="SUBSCRIBE_REFUSED" if sub_res.get("subscribed") is False else "NO_SUBSCRIBE_REPLY",
+                        error_code=sub_res.get("error_code"))
+                continue
+            out = rcx.analyze_channel(first["pubs"][ch], require_message_id=rcx.requires_message_id(ch))
+            rec.add(f"realtime_stream_integrity {label}", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+        before = first["pubs"][trades_ch]
+    elif "realtime_stream_integrity" not in {r["test"] for r in rec.rows}:
+        rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", reason="CONNECT_NOT_CONFIRMED")
     # Deliberate reconnect from the last stream position (recent_trades_v3: history 100 msgs / 5 min).
-    before = first["pubs"][trades_ch]
     last = max((p["offset"] for p in before if type(p["offset"]) is int), default=None)
     epoch = (first["results"].get(trades_ch) or {}).get("epoch")
     if last is None or not isinstance(epoch, str):
         rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", "NOT_TESTED",
                 reason="NO_STREAM_POSITION_BEFORE_DISCONNECT")
     else:
-        await asyncio.sleep(3)  # let publications happen while disconnected
-        second = await _ws_session(token, {trades_ch: {"recoverable": True, "recover": True, "epoch": epoch,
-                                                       "offset": last}}, min(seconds, 10.0))
-        res = second["results"].get(trades_ch) or {}
-        replayed_n = res.get("replayed") or 0
-        got = second["pubs"][trades_ch]
-        out = rcx.analyze_recovery(trades_ch, before=before, resubscribe=res if second["connected"] else None,
-                                   replayed=got[:replayed_n], after=got[replayed_n:])
-        rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
-        before = [*before, *got]
+        try:
+            await asyncio.sleep(3)  # let publications happen while disconnected
+            second = await _ws_session(token, {trades_ch: {"recoverable": True, "recover": True, "epoch": epoch,
+                                                           "offset": last}}, min(seconds, 10.0))
+            res = second["results"].get(trades_ch) or {}
+            replayed_n = res.get("replayed") or 0
+            got = second["pubs"][trades_ch]
+            out = rcx.analyze_recovery(trades_ch, before=before,
+                                       resubscribe=res if second["connected"] and res.get("subscribed") else None,
+                                       replayed=got[:replayed_n], after=got[replayed_n:])
+            rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+            before = [*before, *got]
+        except Exception as exc:
+            rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", "FAIL",
+                    error_type=type(exc).__name__)
     # Same identifiers on REST, read after the window.
     try:
         tape = await _rest_get("/trades-v3/public", {"perPage": 100})
         rows = tape.get("trades") if isinstance(tape, dict) else None
-        rest_ids = [r.get("tradeId") for r in rows or [] if isinstance(r, dict)]
-        oldest = min((str(r.get("betTime")) for r in rows or [] if isinstance(r, dict) and r.get("betTime")),
-                     default=None)
-        complete = isinstance(rows, list) and (not tape.get("nextKey") or
-                                               (oldest is not None and oldest <= window_start.isoformat()))
-        ws_ids = [((p["data"] or {}).get("trade") or {}).get("tradeId") for p in before if isinstance(p["data"], dict)]
-        out = rcx.compare_trades(ws_ids, rest_ids, rest_complete=complete)
-        rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+        if not isinstance(rows, list):
+            rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", "FAIL", reason="REST_TAPE_MALFORMED")
+        else:
+            rest_ids = [r.get("tradeId") for r in rows if isinstance(r, dict)]
+            oldest = min((str(r.get("betTime")) for r in rows if isinstance(r, dict) and r.get("betTime")),
+                         default=None)
+            complete = not tape.get("nextKey") or (oldest is not None and oldest <= window_start.isoformat())
+            ws_ids = [((p["data"] or {}).get("trade") or {}).get("tradeId") for p in before
+                      if isinstance(p["data"], dict)]
+            out = rcx.compare_trades(ws_ids, rest_ids, rest_complete=complete)
+            rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
     except Exception as exc:
         rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
-    if book_ch:
+    if book_ch and first["connected"]:
         try:
             snap = await _rest_get("/orderbook-v3/snapshot/market", {"marketHash": market_hash}, api_key)
             books = [p["data"] for p in first["pubs"][book_ch] if isinstance(p["data"], dict)]
@@ -708,7 +732,8 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
         except Exception as exc:
             rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
     else:
-        rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", "NOT_TESTED", reason="NO_PROBE_MARKET")
+        rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", "NOT_TESTED",
+                reason="NO_PROBE_MARKET" if not book_ch else "REALTIME_NOT_CONNECTED")
     # Independent on-chain balance (official RPC) vs GET /user/balance-v3.
     try:
         proxy_data = await _rest_get("/user/proxy", None, api_key)
@@ -723,9 +748,10 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
         decimals = int(await _rpc("eth_call", [{"to": rcx.MAINNET["usdc"], "data": "0x313ce567"}, "latest"]), 16)
         proxy_usdc = await _erc20_balance(rcx.MAINNET["usdc"], proxy) if isinstance(proxy, str) else None
         eoa_usdc = await _erc20_balance(rcx.MAINNET["usdc"], eoa) if isinstance(eoa, str) else None
+        escrow_usdc = await _erc20_balance(rcx.MAINNET["usdc"], rcx.MAINNET["escrow"])  # shared: lower bound only
         out = rcx.classify_balances(api_rows=rows, proxy=proxy, eoa=eoa,
                                     onchain={"chain_id": chain, "usdc_decimals": decimals, "proxy_usdc": proxy_usdc,
-                                             "eoa_usdc": eoa_usdc})
+                                             "eoa_usdc": eoa_usdc, "escrow_usdc": escrow_usdc})
         # Outcome and relation only: amounts and addresses never leave the run.
         rec.add("onchain_balance usdc (rpc vs /user/balance-v3)", "REAL_CONSISTENCY", out["outcome"],
                 relation=out["reason"], proxy_deployed=(proxy_data or {}).get("deployed"))

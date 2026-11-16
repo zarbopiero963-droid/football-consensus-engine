@@ -34,6 +34,11 @@ def test_script_has_no_write_route_or_signing():
     assert set(re.findall(r'"0x([0-9a-f]{8})', src)) <= {"70a08231", "313ce567"}   # balanceOf, decimals
     for banned_rpc in ("eth_sendRawTransaction", "eth_sendTransaction", "eth_sign", "personal_"):
         assert banned_rpc not in src, banned_rpc
+    # Review 9729fe1 P3: every _rpc( call names its method literally; websocket frames sent are only connect,
+    # subscribe and the pong; the analysis module imported by the probe does no I/O (tests/test_sxbet_realtime_*).
+    assert re.findall(r"_rpc\(([^\"\s])", src.replace("async def _rpc(", "")) == []
+    sends = re.findall(r"ws\.send\(([^\n]*)", src)
+    assert sends and all(('"connect"' in s_ or '"subscribe"' in s_ or s_.startswith('"{}"')) for s_ in sends), sends
     for banned in ('"DELETE"', '"POST"', ".delete(", "/orders-v3\"", "heartbeat", "sign_typed", "private_key", "eth_account"):
         assert banned not in src, banned
     assert "/orders-v3" not in src.replace("GET /orders-v3", "")
@@ -223,7 +228,8 @@ def test_consistency_probe_unrecovered_and_missing_ids_are_never_pass(monkeypatc
     _fake_io(monkeypatch, recovered=False, rest_trades=("t9",), proxy_usdc=1)
     rows, _, _ = _run_probe(market=None)
     assert rows["realtime_recovery recent_trades_v3:global"]["outcome"] == "PARTIAL"
-    assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "FAIL"
+    # Changed by the review of 9729fe1 (P2, declared): REST is LOCKED-only, a missing socket trade is PARTIAL.
+    assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "PARTIAL"
     assert rows["rest_vs_realtime orderbook (version)"]["outcome"] == "NOT_TESTED"
     assert rows["onchain_balance usdc (rpc vs /user/balance-v3)"]["outcome"] == "PARTIAL"
 
@@ -233,3 +239,40 @@ def test_consistency_probe_without_key_is_not_tested(monkeypatch):
     rec = cert.Recorder()
     asyncio.run(cert.consistency_probe(rec, "", None, 5, []))
     assert {r["outcome"] for r in rec.rows} == {"NOT_TESTED"} and len(rec.rows) == 4
+
+
+def test_review_9729fe1_refused_subscription_and_ws_failure_never_hide_other_checks(monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    _fake_io(monkeypatch)
+
+    async def refused(tok, subs, seconds):
+        return {"connected": True, "results": {c: {"subscribed": False, "error_code": 103} for c in subs},
+                "pubs": {c: [] for c in subs}}
+    monkeypatch.setattr(cert, "_ws_session", refused)
+    rows, _, _ = _run_probe()
+    assert rows["realtime_stream_integrity recent_trades_v3:global"]["outcome"] == "FAIL"
+    assert rows["realtime_stream_integrity recent_trades_v3:global"]["reason"] == "SUBSCRIBE_REFUSED"
+
+    async def boom(tok, subs, seconds):
+        raise ConnectionResetError("x")
+    monkeypatch.setattr(cert, "_ws_session", boom)
+    rows, _, _ = _run_probe()
+    assert rows["realtime_stream_integrity"]["outcome"] == "FAIL"
+    assert rows["rest_vs_realtime orderbook (version)"]["outcome"] == "NOT_TESTED"
+    assert "onchain_balance usdc (rpc vs /user/balance-v3)" in rows                   # still runs
+    assert "rest_vs_realtime trades (tradeId)" in rows
+
+
+def test_review_9729fe1_malformed_rest_tape_is_fail(monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    _fake_io(monkeypatch)
+    real = cert._rest_get
+
+    async def bad_tape(path, params=None, api_key=None):
+        if path == "/trades-v3/public":
+            return {"trades": None}
+        return await real(path, params, api_key)
+    monkeypatch.setattr(cert, "_rest_get", bad_tape)
+    rows, _, _ = _run_probe()
+    assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "FAIL"
+    assert rows["rest_vs_realtime trades (tradeId)"]["reason"] == "REST_TAPE_MALFORMED"

@@ -797,7 +797,20 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
             if not isinstance(session_id, str) or not _PATH_TOKEN.fullmatch(session_id):
                 raise InvalidInput("INVALID_SESSION_ID")
             return {"sessionId": session_id}
-        return await call("sxbet_proxy_funding_status", "/user/transfer-to-proxy/status", build, auth=True)
+        def deviations(data):
+            # Provider data stays as received (governance 2.3), but a reply outside the documented contract is
+            # flagged so it can never be read as the outcome of THIS deposit (R2 review of 9729fe1, P2).
+            found = []
+            if not isinstance(data, dict):
+                found.append("DATA_NOT_AN_OBJECT")
+            else:
+                if data.get("sessionId") != session_id:
+                    found.append("SESSION_ECHO_MISMATCH")
+                if data.get("status") not in ("PENDING", "SUCCESS", "FAILED"):
+                    found.append("STATUS_OUTSIDE_DOCUMENTED_ENUM")
+            return {"contract_deviation": found} if found else {}
+        return await call("sxbet_proxy_funding_status", "/user/transfer-to-proxy/status", build, auth=True,
+                          derive=deviations)
 
     @add
     async def sxbet_proxy_address_check(proxy_address: str) -> dict[str, Any]:

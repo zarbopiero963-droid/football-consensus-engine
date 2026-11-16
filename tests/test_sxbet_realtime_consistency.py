@@ -67,7 +67,8 @@ def test_recovery_without_prior_publications_is_not_tested():
 @pytest.mark.parametrize("ws, rest, complete, outcome", [
     ([], ["t1"], True, "NOT_TESTED"),
     (["t1", "t2"], ["t0", "t1", "t2"], True, "PASS"),
-    (["t1", "t9"], ["t1"], True, "FAIL"),
+    # Changed by the review of 9729fe1 (P2, declared): the REST tape is LOCKED-only, a miss is never FAIL.
+    (["t1", "t9"], ["t1"], True, "PARTIAL"),
     (["t1", "t9"], ["t1"], False, "PARTIAL"),
 ])
 def test_compare_trades(ws, rest, complete, outcome):
@@ -114,7 +115,8 @@ OK_CHAIN = {"chain_id": 4162, "usdc_decimals": 6}
     ([row()], 14140000, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE"),
     ([row(available="10000000", escrowed="4140000")], 14140000, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_ESCROWED"),
     ([row(available="10000000", pa="4140000")], 14140000, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING"),
-    ([row()], 0, "PASS", "PROXY_TOKEN_ZERO_FUNDS_HELD_IN_ESCROW_ACCOUNTING"),
+    # Changed by the review of 9729fe1 (P2, declared): proxy 0 is only explained with the escrow lower bound read.
+    ([row()], 0, "PARTIAL", "EXPLANATION_UNVERIFIED"),
     ([row()], 9, "PARTIAL", "DIFFERENCE_NOT_EXPLAINED_BY_DOCUMENTED_FIELDS"),          # explained, never "anomaly"
     ([row(escrowAddress="0x" + "11" * 20)], 14140000, "FAIL", "USDC_ROW_NOT_ON_THE_DOCUMENTED_ESCROW"),
     ([row(wallet="0x" + "22" * 20)], 14140000, "FAIL", "BALANCE_ROW_WALLET_IS_NOT_THE_PROXY"),
@@ -156,3 +158,51 @@ def test_module_does_no_io():
     mods = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     mods |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not mods & {"httpx", "requests", "urllib", "socket", "websockets", "psycopg", "asyncio", "os"}
+
+
+# ---------------------------------------------------------------- review of 9729fe1 (NOT SAFE): regressions
+REC = {"was_recovering": True, "recovered": True}
+
+
+@pytest.mark.parametrize("before, replayed, after, outcome, reason", [
+    (pubs(9, 10), [], [], "NOT_TESTED", "RECOVERED_NOTHING_DELIVERED_AFTER_RECONNECT"),          # P1 scenario 1
+    (pubs(9, 10), [{"offset": None, "message_id": None}], [], "FAIL", "PUBLICATION_WITHOUT_MESSAGE_ID"),  # 2
+    (pubs(9, 10), [{"offset": None, "message_id": "x"}], [], "PARTIAL", "NO_OFFSET_AFTER_RECONNECT"),
+    ([{"offset": None, "message_id": "a"}], pubs(11), [], "PARTIAL", "NO_OFFSET_BEFORE_DISCONNECT"),     # 3
+])
+def test_review_9729fe1_p1_recovery_never_passes_without_evidence(before, replayed, after, outcome, reason):
+    out = rc.analyze_recovery(CH, before=before, resubscribe=REC, replayed=replayed, after=after)
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def test_review_9729fe1_p2_proxy_zero_explained_only_with_the_escrow_lower_bound():
+    base = dict(api_rows=[row()], proxy=PROXY, eoa=None)
+    ok = rc.classify_balances(**base, onchain={**OK_CHAIN, "proxy_usdc": 0, "escrow_usdc": 10 ** 12})
+    assert (ok["outcome"], ok["reason"]) == ("PASS", "PROXY_TOKEN_ZERO_ESCROW_HOLDS_AT_LEAST_THE_API_AMOUNT")
+    low = rc.classify_balances(**base, onchain={**OK_CHAIN, "proxy_usdc": 0, "escrow_usdc": 5})
+    assert (low["outcome"], low["reason"]) == ("PARTIAL", "EXPLANATION_UNVERIFIED")
+
+
+def test_review_9729fe1_p2_all_zero_is_empty_and_funded_proxy_without_row_is_partial():
+    zero = rc.classify_balances(api_rows=[row(available="0")], proxy=PROXY, eoa=None,
+                                onchain={**OK_CHAIN, "proxy_usdc": 0})
+    assert (zero["outcome"], zero["reason"]) == ("EMPTY_VALID", "ALL_ZERO_NOTHING_TO_COMPARE")
+    funded = rc.classify_balances(api_rows=[], proxy=PROXY, eoa=None, onchain={**OK_CHAIN, "proxy_usdc": 7})
+    assert (funded["outcome"], funded["reason"]) == ("PARTIAL", "PROXY_FUNDED_BUT_NO_API_USDC_ROW")
+
+
+def test_review_9729fe1_p3_versions_compare_as_plain_strings():
+    out = rc.compare_book_versions([{"version": "9"}], {"version": "0010"})
+    assert out["outcome"] == "FAIL" and out["reason"] == "REST_SNAPSHOT_OLDER_THAN_SOCKET"
+
+
+def test_review_9729fe1_p3_equal_versions_without_levels_are_not_a_vacuous_pass():
+    out = rc.compare_book_versions([{"version": V1}], {"version": V1})
+    assert (out["outcome"], out["reason"]) == ("PARTIAL", "LEVELS_MISSING")
+
+
+def test_review_9729fe1_p3_book_channels_do_not_require_message_ids():
+    assert not rc.requires_message_id("orderbook_v3:0xab") and rc.requires_message_id(CH)
+    out = rc.analyze_channel([{"offset": 1, "message_id": None}, {"offset": 2, "message_id": None}],
+                             require_message_id=False)
+    assert out["outcome"] == "PASS"

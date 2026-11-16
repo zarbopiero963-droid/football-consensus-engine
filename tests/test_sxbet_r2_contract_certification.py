@@ -24,8 +24,8 @@ SNAPSHOT = json.loads((ROOT / "docs" / "sxbet" / "r2_contract_snapshot.json").re
 TRADE_ID = "0xac6bb30bba6ea82d8717219a4fa49d15b58fd638fba479f294b4d402376d14d6"   # the OpenAPI example id
 SESSION = "9c8f5b21e4d0a7c3f18b6e94d2a05c7318fa4b62d9e0173c5a8b2f4e6019d3c7"      # the OpenAPI example digest
 PROVIDER_SECRET_MSG = "PROVIDER-MSG-r2-5d1e"  # must never be echoed to the MCP client (fixed codes only)
-TRADE = {"tradeId": TRADE_ID, "marketHash": "0x" + "1f" * 32, "isBettingOutcomeOne": False, "isMaker": False,
-         "stake": "5000000", "odds": "52500000000000000000", "settled": False, "betTime": 1_800_000_000}
+# The official OpenAPI 200 example (pinned), never invented fields (review of 9729fe1, P3).
+TRADE = SNAPSHOT["routes"]["/trades-v3/{tradeId}"]["responses"]["200"]["example"]["data"]["trade"]
 
 
 def _only(path, handler):
@@ -53,6 +53,11 @@ def test_snapshot_pins_both_routes_from_the_official_openapi():
     assert status["responses"]["400"]["example"]["message"] == "TRANSFER_NOT_FOUND"
     assert status["status_enum"] == ["PENDING", "SUCCESS", "FAILED"]
     assert "without the 0x prefix" in status["session_id_description"]
+    # Review 9729fe1 P3: the 200 schemas and examples are pinned too, and the trade object is TradeV3.
+    t200 = trade["responses"]["200"]
+    assert t200["schema"]["properties"]["data"]["properties"]["trade"]["$ref"] == "#/components/schemas/TradeV3"
+    assert t200["example"]["data"]["trade"]["tradeId"] == TRADE_ID and "TradeV3" in SNAPSHOT["components"]
+    assert status["responses"]["200"]["example"]["data"]["sessionId"] == SESSION
 
 
 # ---------------------------------------------------------------- sxbet_trade: positive
@@ -134,6 +139,7 @@ def test_funding_status_each_documented_state_is_returned_as_received(state):
     t, _, _ = make(route)
     out = run(t["sxbet_proxy_funding_status"](session_id=SESSION))
     assert out["status"] == "REAL_API_RESPONSE" and out["data"] == body and out["network_calls_made"] == 1
+    assert "contract_deviation" not in out
     assert dict(seen[0].url.params) == {"sessionId": SESSION} and seen[0].headers.get("x-sx-api-key")
 
 
@@ -172,6 +178,8 @@ def test_funding_status_out_of_contract_replies_are_echoed_raw_not_normalised(da
     t, _, _ = make(route)
     out = run(t["sxbet_proxy_funding_status"](session_id=SESSION))
     assert out["status"] == "REAL_API_RESPONSE" and out["data"] == data
+    # Review of 9729fe1 (P2): echoed raw, but explicitly flagged as outside the documented contract.
+    assert out["contract_deviation"]
 
 
 def test_funding_status_is_read_only_no_write_route_reachable():
@@ -179,3 +187,15 @@ def test_funding_status_is_read_only_no_write_route_reachable():
     t, _, _ = make(route)
     run(t["sxbet_proxy_funding_status"](session_id=SESSION))
     assert [r.method for r in seen] == ["GET"]
+
+
+@pytest.mark.parametrize("data, codes", [
+    ({"sessionId": "other", "status": "SUCCESS"}, ["SESSION_ECHO_MISMATCH"]),
+    ({"sessionId": SESSION, "status": "DONE"}, ["STATUS_OUTSIDE_DOCUMENTED_ENUM"]),
+    ({"sessionId": SESSION}, ["STATUS_OUTSIDE_DOCUMENTED_ENUM"]),
+    ([], ["DATA_NOT_AN_OBJECT"]),
+])
+def test_review_9729fe1_funding_status_contract_deviation_codes(data, codes):
+    route, _ = _only("/user/transfer-to-proxy/status", lambda r: _ok(data))
+    t, _, _ = make(route)
+    assert run(t["sxbet_proxy_funding_status"](session_id=SESSION))["contract_deviation"] == codes
