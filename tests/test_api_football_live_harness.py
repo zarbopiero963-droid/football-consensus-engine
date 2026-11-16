@@ -156,13 +156,21 @@ def test_guard_fails_on_a_mutated_runner(tmp_path, original, mutant, expected):
 
 @pytest.mark.parametrize("name", RUNTIME_CLIENT_SCRIPTS)
 def test_runtime_client_scripts_keep_the_shared_coordinator(name):
-    """The campaign runner never replaces the coordinator: its live entry point passes no quota, so
-    ResilientFootballClient builds PostgresQuota; one attempt per call, hard cap 78."""
+    """The campaign runner never bypasses the SHARED coordinator. PATH A2 variant R1 (owner decision D2,
+    intentional change): its live entry point passes quota=CertQuotaCoordinator(), the same counters,
+    leases and attempts as PostgresQuota reached only through fcb_cert_quota.* (the runner has no table
+    privilege); never None, never another coordinator. One attempt per call, hard cap 78."""
     tree = ast.parse((ROOT / "scripts" / name).read_text(encoding="utf-8"))
     main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = 0
     for node in ast.walk(main):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("execute", "execute_snapshot"):
-            assert "quota" not in {k.arg for k in node.keywords}, "the live entry point must keep PostgresQuota"
+            quota = next((k.value for k in node.keywords if k.arg == "quota"), None)
+            assert (isinstance(quota, ast.Call) and isinstance(quota.func, ast.Name)
+                    and quota.func.id == "CertQuotaCoordinator" and not quota.args and not quota.keywords), \
+                "the live entry point must use the shared coordinator through CertQuotaCoordinator()"
+            calls += 1
+    assert calls == 2
     text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
     assert "ResilientFootballClient(" in text and "budget_transport(" in text
     assert "RetryPolicy(max_attempts=ATTEMPTS_PER_CALL)" in text and "HARD_CAP = 78" in text
