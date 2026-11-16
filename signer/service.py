@@ -71,10 +71,20 @@ class SignerService:
         engaged, owner decision 16-11-2026); the others stay pending, unclaimed."""
         with self._lock:
             out = []
+            if kinds is None or "PLACE" in kinds:
+                # Queue order is a safety property (review 9792c7d P2-1): an interrupted PLACE (claimed, not closed:
+                # e.g. a marked or pre-release one whose void was not written) must be resolved by recover() before
+                # any later PLACE is handled, or a re-sent equivalent command could run first. Until then: CANCEL only.
+                if any(u.get("kind") == "PLACE" and u.get("last_state") in ("CLAIMED", "SIGNED")
+                       for u in self._q.unfinished(self._network, self._signer_id)):
+                    kinds = ("CANCEL",)
             batch = self._q.pending(self._network, limit) if kinds is None else \
                 self._q.pending(self._network, limit, kinds)
             failed = 0
+            place_blocked = False
             for req in batch:
+                if place_blocked and req.get("kind") == "PLACE":
+                    continue      # an earlier PLACE could not be claimed: keep queue order, retry next cycle
                 try:
                     if not self._q.claim(req["request_id"], self._signer_id):
                         continue  # another instance or an earlier run owns it
@@ -86,6 +96,8 @@ class SignerService:
                     _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
                     out.append({"request_id": req["request_id"], "event": "CLAIM_FAILED",
                                 "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
+                    if req.get("kind") == "PLACE":
+                        place_blocked = True
                     continue
                 out.append(self._handle(req))
             if batch and failed == len(batch):
@@ -171,10 +183,12 @@ class SignerService:
             # 2. clock-free ordering: queue_seq is assigned by the DATABASE at insert; the owner-signed RELEASE
             #    records a watermark from the same sequence under the service lock; queue_seq <= watermark =>
             #    queued before the release => void + refuse for good.
-            if self._signer._ledger.kill_switch_engaged or p.get("kill_switch_observed") == "ENGAGED":
-                # ENGAGED now, or ENGAGED as the MCP saw it when it queued the order (the published status can lag a
-                # release): refused and voided for good either way.
+            if self._signer._ledger.kill_switch_engaged:
                 return self._void_and_refuse(rid, p, "KILL_SWITCH_ENGAGED")
+            if p.get("kill_switch_observed") == "ENGAGED":
+                # ENGAGED as the MCP saw it when it queued the order (the published status can lag a release):
+                # refused and voided for good, with its own code (review 9792c7d P3-1).
+                return self._void_and_refuse(rid, p, "KILL_SWITCH_OBSERVED_AT_QUEUE")
             wm = self._signer._ledger.queue_watermark()
             seq = req.get("queue_seq")
             if wm is not None and (type(seq) is not int or seq <= wm):

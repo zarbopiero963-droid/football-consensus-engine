@@ -414,7 +414,12 @@ def test_review_6c74d55_p3_4_a_failing_claim_never_blocks_the_next_requests(s, m
     assert out[0]["event"] == "CLAIM_FAILED" and out[0]["detail"] == {"code": "CLAIM_FAILED",
                                                                         "error_type": "RuntimeError"}
     assert "lock timeout" not in json.dumps(out)              # exception class only, never the message
-    assert q.states(b["request_id"])[-1] == "SUBMITTED"
+    # Declared change (review 9792c7d P2-1, owner decision 16-11-2026): queue order is a safety property; a later
+    # PLACE waits until the earlier one is resolved (here: the next call, when the claim works again).
+    assert q.states(b["request_id"]) == []
+    monkeypatch.undo()
+    service(s, q).process_once()
+    assert q.states(a["request_id"])[-1] == "SUBMITTED" and q.states(b["request_id"])[-1] == "SUBMITTED"
 
 
 # ---------------------------------------------------------------- P3 from the review of 20970af
@@ -445,9 +450,11 @@ def test_review_20970af_p3_d_claim_committed_then_raised_is_resumed_once_by_reco
     out = service(s, q).process_once()
     assert out[0]["event"] == "CLAIM_FAILED" and q.states(a["request_id"]) == ["CLAIMED"]
     monkeypatch.undo()
-    assert [r["request_id"] for r in service(s, q).process_once()] == []  # no longer pending: not taken twice
+    # Declared change (review 9792c7d P2-1): while A is claimed but unresolved, no later PLACE runs (B waits).
+    assert [r["request_id"] for r in service(s, q).process_once()] == []  # A not taken twice, B not before A
     (res,) = service(s, q).recover()
     assert res["event"] == "SUBMITTED" and service(s, q).recover() == []
+    service(s, q).process_once()                                 # now B
     posts = [r for r in s.sim.writes() if r.method == "POST"]
     assert len(posts) == 2                                       # one per request, never a second for A
     assert q.states(b["request_id"])[-1] == "SUBMITTED"

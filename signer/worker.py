@@ -135,6 +135,11 @@ class SignerWorker:
         elif engaged:
             report["stages"]["process_once"] = {"ok": True, "skipped": "KILL_SWITCH_STATE_UNKNOWN"}
             processed = []
+        elif not report["stages"]["recover"]["ok"]:
+            # Review 9792c7d P2-1: an interrupted PLACE may still be open; never handle a later PLACE before it.
+            processed = self._stage(report, "process_once",
+                                    lambda: self._service.process_once(self._batch, kinds=("CANCEL",)))
+            report["stages"]["process_once"].update(mode="CANCEL_ONLY_RECOVER_FAILED", only_kinds=["CANCEL"])
         else:
             processed = self._stage(report, "process_once", lambda: self._service.process_once(self._batch))
         report["counts"] = {

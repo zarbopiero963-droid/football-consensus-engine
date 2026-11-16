@@ -436,7 +436,7 @@ def test_status_lag_a_place_queued_as_engaged_after_the_release_still_never_runs
     assert q.requests[-1][2]["kill_switch_observed"] == "ENGAGED"
     svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
     (res,) = svc.process_once(10)
-    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_OBSERVED_AT_QUEUE"
     assert [x for x in s.sim.writes() if x.method == "POST"] == []
     w.signer_rows = [_row()]
     again = s7.place(t, s, "order-key-P5L", text)                    # identical call: the refused request
@@ -470,7 +470,7 @@ def test_release_between_status_read_and_insert_still_never_runs(live, monkeypat
     assert s7.place(t, s, "order-key-P5R", text)["status"] == "QUEUED"
     svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
     (res,) = svc.process_once(10)
-    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_OBSERVED_AT_QUEUE"
     assert [x for x in s.sim.writes() if x.method == "POST"] == []
 
 
@@ -498,3 +498,100 @@ def test_a_void_kind_row_is_refused_by_validation(live):
     with pytest.raises(QueueError) as e:
         validate_request({**q.requests[-1][2], "kind": "VOID"})
     assert e.value.code == "REQUEST_KIND_INVALID"
+
+
+# ---------------------------------------------------------------- review 9792c7d P2-1: queue order before a re-send
+def _marked_then_released_and_resent(s, t, w, key_a, key_b):
+    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    text, _ = s7.owner_text(s, key_a)
+    assert s7.place(t, s, key_a, text)["status"] == "QUEUED"
+    w.signer_rows = [_row()]                                         # released before any worker cycle
+    assert s7.place(t, s, key_b, text)["status"] == "QUEUED"         # the model re-sends the same owner text
+    return text
+
+
+def _svc(s, q):
+    from signer.service import SignerService
+    return SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+
+
+def test_claim_failure_on_the_marked_request_never_lets_the_resend_run(live, monkeypatch):
+    s, q, t, w = live
+    _marked_then_released_and_resent(s, t, w, "order-key-N101", "order-key-N102")
+    a_id = q.requests[0][0]
+    real = q.claim
+    monkeypatch.setattr(q, "claim", lambda rid, sid: (_ for _ in ()).throw(TimeoutError("lock"))
+                        if rid == a_id else real(rid, sid))
+    _svc(s, q).process_once(10)
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []   # B waited
+    monkeypatch.undo()
+    out = _svc(s, q).process_once(10)
+    assert [r["detail"]["code"] for r in out] == ["KILL_SWITCH_OBSERVED_AT_QUEUE", "COMMAND_VOIDED_BY_KILL_SWITCH"]
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+def test_void_write_failure_on_the_marked_request_never_lets_the_resend_run(live, monkeypatch):
+    from signer.orders import LedgerError
+    s, q, t, w = live
+    _marked_then_released_and_resent(s, t, w, "order-key-N111", "order-key-N112")
+    real_void = s.signer._ledger.void_command
+    left = {"n": 2}
+
+    def flaky(**kw):
+        if left["n"]:
+            left["n"] -= 1
+            raise LedgerError("LEDGER_WRITE_FAILED")
+        return real_void(**kw)
+    monkeypatch.setattr(s.signer._ledger, "void_command", flaky)
+    svc = _svc(s, q)
+    with pytest.raises(LedgerError):
+        svc.process_once(10)                                         # A claimed, void failed: batch stops
+    assert svc.process_once(10) == []                                # A unresolved: no PLACE at all
+    with pytest.raises(LedgerError):
+        svc.recover()                                                # second failure
+    assert svc.process_once(10) == []
+    (ra,) = svc.recover()
+    assert ra["detail"]["code"] == "KILL_SWITCH_OBSERVED_AT_QUEUE"
+    (rb,) = svc.process_once(10)
+    assert rb["detail"]["code"] == "COMMAND_VOIDED_BY_KILL_SWITCH"
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+
+
+def test_worker_with_a_failed_recover_stage_handles_no_place(live, monkeypatch, tmp_path):
+    from signer import killswitch as ks
+    from signer.audit import AuditLog
+    from signer.monitor import Monitor, MonitorState
+    from signer.worker import SignerWorker
+    s, q, t, w = live
+    _marked_then_released_and_resent(s, t, w, "order-key-N121", "order-key-N122")
+    svc = _svc(s, q)
+    assert q.claim(q.requests[0][0], SIGNER_ID)                      # A claimed, then the process crashed
+    real_unfinished = q.unfinished
+    fails = {"n": 1}
+
+    def flaky_unfinished(network, signer_id):
+        if fails["n"]:
+            fails["n"] -= 1
+            raise TimeoutError("queue read")
+        return real_unfinished(network, signer_id)
+    monkeypatch.setattr(q, "unfinished", flaky_unfinished)
+    mon = Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "m.json"), ledger_id=s.ledger.ledger_id),
+                  clock=s.clock)
+    kill = ks.KillSwitch(s.ledger, AuditLog(str(tmp_path / "k.jsonl")), owner_public_key=s.owner.public_key(),
+                         network="mainnet", clock=s.clock, queue_watermark=q.release_watermark)
+    with SignerWorker(svc, mon, kill, lock_path=str(tmp_path / "w.lock"), sleep=lambda x: None) as wk:
+        r1 = wk.run_cycle()
+        assert r1["stages"]["recover"]["ok"] is False
+        assert r1["stages"]["process_once"]["mode"] == "CANCEL_ONLY_RECOVER_FAILED"
+        wk.run_cycle()                                               # recover voids A, then B is refused
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []
+    assert q.events_of(q.requests[1][0])[-1]["detail"]["code"] == "COMMAND_VOIDED_BY_KILL_SWITCH"
+
+
+def test_the_mark_is_refused_on_a_cancel(live):
+    from signer.request_queue import QueueError, validate_request
+    s, q, t, w = live
+    run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
+                                        idempotency_key="cancel-key-P5MK"))
+    with pytest.raises(QueueError):
+        validate_request({**q.requests[-1][2], "kill_switch_observed": "ENGAGED"})
