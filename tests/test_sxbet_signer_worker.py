@@ -347,3 +347,33 @@ def test_kill_refusal_drains_the_whole_backlog(tmp_path):
         s.signer.config.market_data.world = ctx
         q.insert(place_request(i, s.command(i, ctx), created_at=int(s.clock())))
     assert len(svc.refuse_pending_places(2)) == 5 and q.pending("mainnet", 10) == []
+
+
+class _FlakyClaimQueue(MemoryQueue):
+    """The claim fails once WITHOUT committing (e.g. a lock timeout): the request stays pending."""
+    def __init__(self):
+        super().__init__()
+        self.fail_claim = True
+
+    def claim(self, request_id, signer_id):
+        if self.fail_claim:
+            self.fail_claim = False
+            raise TimeoutError("lock")
+        return super().claim(request_id, signer_id)
+
+
+def test_a_kill_refusal_whose_claim_failed_is_refused_by_process_once_after_release(tmp_path):
+    """Review d81c500 P3-1: still pending after a failed claim, then the owner releases: refused, never signed."""
+    s = Stack(tmp_path)
+    q = _FlakyClaimQueue()
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    i = s.intent("order-key-W050")
+    ctx = s.context(i)
+    s.signer.config.market_data.world = ctx
+    p = place_request(i, s.command(i, ctx), created_at=int(s.clock()))
+    q.insert(p)
+    assert [r["event"] for r in svc.refuse_pending_places(10)] == ["CLAIM_FAILED"]
+    assert q.states(p["request_id"]) == []                      # still pending
+    (res,) = svc.process_once(10)                                # released: normal processing
+    assert res["event"] == "REFUSED" and res["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+    assert [x for x in s.sim.writes() if x.method == "POST"] == []

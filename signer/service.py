@@ -64,7 +64,8 @@ class SignerService:
         # One process per signer_id; processing, recovery and sync never run concurrently, also across several
         # service objects built on the same signer (lock shared per Signer: review 67e80eb P3-3).
         self._lock = signer._ledger.service_lock
-        # Requests claimed for a kill-switch refusal whose REFUSED event is not recorded yet (in this process).
+        # Requests picked for a kill-switch refusal whose REFUSED event is not recorded yet. Per service object and
+        # per process (lost on restart, residual documented): the worker uses ONE SignerService per signer.
         self._kill_refusals: set[str] = set()
 
     # ---------------------------------------------------------------- loop
@@ -88,6 +89,12 @@ class SignerService:
                     _log.warning("signer_queue_claim_failed type=%s", type(exc).__name__)
                     out.append({"request_id": req["request_id"], "event": "CLAIM_FAILED",
                                 "detail": {"code": "CLAIM_FAILED", "error_type": type(exc).__name__}})
+                    continue
+                if req.get("kind") == "PLACE" and req["request_id"] in self._kill_refusals:
+                    # Picked for a kill-switch refusal whose claim failed: refused, never signed, even after a
+                    # release (review d81c500 P3-1).
+                    out.append(self._refuse(req["request_id"], "KILL_SWITCH_ENGAGED"))
+                    self._kill_refusals.discard(req["request_id"])
                     continue
                 out.append(self._handle(req))
             if batch and failed == len(batch):

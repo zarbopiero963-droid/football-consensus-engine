@@ -83,3 +83,12 @@ def test_row_kind_and_network_must_match_the_payload(connect):
                 conn.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
                              "VALUES (%s, %s, %s::jsonb, %s, %s)",
                              ("c" * 32, kind, json.dumps(body), "sha256:" + "0" * 64, network))
+    for missing in ({"network": "testnet"}, {"kind": "PLACE"}):           # review d81c500 P3-4: NULL not allowed
+        with pytest.raises(psycopg.Error):
+            with connect() as conn:
+                conn.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
+                             "VALUES (%s, 'PLACE', %s::jsonb, %s, 'testnet')",
+                             ("e" * 32, json.dumps(missing), "sha256:" + "0" * 64))
+    with connect() as conn:                                                # a consistent row is accepted
+        conn.execute("INSERT INTO signer_order_requests (request_id, kind, payload, payload_sha256, network) "
+                     "VALUES (%s, 'PLACE', %s::jsonb, %s, 'testnet')", ("f" * 32, json.dumps(body), "sha256:" + "0" * 64))
