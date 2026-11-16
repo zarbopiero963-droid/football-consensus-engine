@@ -25,8 +25,15 @@ def test_refuses_without_explicit_authorization(tmp_path):
 def test_script_has_no_write_route_or_signing():
     src = SCRIPT.read_text(encoding="utf-8")
     src = src.split('"""', 2)[2]  # code only: the module docstring lists what is forbidden
-    # The only .post( is the in-process MCP harness (Starlette TestClient), never SX Bet.
-    assert re.findall(r"\.post\(", src) == [".post("] and 'client.post("/mcp/"' in src
+    # Exactly two .post(: the in-process MCP harness (Starlette TestClient) and the read-only JSON-RPC call to the
+    # official SX Network RPC (R2 on-chain balance, owner directive 16-11-2026: declared change of this guard).
+    # Never SX Bet. The RPC methods are only eth_chainId / eth_call with the read selectors decimals and balanceOf.
+    assert re.findall(r"\.post\(", src) == [".post(", ".post("] and 'client.post("/mcp/"' in src
+    assert "client.post(RPC_ENDPOINT" in src and 'RPC_ENDPOINT = "https://rpc-rollup.sx.technology"' in src
+    assert set(re.findall(r'_rpc\("([a-zA-Z_]+)"', src)) == {"eth_chainId", "eth_call"}
+    assert set(re.findall(r'"0x([0-9a-f]{8})', src)) <= {"70a08231", "313ce567"}   # balanceOf, decimals
+    for banned_rpc in ("eth_sendRawTransaction", "eth_sendTransaction", "eth_sign", "personal_"):
+        assert banned_rpc not in src, banned_rpc
     for banned in ('"DELETE"', '"POST"', ".delete(", "/orders-v3\"", "heartbeat", "sign_typed", "private_key", "eth_account"):
         assert banned not in src, banned
     assert "/orders-v3" not in src.replace("GET /orders-v3", "")
@@ -120,3 +127,109 @@ def test_certification_harness_token_passes_the_mcp_bearer_format_check(monkeypa
     client = TestClient(srv2.app, base_url="https://" + srv2.public_host, raise_server_exceptions=False)
     r = client.post("/mcp/", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
     assert r.status_code != 401
+
+
+# ---------------------------------------------------------------- R2 consistency probe (offline, faked I/O)
+PROXY = "0x" + "aa" * 20
+EOA = "0x" + "bb" * 20
+TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig-for-tests-only"
+
+
+def _fake_io(monkeypatch, *, recovered=True, rest_trades=("t1", "t2"), proxy_usdc=14140000):
+    calls = {"rest": [], "rpc": []}
+
+    async def token(api_key):
+        return 200, TOKEN
+
+    sessions = []
+
+    async def ws(tok, subs, seconds):
+        sessions.append(subs)
+        trades = "recent_trades_v3:global"
+        if len(sessions) == 1:
+            return {"connected": True,
+                    "results": {trades: {"subscribed": True, "epoch": "e1", "offset": 10},
+                                **{c: {"subscribed": True} for c in subs if c != trades}},
+                    "pubs": {trades: [{"offset": 11, "message_id": "m11", "data": {"trade": {"tradeId": "t1"}}}],
+                             **{c: [{"offset": 1, "message_id": "b1",
+                                     "data": {"version": "0001", "outcomeOne": [], "outcomeTwo": []}}]
+                                for c in subs if c != trades}}}
+        return {"connected": True,
+                "results": {trades: {"subscribed": True, "was_recovering": True, "recovered": recovered,
+                                     "replayed": 1}},
+                "pubs": {trades: [{"offset": 12, "message_id": "m12", "data": {"trade": {"tradeId": "t2"}}}]}}
+
+    async def rest(path, params=None, api_key=None):
+        calls["rest"].append(path)
+        return {"/trades-v3/public": {"trades": [{"tradeId": t, "betTime": "2000-01-01T00:00:00Z"}
+                                                 for t in rest_trades], "nextKey": None},
+                "/orderbook-v3/snapshot/market": {"version": "0002", "outcomeOne": [], "outcomeTwo": []},
+                "/user/proxy": {"obv3ProxyWalletAddress": PROXY, "deployed": True},
+                "/user/balance-v3": {"balances": [{"userAddress": EOA, "wallet": PROXY,
+                                                   "tokenAddress": "0x6629Ce1Cf35Cc1329ebB4F63202F3f197b3F050B",
+                                                   "escrowAddress": "0x890482680C3a0116aBB003B17e7D694D13a6c1eB",
+                                                   "availableAmount": "14140000", "escrowedAmount": "0",
+                                                   "pendingAvailableAmount": "0", "pendingEscrowAmount": "0"}]}}[path]
+
+    async def rpc(method, params):
+        calls["rpc"].append(method)
+        if method == "eth_chainId":
+            return "0x1042"
+        data = params[0]["data"]
+        if data == "0x313ce567":
+            return hex(6)
+        return hex(proxy_usdc if PROXY[2:] in data else 0)
+
+    async def no_sleep(_):
+        return None
+    monkeypatch.setattr(cert, "fetch_realtime_token", token)
+    monkeypatch.setattr(cert, "_ws_session", ws)
+    monkeypatch.setattr(cert, "_rest_get", rest)
+    monkeypatch.setattr(cert, "_rpc", rpc)
+    monkeypatch.setattr(cert.asyncio, "sleep", no_sleep)
+    return calls, sessions
+
+
+def _run_probe(market="0x" + "ab" * 32):
+    import asyncio
+    rec, secrets = cert.Recorder(), ["KEY-123456"]
+    asyncio.run(cert.consistency_probe(rec, "KEY-123456", market, 5, secrets))
+    return {r["test"]: r for r in rec.rows}, secrets, rec
+
+
+def test_consistency_probe_reports_each_r2_check_from_real_shaped_data(monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    calls, sessions = _fake_io(monkeypatch)
+    rows, secrets, rec = _run_probe()
+    assert rows["realtime_stream_integrity recent_trades_v3:global"]["outcome"] == "PASS"
+    assert rows["realtime_recovery recent_trades_v3:global"]["outcome"] == "PASS"
+    assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "PASS"
+    assert rows["rest_vs_realtime orderbook (version)"]["outcome"] == "PASS"
+    onchain = rows["onchain_balance usdc (rpc vs /user/balance-v3)"]
+    assert onchain["outcome"] == "PASS" and onchain["relation"] == "PROXY_TOKEN_EQUALS_AVAILABLE"
+    # The reconnect asks for recovery from the last stream position.
+    assert sessions[1]["recent_trades_v3:global"] == {"recoverable": True, "recover": True, "epoch": "e1",
+                                                      "offset": 11}
+    # Read-only: GET routes and eth_chainId / eth_call only.
+    assert set(calls["rpc"]) <= {"eth_chainId", "eth_call"}
+    # Nothing account-identifying or monetary in the report; addresses and token joined the leak list.
+    text = json.dumps(rec.rows)
+    assert cert.leak_free(text, secrets) and "14140000" not in text and PROXY not in text and EOA not in text
+    assert TOKEN in secrets and PROXY in secrets and EOA in secrets
+
+
+def test_consistency_probe_unrecovered_and_missing_ids_are_never_pass(monkeypatch):
+    sys.path.insert(0, str(ROOT))
+    _fake_io(monkeypatch, recovered=False, rest_trades=("t9",), proxy_usdc=1)
+    rows, _, _ = _run_probe(market=None)
+    assert rows["realtime_recovery recent_trades_v3:global"]["outcome"] == "PARTIAL"
+    assert rows["rest_vs_realtime trades (tradeId)"]["outcome"] == "FAIL"
+    assert rows["rest_vs_realtime orderbook (version)"]["outcome"] == "NOT_TESTED"
+    assert rows["onchain_balance usdc (rpc vs /user/balance-v3)"]["outcome"] == "PARTIAL"
+
+
+def test_consistency_probe_without_key_is_not_tested(monkeypatch):
+    import asyncio
+    rec = cert.Recorder()
+    asyncio.run(cert.consistency_probe(rec, "", None, 5, []))
+    assert {r["outcome"] for r in rec.rows} == {"NOT_TESTED"} and len(rec.rows) == 4

@@ -1,0 +1,98 @@
+{
+ "source": "https://docs.sx.bet/openapi.json",
+ "openapi_info_version": "1.0.0",
+ "retrieved_at_utc": "2026-11-16",
+ "purpose": "Issue #187 R2: offline contract certification of sxbet_trade and sxbet_proxy_funding_status (pinned)",
+ "routes": {
+  "/trades-v3/{tradeId}": {
+   "operationId": "getTradeV3ById",
+   "parameters": [
+    {
+     "name": "tradeId",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string"
+     },
+     "description": "Opaque bet id. Same value as `tradeId` on trade rows; use it to filter `GET /fills-v3`.",
+     "example": "0xac6bb30bba6ea82d8717219a4fa49d15b58fd638fba479f294b4d402376d14d6"
+    }
+   ],
+   "responses": {
+    "200": {
+     "description": "",
+     "schema_ref": null,
+     "example": null
+    },
+    "404": {
+     "description": "",
+     "schema_ref": "#/components/schemas/ErrorNest",
+     "example": {
+      "message": "Trade not found",
+      "error": "Not Found",
+      "statusCode": 404
+     }
+    },
+    "503": {
+     "description": "",
+     "schema_ref": "#/components/schemas/ErrorNest",
+     "example": null
+    }
+   }
+  },
+  "/user/transfer-to-proxy/status": {
+   "operationId": "getTransferToProxyStatus",
+   "parameters": [
+    {
+     "name": "sessionId",
+     "in": "query",
+     "required": true,
+     "schema": {
+      "type": "string"
+     },
+     "description": "Permit EIP-712 digest from the fund response, hex without the 0x prefix."
+    }
+   ],
+   "responses": {
+    "200": {
+     "description": "",
+     "schema_ref": null,
+     "example": null
+    },
+    "400": {
+     "description": "Unknown `sessionId`, or the deposit is not yours.",
+     "schema_ref": "#/components/schemas/ErrorNest",
+     "example": {
+      "message": "TRANSFER_NOT_FOUND",
+      "error": "Bad Request",
+      "statusCode": 400
+     }
+    },
+    "401": {
+     "description": "",
+     "schema_ref": "#/components/schemas/ErrorNest",
+     "example": {
+      "message": "BAD_AUTH",
+      "error": "Unauthorized",
+      "statusCode": 401
+     }
+    },
+    "503": {
+     "description": "",
+     "schema_ref": "#/components/schemas/ErrorNest",
+     "example": {
+      "message": "Service Unavailable",
+      "statusCode": 503
+     }
+    }
+   },
+   "status_enum": [
+    "PENDING",
+    "SUCCESS",
+    "FAILED"
+   ],
+   "session_id_description": "Permit EIP-712 digest from the fund response, hex without the 0x prefix."
+  }
+ },
+ "verified_against_live_spec": "2026-11-16: both routes and TradeV3 identical to https://docs.sx.bet/openapi.json"
+}

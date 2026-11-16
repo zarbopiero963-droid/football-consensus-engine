@@ -201,6 +201,33 @@ Solo bridge, READ_ONLY + SIMULATION: nessun cambio a `signer/`, nessun nuovo too
 
 Restano aperti e pianificati: D4 (chiusura formale proposta: il minimo dichiarato prima della lettura dei metadati è già marcato `min_is_lower_bound_only`), D7 (righe obsolete `ACTIVE` e codici di stato delle fixture), D11 (`GET /orders-v3/batch`). Stato completo: [`issue187_completion_matrix.md`](issue187_completion_matrix.md).
 
+## R2: verifiche READ-ONLY sul mainnet (direttiva owner 16-11-2026)
+
+Nessuna firma, nessun ordine, nessun movimento di fondi. Le verifiche reali girano solo nel workflow `SX Bet Full API Read-Only Audit`. È manuale, gira solo da `main` e usa l'Environment `sxbet-live-readonly`, protetto dall'owner. Il report non contiene chiavi, token, indirizzi né importi.
+
+- **Contratti `sxbet_trade` e `sxbet_proxy_funding_status`** (`tests/test_sxbet_r2_contract_certification.py`, contratto fissato in `docs/sxbet/r2_contract_snapshot.json` e verificato identico all'OpenAPI ufficiale il 16-11). Certificazione **offline** del comportamento del tool:
+  - casi positivi;
+  - 404 documentato e non documentato;
+  - 400 `TRANSFER_NOT_FOUND`;
+  - 401 e 503;
+  - ID non validi;
+  - risposte malformate o fuori contratto, riportate così come arrivano e mai normalizzate.
+
+  Sul tuo account reale entrambi restano `NOT_TESTED` finché non esiste un `tradeId` o un `sessionId` vero, che non viene mai inventato.
+- **Coerenza REST/WebSocket** (`scripts/sxbet_realtime_consistency.py`, analisi pura, e `consistency_probe` nello script del workflow). Canale ufficiale `wss://realtime.sx.bet/connection/websocket` (Centrifugo). Si verificano:
+  - integrità del flusso: deduplica per `messageId`, offset crescenti, buchi;
+  - una riconnessione **voluta** con recupero dall'ultima posizione su `recent_trades_v3:global` (`wasRecovering`/`recovered`, nessun messaggio applicato due volte, nessun buco tra prima e dopo);
+  - gli stessi `tradeId` su `GET /trades-v3/public`;
+  - le `version` dell'order book contro `GET /orderbook-v3/snapshot/market`.
+
+  Senza eventi sufficienti l'esito resta `NOT_TESTED` o `PARTIAL`.
+- **Saldo on-chain indipendente.** Dalla documentazione ufficiale:
+  - RPC `https://rpc-rollup.sx.technology`, chain 4162;
+  - USDC `0x6629…050B` con 6 decimali;
+  - escrow OBv3 `0x8904…c1eB`.
+
+  Verificati il 16-11 con chiamate pubbliche: chain ID, decimali, simbolo, presenza dei contratti, coerenza con `/metadata/obv3`. Il workflow legge `balanceOf` del proxy e dell'EOA e li confronta con `GET /user/balance-v3`. Gli importi dell'API sono contabilità dell'escrow, quindi la relazione con il saldo del token viene **classificata e spiegata**, senza considerarla un'anomalia di per sé: per esempio uguale al disponibile, al disponibile più l'escrow, al disponibile più i movimenti pendenti, oppure fondi tenuti nella contabilità dell'escrow. Sono `FAIL` solo chain, decimali, token ed escrow diversi da quelli documentati.
+
 ## Signer isolato
 
 Vedi [`signer/README.md`](../../signer/README.md) e [`wallet_and_signing.md`](wallet_and_signing.md). Wallet Magic dell'account esistente, hosting del signer e trading dalla chat: [`magic_wallet_existing_account_audit.md`](magic_wallet_existing_account_audit.md), [`isolated_signer_architecture.md`](isolated_signer_architecture.md), [`mcp_chat_trading_workflow.md`](mcp_chat_trading_workflow.md). Il signer è un **servizio separato**: non gira mai nel processo MCP, e `import signer` fallisce se manca `SXBET_SIGNER_PROCESS=1` o se è presente `RENDER` (test `tests/test_sxbet_render_isolation.py`).

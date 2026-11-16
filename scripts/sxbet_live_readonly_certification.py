@@ -548,6 +548,192 @@ async def realtime_probe(rec: Recorder, api_key: str, market_hash: str | None, e
                 subscribed=res.get("subscribed"), error_code=res.get("error_code"), publications=n)
 
 
+# ---------------------------------------------------------------- R2 consistency probe (owner directive 16-11)
+RPC_ENDPOINT = "https://rpc-rollup.sx.technology"   # docs.sx.bet/developers/testnet-and-mainnet (chain 4162)
+RPC_USER_AGENT = "fce-readonly-audit/1.0"
+
+
+def _pub(pub: dict[str, Any]) -> dict[str, Any]:
+    tags = pub.get("tags") if isinstance(pub.get("tags"), dict) else {}
+    return {"offset": pub.get("offset") if type(pub.get("offset")) is int else None,
+            "message_id": tags.get("messageId"), "data": pub.get("data")}
+
+
+async def _ws_session(token: str, subs: dict[str, dict[str, Any]], seconds: float) -> dict[str, Any]:
+    """One realtime connection: subscribe each channel with its options, listen `seconds`. Returns the subscribe
+    results and the publications per channel (offset, messageId, data). Read-only by construction: the only frames
+    sent are connect, subscribe and the pong."""
+    import websockets
+    results: dict[str, dict[str, Any]] = {}
+    pubs: dict[str, list[dict[str, Any]]] = {ch: [] for ch in subs}
+    ids: dict[int, str] = {}
+    async with asyncio.timeout(seconds + 45):
+        async with websockets.connect(WS_ENDPOINT, open_timeout=15, max_size=2 ** 21) as ws:
+            await ws.send(json.dumps({"id": 1, "connect": {"token": token, "name": "fce-readonly-consistency"}}))
+            deadline = None
+            while True:
+                timeout = 15 if deadline is None else max(0.1, deadline - time.monotonic())
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                except TimeoutError:
+                    break
+                for frame in centrifugo_frames(raw):
+                    if not frame:
+                        await ws.send("{}")
+                    elif frame.get("id") == 1:
+                        if "connect" not in frame:
+                            return {"connected": False, "results": {}, "pubs": pubs}
+                        for n, (ch, opts) in enumerate(subs.items(), start=2):
+                            ids[n] = ch
+                            await ws.send(json.dumps({"id": n, "subscribe": {"channel": ch, **opts}}))
+                        deadline = time.monotonic() + seconds
+                    elif frame.get("id") in ids:
+                        ch = ids[frame["id"]]
+                        r = frame.get("subscribe")
+                        if isinstance(r, dict):
+                            results[ch] = {"subscribed": True, "epoch": r.get("epoch"), "offset": r.get("offset"),
+                                           "was_recovering": r.get("was_recovering", False),
+                                           "recovered": r.get("recovered", False)}
+                            pubs[ch].extend(_pub(x) for x in (r.get("publications") or []) if isinstance(x, dict))
+                            results[ch]["replayed"] = len(r.get("publications") or [])
+                        else:
+                            results[ch] = {"subscribed": False, "error_code": (frame.get("error") or {}).get("code")}
+                    elif isinstance(frame.get("push"), dict) and isinstance(frame["push"].get("pub"), dict):
+                        ch = frame["push"].get("channel")
+                        if ch in pubs:
+                            pubs[ch].append(_pub(frame["push"]["pub"]))
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+    return {"connected": True, "results": results, "pubs": pubs}
+
+
+async def _rest_get(path: str, params: dict[str, Any] | None = None, api_key: str | None = None) -> Any:
+    import httpx
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["x-sx-api-key"] = api_key
+    async with httpx.AsyncClient(base_url=REST_ENDPOINT, timeout=15, follow_redirects=False) as client:
+        r = await client.get(path, params=params or {}, headers=headers)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP_{r.status_code}")
+        body = r.json()
+        if not isinstance(body, dict) or body.get("status") != "success":
+            raise RuntimeError("PROVIDER_STATUS_NOT_SUCCESS")
+        return body.get("data")
+
+
+async def _rpc(method: str, params: list[Any]) -> Any:
+    import httpx
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+        r = await client.post(RPC_ENDPOINT, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                              headers={"content-type": "application/json", "user-agent": RPC_USER_AGENT})
+        body = r.json()
+        if "result" not in body:
+            raise RuntimeError("RPC_ERROR")
+        return body["result"]
+
+
+async def _erc20_balance(token: str, holder: str) -> int:
+    data = "0x70a08231" + holder.lower().removeprefix("0x").rjust(64, "0")
+    return int(await _rpc("eth_call", [{"to": token, "data": data}, "latest"]), 16)
+
+
+async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None, seconds: float,
+                            secrets: list[str]) -> None:
+    """R2 READ-ONLY consistency: realtime stream integrity + a deliberate reconnect with recovery, the same ids on
+    REST, and the USDC balance on chain vs the API. Reports outcomes and counts only (no address, no amount)."""
+    from scripts import sxbet_realtime_consistency as rcx
+    if not api_key:
+        for t in ("realtime_stream_integrity", "realtime_recovery", "rest_vs_realtime", "onchain_balance"):
+            rec.add(t, "REAL_CONSISTENCY", "NOT_TESTED", reason="SXBET_API_KEY_SECRET_ABSENT")
+        return
+    async with asyncio.timeout(20):
+        _, token = await fetch_realtime_token(api_key)
+    if not token:
+        rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", reason="REALTIME_TOKEN_UNAVAILABLE")
+        return
+    secrets.append(token)
+    trades_ch = "recent_trades_v3:global"
+    subs = {trades_ch: {"recoverable": True}}
+    book_ch = f"orderbook_v3:{market_hash}" if market_hash else None
+    if book_ch:
+        subs[book_ch] = {"recoverable": True}
+    window_start = datetime.now(timezone.utc)
+    first = await _ws_session(token, subs, seconds)
+    if not first["connected"]:
+        rec.add("realtime_stream_integrity", "REAL_CONSISTENCY", "FAIL", reason="CONNECT_REFUSED")
+        return
+    for ch in subs:
+        label = "orderbook_v3:<probe market>" if ch == book_ch else ch
+        out = rcx.analyze_channel(first["pubs"][ch])
+        rec.add(f"realtime_stream_integrity {label}", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+    # Deliberate reconnect from the last stream position (recent_trades_v3: history 100 msgs / 5 min).
+    before = first["pubs"][trades_ch]
+    last = max((p["offset"] for p in before if type(p["offset"]) is int), default=None)
+    epoch = (first["results"].get(trades_ch) or {}).get("epoch")
+    if last is None or not isinstance(epoch, str):
+        rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", "NOT_TESTED",
+                reason="NO_STREAM_POSITION_BEFORE_DISCONNECT")
+    else:
+        await asyncio.sleep(3)  # let publications happen while disconnected
+        second = await _ws_session(token, {trades_ch: {"recoverable": True, "recover": True, "epoch": epoch,
+                                                       "offset": last}}, min(seconds, 10.0))
+        res = second["results"].get(trades_ch) or {}
+        replayed_n = res.get("replayed") or 0
+        got = second["pubs"][trades_ch]
+        out = rcx.analyze_recovery(trades_ch, before=before, resubscribe=res if second["connected"] else None,
+                                   replayed=got[:replayed_n], after=got[replayed_n:])
+        rec.add("realtime_recovery recent_trades_v3:global", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+        before = [*before, *got]
+    # Same identifiers on REST, read after the window.
+    try:
+        tape = await _rest_get("/trades-v3/public", {"perPage": 100})
+        rows = tape.get("trades") if isinstance(tape, dict) else None
+        rest_ids = [r.get("tradeId") for r in rows or [] if isinstance(r, dict)]
+        oldest = min((str(r.get("betTime")) for r in rows or [] if isinstance(r, dict) and r.get("betTime")),
+                     default=None)
+        complete = isinstance(rows, list) and (not tape.get("nextKey") or
+                                               (oldest is not None and oldest <= window_start.isoformat()))
+        ws_ids = [((p["data"] or {}).get("trade") or {}).get("tradeId") for p in before if isinstance(p["data"], dict)]
+        out = rcx.compare_trades(ws_ids, rest_ids, rest_complete=complete)
+        rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+    except Exception as exc:
+        rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
+    if book_ch:
+        try:
+            snap = await _rest_get("/orderbook-v3/snapshot/market", {"marketHash": market_hash}, api_key)
+            books = [p["data"] for p in first["pubs"][book_ch] if isinstance(p["data"], dict)]
+            out = rcx.compare_book_versions(books, snap if isinstance(snap, dict) else None)
+            rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
+        except Exception as exc:
+            rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
+    else:
+        rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", "NOT_TESTED", reason="NO_PROBE_MARKET")
+    # Independent on-chain balance (official RPC) vs GET /user/balance-v3.
+    try:
+        proxy_data = await _rest_get("/user/proxy", None, api_key)
+        proxy = proxy_data.get("obv3ProxyWalletAddress") if isinstance(proxy_data, dict) else None
+        bal = await _rest_get("/user/balance-v3", None, api_key)
+        rows = bal.get("balances") if isinstance(bal, dict) else None
+        eoa = next((r.get("userAddress") for r in rows or [] if isinstance(r, dict) and r.get("userAddress")), None)
+        for a in (proxy, eoa):
+            if isinstance(a, str):
+                secrets.extend([a, a.lower()])
+        chain = int(await _rpc("eth_chainId", []), 16)
+        decimals = int(await _rpc("eth_call", [{"to": rcx.MAINNET["usdc"], "data": "0x313ce567"}, "latest"]), 16)
+        proxy_usdc = await _erc20_balance(rcx.MAINNET["usdc"], proxy) if isinstance(proxy, str) else None
+        eoa_usdc = await _erc20_balance(rcx.MAINNET["usdc"], eoa) if isinstance(eoa, str) else None
+        out = rcx.classify_balances(api_rows=rows, proxy=proxy, eoa=eoa,
+                                    onchain={"chain_id": chain, "usdc_decimals": decimals, "proxy_usdc": proxy_usdc,
+                                             "eoa_usdc": eoa_usdc})
+        # Outcome and relation only: amounts and addresses never leave the run.
+        rec.add("onchain_balance usdc (rpc vs /user/balance-v3)", "REAL_CONSISTENCY", out["outcome"],
+                relation=out["reason"], proxy_deployed=(proxy_data or {}).get("deployed"))
+    except Exception as exc:
+        rec.add("onchain_balance usdc (rpc vs /user/balance-v3)", "REAL_CONSISTENCY", "FAIL",
+                error_type=type(exc).__name__)
+
+
 def main() -> int:
     import logging
     for noisy in ("httpx", "httpcore", "websockets", "mcp"):
@@ -580,6 +766,10 @@ def main() -> int:
                                    seconds, secrets))
     except Exception as exc:
         rec.add("realtime_websocket", "REAL_WEBSOCKET", "FAIL", error_type=type(exc).__name__)
+    try:
+        asyncio.run(consistency_probe(rec, api_key, ctx.get("probe_market_hash"), seconds, secrets))
+    except Exception as exc:
+        rec.add("r2_consistency", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
     counts: dict[str, int] = {}
     for r in rec.rows:
         counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1

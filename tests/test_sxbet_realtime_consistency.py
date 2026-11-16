@@ -1,0 +1,158 @@
+"""Issue #187 R2: offline tests of the pure analysis used by the mainnet READ-ONLY audit (REST vs realtime,
+recovery, on-chain balance). No network: the live run happens only in the owner-run workflow."""
+import pytest
+
+from scripts import sxbet_realtime_consistency as rc
+
+PROXY = "0x" + "aa" * 20
+USDC = rc.MAINNET["usdc"]
+ESCROW = rc.MAINNET["escrow"]
+
+
+def pubs(*offsets, ids=None):
+    ids = ids or [f"m{o}" for o in offsets]
+    return [{"offset": o, "message_id": i} for o, i in zip(offsets, ids)]
+
+
+# ---------------------------------------------------------------- stream integrity
+@pytest.mark.parametrize("stream, outcome, reason", [
+    ([], "EMPTY_VALID", "NO_PUBLICATION_IN_WINDOW"),
+    (pubs(5, 6, 7), "PASS", "UNIQUE_IDS_CONTIGUOUS_OFFSETS"),
+    (pubs(5, 6, 6, ids=["a", "b", "b"]), "PASS", "UNIQUE_IDS_CONTIGUOUS_OFFSETS"),       # duplicate dropped
+    (pubs(5, 7), "PARTIAL", "OFFSET_GAPS_IN_LIVE_STREAM"),
+    (pubs(7, 6), "FAIL", "OFFSETS_OUT_OF_ORDER"),
+    ([{"offset": 1, "message_id": None}], "FAIL", "PUBLICATION_WITHOUT_MESSAGE_ID"),
+    ([{"offset": None, "message_id": "x"}], "PARTIAL", "OFFSETS_NOT_PROVIDED"),
+])
+def test_analyze_channel(stream, outcome, reason):
+    out = rc.analyze_channel(stream)
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def test_duplicates_are_counted_and_never_applied_twice():
+    out = rc.analyze_channel(pubs(1, 2, 2, 3, ids=["a", "b", "b", "c"]))
+    assert out["duplicates_dropped"] == 1 and out["unique"] == 3
+
+
+# ---------------------------------------------------------------- recovery across a reconnect
+CH = "recent_trades_v3:global"
+
+
+@pytest.mark.parametrize("resub, replayed, after, outcome, reason", [
+    ({"was_recovering": True, "recovered": True}, pubs(11, 12), pubs(13), "PASS", "RECOVERED_DEDUPED_CONTIGUOUS"),
+    ({"was_recovering": True, "recovered": True}, pubs(10, 11, ids=["m10", "m11"]), pubs(12), "PASS",
+     "RECOVERED_DEDUPED_CONTIGUOUS"),                                                     # replay overlaps: deduped
+    ({"was_recovering": True, "recovered": True}, [], pubs(14), "FAIL", "GAP_ACROSS_RECONNECT"),
+    ({"was_recovering": True, "recovered": False}, [], pubs(40), "PARTIAL", "RECOVERY_NOT_GRANTED_RESEED_FROM_REST"),
+    ({"was_recovering": False, "recovered": False}, [], [], "FAIL", "RECOVERY_NOT_ATTEMPTED"),
+    (None, [], [], "FAIL", "NO_RESUBSCRIBE_RESULT"),
+])
+def test_analyze_recovery(resub, replayed, after, outcome, reason):
+    out = rc.analyze_recovery(CH, before=pubs(9, 10), resubscribe=resub, replayed=replayed, after=after)
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def test_recovery_not_claimed_for_namespaces_without_history():
+    out = rc.analyze_recovery("best_odds_v3:global", before=pubs(1), resubscribe={}, replayed=[], after=[])
+    assert out["outcome"] == "NOT_TESTED"
+
+
+def test_recovery_without_prior_publications_is_not_tested():
+    out = rc.analyze_recovery(CH, before=[], resubscribe={"was_recovering": True, "recovered": True},
+                              replayed=[], after=pubs(1))
+    assert out["outcome"] == "NOT_TESTED"
+
+
+# ---------------------------------------------------------------- REST vs realtime identifiers
+@pytest.mark.parametrize("ws, rest, complete, outcome", [
+    ([], ["t1"], True, "NOT_TESTED"),
+    (["t1", "t2"], ["t0", "t1", "t2"], True, "PASS"),
+    (["t1", "t9"], ["t1"], True, "FAIL"),
+    (["t1", "t9"], ["t1"], False, "PARTIAL"),
+])
+def test_compare_trades(ws, rest, complete, outcome):
+    assert rc.compare_trades(ws, rest, rest_complete=complete)["outcome"] == outcome
+
+
+V1, V2, V3 = "00100000000000010015000", "00100000000000010015001", "00100000000000010015002"
+L = [{"percentageOdds": "40000000000000000000", "size": "1000000"}]
+
+
+@pytest.mark.parametrize("ws, rest, outcome, reason", [
+    ([], {"version": V1}, "NOT_TESTED", "NO_BOOK_PUBLICATION_IN_WINDOW"),
+    ([{"version": V1, "outcomeOne": L, "outcomeTwo": []}], {"version": V1, "outcomeOne": L, "outcomeTwo": []},
+     "PASS", "SAME_VERSION_SAME_LEVELS"),
+    ([{"version": V1, "outcomeOne": L, "outcomeTwo": []}], {"version": V1, "outcomeOne": [], "outcomeTwo": []},
+     "FAIL", "SAME_VERSION_DIFFERENT_LEVELS"),
+    ([{"version": V1}, {"version": V2}], {"version": V3}, "PASS", "REST_NEWER_THAN_LAST_SOCKET_VERSION"),
+    ([{"version": V2}], {"version": V1}, "FAIL", "REST_SNAPSHOT_OLDER_THAN_SOCKET"),
+    ([{"version": "x"}], {"version": V1}, "FAIL", "BOOK_VERSION_MALFORMED"),
+    ([{"version": V1}], None, "PARTIAL", "REST_SNAPSHOT_NOT_READ"),
+])
+def test_compare_book_versions(ws, rest, outcome, reason):
+    out = rc.compare_book_versions(ws, rest)
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def test_stale_socket_versions_are_counted():
+    out = rc.compare_book_versions([{"version": V2}, {"version": V1}], {"version": V3})
+    assert out["stale_publications"] == 1
+
+
+# ---------------------------------------------------------------- on-chain balance
+def row(available="14140000", escrowed="0", pa="0", pe="0", **kw):
+    r = {"wallet": PROXY, "tokenAddress": USDC, "escrowAddress": ESCROW, "availableAmount": available,
+         "escrowedAmount": escrowed, "pendingAvailableAmount": pa, "pendingEscrowAmount": pe}
+    r.update(kw)
+    return r
+
+
+OK_CHAIN = {"chain_id": 4162, "usdc_decimals": 6}
+
+
+@pytest.mark.parametrize("rows, proxy_usdc, outcome, reason", [
+    ([row()], 14140000, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE"),
+    ([row(available="10000000", escrowed="4140000")], 14140000, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_ESCROWED"),
+    ([row(available="10000000", pa="4140000")], 14140000, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING"),
+    ([row()], 0, "PASS", "PROXY_TOKEN_ZERO_FUNDS_HELD_IN_ESCROW_ACCOUNTING"),
+    ([row()], 9, "PARTIAL", "DIFFERENCE_NOT_EXPLAINED_BY_DOCUMENTED_FIELDS"),          # explained, never "anomaly"
+    ([row(escrowAddress="0x" + "11" * 20)], 14140000, "FAIL", "USDC_ROW_NOT_ON_THE_DOCUMENTED_ESCROW"),
+    ([row(wallet="0x" + "22" * 20)], 14140000, "FAIL", "BALANCE_ROW_WALLET_IS_NOT_THE_PROXY"),
+    ([], 0, "EMPTY_VALID", "NO_USDC_ROW"),
+    ([row(tokenAddress="0x" + "33" * 20)], 0, "PARTIAL", "NO_ROW_FOR_THE_DOCUMENTED_USDC"),
+    ([row(available="1.5")], 1, "PARTIAL", "AMOUNT_NOT_READABLE"),
+])
+def test_classify_balances(rows, proxy_usdc, outcome, reason):
+    out = rc.classify_balances(api_rows=rows, proxy=PROXY, eoa=None,
+                               onchain={**OK_CHAIN, "proxy_usdc": proxy_usdc, "eoa_usdc": None})
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+@pytest.mark.parametrize("chain, outcome, reason", [
+    ({"chain_id": 1, "usdc_decimals": 6}, "FAIL", "RPC_CHAIN_ID_NOT_4162"),
+    ({"chain_id": 4162, "usdc_decimals": 18}, "FAIL", "USDC_DECIMALS_NOT_6"),
+])
+def test_classify_balances_pins_the_documented_chain_and_token(chain, outcome, reason):
+    out = rc.classify_balances(api_rows=[row()], proxy=PROXY, eoa=None, onchain={**chain, "proxy_usdc": 1})
+    assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+def test_classify_balances_without_api_read_is_not_tested():
+    assert rc.classify_balances(api_rows=None, proxy=PROXY, eoa=None,
+                                onchain={**OK_CHAIN, "proxy_usdc": 1})["outcome"] == "NOT_TESTED"
+
+
+def test_signed_pending_deltas_are_parsed():
+    out = rc.classify_balances(api_rows=[row(available="15000000", pa="-860000")], proxy=PROXY, eoa=None,
+                               onchain={**OK_CHAIN, "proxy_usdc": 14140000})
+    assert out["reason"] == "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING"
+    assert out["api"]["pending_available"] == "-860000"
+
+
+def test_module_does_no_io():
+    import ast
+    import pathlib
+    tree = ast.parse(pathlib.Path(rc.__file__).read_text())
+    mods = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    mods |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    assert not mods & {"httpx", "requests", "urllib", "socket", "websockets", "psycopg", "asyncio", "os"}
