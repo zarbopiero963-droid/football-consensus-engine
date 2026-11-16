@@ -217,7 +217,19 @@ facts AS (
             OR p.relam OPERATOR(pg_catalog.<>) (SELECT am.oid FROM pg_catalog.pg_am am WHERE am.amname OPERATOR(pg_catalog.=) 'heap'::pg_catalog.name)) AS table_props,
         (SELECT pg_catalog.count(*) FROM present p JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) p.oid
             AND a.attnum OPERATOR(pg_catalog.>) 0::pg_catalog.int2
-            WHERE a.attacl IS NOT NULL OR a.attoptions IS NOT NULL
+            WHERE a.attacl IS NOT NULL
+               -- PostgreSQL 18.7/16.16 set the internal, server-managed column option pg_attver on every column
+               -- (ALTER COLUMN SET/RESET cannot change it). Exactly that one key, decimal, on those versions only;
+               -- any other option or any extra key is still drift (docs/certification/areas/defaultdb_restore_runbook.md).
+               -- COALESCE: an array with a lower bound other than 1 makes [1] NULL, which must be drift.
+               OR (a.attoptions IS NOT NULL AND NOT COALESCE(
+                   pg_catalog.cardinality(a.attoptions) OPERATOR(pg_catalog.=) 1
+                   AND pg_catalog.array_lower(a.attoptions, 1) OPERATOR(pg_catalog.=) 1
+                   AND (a.attoptions)[1] OPERATOR(pg_catalog.~) '^pg_attver=[0-9]+$'::pg_catalog.text
+                   AND (pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>=) 180007
+                        OR (pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.>=) 160016
+                            AND pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 170000)),
+                   false))
                OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog."char"
                OR a.attgenerated OPERATOR(pg_catalog.<>) ''::pg_catalog."char") AS column_props,
         (SELECT pg_catalog.count(*) FROM pg_catalog.pg_policy pol JOIN present p ON p.oid OPERATOR(pg_catalog.=) pol.polrelid) AS policies,

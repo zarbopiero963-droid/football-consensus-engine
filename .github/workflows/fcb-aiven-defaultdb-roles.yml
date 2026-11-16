@@ -82,7 +82,7 @@ jobs:
         sql/aiven/verify_bridge_roles.sql=e6d7549b6e3aa9e538b483ff4aec4846babc670baa2cd3452f867fef021c615a
         sql/aiven/diagnose_bridge_roles.sql=b6052fb941fd52bd48064a71bbf3a9ffd61cdccac292b45c0cb2383b5cd0f270
         sql/aiven/verify_bridge_schema.sql=fd063c1d7fee80616647f3f98a42693bbf4a7c77691846d89a8df590e14deb24
-        sql/aiven/defaultdb_precheck.sql=d3291db3e7d6cc75ba9e40f34c86f44241f4c883f22d2098d5abfde274311d6d
+        sql/aiven/defaultdb_precheck.sql=62555081449387999e73b7f723609ea092a1e3f30f14087988358766881df178
         sql/aiven/defaultdb_precheck_tracked.sql=e20c845d49a8af61d12975d7756f51a806a8833ffe09b7ef500106143ee5b493
         sql/aiven/fingerprint_bridge_schema.sql=9a04f81ac3fa6a24fb72f0e2e911b76a4c3b33bdeb6f12c8347b674767e36ba8
         sql/aiven/fingerprint_bridge_structure.sql=995ba192e5c8c93b70b484d71f110a3b955a8e1b6b3298db74d6eed557ec092c

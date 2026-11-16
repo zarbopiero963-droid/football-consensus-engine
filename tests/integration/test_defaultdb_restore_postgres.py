@@ -1046,3 +1046,98 @@ def test_the_post_guard_needs_the_state_recorded_by_the_guard(schema):
                        "-f", str(AIVEN / "assert_bridge_counts.sql"), "-f", str(AIVEN / "defaultdb_restore_post_guard.sql"))
     assert rc != 0 and "FCB_RESTORE_PRIOR_STATE_UNKNOWN" in err
     assert _nothing_written(schema)
+
+
+# ------------------------------------------------------------------ PostgreSQL 18.7 / 16.16: pg_attver
+# Those minors set the internal column option `pg_attver=<decimal>` on every column they create or
+# re-type (CREATE TABLE, ADD COLUMN, ALTER COLUMN TYPE); ALTER COLUMN SET/RESET (pg_attver=...) is
+# silently ignored, so only the server writes it. The column_props drift check accepts exactly that
+# one key, decimal, on those versions; anything else is still REFUSE_RUNTIME_TABLE_DRIFT.
+
+def _server_version_num():
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
+        return conn.info.server_version
+
+
+def _attver_server():
+    v = _server_version_num()
+    return v >= 180007 or 160016 <= v < 170000
+
+
+def _column_options(target, table="api_football_quota_counters", column="api_key_hash"):
+    with psycopg.connect(target.dsn) as conn:
+        return conn.execute("SELECT a.attoptions FROM pg_catalog.pg_attribute a WHERE a.attrelid = %s::regclass "
+                            "AND a.attname = %s", (f"public.{table}", column)).fetchone()[0]
+
+
+def test_pg_attver_is_server_managed_on_this_minor(schema):
+    """Evidence for the exception: present on every new column only on 18.7+/16.16+, and an
+    ALTER COLUMN SET/RESET of it does not change or remove it (18.6/16.15 reject the key)."""
+    _runtime_tables(schema)
+    before = _column_options(schema)
+    if not _attver_server():
+        assert before is None
+        rc, _, err = _psql(schema, "-c", "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (pg_attver = 1)")
+        assert rc != 0 and 'unrecognized parameter "pg_attver"' in err
+        return
+    assert len(before) == 1 and re.fullmatch(r"pg_attver=[0-9]+", before[0]), before
+    for stmt in ("ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (pg_attver = 1)",
+                 "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (pg_attver = 'abc')",
+                 "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash RESET (pg_attver)"):
+        rc, _, err = _psql(schema, "-c", stmt)
+        assert rc == 0, err
+        assert _column_options(schema) == before, stmt
+    with psycopg.connect(schema.dsn) as conn:
+        missing = conn.execute(
+            "SELECT pg_catalog.count(*) FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' "
+            "AND a.attnum > 0 AND NOT a.attisdropped AND a.attoptions IS NULL").fetchone()[0]
+    assert missing == 0
+    assert _state(schema) == "RUNTIME_ONLY"
+
+
+@pytest.mark.parametrize("variant", [
+    "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (n_distinct = 5)",
+    "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (n_distinct_inherited = 3)",
+    "ALTER TABLE api_football_quota_counters ALTER COLUMN api_key_hash SET (n_distinct = -1, n_distinct_inherited = -0.5)",
+])
+def test_any_other_column_option_is_still_drift_with_or_without_pg_attver(schema, variant):
+    _runtime_tables(schema)
+    rc, _, err = _psql(schema, "-c", variant)
+    assert rc == 0, err
+    assert any(not o.startswith("pg_attver=") for o in _column_options(schema))
+    assert _state(schema) == "REFUSE_RUNTIME_TABLE_DRIFT"
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and "REFUSE_RUNTIME_TABLE_DRIFT" in err  # the in-transaction guard too
+
+
+@pytest.mark.parametrize("options", [
+    "{pg_attver=abc}", "{pg_attver=}", "{pg_attver=12x}", "{pg_attver=-1}", "{pg_attver=1,pg_attver=2}",
+    "{pg_attver=1,n_distinct=5}", "{n_distinct=5,pg_attver=1}", "{PG_ATTVER=1}", "{pg_attver2=1}", "{\"pg_attver=1 \"}", "{\" pg_attver=1\"}",
+    # review #202 P3-a: a lower bound other than 1 made (attoptions)[1] NULL and the predicate fail open
+    "[0:0]={n_distinct=5}", "[2:2]={n_distinct=5}", "[0:0]={pg_attver=1}", "[2:2]={pg_attver=1}",
+])
+def test_malformed_or_extra_pg_attver_written_into_the_catalog_is_drift(schema, options):
+    """Only a superuser editing pg_attribute directly can produce these; each is refused, or the
+    18.7 server itself fails the precheck while parsing it ("could not parse attribute version"):
+    fail closed either way, never RUNTIME_ONLY."""
+    _runtime_tables(schema)
+    _exec(schema.dsn, "UPDATE pg_catalog.pg_attribute SET attoptions = %s::text[] "
+                      "WHERE attrelid = 'public.api_football_quota_counters'::regclass AND attname = 'api_key_hash'"
+          .replace("%s", "'" + options + "'"))
+    rc, out, err = _psql(schema, "-f", str(AIVEN / "defaultdb_precheck.sql"))
+    if rc == 0:
+        assert out == "REFUSE_RUNTIME_TABLE_DRIFT", (options, out)
+    else:
+        assert _attver_server() and "could not parse attribute version" in err, (options, err)
+    # review #202 P3-d: the generated in-transaction guards refuse it too (never apply)
+    rc, _, err = _restore_tx(schema, _clean_counts())
+    assert rc != 0 and ("REFUSE_RUNTIME_TABLE_DRIFT" in err
+                        or (_attver_server() and "could not parse attribute version" in err)), (options, err)
+
+
+def test_a_well_formed_pg_attver_is_accepted_only_on_the_minors_that_write_it(schema):
+    _runtime_tables(schema)
+    _exec(schema.dsn, "UPDATE pg_catalog.pg_attribute SET attoptions = '{pg_attver=4242}'::text[] "
+                      "WHERE attrelid = 'public.api_football_quota_counters'::regclass AND attname = 'api_key_hash'")
+    assert _state(schema) == ("RUNTIME_ONLY" if _attver_server() else "REFUSE_RUNTIME_TABLE_DRIFT")
