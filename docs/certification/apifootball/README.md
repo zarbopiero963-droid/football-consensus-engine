@@ -105,7 +105,7 @@ Colonne della matrice: `source_sha`, `evidence_date`, `evidence_ref`, `changes_s
 Ne seguono tre garanzie:
 - retry, timeout e risposte ambigue sono sempre contati;
 - un riavvio o un nuovo dispatch con lo stesso `campaign_id` continua lo stesso budget e non ritenta le chiamate già tentate;
-- ogni richiesta prende anche il lease del coordinatore di quota condiviso (`PostgresQuota`), che resta **intatto**.
+- ogni richiesta prende anche il lease del coordinatore di quota condiviso, che resta **intatto**: stesse tabelle e stesso lock di `PostgresQuota`, raggiunte dal runner tramite `fcb_cert_quota.*` (variante R1).
 
 **Numero e dipendenza (AF-11, decisione owner).** La PR #198, mergiata dall'owner su main come squash `a46ba72`, introduce la 0009 (`0009_oauth_throttle_buckets.sql`). Questa migration è quindi la **0010** (`sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql`).
 
@@ -346,7 +346,7 @@ Fuori scope: raccolta continuativa delle quote, storico, calcolo del drop.
 
 ## PATH A2: ledger nel database dedicato `fcb_cert` (owner GO, PR #201)
 
-Il ledger è la 0010 byte per byte nel database `fcb_cert` dello stesso servizio Aiven. Database e oggetti appartengono a `fcb_cert_owner` (NOLOGIN). Il runner `fcb_cert_runner` ha SELECT e INSERT di colonna sul ledger; su `defaultdb` ha solo i 9 privilegi approvati del coordinatore. I workflow legacy 0010 e plan-approve sono disabilitati (`LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2`); installazione e approvazione passano dai workflow `fcb-aiven-apifootball-cert-a2-*`.
+Il ledger è la 0010 byte per byte nel database `fcb_cert` dello stesso servizio Aiven. Database e oggetti appartengono a `fcb_cert_owner` (NOLOGIN). Il runner `fcb_cert_runner` ha SELECT e INSERT di colonna sul ledger; su `defaultdb` non ha nessun privilegio sulle tabelle del coordinatore. Nella variante R1 (decisione owner D2, branch `claude/a2-r1-quota-rpc`) accede al coordinatore condiviso solo tramite 4 funzioni `SECURITY DEFINER` dello schema `fcb_cert_quota`, con limiti fissi 8/80/2 e identità `SESSION_USER`; dettagli, rischio residuo e compatibilità ancora bloccata con restore, backup e WP-009 in `a2_privilege_matrix.md`. I workflow legacy 0010 e plan-approve sono disabilitati (`LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2`); installazione e approvazione passano dai workflow `fcb-aiven-apifootball-cert-a2-*`.
 
 **Controllo contatore = tentativi (review #201, opzione A).** Nella stessa transazione della prenotazione, dopo l'INSERT e prima del COMMIT, il runner esige che il numero dei tentativi del piano, i seq distinti e il seq massimo siano tutti uguali al `seq` appena assegnato. Il `seq` è il valore del contatore dopo l'incremento del trigger.
 - Il lock di riga sul contatore serializza le prenotazioni del piano.
@@ -376,7 +376,7 @@ Qualunque differenza, o errore del controllo stesso, rifiuta prima dell'invio.
 - tra il controllo e l'INSERT l'owner poteva sostituire il trigger di budget (P2).
 
 Ora il runner fa questo:
-- **Rifiuta in modo fail-closed** se sulle 5 tabelle del ledger esiste una regola (`pg_rewrite`), RLS abilitata o forzata, una policy, un'ereditarietà o partizione, un relkind diverso da tabella, una tabella non permanente o non heap. Lo stesso controllo vale per le 3 tabelle del coordinatore in `defaultdb`, sulla connessione del coordinatore, prima di qualsiasi lease (`COORDINATOR_TABLES_TAMPERED`).
+- **Rifiuta in modo fail-closed** se sulle 5 tabelle del ledger esiste una regola (`pg_rewrite`), RLS abilitata o forzata, una policy, un'ereditarietà o partizione, un relkind diverso da tabella, una tabella non permanente o non heap. Lo stesso controllo vale per le 3 tabelle del coordinatore in `defaultdb`, sulla connessione del coordinatore, prima di qualsiasi lease (`COORDINATOR_TABLES_TAMPERED`). Sulla stessa connessione il runner esige che le funzioni `fcb_cert_quota.*` siano nello stato esatto (`COORDINATOR_FUNCTIONS_NOT_EXACT`).
 - **Prende i lock all'inizio di ogni transazione del ledger**, prima di ogni controllo, in ordine fisso, con `lock_timeout` di 3 s. Un timeout produce `CAMPAIGN_LEDGER_LOCK_TIMEOUT`.
   - ROW EXCLUSIVE su campaigns, attempts e outcomes, tramite un INSERT di zero righe: nessun nuovo privilegio e nessuna serializzazione tra prenotazioni.
   - ACCESS SHARE su plans.
