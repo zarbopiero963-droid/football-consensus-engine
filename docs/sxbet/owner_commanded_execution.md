@@ -86,9 +86,9 @@ Certificazione prima del GO: suite verdi, checklist testnet con evidenze, almeno
 - **D2** L'evento deve comparire nel comando (consigliato, richiesto dal §2.3bis) o può venire dal contesto della chat?
 - **D3** «a quota minima X» = FOK (tutto o niente, consigliato) o IOC (parziale ammesso)? Quota minima lorda o netta di commissioni?
 - **D4** Hosting del signer (servizio privato Render ~7,25 $/mese, hardware dell'owner, VPS) e KMS sì/no.
-- **D5** Chiave: EOA dedicato con saldo ridotto (consigliato) o chiave Magic esportata.
-- **D6** Chiave API con permessi di ordine/cancellazione solo nel signer (consigliato) o anche nel MCP.
-- **D7** Kill switch: solo blocco o blocco + cancellazione di tutto; heartbeat per gli ordini GTC.
+- **D5** Chiave: EOA dedicato con saldo ridotto (consigliato) o chiave Magic esportata. **Decisa dall'owner il 16-11-2026: EOA dedicato al trading.**
+- **D6** Chiave API con permessi di ordine/cancellazione solo nel signer (consigliato) o anche nel MCP. **Decisa dall'owner il 16-11-2026: esclusivamente nel signer isolato.**
+- **D7** Kill switch: solo blocco o blocco + cancellazione di tutto; heartbeat per gli ordini GTC. **Parzialmente decisa dall'owner il 16-11-2026:** con il kill switch attivo le cancellazioni di ordini già aperti restano ammesse, con autenticazione, idempotenza, audit e riconciliazione (implementato in P5); il resto resta aperto.
 - **D8** Impostazione di approvazione dei tool nel client (chiedi / consenti sempre): non è un controllo del signer.
 - **D9** Connettore di trading separato e client OAuth dedicato.
 - **D10** Testnet: account, proxy, USDC di test, chiave API e chiave di firma di test.
