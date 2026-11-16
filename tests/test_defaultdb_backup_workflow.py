@@ -765,8 +765,19 @@ def test_the_packaged_roles_sql_is_the_unfiltered_dump():
     assert '"roles": src_globals["roles"],' in pkg
 
 
+KEY = "Ab3" * 21  # 63 alphanumerics, pg_dump's \restrict key format
+HEAD, TAIL = f"\\restrict {KEY}\n", f"\\unrestrict {KEY}\n"
+
+
+def _wrapped(text):
+    """`text` between the pg_dumpall restrict/unrestrict pair (check_psql_script requires it)."""
+    return HEAD + text + TAIL
+
+
 def _one(mod, text):
-    return mod.restore_test_roles_sql(text)
+    filtered, skipped = mod.restore_test_roles_sql(_wrapped(text))
+    assert filtered.startswith(HEAD) and filtered.endswith(TAIL)
+    return filtered[len(HEAD):-len(TAIL)], skipped
 
 
 @pytest.mark.parametrize("statement", [
@@ -833,7 +844,7 @@ def test_quoted_identifiers_with_quotes_and_semicolons_are_kept_intact():
 def test_anything_the_lexer_cannot_classify_fails_closed(text):
     mod = _module()
     with pytest.raises(mod.BackupError) as exc:
-        mod.restore_test_roles_sql(text)
+        mod.restore_test_roles_sql(_wrapped(text))
     assert exc.value.code == "ROLES_SQL_UNPARSEABLE"
 
 
@@ -857,3 +868,107 @@ def test_runbook_explains_the_managed_roles_restore_fix():
                    "restore_test_skipped_role_settings", "ROLES_SQL_UNPARSEABLE", "Limiti della verifica dei ruoli gestiti",
                    "Non eseguire `roles.sql` per intero", "roles_local.sql", "_aiven_x"):
         assert needle in text, needle
+
+
+
+# ------------------------------------------------------------------ review of PR #204 (F1-F4)
+
+FIXTURE_TEXT = AIVEN_ROLES_FIXTURE.read_text(encoding="utf-8") if AIVEN_ROLES_FIXTURE.exists() else ""
+FIXTURE_KEY = re.search(r"^\\restrict (\S+)$", FIXTURE_TEXT, re.M).group(1) if FIXTURE_TEXT else ""
+
+
+def _fixture_with(old, new):
+    assert FIXTURE_TEXT.count(old) == 1, old
+    return FIXTURE_TEXT.replace(old, new)
+
+
+@pytest.mark.parametrize("text", [
+    # F1: any meta-command other than the pg_dumpall pair, anywhere
+    _fixture_with("CREATE ROLE _aiven;\n", "\\! touch /tmp/pwned\nCREATE ROLE _aiven;\n"),
+    _fixture_with("CREATE ROLE _aiven;\n", "\\i /etc/passwd\nCREATE ROLE _aiven;\n"),
+    _fixture_with("CREATE ROLE _aiven;\n", "\\set ON_ERROR_STOP 0\nCREATE ROLE _aiven;\n"),
+    _fixture_with("CREATE ROLE _aiven;\n", "\\c template1\nCREATE ROLE _aiven;\n"),
+    _fixture_with("CREATE ROLE _aiven;\n", "\\connect template1\nCREATE ROLE _aiven;\n"),
+    # F1: the pair itself: missing, extra, wrong order, different keys, bad key, \\ separator, trailing text
+    FIXTURE_TEXT.replace(f"\\restrict {FIXTURE_KEY}\n", ""),
+    FIXTURE_TEXT.replace(f"\\unrestrict {FIXTURE_KEY}\n", ""),
+    FIXTURE_TEXT.replace(f"\\restrict {FIXTURE_KEY}\n", "").replace(f"\\unrestrict {FIXTURE_KEY}\n", ""),
+    _fixture_with("CREATE ROLE _aiven;\n", f"\\restrict {FIXTURE_KEY}\nCREATE ROLE _aiven;\n"),
+    _fixture_with(f"\\unrestrict {FIXTURE_KEY}\n", f"\\unrestrict {'Z' * 63}\n"),
+    FIXTURE_TEXT.replace(FIXTURE_KEY, "short"),
+    FIXTURE_TEXT.replace(FIXTURE_KEY, FIXTURE_KEY[:-1] + "!"),
+    _fixture_with(f"\\restrict {FIXTURE_KEY}\n", f"\\restrict {FIXTURE_KEY} \\\\ \\! id\n"),
+    _fixture_with(f"\\restrict {FIXTURE_KEY}\n", f"\\restrict {FIXTURE_KEY} extra\n"),
+    _fixture_with(f"\\unrestrict {FIXTURE_KEY}\n", f"\\unrestrict {FIXTURE_KEY}\\\\\\! id\n"),
+    # F1: a statement outside the restricted section
+    _fixture_with(f"\\restrict {FIXTURE_KEY}\n", f"CREATE ROLE early;\n\\restrict {FIXTURE_KEY}\n"),
+    _fixture_with(f"\\unrestrict {FIXTURE_KEY}\n", f"\\unrestrict {FIXTURE_KEY}\nCREATE ROLE late;\n"),
+    # F2: the lexer reads literals with standard_conforming_strings=on only
+    _fixture_with("SET standard_conforming_strings = on;", "SET standard_conforming_strings = off;"),
+    _fixture_with("SET client_encoding = 'UTF8';", "SET client_encoding = 'UTF8';\nSET standard_conforming_strings TO off;"),
+    _fixture_with("SET client_encoding = 'UTF8';",
+                  "SET client_encoding = 'UTF8';\nSELECT pg_catalog.set_config('standard_conforming_strings', 'off', false);"),
+    _fixture_with("SET client_encoding = 'UTF8';", "SET client_encoding = 'UTF8';\nset Standard_Conforming_Strings = 'on';"),
+], ids=["shell", "include", "set-var", "c", "connect", "no-restrict", "no-unrestrict", "no-pair", "two-restrict",
+        "key-mismatch", "key-short", "key-charset", "restrict-separator", "restrict-trailing", "unrestrict-separator",
+        "stmt-before", "stmt-after", "scs-off", "scs-to-off", "scs-set-config", "scs-other-spelling"])
+def test_f1_f2_only_the_pg_dumpall_meta_pair_and_scs_on_are_accepted(text):
+    mod = _module()
+    with pytest.raises(mod.BackupError) as exc:
+        mod.restore_test_roles_sql(text)
+    assert exc.value.code == "ROLES_SQL_UNPARSEABLE"
+
+
+def test_f1_the_real_dump_shape_is_accepted():
+    mod = _module()
+    segments = mod.split_psql_script(FIXTURE_TEXT)
+    mod.check_psql_script(segments)
+    assert [s for k, s in segments if k == "meta"] == [f"\\restrict {FIXTURE_KEY}\n", f"\\unrestrict {FIXTURE_KEY}\n"]
+    assert len(FIXTURE_KEY) == 63
+
+
+def test_f1_the_check_runs_before_psql():
+    src = SCRIPT.read_text(encoding="utf-8")
+    body = src[src.index("def restore_test_roles_sql"):src.index("def skipped_settings_info")]
+    assert body.index("check_psql_script(segments)") < body.index("for kind, seg in segments")
+    run = src[src.index("# ---- 3. isolated restore"):src.index("# ---- 4. verification")]
+    assert run.index("restore_test_roles_sql(") < run.index("cluster.start()") < run.index("apply_roles_sql(")
+
+
+@pytest.mark.parametrize("value", [
+    "'10s' , '20s'", "'a'||'b'", "'a' 'b'", "now()", "'a', b", "'a'\n", "$x$", "'a' -- c\n", "1 + 1", "'a',",
+    "E'a'", "(1)",
+])
+def test_f3_a_value_outside_pg_dumpall_format_is_never_skipped(value):
+    mod = _module()
+    stmt = f"ALTER ROLE _aiven SET \"pgaudit.log\" TO {value};"
+    assert mod.managed_setting_of(stmt) is None
+
+
+@pytest.mark.parametrize("value", ["'none'", "'it''s'", "'a;\nb'", "'ddl', 'role'", "on", "10s", "-1", "0.5"])
+def test_f3_pg_dumpall_value_forms_are_skipped(value):
+    mod = _module()
+    assert mod.managed_setting_of(f"ALTER ROLE _aiven SET \"pgaudit.log\" TO {value};") == ("_aiven", "pgaudit.log")
+
+
+@pytest.mark.parametrize("stderr, cls", [
+    ("psql:/w/roles_restore_test.sql:7: error: backslash commands are restricted; only \\unrestrict is allowed",
+     "META_COMMAND_REFUSED"),
+    ("psql:/w/roles_restore_test.sql:7: error: invalid command \\foo", "META_COMMAND_REFUSED"),
+    ("psql:/w/roles_restore_test.sql:7: error: could not open file", "OTHER"),
+])
+def test_f4_psql_client_errors_fail_even_with_exit_code_zero(monkeypatch, tmp_path, stderr, cls):
+    mod = _module()
+    import subprocess as sp
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: sp.CompletedProcess(a[0], 0, "", stderr + "\n"))
+    with pytest.raises(mod.BackupError) as exc:
+        mod.apply_roles_sql("psql", tmp_path / "r.sql", {}, "postgres")
+    assert (exc.value.code, exc.value.detail) == ("ROLES_SQL_APPLY_FAILED", f"class={cls}")
+
+
+def test_f4_the_expected_bootstrap_error_alone_still_passes(monkeypatch, tmp_path):
+    mod = _module()
+    import subprocess as sp
+    err = 'psql:/w/roles_restore_test.sql:32: ERROR:  role "postgres" already exists\n'
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: sp.CompletedProcess(a[0], 0, "", err))
+    mod.apply_roles_sql("psql", tmp_path / "r.sql", {}, "postgres")

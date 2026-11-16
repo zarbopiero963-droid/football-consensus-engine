@@ -221,6 +221,7 @@ def child_env(params: dict | None = None, *, options: str = "") -> dict:
 # n: ...", "Command was: ..."), role names or settings. It is NEVER printed: a failure is reported
 # as a fixed code plus one of these fixed classes, chosen by the first rule that matches.
 ERROR_CLASSES = (
+    ("META_COMMAND_REFUSED", re.compile(r"backslash commands are restricted|invalid command \\", re.I)),
     ("AUTHENTICATION_FAILED", re.compile(r"password authentication failed|authentication failed|no pg_hba\.conf entry", re.I)),
     ("TLS_FAILED", re.compile(r"\bSSL\b|certificate", re.I)),
     ("CONNECTION_FAILED", re.compile(r"connection to server|could not connect|connection refused|could not translate host|"
@@ -1170,6 +1171,9 @@ def apply_roles_sql(psql: str, roles_sql: Path, env: dict, bootstrap: str) -> No
     errors = [line for line in proc.stderr.splitlines() if re.search(r"\b(ERROR|FATAL|PANIC):", line)]
     allowed = f'ERROR:  role "{bootstrap}" already exists'
     unexpected = [e for e in errors if not e.endswith(allowed)]
+    # psql's own client errors (`psql:<file>:<line>: error: ...`, e.g. a refused backslash
+    # command under \restrict) do not set the exit code with ON_ERROR_STOP=0: any one fails.
+    unexpected += [line for line in proc.stderr.splitlines() if re.search(r"\berror:", line)]
     if proc.returncode != 0 or unexpected or len(errors) > 1:
         raise BackupError("ROLES_SQL_APPLY_FAILED", f"class={error_class(chr(10).join(unexpected or errors) or proc.stderr)}")
 
@@ -1212,7 +1216,16 @@ def managed_setting_pairs() -> list[str]:
 
 _BARE_IDENT = re.compile(r"[a-z_][a-z0-9_]*")
 _IDENT = r'(?:[a-z_][a-z0-9_$]*|"(?:[^"]|"")+")'
-_ALTER_ROLE_SET = re.compile(rf"ALTER ROLE (?P<role>{_IDENT}) SET (?P<param>{_IDENT}) TO (?P<value>.+);", re.S)
+# pg_dumpall's value forms (standard_conforming_strings=on): one single-quoted literal, or a
+# GUC_LIST_QUOTE list of them joined by ", ". A statement with any other value is never skipped.
+_LITERAL = r"'(?:[^']|'')*'"
+_VALUE = rf"(?:{_LITERAL}(?:, {_LITERAL})*|[A-Za-z0-9_.-]+)"
+_ALTER_ROLE_SET = re.compile(rf"ALTER ROLE (?P<role>{_IDENT}) SET (?P<param>{_IDENT}) TO (?P<value>{_VALUE});", re.S)
+# The only psql meta-commands roles.sql may hold: pg_dumpall's \restrict <key> before the first
+# statement and \unrestrict <same key> after the last (63 alphanumerics, pg_dump's format).
+_RESTRICT = re.compile(r"\\restrict (?P<key>[A-Za-z0-9]{63})\n")
+_UNRESTRICT = re.compile(r"\\unrestrict (?P<key>[A-Za-z0-9]{63})\n")
+_SCS_ON = "SET standard_conforming_strings = on;"
 
 
 def _unquote_ident(token: str) -> str:
@@ -1227,7 +1240,8 @@ def _fmt_ident(name: str) -> str:
 def split_psql_script(text: str) -> list[tuple[str, str]]:
     r"""Split a pg_dumpall script into ("gap" | "meta" | "stmt", text) segments whose concatenation
     is exactly `text`. Gaps are whitespace and `--` comment lines between statements; a meta
-    segment is one psql backslash line (\restrict, \unrestrict, \connect) at a statement boundary;
+    segment is one psql backslash line at a statement boundary (check_psql_script admits only
+    pg_dumpall's \restrict/\unrestrict pair);
     a statement runs up to its `;` outside single-quoted strings (E'' escapes included), quoted
     identifiers and `--` comments. Anything this lexer cannot classify exactly (dollar quoting,
     block comments, a backslash outside a literal, an unterminated literal or statement) raises
@@ -1310,6 +1324,27 @@ def split_psql_script(text: str) -> list[tuple[str, str]]:
     return segments
 
 
+def check_psql_script(segments: list[tuple[str, str]]) -> None:
+    r"""Fail closed (ROLES_SQL_UNPARSEABLE) unless the script's psql meta-commands are exactly
+    pg_dumpall's `\restrict <key>` before the first statement and `\unrestrict <same key>` after
+    the last, with nothing else on those lines (no `\\` separator, no other meta-command such as
+    \! \i \set \c), and unless every statement naming standard_conforming_strings is exactly
+    `SET standard_conforming_strings = on;` (the lexer reads literals with that setting). Runs on
+    the stored roles.sql before psql ever sees it."""
+    metas = [i for i, (kind, _) in enumerate(segments) if kind == "meta"]
+    if len(metas) != 2:
+        raise BackupError("ROLES_SQL_UNPARSEABLE")
+    first, last = (_RESTRICT.fullmatch(segments[metas[0]][1]), _UNRESTRICT.fullmatch(segments[metas[1]][1]))
+    if not first or not last or first.group("key") != last.group("key"):
+        raise BackupError("ROLES_SQL_UNPARSEABLE")
+    stmts = [i for i, (kind, _) in enumerate(segments) if kind == "stmt"]
+    if stmts and (stmts[0] < metas[0] or stmts[-1] > metas[1]):
+        raise BackupError("ROLES_SQL_UNPARSEABLE")
+    for i in stmts:
+        if "standard_conforming_strings" in segments[i][1].lower() and segments[i][1] != _SCS_ON:
+            raise BackupError("ROLES_SQL_UNPARSEABLE")
+
+
 def managed_setting_of(statement: str) -> tuple[str, str] | None:
     """(role, param) when `statement` is exactly pg_dumpall's `ALTER ROLE <role> SET <param> TO
     <value>;` for an allowlisted pair, written in pg_dumpall's canonical identifier form; else None
@@ -1331,7 +1366,9 @@ def restore_test_roles_sql(text: str) -> tuple[str, list[str]]:
     settings statements (and the line break that ends each), every other byte unchanged. Returns
     the filtered script and the skipped pairs as sorted `role param` (names only, never values)."""
     out, skipped, drop_newline = [], [], False
-    for kind, seg in split_psql_script(text):
+    segments = split_psql_script(text)
+    check_psql_script(segments)
+    for kind, seg in segments:
         if drop_newline and kind == "gap" and seg.startswith("\n"):
             seg = seg[1:]
         drop_newline = False

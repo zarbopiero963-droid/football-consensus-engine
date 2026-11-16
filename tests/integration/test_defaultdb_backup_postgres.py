@@ -670,7 +670,10 @@ def test_unknown_settings_outside_the_allowlist_still_fail_closed(source, short_
         out = real(argv, env, code, timeout)
         if "--roles-only" in argv:
             path = Path(argv[argv.index("--file") + 1])
-            path.write_text(path.read_text() + extra + "\n")
+            text = path.read_text()
+            end = next(l for l in text.splitlines() if l.startswith("\\unrestrict "))
+            # inside the \restrict section, where pg_dumpall writes every statement
+            path.write_text(text.replace(end + "\n", extra + "\n" + end + "\n", 1))
         return out
     mod._run = run
     rc, out, summary = _run(mod, source, short_tmp, capsys)
@@ -704,3 +707,48 @@ def test_managed_roles_stay_in_the_attribute_and_membership_comparison(source, s
     rc, out, summary = _run(mod, source, short_tmp, capsys)
     _assert_failed_clean(rc, out, summary, short_tmp, failing)
     assert "pg_restore_exit_on_error" not in summary
+
+
+# ------------------------------------------------------------------ review of PR #204: psql meta-commands
+
+def test_f1_a_meta_command_in_roles_sql_is_refused_before_psql_runs(source, short_tmp, capsys):
+    """A `\\!` line inside pg_dumpall's \\restrict section: psql would refuse it with exit code 0 and
+    an ignored `error:` line (RED on 302ed83: the run PASSED); now the run fails before psql."""
+    if source.kind != "fresh":
+        pytest.skip("one state is enough")
+    marker = short_tmp / "meta-marker"
+    mod = _module()
+    real = mod._run
+
+    def run(argv, env, code, timeout=3600):
+        out = real(argv, env, code, timeout)
+        if "--roles-only" in argv:
+            path = Path(argv[argv.index("--file") + 1])
+            text = path.read_text()
+            line = next(l for l in text.splitlines() if l.startswith("\\restrict "))
+            path.write_text(text.replace(line + "\n", f"{line}\n\\! touch {marker}\n", 1))
+        return out
+    mod._run = run
+    rc, out, summary = _run(mod, source, short_tmp, capsys)
+    _assert_failed_clean(rc, out, summary, short_tmp)
+    assert out.strip() == "::error::ROLES_SQL_UNPARSEABLE", out
+    assert "roles_sql_applied" not in summary and not marker.exists()
+
+
+def test_f4_a_refused_meta_command_fails_apply_roles_sql_on_real_psql(short_tmp):
+    mod = _module()
+    marker = short_tmp / "meta-marker"
+    key = "Ab3" * 21
+    script = short_tmp / "roles.sql"
+    script.write_text(f"\\restrict {key}\nCREATE ROLE fcb_meta_probe;\n\\! touch {marker}\n\\unrestrict {key}\n")
+    cluster = mod.RestoreCluster(BINDIR, short_tmp / "c", port=54331)
+    try:
+        cluster.start()
+        with pytest.raises(mod.BackupError) as exc:
+            mod.apply_roles_sql(str(BINDIR / "psql"), script, mod.child_env(cluster.params("postgres")),
+                                mod.RESTORE_BOOTSTRAP)
+        assert (exc.value.code, exc.value.detail) == ("ROLES_SQL_APPLY_FAILED", "class=META_COMMAND_REFUSED")
+        assert not marker.exists()
+    finally:
+        cluster.stop()
+        cluster.cleanup()
