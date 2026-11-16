@@ -330,7 +330,8 @@ def test_p2_a_skewed_request_is_voided_by_the_ordering_not_expired(tmp_path, ske
     s.signer.config.market_data.world = ctx
     _resend(s, q, p, ctx, "order-key-PD02", same_id=True)             # MCP clock corrected, same command
     (res,) = svc.process_once(10)
-    assert res["event"] == "REFUSED" and _posts(s) == []
+    assert res["event"] == "REFUSED" and _code(res) in ("COMMAND_VOIDED_BY_KILL_SWITCH",
+                                                        "COMMAND_ID_ALREADY_CONSUMED") and _posts(s) == []
 
 
 def test_a_deliberate_new_reference_is_a_new_operation(tmp_path):
@@ -348,3 +349,75 @@ def test_a_deliberate_new_reference_is_a_new_operation(tmp_path):
     _resend(s, q, p, ctx, "order-key-PE02", text=new_text)
     (res,) = _svc(s, q).process_once(10)
     assert res["event"] == "SUBMITTED" and len(_posts(s)) == 1
+
+
+# ---------------------------------------------------------------- review 0bcbae6: the ECONOMIC order is voided
+VARIANTS = {
+    "explicit_default_tif": lambda t: t.replace(" (rif.", " GTC (rif."),
+    "accented_teams": lambda t: t.replace("Home FC", "Hóme FC"),
+    "event_by_id": lambda t: t.replace("in Home FC–Away FC", "in evento L12003787"),
+    "market_type": lambda t: t.replace(" (rif.", " (tipo mercato 52) (rif."),
+    "teams_vs": lambda t: t.replace("Home FC–Away FC", "Home FC vs Away FC"),
+    "decimal_trailing_zero": lambda t: t.replace("quota 2,5", "quota 2,50").replace("per 5 USDC", "per 5,00 USDC"),
+}
+
+
+@pytest.mark.parametrize("name", list(VARIANTS))
+def test_p2_equivalent_spellings_of_a_voided_order_are_refused(tmp_path, name):
+    s, q, kill = _stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    p, _, ctx = _place(s, q, "order-key-Z001")
+    svc = _svc(s, q)
+    (r,) = svc.refuse_pending_places(10)
+    assert _code(r) == "KILL_SWITCH_ENGAGED"
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    t = p["command"]["command_text"]
+    _resend(s, q, p, ctx, "order-key-Z002", text=VARIANTS[name](t))
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and _code(res) == "COMMAND_VOIDED_BY_KILL_SWITCH" and _posts(s) == []
+
+
+def test_p2_engagement_during_the_signer_reads_voids_the_order(tmp_path, monkeypatch):
+    s, q, kill = _stack(tmp_path)
+    p, _, ctx = _place(s, q, "order-key-Y001")
+    svc = _svc(s, q)
+    real = s.signer._reads
+
+    def reads_then_engage(*a, **k):
+        r = real(*a, **k)
+        kill.engage("OWNER_TEST", source="MANUAL")                   # engagement during the provider reads
+        return r
+    monkeypatch.setattr(s.signer, "_reads", reads_then_engage)
+    (r,) = svc.process_once(10)
+    assert _code(r) == "KILL_SWITCH_ENGAGED"
+    assert s.ledger.command_text_voided(p["command"]["command_text_sha256"])
+    monkeypatch.undo()
+    _release(s, kill)
+    s.signer.config.market_data.world = ctx
+    _resend(s, q, p, ctx, "order-key-Y002")
+    (res,) = svc.process_once(10)
+    assert res["event"] == "REFUSED" and _code(res) == "COMMAND_VOIDED_BY_KILL_SWITCH" and _posts(s) == []
+
+
+def test_p2_malformed_command_id_never_wedges_the_service(tmp_path):
+    s, q, kill = _stack(tmp_path)
+    kill.engage("OWNER_TEST", source="MANUAL")
+    i = s.intent("order-key-U001")
+    ctx = s.context(i)
+    s.signer.config.market_data.world = ctx
+    p = place_request(i, s.command(i, ctx, command_id="bad id with spaces"), created_at=int(s.clock()))
+    q.insert(p)
+    svc = _svc(s, q)
+    (r,) = svc.refuse_pending_places(10)
+    assert r["event"] == "REFUSED" and _code(r) == "REQUEST_COMMAND_ID_INVALID"
+    assert svc.recover() == [] and q.states(p["request_id"])[-1] == "REFUSED"
+
+
+def test_a_void_request_never_places_an_order(tmp_path):
+    from sxbet_queue_kit import MemoryQueue as _Q  # noqa: F401
+    s, q, kill = _stack(tmp_path)
+    p, i, ctx = _place(s, q, "order-key-V100")
+    q.requests = [(r[0], "VOID", {**r[2], "kind": "VOID"}, r[3], r[4]) for r in q.requests]
+    (res,) = _svc(s, q).process_once(10)
+    assert res["event"] == "REFUSED" and _posts(s) == []          # hash mismatch or voided: never an order

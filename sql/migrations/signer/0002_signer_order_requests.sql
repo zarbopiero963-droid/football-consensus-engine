@@ -17,7 +17,7 @@ CREATE SEQUENCE IF NOT EXISTS signer_order_requests_queue_seq AS BIGINT MINVALUE
 CREATE TABLE IF NOT EXISTS signer_order_requests (
     request_id TEXT PRIMARY KEY CHECK (request_id ~ '^[0-9a-f]{32}$'),
     queue_seq BIGINT NOT NULL UNIQUE CHECK (queue_seq > 0),
-    kind TEXT NOT NULL CHECK (kind IN ('PLACE', 'CANCEL')),
+    kind TEXT NOT NULL CHECK (kind IN ('PLACE', 'CANCEL', 'VOID')),
     payload JSONB NOT NULL,
     payload_sha256 TEXT NOT NULL CHECK (payload_sha256 ~ '^sha256:[0-9a-f]{64}$'),
     network TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet')),

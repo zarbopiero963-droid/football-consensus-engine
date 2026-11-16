@@ -119,6 +119,16 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 "note": "Same key, same order and same command: the existing request is reported, nothing new "
                         "was written. Read its state with sxbet_order_request_status."}
 
+    async def queue_void(out: dict[str, Any], *, key: str, text: str, intent: Any, post_only: bool) -> Any:
+        """Queue a VOID for the signer: True written, False already there, None outcome unknown."""
+        try:
+            payload = oreq.build_void_request(network=settings.network, key=key, command_text=text,
+                                              now=int(clock()), intent=intent, post_only=post_only)
+            outcome, _ = await asyncio.to_thread(writer.submit, payload)
+        except Exception:
+            return None
+        return outcome == "INSERTED" or (False if outcome == "EXISTS" else None)
+
     @add
     @with_rule
     async def sxbet_order_request_place(owner_command: str, market_hash: str, betting_outcome_one: bool,
@@ -154,6 +164,34 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 return invalid(out, code)
         rid = oreq.request_id_for(settings.network, "PLACE", key)
 
+        async def void_on_kill_switch(base_out: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
+            # Review 0bcbae6 P1-A (owner decision 16-11-2026): a PLACE refused because the kill switch is engaged
+            # must stay refused after the release. The MCP cannot void anything itself, so it queues a VOID: the
+            # signer voids the operation (text, parsed command and, when the intent can be built, the economic
+            # order). A VOID can never place an order.
+            intent = None
+            meta_raw, err = await get(base_out, "/metadata/obv3", {}, auth=False)
+            if not err:
+                try:
+                    meta = sim.parse_metadata(meta_raw, settings.network)
+                    now = int(clock())
+                    intent = sim.build_intent(
+                        network=settings.network, metadata=meta, market_hash=market_hash.lower(),
+                        betting_outcome_one=betting_outcome_one, stake_base_units=stake_base_units,
+                        requested_percentage_odds=int(percentage_odds), time_in_force=time_in_force,
+                        expiry=expiry, idempotency_key=key, now=now, maker=ors.maker,
+                        salt=oreq.deterministic_salt(settings.network, ors.maker, key))
+                except Exception:
+                    intent = None
+            queued = await queue_void(base_out, key=key, text=text, intent=intent, post_only=post_only)
+            res = await refused({**gate, "status": "REFUSED_KILL_SWITCH_ENGAGED"})
+            res.update({"operation_void_queued": queued, "operation_void_includes_order": intent is not None,
+                        "note": "Refused: the kill switch is engaged. This order will never be executed, also "
+                                "after a release: the signer voids this command's operation. A new order after "
+                                "the owner's release needs a NEW owner command with a new reference, e.g. "
+                                "'(rif. 2)'."})
+            return res
+
         async def refused(res: dict[str, Any]) -> dict[str, Any]:
             # A retry after QUEUE_WRITE_OUTCOME_UNKNOWN can fail here (expiry now too soon, metadata read error)
             # although the first call was queued: say so instead of letting it read as "not queued" (P3-8).
@@ -168,6 +206,8 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         # P5: the signer gate runs before the metadata read (review 25d43a2 P3-1: no provider slot spent on a
         # refusal, and the refusal code is never hidden by a provider error).
         gate = await signer_gate(out, "PLACE")
+        if gate is not None and gate["error"]["code"] == "KILL_SWITCH_ENGAGED":
+            return await void_on_kill_switch(out, gate)
         if gate is not None:
             return await refused(gate)
         meta_raw, err = await get(out, "/metadata/obv3", {}, auth=False)

@@ -127,8 +127,9 @@ class SignerWorker:
         if engaged is True and report["kill_switch_engaged"] is True:
             # Known ENGAGED: cancels are processed (they reduce risk); every pending PLACE is refused for good.
             processed = self._stage(report, "process_once",
-                                    lambda: self._service.process_once(self._batch, kinds=("CANCEL",)))
-            report["stages"]["process_once"].update(mode="CANCEL_ONLY_KILL_SWITCH_ENGAGED", only_kinds=["CANCEL"])
+                                    lambda: self._service.process_once(self._batch, kinds=("CANCEL", "VOID")))
+            report["stages"]["process_once"].update(mode="CANCEL_ONLY_KILL_SWITCH_ENGAGED",
+                                                    only_kinds=["CANCEL", "VOID"])
             refused = self._stage(report, "refuse_new_placements",
                                   lambda: self._service.refuse_pending_places(self._batch))
             report["counts_refused_placements"] = len(refused or [])

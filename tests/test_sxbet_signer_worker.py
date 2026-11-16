@@ -76,9 +76,10 @@ def test_kill_switch_engaged_skips_new_orders_but_keeps_reconciling(tmp_path):
     svc, mon = FakeService(), FakeMonitor()
     r = worker(tmp_path, svc, mon, FakeKill(engaged=True)).run_cycle()
     # Declared (review a046ad9 P2-2/P3-2): stage label is a mode, and pending PLACE requests are refused for good.
-    assert svc.kinds == ("CANCEL",) and mon.calls == 1 and "recover" in svc.calls
+    # Declared (review 0bcbae6 P1-A): VOID requests (operation voids from the MCP gate) also run while ENGAGED.
+    assert svc.kinds == ("CANCEL", "VOID") and mon.calls == 1 and "recover" in svc.calls
     assert r["stages"]["process_once"] == {"ok": True, "mode": "CANCEL_ONLY_KILL_SWITCH_ENGAGED",
-                                           "only_kinds": ["CANCEL"]}
+                                           "only_kinds": ["CANCEL", "VOID"]}
     assert "refuse_pending_places" in svc.calls and r["counts_refused_placements"] == 1
 
 
@@ -267,7 +268,7 @@ def test_end_to_end_kill_switch_engaged_processes_owner_cancels_of_open_orders_o
     posts_before = len([x for x in s.sim.writes() if x.method == "POST"])
     with SignerWorker(svc, mon, kill, lock_path=str(tmp_path / "w.lock"), sleep=lambda x: None) as w:
         r = w.run_cycle()
-    assert r["stages"]["process_once"]["only_kinds"] == ["CANCEL"] and r["counts"]["processed"] == 1
+    assert r["stages"]["process_once"]["only_kinds"] == ["CANCEL", "VOID"] and r["counts"]["processed"] == 1
     assert q.states(p_cancel["request_id"])[-1] == "DONE"
     assert q.states(p_place["request_id"]) == ["CLAIMED", "REFUSED"]   # closed for good, never signed (P2-2)
     assert len([x for x in s.sim.writes() if x.method == "POST"]) == posts_before

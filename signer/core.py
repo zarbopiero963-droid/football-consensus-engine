@@ -207,16 +207,19 @@ class Signer:
         except Exception:
             raise SignerRefused("RISK_CONTEXT_MALFORMED") from None
 
-    def _void_for_kill_switch(self, auth: Any) -> None:
-        """Every PLACE refused because of the kill switch voids its owner command for good, whatever path reached
-        the signer (queue, recover, concurrent engagement): review dccb44a P1-1/P2-1. Hashes computed here."""
+    def _void_for_kill_switch(self, auth: Any, clean: Any = None, post_only: Any = False) -> None:
+        """Every PLACE refused while the kill switch is engaged voids its operation for good, whatever path reached
+        the signer: text hash, parsed-command hash and economic-order hash, all computed here."""
+        cid = auth.command_id if isinstance(auth.command_id, str) and cmd._ID.fullmatch(auth.command_id) else None
         try:
-            self._ledger.void_command(command_id=auth.command_id, command_text_sha256=cmd.text_sha256(auth.command_text),
+            self._ledger.void_command(command_id=cid, command_text_sha256=cmd.text_sha256(auth.command_text),
                                       operation_sha256=cmd.operation_sha256(auth.command_text), request_id=None,
-                                      reason="KILL_SWITCH_ENGAGED")
+                                      reason="KILL_SWITCH_ENGAGED",
+                                      intent_operation_sha256=cmd.intent_operation_sha256(
+                                          clean, post_only, cmd.reference_of(auth.command_text)))
         except (OrderStateError, LedgerError):
-            # Unwritable ledger: the refusal still stands; nothing can be authorised either (AUTHORIZE needs the
-            # ledger). Declared residual in signer/README.md.
+            # Unwritable ledger: the refusal still stands and nothing can be authorised meanwhile (AUTHORIZE needs
+            # the ledger). Declared residual: docs/sxbet/README.md (P5).
             self._log("COMMAND_VOID_NOT_RECORDED", "KILL_SWITCH_ENGAGED", None, None, None, None, auth=auth)
 
     def sign_order(self, intent: Mapping[str, Any], authorization: cmd.OwnerCommandAuthorization, *,
@@ -228,6 +231,7 @@ class Signer:
             key = intent.get("idempotency_key") if isinstance(intent, Mapping) else None
             ihash = None
             auth = None
+            clean = None
             try:
                 # Snapshot FIRST (before anything else reads caller-owned objects); only the copies are used.
                 try:
@@ -252,14 +256,15 @@ class Signer:
                                         if known.intent_hash != ihash
                                         else "IDEMPOTENCY_KEY_SIGNED_BEFORE_RESTART_RECONCILE_FIRST")
                 if self._ledger.command_text_voided(cmd.text_sha256(auth.command_text)) \
-                        or self._ledger.operation_voided(cmd.operation_sha256(auth.command_text)):
+                        or self._ledger.operation_voided(cmd.operation_sha256(auth.command_text)) \
+                        or self._ledger.intent_operation_voided(cmd.intent_operation_sha256(
+                            clean, post_only, cmd.reference_of(auth.command_text))):
                     # Voided because a PLACE with it was refused by the kill switch (owner decision 16-11-2026):
                     # neither the same text nor any spelling of the same operation authorises a later order; the
                     # owner writes a new command with a new reference, e.g. "(rif. 2)".
                     raise SignerRefused("COMMAND_VOIDED_BY_KILL_SWITCH")
                 if self._ledger.kill_switch_engaged:
-                    self._void_for_kill_switch(auth)
-                    raise SignerRefused("KILL_SWITCH_ENGAGED")
+                    raise SignerRefused("KILL_SWITCH_ENGAGED")      # voided in the handler below
                 self._check_config(clean)
                 if type(post_only) is not bool:
                     raise SignerRefused("POST_ONLY_INVALID")
@@ -321,7 +326,6 @@ class Signer:
                         self._ledger.transition(key, REJECTED, reason="KILL_SWITCH_ENGAGED")
                     except LedgerError:
                         pass  # stays AUTHORIZED (reserved, never signed): abandon_unsigned after restart
-                    self._void_for_kill_switch(auth)
                     raise SignerRefused("KILL_SWITCH_ENGAGED")
 
                 # 4. sign; persist SIGNED before the signature leaves this function
@@ -349,6 +353,12 @@ class Signer:
                 self._log("SIGNED", None, key, ihash, oid, clean, auth=auth)
                 return {**result, "cached": False}
             except SignerRefused as exc:
+                # ANY refusal while the kill switch is engaged (its own checks, the ledger's authorize, an
+                # engagement during the market reads...) voids the operation: review 0bcbae6 P2-1. Over-voiding
+                # an unrelated refusal is the safe side.
+                if auth is not None and exc.code != "COMMAND_VOIDED_BY_KILL_SWITCH" \
+                        and self._ledger.kill_switch_engaged:
+                    self._void_for_kill_switch(auth, clean, post_only)
                 self._log("REFUSED", exc.code, key[:64] if isinstance(key, str) else None, ihash, None, None,
                           auth=auth)
                 raise

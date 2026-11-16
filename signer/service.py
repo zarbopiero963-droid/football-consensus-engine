@@ -136,9 +136,11 @@ class SignerService:
         REFUSED event: a crash between the two leaves a voided command, never a usable one. The text hash and the
         parsed-operation hash are computed here from the text, never taken from the payload (review dccb44a P3-1)."""
         text = p["command"]["command_text"]
-        self._signer._ledger.void_command(command_id=p["command"]["command_id"],
-                                          command_text_sha256=cmd.text_sha256(text),
-                                          operation_sha256=cmd.operation_sha256(text), request_id=rid, reason=code)
+        self._signer._ledger.void_command(
+            command_id=p["command"]["command_id"], command_text_sha256=cmd.text_sha256(text),
+            operation_sha256=cmd.operation_sha256(text), request_id=rid, reason=code,
+            intent_operation_sha256=cmd.intent_operation_sha256(p.get("intent"), p.get("post_only"),
+                                                                cmd.reference_of(text)))
         return self._refuse(rid, code)
 
     def _event(self, request_id: str, event: str, **detail: Any) -> dict[str, Any]:
@@ -162,6 +164,9 @@ class SignerService:
             return self._refuse(rid, "REQUEST_KIND_MISMATCH")
         if p["network"] != self._network:
             return self._refuse(rid, "REQUEST_NETWORK_MISMATCH")
+        if p["kind"] == "VOID":
+            # The MCP refused a PLACE because the kill switch was engaged: void its operation, never place it.
+            return self._void_and_refuse(rid, p, "KILL_SWITCH_ENGAGED")
         if p["kind"] == "PLACE":
             # Owner decision 16-11-2026, checked BEFORE any other refusal of a PLACE (review dccb44a P2-2), so every
             # kill-switch-related refusal voids the operation:
@@ -271,7 +276,9 @@ class SignerService:
             command_id = (p.get("command") or {}).get("command_id") if isinstance(p.get("command"), Mapping) else None
             ours = (o is not None and isinstance(command_id, str)
                     and self._signer._ledger.order_of_command(command_id) == cid)  # review 6c74d55 P3-1
-            if p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
+            if p.get("kind") == "VOID" and last == "CLAIMED":
+                out.append(self._handle(req))
+            elif p.get("kind") == "PLACE" and o is None and last == "CLAIMED":
                 out.append(self._handle(req))
             elif o is not None and not ours:
                 # The ledger order belongs to ANOTHER request with the same key (a duplicate claimed before a

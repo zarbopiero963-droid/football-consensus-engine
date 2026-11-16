@@ -129,6 +129,26 @@ def text_sha256(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def reference_of(text: Any) -> str | None:
+    """The explicit reference token "(rif. N)" of a command, or None (also when the text does not parse)."""
+    try:
+        return parse(text).reference
+    except CommandRefused:
+        return None
+
+
+def intent_operation_sha256(intent: Any, post_only: Any, reference: str | None) -> str | None:
+    """Hash of the ECONOMIC order the signer would sign (market, side, stake, price, time in force, post-only) plus
+    the command's reference token: independent of how the command is spelled (review 0bcbae6 P2-2). None when the
+    intent lacks a field (nothing to void). A deliberate repetition needs a new reference "(rif. N)"."""
+    keys = ("market_hash", "is_maker_betting_outcome_one", "total_bet_size", "percentage_odds", "time_in_force",
+            "network")
+    if not isinstance(intent, Mapping) or any(k not in intent for k in keys):
+        return None
+    body = {k: (str(intent[k]).lower() if k == "market_hash" else str(intent[k])) for k in keys}
+    return _fingerprint({"op": "PLACE_INTENT", **body, "post_only": post_only is True, "reference": reference})
+
+
 def operation_sha256(text: Any) -> str | None:
     """Canonical hash of the PARSED command (operation, every parsed field and the reference token), computed by
     the signer: equivalent spellings (spaces, case, a trailing dot) give the same hash. None when the text does not
@@ -145,7 +165,9 @@ def operation_sha256(text: Any) -> str | None:
         if isinstance(v, (tuple, list)):
             return [norm(x) for x in v]
         if isinstance(v, str):
-            return " ".join(v.casefold().split())       # case/whitespace never make a new operation (broader void)
+            import unicodedata
+            folded = "".join(ch for ch in unicodedata.normalize("NFKD", v) if not unicodedata.combining(ch))
+            return " ".join(folded.casefold().split())  # case/accents/whitespace never make a new operation
         return v
     body = {k: norm(getattr(parsed, k)) for k in parsed.__dataclass_fields__}
     return _fingerprint({"op_parsed": type(parsed).__name__, **body})

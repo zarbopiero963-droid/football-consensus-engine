@@ -174,8 +174,11 @@ def _void_fields_ok(rec: Mapping[str, Any]) -> bool:
     """Bounded, well-formed COMMAND_VOID fields (review dccb44a P3-1), checked on write and on replay."""
     op, req = rec.get("operation_sha256"), rec.get("request_id")
     required = {"kind", "command_id", "command_text_sha256", "operation_sha256", "request_id", "reason"}
-    return (required <= set(rec) and not (set(rec) - required - _LEDGER_META_FIELDS)
-            and isinstance(rec.get("command_id"), str) and bool(_VOID_ID.fullmatch(rec["command_id"]))
+    iop = rec.get("intent_operation_sha256")
+    cid = rec.get("command_id")
+    return (required <= set(rec) and not (set(rec) - required - {"intent_operation_sha256"} - _LEDGER_META_FIELDS)
+            and (cid is None or (isinstance(cid, str) and bool(_VOID_ID.fullmatch(cid))))
+            and (iop is None or (isinstance(iop, str) and bool(_VOID_SHA.fullmatch(iop))))
             and isinstance(rec.get("command_text_sha256"), str) and bool(_VOID_SHA.fullmatch(rec["command_text_sha256"]))
             and (op is None or (isinstance(op, str) and bool(_VOID_SHA.fullmatch(op))))
             and (req is None or (isinstance(req, str) and bool(_VOID_REQUEST.fullmatch(req))))
@@ -509,6 +512,7 @@ class OrderLedger:
         # text hash and by canonical parsed-operation hash (any spelling of the same operation).
         self._voided_command_texts: set[str] = set()
         self._voided_operations: set[str] = set()
+        self._voided_intent_operations: set[str] = set()
         self._settlements: list[tuple[int, int]] = []  # (ts, pnl)
         self._prev = GENESIS_PREV
         self._fd: int | None = None
@@ -844,10 +848,13 @@ class OrderLedger:
             # A PLACE refused because of the kill switch: its owner command can never authorise anything later.
             if not _void_fields_ok(rec):
                 raise OrderStateError("LEDGER_COMMAND_VOID_INVALID")
-            self._nonces.add(rec["command_id"])
+            if rec["command_id"] is not None:
+                self._nonces.add(rec["command_id"])
             self._voided_command_texts.add(rec["command_text_sha256"])
             if rec["operation_sha256"] is not None:
                 self._voided_operations.add(rec["operation_sha256"])
+            if rec.get("intent_operation_sha256") is not None:
+                self._voided_intent_operations.add(rec["intent_operation_sha256"])
         else:
             raise OrderStateError("LEDGER_UNKNOWN_RECORD")
 
@@ -967,18 +974,25 @@ class OrderLedger:
         with self._lock:
             return operation_sha256 is not None and operation_sha256 in self._voided_operations
 
-    def void_command(self, *, command_id: str, command_text_sha256: str, operation_sha256: str | None,
-                     request_id: str | None, reason: str) -> None:
+    def intent_operation_voided(self, intent_operation_sha256: str | None) -> bool:
+        with self._lock:
+            return intent_operation_sha256 is not None and intent_operation_sha256 in self._voided_intent_operations
+
+    def void_command(self, *, command_id: str | None, command_text_sha256: str, operation_sha256: str | None,
+                     request_id: str | None, reason: str, intent_operation_sha256: str | None = None) -> None:
         """One fsync'd COMMAND_VOID line (idempotent): the command id, its text hash and its parsed-operation hash
         are never usable again. The hashes are computed by the signer from the text, never taken from a payload."""
         rec = {"kind": "COMMAND_VOID", "command_id": command_id, "command_text_sha256": command_text_sha256,
-               "operation_sha256": operation_sha256, "request_id": request_id, "reason": reason}
+               "operation_sha256": operation_sha256, "intent_operation_sha256": intent_operation_sha256,
+               "request_id": request_id, "reason": reason}
         if not _void_fields_ok(rec):
             raise OrderStateError("COMMAND_VOID_FIELDS_INVALID")
         with self._lock:
             self._writable()
-            if command_id in self._nonces and command_text_sha256 in self._voided_command_texts \
-                    and (operation_sha256 is None or operation_sha256 in self._voided_operations):
+            if (command_id is None or command_id in self._nonces) \
+                    and command_text_sha256 in self._voided_command_texts \
+                    and (operation_sha256 is None or operation_sha256 in self._voided_operations) \
+                    and (intent_operation_sha256 is None or intent_operation_sha256 in self._voided_intent_operations):
                 return
             self._commit(rec)
 

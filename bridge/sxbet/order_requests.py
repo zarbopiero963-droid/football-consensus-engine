@@ -56,7 +56,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
 REQUEST_SCHEMA = "sxbet.order_request.v1"
-KINDS = ("PLACE", "CANCEL")
+KINDS = ("PLACE", "CANCEL", "VOID")
 CANCEL_SCOPES = ("ORDER_IDS", "MARKET", "EVENT", "ALL")
 EVENT_STATES = ("CLAIMED", "REFUSED", "SIGNED", "SUBMITTED", "UNKNOWN", "DONE")
 TERMINAL_EVENTS = frozenset({"REFUSED", "DONE"})
@@ -137,6 +137,22 @@ def build_place_request(*, network: str, intent: Mapping[str, Any], post_only: b
     return {"schema": REQUEST_SCHEMA, "request_id": request_id_for(network, "PLACE", key), "kind": "PLACE",
             "network": network, "created_at": now, "command": _command(owner_command_text(command_text), now),
             "intent": dict(intent), "post_only": post_only}
+
+
+def build_void_request(*, network: str, key: Any, command_text: str, now: int, intent: Mapping[str, Any] | None,
+                       post_only: bool) -> dict[str, Any]:
+    """VOID (owner decision 16-11-2026, review 0bcbae6 P1-A): the MCP's kill-switch gate refused this PLACE; the
+    signer voids the command's operation so the same order can never run after a release. Never an order."""
+    _need(network in ("mainnet", "testnet"), "INVALID_NETWORK")
+    _need(isinstance(post_only, bool), "INVALID_POST_ONLY")
+    k = idempotency_key(key)
+    p: dict[str, Any] = {"schema": REQUEST_SCHEMA, "request_id": request_id_for(network, "VOID", k), "kind": "VOID",
+                         "network": network, "created_at": now,
+                         "command": _command(owner_command_text(command_text), now), "post_only": post_only}
+    if intent is not None:
+        _need(isinstance(intent, Mapping) and intent.get("network") == network, "INTENT_NETWORK_MISMATCH")
+        p["intent"] = dict(intent)
+    return p
 
 
 def build_cancel_request(*, network: str, scope: Any, key: Any, command_text: str, now: int,
@@ -851,7 +867,7 @@ def valid_request_id(value: Any) -> bool:
     return isinstance(value, str) and _HEX32.fullmatch(value) is not None
 
 
-__all__ = ["CANCEL_SCOPES", "CLIENT_REF_UNAVAILABLE", "EVENT_STATES", "KINDS", "MCP_STATES",
+__all__ = ["build_void_request", "CANCEL_SCOPES", "CLIENT_REF_UNAVAILABLE", "EVENT_STATES", "KINDS", "MCP_STATES",
            "OrderRequestSettings", "PostgresRequestWriter", "QueueUnavailable", "REQUEST_SCHEMA",
            "RequestInvalid", "build_cancel_request", "build_place_request", "canonical_sha256",
            "deterministic_salt", "merge_exchange", "postgres_connect", "queue_view", "request_id_for",
