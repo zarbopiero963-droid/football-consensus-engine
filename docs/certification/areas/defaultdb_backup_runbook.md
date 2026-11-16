@@ -31,7 +31,7 @@ Prima di leggere una sola riga, una guardia sul solo catalogo rifiuta il backup 
 - il database non è `defaultdb`;
 - il server non è PostgreSQL 18;
 - la connessione non usa TLS;
-- uno schema diverso da `public` non è stato previsto. `_avnadmin_monitor` di Aiven è ammesso: viene escluso dal dump e riportato;
+- uno schema diverso da `public` non è stato previsto. `_avnadmin_monitor` di Aiven è ammesso: viene escluso dal dump e riportato. `fcb_cert_quota` (PATH A2 R1) è ammesso **solo** nello stato EXACT di `sql/aiven/apifootball_cert_quota_state.sql` (copia su una riga in `CERT_QUOTA_STATE_SQL`): in quel caso è **incluso** nel dump e il restore isolato deve mostrare lo stesso stato (check `restore_cert_quota_state`); in ogni altro stato `UNEXPECTED_SCHEMA`;
 - un oggetto di `public` non appartiene all'identità che fa il backup;
 - un altro ruolo non superuser può agire come quell'identità;
 - ci sono large object;
@@ -164,7 +164,7 @@ Gli altri segreti sono quelli già usati dai workflow di `defaultdb`: `FCB_DEFAU
   - `source_guard_catalog_only`, `sequences_stable_during_dump`;
   - `roles_sql_without_passwords`, `roles_sql_aiven_managed_settings_skipped_in_restore_test` (in produzione: `skipped=29 …`), `roles_names_attributes_match_source`, `role_memberships_match_source`;
   - `pg_restore_exit_on_error`, `restore_catalog_counts`, `restore_structure`, `restore_schema_migrations_1_8`;
-  - `restore_functions`, `restore_sequences_last_value_is_called`, `restore_owners`, `restore_acls_normalized`;
+  - `restore_cert_quota_state` (PATH A2 R1: ABSENT o EXACT, uguale alla sorgente), `restore_functions`, `restore_sequences_last_value_is_called`, `restore_owners`, `restore_acls_normalized`;
   - `database_sql_applied`, `restore_database_owner_acl_settings`;
   - `restore_rows_per_table` (numero di tabelle, totale righe, hash dei conteggi) e `restore_content_per_table`, `restore_content_sha256`;
   - `decrypt_roundtrip_plaintext_sha256`, `tampered_ciphertext_rejected`;

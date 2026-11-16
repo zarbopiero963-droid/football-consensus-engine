@@ -1897,20 +1897,21 @@ def test_workflow_bash_password_gate_fails_closed_without_echoing(fresh, tmp_pat
     assert fresh.roles_state() == ("ROLES_ABSENT" if mode == "apply" else "HARDENED_PHASE1")
 
 
-# ---------------------------------------------------------------- PATH A2 (owner GO): fcb_cert_runner
-# PATH A2 adds to defaultdb only the exact quota-coordinator grant of the plain role fcb_cert_runner.
-# The WP-009 verify model accepts exactly that grant (and nothing more) in every phase; the restore
-# precheck and fingerprints accept it on the 0001-0008 status quo.
+# ---------------------------------------------------------------- PATH A2 R1 (FCB-A2-R1-WP009-DECISIONS)
+# PATH A2 variant R1 adds to defaultdb two roles and the schema fcb_cert_quota (four SECURITY DEFINER
+# functions owned by the quota tables' owner). The WP-009 model has NO runner exception any more (the nine
+# direct privileges and the runner's USAGE on public are gone: intentional change of the earlier tests);
+# verify_bridge_roles.sql admits fcb_cert_quota only ABSENT or EXACT (check cert_quota_state).
 
 def _a2_sql(env, name):
     sql = (AIVEN / name).read_text(encoding="utf-8")
-    assert sql.count("'defaultdb'::pg_catalog.name") == 1
+    assert sql.count("'defaultdb'::pg_catalog.name") == 1, name
     return sql.replace("'defaultdb'::pg_catalog.name", f"'{env.dbname}'::pg_catalog.name")
 
 
 def _a2_roles(env, runner_password=None):
-    """A2 step 1 (administrator): roles, runner password, explicit USAGE on public. Alone, it is the
-    runner password rotation (no re-grant), followed by the exact-grant assertion."""
+    """A2 step 1 (administrator): roles and runner password, nothing granted. Alone, it is the runner
+    password rotation, followed by the exact R1 state assertion."""
     from fcb_db_roles import scram_verifier
     with psycopg.connect(env.admin_dsn, options=ADMIN_OPTIONS) as conn:
         conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)",
@@ -1918,84 +1919,152 @@ def _a2_roles(env, runner_password=None):
         conn.execute(_a2_sql(env, "apifootball_cert_path_a_roles.sql"))
 
 
-def _a2_grants(env, grantor):
-    """A2 step 1b AS the coordinator tables' owner (admin before WP-009 phase 2, fcb_migrator after)."""
-    dsn = env.admin_dsn if grantor == "admin" else env.dsn(grantor)
-    with psycopg.connect(dsn) as conn:
-        conn.execute(_a2_sql(env, "apifootball_cert_path_a_coordinator_grants.sql"))
-        conn.execute(_a2_sql(env, "apifootball_cert_path_a_coordinator_assert.sql"))
+def _a2_quota(env, owner):
+    """A2 step 1a (administrator: the empty schema, owned by the tables' owner) and step 1b + assert AS the
+    tables' owner (the administrator before WP-009 phase 2, fcb_migrator after)."""
+    with psycopg.connect(env.admin_dsn, options=ADMIN_OPTIONS) as conn:
+        conn.execute(_a2_sql(env, "apifootball_cert_path_a_quota_schema.sql"))
+    with psycopg.connect(env.admin_dsn if owner == "admin" else env.dsn(owner)) as conn:
+        conn.execute(_a2_sql(env, "apifootball_cert_path_a_quota_functions.sql"))
+        conn.execute(_a2_sql(env, "apifootball_cert_path_a_quota_assert.sql"))
 
 
-def _a2_install(env, grantor="admin", runner_password=None):
-    sys.path.insert(0, str(ROOT / "scripts"))
+def _a2_skip_if_present():
     with psycopg.connect(os.environ["TEST_DATABASE_URL"]) as conn:
         if conn.execute("SELECT 1 FROM pg_roles WHERE rolname IN ('fcb_cert_runner', 'fcb_cert_owner')").fetchone():
             pytest.skip("PATH A2 roles already exist on this server; not touching them")
+
+
+def _a2_install(env, owner="admin", runner_password=None):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    _a2_skip_if_present()
     env.extra_roles += ["fcb_cert_runner", "fcb_cert_owner"]
     env.superuser(SQL("ALTER ROLE {} CREATEDB BYPASSRLS").format(Identifier(env.admin_role)))  # Aiven's avnadmin shape
     _a2_roles(env, runner_password)
-    _a2_grants(env, grantor)
+    _a2_quota(env, owner)
+
+
+def _cert_quota_state(env):
+    return env.ok("-f", str(AIVEN / "apifootball_cert_quota_state.sql"))
 
 
 def _a2_runner_privileges(env):
+    """(relation ACL entries, column ACL entries, entries on schema public) of fcb_cert_runner, anywhere."""
     with psycopg.connect(_dsn_for(env.dbname)) as conn:
         return conn.execute(
-            "SELECT count(*) FILTER (WHERE a.attname IS NULL), count(*) FILTER (WHERE a.attname IS NOT NULL), "
-            "bool_and(pg_get_userbyid(x.grantor) = pg_get_userbyid(c.relowner)) FROM pg_class c "
-            "LEFT JOIN LATERAL aclexplode(c.relacl) x ON true LEFT JOIN pg_attribute a ON false "
-            "WHERE x.grantee = 'fcb_cert_runner'::regrole "
-            "UNION ALL SELECT 0, count(*), true FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid, "
-            "LATERAL aclexplode(a.attacl) x WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchall()
+            "SELECT (SELECT count(*) FROM pg_class c, LATERAL aclexplode(c.relacl) x WHERE x.grantee = 'fcb_cert_runner'::regrole),"
+            " (SELECT count(*) FROM pg_attribute a, LATERAL aclexplode(a.attacl) x WHERE x.grantee = 'fcb_cert_runner'::regrole),"
+            " (SELECT count(*) FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x WHERE n.nspname = 'public'"
+            "  AND x.grantee = 'fcb_cert_runner'::regrole)").fetchone()
 
 
-def test_a2_status_quo_restore_checks_and_both_wp009_phases_accept_exactly_the_runner_grant(fresh):
-    assert fresh.roles_state() == "ROLES_ABSENT"  # WITHOUT A2: unchanged
-    _a2_install(fresh)
-    # restore precheck, full and structure fingerprints: unchanged by the exact runner grant
-    assert fresh.state() == "BRIDGE_0001_0008"
-    assert fresh.full_fingerprint() == fresh.full_before and fresh.structure_fingerprint() == fresh.structure_before
-    if _server_major_raw() == 18:
-        assert fresh.full_fingerprint() == RESTORE_PINNED_FINGERPRINT
-    rc, _, err = _roles_tx(fresh)  # WP-009 phase 1 through the workflow's transaction
-    assert rc == 0, err
-    assert fresh.roles_state() == "HARDENED_PHASE1"
-    assert fresh.structure_fingerprint() == fresh.structure_before
-    rc, _, err = _enable_tx(fresh)  # phase 2: ownership to fcb_migrator (the runner's grantor follows)
-    assert rc == 0, err
-    assert fresh.roles_state() == "HARDENED"
-    assert fresh.structure_fingerprint() == fresh.structure_before
-    assert _a2_runner_privileges(fresh) == [(8, 0, True), (0, 1, True)]
-    # post-WP-009 adaptation (intentional change of the previous residual): phase 1 revokes PUBLIC's
-    # USAGE on public, but the runner's own EXPLICIT USAGE survives both phases and is accepted
-    with psycopg.connect(_dsn_for(fresh.dbname)) as conn:
-        assert conn.execute("SELECT has_schema_privilege('fcb_cert_runner', 'public', 'USAGE')").fetchone()[0] is True
+# The production state today (WP-009 phase 1 applied: fcb_app LOGIN, fcb_migrator/fcb_signer NOLOGIN,
+# PUBLIC without USAGE on public, every object still owned by the administrator; no fcb_cert_quota).
+# Measured with the checks of the PR #201 head before R1 (ca18d4f) and with the adapted ones: identical.
+PHASE1_PRODUCTION_CLASSIFICATION = {
+    "roles_state": "HARDENED_PHASE1",
+    "bridge_state": "BRIDGE_0001_0008",
+    "precheck": "REFUSE_RUNTIME_TABLE_DRIFT",
+    "cert_quota_state": "ABSENT",
+}
+
+
+def test_a2_r1_production_phase1_state_is_classified_exactly_as_before(phase1):
+    with psycopg.connect(_dsn_for(phase1.dbname)) as conn:
+        flags = dict(conn.execute("SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname IN "
+                                  "('fcb_app', 'fcb_migrator', 'fcb_signer')").fetchall())
+        assert flags == {"fcb_app": True, "fcb_migrator": False, "fcb_signer": False}
         assert conn.execute("SELECT has_schema_privilege('public', 'public', 'USAGE')").fetchone()[0] is False
+        assert conn.execute("SELECT count(*) FROM pg_namespace WHERE nspname = 'fcb_cert_quota'").fetchone()[0] == 0
+    got = {
+        "roles_state": phase1.roles_state(),
+        "bridge_state": phase1.ok("-f", str(AIVEN / "verify_bridge_roles.sql"), "-c", "\\echo :fcb_bridge_state").splitlines()[-1],
+        "precheck": phase1.ok("-f", str(AIVEN / "defaultdb_precheck.sql")),
+        "cert_quota_state": _cert_quota_state(phase1),
+    }
+    assert got == PHASE1_PRODUCTION_CLASSIFICATION
+    assert phase1.structure_fingerprint() == phase1.structure_before
 
 
-@pytest.mark.parametrize("tamper,code", [
-    ("GRANT TRUNCATE ON public.api_football_quota_counters TO fcb_cert_runner", "unexpected_relation_grant"),
-    ("GRANT SELECT ON public.oauth_access_tokens TO fcb_cert_runner", "unexpected_relation_grant"),
-    ("GRANT UPDATE (bucket) ON public.api_football_quota_counters TO fcb_cert_runner", "column_grant"),
-    ("REVOKE DELETE ON public.api_football_quota_leases FROM fcb_cert_runner", "missing_runtime_grant"),
-    ("ALTER ROLE fcb_cert_runner CREATEDB", "unexpected_relation_grant"),
-    # review P3 F3: a role that inherits from / can SET to the runner (dropped with the env)
-    ("GRANT fcb_cert_runner TO {x} WITH INHERIT TRUE, SET FALSE", "unexpected_relation_grant"),
-    ("GRANT fcb_cert_runner TO {x} WITH INHERIT FALSE, SET TRUE", "unexpected_relation_grant"),
-    # post-WP-009 adaptation: exactly ONE explicit USAGE on public, nothing more, never a grant option
-    ("REVOKE USAGE ON SCHEMA public FROM fcb_cert_runner", "schema_acl"),
-    ("GRANT CREATE ON SCHEMA public TO fcb_cert_runner", "schema_acl"),
-    ("GRANT USAGE ON SCHEMA public TO fcb_cert_runner WITH GRANT OPTION", "grant_option"),
-    ("GRANT SELECT ON public.api_football_quota_leases TO fcb_cert_runner WITH GRANT OPTION", "grant_option"),
-])
-def test_a2_wp009_verify_still_refuses_anything_beyond_the_exact_runner_grant(fresh, tamper, code):
-    _a2_install(fresh)
-    rc, _, err = _roles_tx(fresh)
+def test_a2_r1_installed_after_phase2_by_fcb_migrator_is_hardened_and_runs_without_usage_on_public(hardened):
+    structure = hardened.structure_fingerprint()
+    pw = secrets.token_urlsafe(32)
+    _a2_install(hardened, owner="fcb_migrator", runner_password=pw)
+    assert _cert_quota_state(hardened) == "EXACT"
+    assert hardened.roles_state() == "HARDENED"
+    assert hardened.structure_fingerprint() == structure
+    assert _a2_runner_privileges(hardened) == (0, 0, 0)  # the nine direct privileges and USAGE on public: none
+    with psycopg.connect(_dsn_for(hardened.dbname)) as conn:
+        assert conn.execute("SELECT has_schema_privilege('fcb_cert_runner', 'public', 'USAGE')").fetchone()[0] is False
+        assert conn.execute("SELECT pg_get_userbyid(nspowner)::text FROM pg_namespace WHERE nspname = 'fcb_cert_quota'"
+                            ).fetchone()[0] == "fcb_migrator"
+    # the runner works through the four functions only, without USAGE on public
+    assert _runner_coordinator_cycle(hardened, pw) == {"remaining_minute": 6, "remaining_day": 78, "active_leases": 0}
+    with _runner_connect(hardened, pw) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("SELECT 1 FROM public.api_football_quota_counters")
+    # a later phase-2 re-run (migrator password only) keeps the exact R1 state
+    rc, _, err = _enable_tx(hardened)
     assert rc == 0, err
+    assert hardened.roles_state() == "HARDENED" and _cert_quota_state(hardened) == "EXACT"
+
+
+def test_a2_r1_installed_during_phase1_blocks_phase2_fail_closed(phase1):
+    """Owner decision: A2 after phase 2. Installed during phase 1 (tables owned by the administrator) it is
+    EXACT and accepted, but phase 2 moves the tables to fcb_migrator and NOT the schema: the in-transaction
+    assert sees cert_quota_state and rolls phase 2 back (nothing changes)."""
+    _a2_install(phase1, owner="admin")
+    assert _cert_quota_state(phase1) == "EXACT" and phase1.roles_state() == "HARDENED_PHASE1"
+    rc, _, err = _enable_tx(phase1)
+    assert rc != 0
+    assert phase1.roles_state() == "HARDENED_PHASE1" and _cert_quota_state(phase1) == "EXACT"
+
+
+R1_VERIFY_TAMPER = [
+    ("CREATE FUNCTION fcb_cert_quota.extra() RETURNS int LANGUAGE sql AS 'select 1'", "cert_quota_state"),
+    ("CREATE OR REPLACE FUNCTION fcb_cert_quota.release(p_key_hash text, p_lease_id text) RETURNS void LANGUAGE plpgsql "
+     "VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$BEGIN END$$", "cert_quota_state"),
+    ("ALTER FUNCTION fcb_cert_quota.reserve(text) SECURITY INVOKER", "cert_quota_state"),
+    ("ALTER FUNCTION fcb_cert_quota.reserve(text) RESET search_path", "cert_quota_state"),
+    ("GRANT EXECUTE ON FUNCTION fcb_cert_quota.snapshot(text) TO PUBLIC", "cert_quota_state"),
+    ("GRANT EXECUTE ON FUNCTION fcb_cert_quota.reserve(text) TO {x}", "cert_quota_state"),
+    ("CREATE TABLE fcb_cert_quota.t (a int)", "cert_quota_state"),
+    ("ALTER FUNCTION fcb_cert_quota.reserve(text) OWNER TO {x}", "cert_quota_state"),
+    ("ALTER SCHEMA fcb_cert_quota OWNER TO {x}", "cert_quota_state"),
+    ("GRANT CREATE ON SCHEMA fcb_cert_quota TO fcb_cert_runner", "cert_quota_state"),
+    ("GRANT SELECT ON public.api_football_quota_counters TO fcb_cert_runner", "unexpected_relation_grant"),
+    ("GRANT UPDATE (used) ON public.api_football_quota_counters TO fcb_cert_runner", "column_grant"),
+    ("GRANT USAGE ON SCHEMA public TO fcb_cert_runner", "schema_acl"),
+    ("GRANT CREATE ON SCHEMA public TO fcb_cert_runner", "schema_acl"),
+    ("ALTER ROLE fcb_cert_runner CREATEDB", "cert_quota_state"),
+    ("GRANT fcb_cert_runner TO {x} WITH INHERIT FALSE, SET TRUE", "cert_quota_state"),
+]
+
+
+@pytest.mark.parametrize("tamper,code", R1_VERIFY_TAMPER)
+def test_a2_r1_wp009_verify_refuses_any_drift_and_any_runner_privilege(hardened, tamper, code):
+    _a2_install(hardened, owner="fcb_migrator")
+    assert hardened.roles_state() == "HARDENED"
     if "{x}" in tamper:
-        tamper = tamper.format(x=fresh.extra_role())
-    fresh.superuser(tamper)
-    state = fresh.roles_state()
-    assert state.startswith("NOT_HARDENED") and code in state, state
+        tamper = tamper.format(x=hardened.extra_role())
+    hardened.superuser(tamper)
+    state = hardened.roles_state()
+    assert state.startswith("NOT_HARDENED:") and code in state.split(":", 1)[1].split(","), state
+
+
+def test_a2_r1_the_legacy_nine_privileges_are_now_refused(hardened):
+    """Intentional change: the earlier variant's exact grant (and runner USAGE on public) is NOT_HARDENED."""
+    _a2_install(hardened, owner="fcb_migrator")
+    hardened.superuser("GRANT USAGE ON SCHEMA public TO fcb_cert_runner")  # as the earlier step 1 did (public's owner)
+    hardened.superuser("GRANT SELECT, INSERT ON public.api_football_quota_counters TO fcb_cert_runner",
+                       "GRANT UPDATE (used) ON public.api_football_quota_counters TO fcb_cert_runner",
+                       "GRANT SELECT, INSERT, DELETE ON public.api_football_quota_leases, public.api_football_quota_attempts "
+                       "TO fcb_cert_runner", as_role="fcb_migrator")
+    codes = hardened.roles_state().split(":", 1)[1].split(",")
+    assert {"cert_quota_state", "column_grant", "schema_acl", "unexpected_relation_grant"} <= set(codes), codes
+    with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_STATE_UNEXPECTED"):
+        with psycopg.connect(hardened.admin_dsn) as conn:
+            conn.execute(_a2_sql(hardened, "apifootball_cert_path_a_quota_assert.sql"))
 
 
 # ---------------------------------------------------------------- G1: effective powers of the REAL fcb_app login
@@ -2095,8 +2164,12 @@ def _runner_connect(env, password, dbname=None):
 
 
 def _runner_coordinator_cycle(env, password):
-    from bridge.api_football.quota import PostgresQuota, QuotaExceeded, QuotaLimits
-    quota = PostgresQuota(QuotaLimits(10, 2, 1), connect=lambda: _runner_connect(env, password))
+    """The runner's real coordinator (CertQuotaCoordinator: the four fcb_cert_quota functions only)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("wp009_r1_batch", ROOT / "scripts" / "apifootball_cert_batch1.py")
+    batch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(batch)
+    quota = batch.CertQuotaCoordinator(connect=lambda: _runner_connect(env, password))
     key = "WP009-A2-" + uuid.uuid4().hex
 
     async def go():
@@ -2104,16 +2177,15 @@ def _runner_coordinator_cycle(env, password):
         for _ in range(2):
             lease = await quota.acquire(key)
             await quota.release(lease)
-        with pytest.raises(QuotaExceeded):  # the shared day budget still holds for the runner
-            await quota.acquire(key)
-        return await quota.snapshot(key)
+        return dict(await quota.snapshot(key))
     return asyncio.run(go())
 
 
 def test_full_sequence_wp009_then_a2_as_migrator_runner_rotation_and_fcb_app_isolation(fresh):
-    """bridge 0008 -> WP-009 phase 1 -> runtime switch to fcb_app -> phase 2 -> A2 installed post-WP-009
-    (roles + USAGE as administrator, the 9 coordinator grants AS fcb_migrator, fcb_cert + ledger) ->
-    the runner works -> runner rotation without re-grant -> fcb_app cannot touch fcb_cert (G3)."""
+    """bridge 0008 -> WP-009 phase 1 -> runtime switch to fcb_app -> phase 2 -> A2 R1 installed post-WP-009
+    (roles as administrator, schema fcb_cert_quota by the administrator for fcb_migrator, the four functions
+    AS fcb_migrator, fcb_cert + ledger) -> the runner works through the functions only -> runner rotation
+    without re-definition -> fcb_app cannot touch fcb_cert (G3)."""
     sys.path.insert(0, str(ROOT / "scripts"))
     import importlib.util
     spec = importlib.util.spec_from_file_location("wp009_path_a", ROOT / "scripts" / "apifootball_cert_path_a.py")
@@ -2144,38 +2216,38 @@ def test_full_sequence_wp009_then_a2_as_migrator_runner_rotation_and_fcb_app_iso
     fresh.superuser(SQL("ALTER ROLE {} CREATEDB BYPASSRLS").format(Identifier(fresh.admin_role)))
     pw1 = secrets.token_urlsafe(32)
     try:
-        _a2_roles(fresh, pw1)  # administrator: roles, password, explicit USAGE on public
-        assert fresh.roles_state().startswith("NOT_HARDENED:")  # USAGE without the coordinator grant: incomplete
-        with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_GRANTS_GUARD_FAILED"):
-            _a2_grants(fresh, "admin")  # the administrator no longer owns the coordinator tables
+        _a2_roles(fresh, pw1)  # administrator: roles and password, nothing granted
+        assert fresh.roles_state() == "HARDENED"  # roles alone: no privilege, schema absent
+        with pytest.raises(psycopg.errors.RaiseException, match="FCB_CERT_PATH_A_QUOTA_GUARD_FAILED"):
+            _a2_quota(fresh, "admin")  # the administrator no longer owns the coordinator tables
         with pytest.raises(psycopg.errors.InsufficientPrivilege):  # nor could it grant on them directly
             with psycopg.connect(fresh.admin_dsn) as conn:
                 conn.execute("GRANT SELECT ON public.api_football_quota_counters TO fcb_cert_runner")
-        _a2_grants(fresh, "fcb_migrator")  # the owner issues exactly the 9 grants (asserted)
-        _a2_grants(fresh, "fcb_migrator")  # idempotent
-        assert fresh.roles_state() == "HARDENED"
+        with psycopg.connect(_dsn_for(fresh.dbname)) as conn:  # the refused step 1b left the schema of step 1a only
+            assert conn.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                                "WHERE n.nspname = 'fcb_cert_quota'").fetchone()[0] == 0
+        assert _cert_quota_state(fresh) == "DRIFT" and "cert_quota_state" in fresh.roles_state()  # empty schema: refused
+        _a2_quota(fresh, "fcb_migrator")  # the owner defines the four functions (asserted)
+        _a2_quota(fresh, "fcb_migrator")  # idempotent
+        assert _cert_quota_state(fresh) == "EXACT" and fresh.roles_state() == "HARDENED"
         assert fresh.structure_fingerprint() == structure
-        assert _a2_runner_privileges(fresh) == [(8, 0, True), (0, 1, True)]
-        with psycopg.connect(_dsn_for(fresh.dbname)) as conn:  # grantor of the 9: fcb_migrator
-            assert conn.execute("SELECT array_agg(DISTINCT pg_get_userbyid(x.grantor)) FROM pg_class c, aclexplode(c.relacl) x "
-                                "WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchone()[0] == ["fcb_migrator"]
+        assert _a2_runner_privileges(fresh) == (0, 0, 0)
         assert path_a.create_database(lambda: psycopg.connect(fresh.admin_dsn, autocommit=True)) == "CREATED"
         path_a.install_ledger(lambda: psycopg.connect(_dsn_for("fcb_cert", user=fresh.admin_role,
                                                                password=fresh.admin_password)))
-        # the runner works: the shared coordinator in defaultdb and the ledger database
-        assert _runner_coordinator_cycle(fresh, pw1)["remaining_day"] == 0
+        # the runner works: the shared coordinator in defaultdb (functions only) and the ledger database
+        assert _runner_coordinator_cycle(fresh, pw1)["remaining_day"] == 78
         with _runner_connect(fresh, pw1, "fcb_cert") as conn:
             assert conn.execute("SELECT count(*) AS n FROM public.api_football_cert_plans").fetchone()["n"] == 0
-        # runner rotation: step 1 only + exact assertion, no re-grant (as the workflow's rotate-runner)
-        before = _a2_runner_privileges(fresh)
+        # runner rotation: step 1 only + exact R1 assertion, no re-definition (as the workflow's rotate-runner)
         pw2 = secrets.token_urlsafe(32)
         _a2_roles(fresh, pw2)
         with psycopg.connect(fresh.admin_dsn) as conn:
-            conn.execute(_a2_sql(fresh, "apifootball_cert_path_a_coordinator_assert.sql"))
-        assert _a2_runner_privileges(fresh) == before and fresh.roles_state() == "HARDENED"
+            conn.execute(_a2_sql(fresh, "apifootball_cert_path_a_quota_assert.sql"))
+        assert _a2_runner_privileges(fresh) == (0, 0, 0) and fresh.roles_state() == "HARDENED"
         with pytest.raises(psycopg.OperationalError):
             _runner_connect(fresh, pw1).close()
-        assert _runner_coordinator_cycle(fresh, pw2)["remaining_day"] == 0
+        assert _runner_coordinator_cycle(fresh, pw2)["remaining_day"] == 78  # a fresh key per cycle
         # G3: fcb_app against the fcb_cert_* roles and the fcb_cert database
         with fresh.connect("fcb_app", autocommit=True) as conn:
             for stmt in ("SET ROLE fcb_cert_owner", "SET ROLE fcb_cert_runner", "SET SESSION AUTHORIZATION fcb_cert_runner",
@@ -2198,9 +2270,10 @@ def test_full_sequence_wp009_then_a2_as_migrator_runner_rotation_and_fcb_app_iso
         assert proc.returncode == 0, proc.stderr
         line = _assert_effective_line(proc.stdout, "refused")
         assert "targets=" in line
-        # a later WP-009 phase-2 re-run (migrator password only) keeps the runner's exact grant
+        # a later WP-009 phase-2 re-run (migrator password only) keeps the exact R1 state
         rc, _, err = _enable_tx(fresh)
         assert rc == 0, err
         assert fresh.roles_state() == "HARDENED" and _a2_runner_privileges(fresh) == acl
+        assert _cert_quota_state(fresh) == "EXACT"
     finally:
         _drop_cert_db()

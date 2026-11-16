@@ -87,6 +87,8 @@ def env(tmp_path_factory):
         for m in migrations.load_migrations()[:8]:
             (upto8 / m.name).write_bytes((migrations.BRIDGE.directory / m.name).read_bytes())
         migrations.apply_migrations(ns.admin, upto8)  # the administrator owns bridge 0001-0008
+        with ns.admin() as conn:  # production shape after WP-009 phase 1: PUBLIC has no USAGE on public
+            conn.execute("REVOKE USAGE ON SCHEMA public FROM PUBLIC")
         path_a.install_roles(ns.admin, scram_verifier(runner_pw))
         path_a.install_quota_schema(ns.admin)
         path_a.install_quota_functions(ns.admin)  # the tables' owner (pre-WP-009 shape of this module)
@@ -128,6 +130,11 @@ def _runner_q(ns):
 
 def test_install_is_exact_and_idempotent(env):
     assert _state(env) == "EXACT"
+    # FCB-A2-R1-WP009-DECISIONS: no entry of the runner on schema public, and no USAGE through PUBLIC either
+    with env.su() as su:
+        assert su.execute("SELECT count(*) AS n FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x "
+                          "WHERE n.nspname = 'public' AND x.grantee = %s::regrole", (RUNNER,)).fetchone()["n"] == 0
+        assert su.execute("SELECT has_schema_privilege(%s, 'public', 'USAGE') AS u", (RUNNER,)).fetchone()["u"] is False
     path_a.install_quota_schema(env.admin)
     path_a.install_quota_functions(env.admin)  # second run: no change
     path_a.assert_quota_functions(env.admin)

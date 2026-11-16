@@ -2,7 +2,10 @@
 -- avnadmin: no superuser, CREATEROLE, CREATE on the database) in ONE transaction, after
 -- apifootball_cert_path_a_roles.sql. Creates the EMPTY schema fcb_cert_quota OWNED BY the owner of the
 -- three shared quota-coordinator tables (after WP-009 phase 2 fcb_migrator, which has no CREATE on the
--- database: the administrator, member of fcb_migrator WITH SET, creates it on its behalf). Nothing else:
+-- database). The WP-009 model gives the administrator only the ADMIN-only membership in fcb_migrator (no
+-- SET, no INHERIT: verify_bridge_roles.sql session_reaches_migrator), so to name fcb_migrator as owner it
+-- grants ITSELF SET on that role for this transaction only and revokes it before the end of the same DO
+-- block, asserted (the same pattern as fcb_cert_owner in the ledger steps). Nothing else:
 -- no USAGE for anybody (step 1b grants it to fcb_cert_runner), PUBLIC has nothing on it. Idempotent: an
 -- existing fcb_cert_quota with any other owner is refused (never re-owned). Catalog-qualified.
 SET LOCAL search_path = pg_catalog, pg_temp;
@@ -27,7 +30,17 @@ BEGIN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_QUOTA_SCHEMA_GUARD_FAILED';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name) THEN
-        EXECUTE pg_catalog.format('CREATE SCHEMA fcb_cert_quota AUTHORIZATION %I', tables_owner);
+        IF tables_owner OPERATOR(pg_catalog.<>) SESSION_USER AND NOT pg_catalog.pg_has_role(SESSION_USER, tables_owner, 'SET') THEN
+            -- post-WP-009: one-transaction SET on the tables' owner (the administrator holds ADMIN OPTION)
+            EXECUTE pg_catalog.format('GRANT %I TO CURRENT_USER WITH INHERIT FALSE, SET TRUE', tables_owner);
+            EXECUTE pg_catalog.format('CREATE SCHEMA fcb_cert_quota AUTHORIZATION %I', tables_owner);
+            EXECUTE pg_catalog.format('REVOKE %I FROM CURRENT_USER', tables_owner);
+            IF pg_catalog.pg_has_role(SESSION_USER, tables_owner, 'SET') OR pg_catalog.pg_has_role(SESSION_USER, tables_owner, 'USAGE') THEN
+                RAISE EXCEPTION 'FCB_CERT_PATH_A_QUOTA_SCHEMA_TEMPORARY_GRANT_LEFT';
+            END IF;
+        ELSE
+            EXECUTE pg_catalog.format('CREATE SCHEMA fcb_cert_quota AUTHORIZATION %I', tables_owner);
+        END IF;
     END IF;
     IF (SELECT n.nspowner FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name)
        IS DISTINCT FROM (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) tables_owner) THEN

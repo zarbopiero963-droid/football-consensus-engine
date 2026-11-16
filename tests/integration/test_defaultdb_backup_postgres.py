@@ -328,6 +328,7 @@ def test_backup_restore_verify_encrypt_roundtrip(source, short_tmp, capsys, monk
     for check in ("source_guard_catalog_only", "sequences_stable_during_dump", "roles_sql_without_passwords",
                   "roles_names_attributes_match_source", "role_memberships_match_source", "pg_restore_exit_on_error",
                   "restore_catalog_counts", "restore_structure", "restore_schema_migrations_1_8", "restore_functions",
+                  "restore_cert_quota_state",
                   "restore_sequences_last_value_is_called", "restore_owners", "restore_acls_normalized",
                   "restore_rows_per_table", "restore_content_per_table", "restore_content_sha256",
                   "database_sql_applied", "restore_database_owner_acl_settings",
@@ -775,3 +776,54 @@ def test_f4_a_refused_meta_command_fails_apply_roles_sql_on_real_psql(short_tmp)
     finally:
         cluster.stop()
         cluster.cleanup()
+
+
+# ------------------------------------------------------------------ PATH A2 R1 (FCB-A2-R1-WP009-DECISIONS)
+# fcb_cert_quota is admitted ONLY in its EXACT canonical state: it is dumped with the database and the
+# isolated restore must show EXACT again; any drift is UNEXPECTED_SCHEMA before any row is read.
+
+@pytest.fixture
+def r1_source():
+    """WP-009 phase 1 (PUBLIC without USAGE on public, the administrator owns everything) + PATH A2 R1
+    installed by the real step 1/1a/1b files (the administrator owns the quota tables in this phase)."""
+    env = rr._create_env()
+    try:
+        rc, _, err = rr._roles_tx(env)
+        assert rc == 0, err
+        rr._a2_install(env, owner="admin")
+        assert rr._cert_quota_state(env) == "EXACT" and env.roles_state() == "HARDENED_PHASE1"
+        _seed(env)
+        env.kind = "r1"
+        yield env
+    finally:
+        rr._destroy_env(env)
+
+
+def test_r1_exact_schema_is_dumped_restored_and_verified(r1_source, short_tmp, capsys):
+    before = _source_state(r1_source)
+    rc, out, summary = _run(_module(), r1_source, short_tmp, capsys)
+    assert rc == 0, out + summary
+    assert "## FCB defaultdb encrypted backup: PASS" in summary and "| FAIL |" not in summary
+    assert "| restore_cert_quota_state | PASS | EXACT |" in summary
+    assert "| source_guard_catalog_only | PASS | ok |" in summary
+    assert _source_state(r1_source) == before and rr._cert_quota_state(r1_source) == "EXACT"
+
+
+R1_BACKUP_TAMPER = {
+    "extra_function": "CREATE FUNCTION fcb_cert_quota.extra() RETURNS int LANGUAGE sql AS 'select 1'",
+    "security_invoker": "ALTER FUNCTION fcb_cert_quota.reserve(text) SECURITY INVOKER",
+    "search_path_missing": "ALTER FUNCTION fcb_cert_quota.reserve(text) RESET search_path",
+    "execute_public": "GRANT EXECUTE ON FUNCTION fcb_cert_quota.snapshot(text) TO PUBLIC",
+    "extra_object": "CREATE TABLE fcb_cert_quota.t (a int)",
+    "runner_table_privilege": "GRANT SELECT ON public.api_football_quota_counters TO fcb_cert_runner",
+    "runner_schema_create": "GRANT CREATE ON SCHEMA fcb_cert_quota TO fcb_cert_runner",
+}
+
+
+@pytest.mark.parametrize("tamper", sorted(R1_BACKUP_TAMPER))
+def test_r1_any_drift_is_refused_before_any_row_is_read(r1_source, short_tmp, capsys, tamper):
+    r1_source.superuser(R1_BACKUP_TAMPER[tamper])
+    assert rr._cert_quota_state(r1_source) == "DRIFT"
+    rc, out, summary = _run(_module(), r1_source, short_tmp, capsys)
+    _assert_failed_clean(rc, out, summary, short_tmp, "source_guard_catalog_only")
+    assert "UNEXPECTED_SCHEMA" in summary
