@@ -60,9 +60,40 @@ Ogni voce è verificata da `apifootball_cert_path_a_coordinator_assert.sql` e, p
 
 `USAGE` sullo schema `public` è concesso esplicitamente in `apifootball_cert_path_a_roles.sql`, è fuori dai 9 privilegi ed è escluso dal fingerprint del restore.
 
+L'eccezione per l'ACL di `fcb_cert_runner` nel precheck e nei guard fallisce chiusa (`NOT COALESCE(…, false)`). È un correttivo della review #201 su `0f6e1ce` (F1): prima, con il runner assente o con un'ACL vuota, il confronto restituiva NULL e la riga non era contata.
+Questi casi sono ora rifiutati, con e senza A2 installato, da `test_a2_f1_acl_exception_fails_closed_*` in `tests/integration/test_defaultdb_restore_postgres.py`:
+- `GRANT UPDATE (used)` a `PUBLIC`;
+- `GRANT UPDATE (used)` a un altro ruolo;
+- ACL di tabella svuotata.
+
+## Rischi residui da ratificare (review #201, `0f6e1ce`)
+
+**R1 (F2, P2): stato di quota condiviso.** Con esattamente questi 9 privilegi, chi possiede la credenziale del runner può, con SQL diretto (non con il codice del runner):
+- impostare `used` a un valore arbitrario, anche 0, sul contatore di qualunque chiave;
+- cancellare tentativi e lease, compresi quelli del bridge in produzione.
+
+Questo permetterebbe di aggirare la quota condivisa (§2.4).
+
+Cosa limita il rischio:
+- la credenziale vive solo nell'Environment GitHub protetto dei workflow A2;
+- il runner usa solo le istruzioni del coordinatore;
+- il ledger A2 in `fcb_cert` resta append-only e con budget per piano.
+
+Il database non può eliminare il rischio con questi privilegi: `UPDATE (used)` e `DELETE` servono al coordinatore così com'è scritto.
+
+Alternative di design, da decidere da parte dell'owner:
+- coordinatore dedicato per il runner con funzioni `SECURITY DEFINER` che espongono solo "prenota", "rilascia" e "pota";
+- contatori separati per la chiave della campagna.
+
+**R2 (F3, P3): impostazioni e password del proprio ruolo.** Il runner può modificare la propria password e le proprie impostazioni di ruolo. Non è un'escalation, ma è un possibile disservizio che fallisce chiuso:
+- un'impostazione di ruolo fa rifiutare il precheck del restore e i workflow dei ruoli;
+- un cambio di password blocca il segreto memorizzato.
+
+Il rimedio è rieseguire lo step 1 di installazione, che ruota la password, con un GO owner.
+
 ## Gate prima dell'applicazione in produzione (non autorizzata)
 
 1. Merge della #201 con un GO owner, dopo CI verde e review indipendente SAFE sullo SHA finale.
 2. Completamento dei gate WP-009: fase 1, switch di Render a `fcb_app`, 24 ore di osservazione, G1/G2.
    Dopo la fase 2 il proprietario delle tabelle è `fcb_migrator`: il workflow di installazione richiede quell'identità.
-3. Ratifica scritta dell'owner di questa matrice. Il documento non autorizza nessun GRANT.
+3. Ratifica scritta dell'owner di questa matrice e dei rischi residui R1 e R2, oppure scelta di un'alternativa per R1. Il documento non autorizza nessun GRANT.

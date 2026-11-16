@@ -17,7 +17,7 @@
 -- their owner fcb_migrator in sql/aiven/apifootball_cert_path_a_coordinator_grants.sql (separate
 -- step). Re-running THIS file alone rotates the runner password without any re-grant.
 -- Coordinator privileges (granted by the table owner, asserted by apifootball_cert_path_a_coordinator_assert.sql):
--- EXACTLY these 9 (8 table-level + 1 column-level, in 4 GRANT statements), each required by bridge/api_football/quota.py (PostgresQuota), the only SQL the runner sends to
+-- EXACTLY these 9 (8 table-level + 1 column-level, in 3 GRANT statements on 4 objects), each required by bridge/api_football/quota.py (PostgresQuota), the only SQL the runner sends to
 -- defaultdb (tests/integration/test_apifootball_cert_path_a_postgres.py revokes each one in turn and
 -- shows the coordinator then fails):
 --   api_football_quota_counters  SELECT       _reserve/_snapshot read `used`; ON CONFLICT ... WHERE used < max RETURNING used

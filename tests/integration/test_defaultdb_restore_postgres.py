@@ -1151,6 +1151,56 @@ def test_a2_anything_beyond_the_exact_runner_grant_is_still_refused(a2_installed
     assert rc != 0 and _migration_rows(owner) == rows  # refused before commit: nothing written
 
 
+# Review #201 (0f6e1ce) F1: the A2 ACL exception compared NULL when the runner was absent or the
+# ACL empty, and NOT(NULL) let the row through (fail-open). Every case below must be REFUSE_*,
+# with and without the A2 installation. (superuser_steps, owner_steps)
+A2_FAIL_OPEN = {
+    "column_grant_public": ((), ["GRANT UPDATE (used) ON public.api_football_quota_counters TO PUBLIC"]),
+    "column_grant_other_role": (["CREATE ROLE fcbpa_other NOLOGIN"],
+                                ["GRANT UPDATE (used) ON public.api_football_quota_counters TO fcbpa_other"]),
+}
+NO_A2_FAIL_OPEN = {
+    **A2_FAIL_OPEN,
+    "table_acl_emptied": ((), ["REVOKE ALL ON public.api_football_quota_leases FROM CURRENT_USER"]),
+}
+
+
+def _tamper(schema_name, owner, steps):
+    superuser_steps, owner_steps = steps
+    if superuser_steps:
+        _exec(schema_name.dsn, *superuser_steps)
+    _exec(owner.dsn, *owner_steps)
+
+
+@pytest.mark.parametrize("tamper", sorted(A2_FAIL_OPEN))
+def test_a2_f1_acl_exception_fails_closed_with_the_runner_installed(a2_installed, tamper):
+    schema_name, owner = a2_installed
+    _tamper(schema_name, owner, A2_FAIL_OPEN[tamper])
+    assert _state(owner).startswith("REFUSE_"), tamper
+    rows = _migration_rows(owner)
+    rc, _, _err = _workflow_tx(owner)
+    assert rc != 0 and _migration_rows(owner) == rows
+
+
+@pytest.mark.parametrize("tamper", sorted(NO_A2_FAIL_OPEN))
+def test_a2_f1_acl_exception_fails_closed_without_the_runner(owned, tamper):
+    schema_name, owner = owned
+    with psycopg.connect(schema_name.dsn) as conn:
+        if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = ANY(%s)", (list(A2_ROLES),)).fetchone():
+            pytest.skip("PATH A2 roles already exist on this server; not touching them")
+    rc, _, err = _workflow_tx(owner)
+    assert rc == 0, err
+    assert _state(owner) == "BRIDGE_0001_0008"
+    try:
+        _tamper(schema_name, owner, NO_A2_FAIL_OPEN[tamper])
+        assert _state(owner).startswith("REFUSE_"), tamper
+        rows = _migration_rows(owner)
+        rc, _, _err = _workflow_tx(owner)
+        assert rc != 0 and _migration_rows(owner) == rows
+    finally:
+        _a2_drop_roles(schema_name)
+
+
 # ------------------------------------------------------------------ PostgreSQL 18.7 / 16.16: pg_attver
 # Those minors set the internal column option `pg_attver=<decimal>` on every column they create or
 # re-type (CREATE TABLE, ADD COLUMN, ALTER COLUMN TYPE); ALTER COLUMN SET/RESET (pg_attver=...) is

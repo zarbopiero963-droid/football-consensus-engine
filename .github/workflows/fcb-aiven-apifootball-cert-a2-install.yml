@@ -58,7 +58,7 @@ jobs:
       CONFIRM_ROTATE: ROTATE fcb_cert_runner PASSWORD
       # SHA-256 of every file this workflow runs (tests/test_apifootball_cert_a2_workflows.py).
       EXPECTED_FILE_SHA256: |
-        sql/aiven/apifootball_cert_path_a_roles.sql=c1b4299d7cf734b13ae81d35c81f60e2a18abb472a819c8a8492494ee2a68fc7
+        sql/aiven/apifootball_cert_path_a_roles.sql=ae7f11c4e88d458b5e46ac28d915019b6d0ee495ecb86c2fe53a141f8c4ed6c2
         sql/aiven/apifootball_cert_path_a_coordinator_grants.sql=e95765f8abaed49c95e132fb29d9d1cd3af8fe2b3db266e5509137563e9378b1
         sql/aiven/apifootball_cert_path_a_coordinator_assert.sql=6c944e6a274153a12a208abe5951b9c3ee4e32b76b8014bf3a147cc07e119095
         sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
