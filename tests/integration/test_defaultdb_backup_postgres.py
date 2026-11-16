@@ -26,6 +26,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import re
 import tarfile
 import tempfile
 from pathlib import Path
@@ -206,6 +207,28 @@ def source(request, monkeypatch):
         _drop_aiven_service_roles(env)
 
 
+def _managed_setting_words(source):
+    """Every allowlisted role, parameter and placeholder value of the Aiven shape."""
+    words = {"_aiven", "_aiven_repl", "_avnadmin_monitor", AVN_ONLY_PARAM, "'10s'"}
+    for param, value in (*AIVEN_SERVICE_SETTINGS, *AIVEN_MONITOR_SETTINGS):
+        words |= {param, f"'{value}'", value} if len(value) > 4 else {param, f"'{value}'"}
+    return sorted(words)
+
+
+def _assert_no_managed_setting_names(source, summary, out, artifact_dir):
+    """Neither the step summary, nor stdout/stderr, nor the artifact directory names a skipped
+    pair or a value; `postgres` (the bootstrap) as a whole lowercase word is not in the summary."""
+    texts = {"summary": summary, "output": out}
+    if artifact_dir.is_dir():
+        for f in artifact_dir.iterdir():
+            texts[f.name] = f.read_bytes().decode("latin-1")
+            texts[f.name + ":name"] = f.name
+    for label, text in texts.items():
+        for word in _managed_setting_words(source):
+            assert not re.search(rf"(?<![A-Za-z0-9_$.]){re.escape(word)}(?![A-Za-z0-9_$])", text), (label, word)
+    assert not re.search(r"(?<![A-Za-z0-9_])postgres(?![A-Za-z0-9_])", summary + out)
+
+
 def _url(env):
     p = conninfo_to_dict(os.environ["TEST_DATABASE_URL"])
     return f"postgresql://{env.admin_role}:{env.admin_password}@{p.get('host', 'localhost')}:{p.get('port', '5432')}/{env.dbname}"
@@ -311,23 +334,18 @@ def test_backup_restore_verify_encrypt_roundtrip(source, short_tmp, capsys, monk
                   "decrypt_roundtrip_plaintext_sha256", "tampered_ciphertext_rejected",
                   "plaintext_deleted_before_upload", "artifact_dir_only_ciphertext_and_sha256"):
         assert f"| {check} | PASS |" in summary, check
-    # No per-table counts and no schema/role names in the public summary (review #202).
-    # The skipped Aiven-managed settings row names allowlisted roles and parameters only (by design,
-    # FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX); nothing else names a schema or a role.
+    # No per-table counts and no schema/role names in the public summary (review #202). The skipped
+    # Aiven-managed settings row is `skipped=N sha256=<digest>` only (owner ratification
+    # FCB-WP009-PR204-F5-RUNBOOK): no role name, parameter name or value.
     skipped_row = next(l for l in summary.splitlines()
                        if l.startswith("| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS |"))
-    assert "rows ingest_runs" not in summary and "| 25 " not in summary
-    assert "_avnadmin_monitor" not in summary.replace(skipped_row, "")
-    if source.kind == "aiven":
-        assert skipped_row == ("| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS | skipped=29 "
-                               "_aiven[" + ",".join(sorted(["avn_wal_sender_stop_timeout", *[p for p, _ in AIVEN_SERVICE_SETTINGS]]))
-                               + "] _aiven_repl[" + ",".join(sorted(["avn_wal_sender_stop_timeout", *[p for p, _ in AIVEN_SERVICE_SETTINGS]]))
-                               + "] _avnadmin_monitor[" + ",".join(sorted(p for p, _ in AIVEN_MONITOR_SETTINGS))
-                               + "] postgres[" + ",".join(sorted(["avn_wal_sender_stop_timeout", *[p for p, _ in AIVEN_SERVICE_SETTINGS]]))
-                               + "] |")
-        assert "'10s'" not in summary and "read committed" not in summary
-    else:
-        assert skipped_row.endswith("| skipped=0 |")
+    assert "rows ingest_runs" not in summary and "| 25 " not in summary and "_avnadmin_monitor" not in summary
+    m = re.fullmatch(r"\| roles_sql_aiven_managed_settings_skipped_in_restore_test \| PASS \| "
+                     r"skipped=(\d+) sha256=([0-9a-f]{64}) \|", skipped_row)
+    assert m, skipped_row
+    public_count, public_digest = int(m.group(1)), m.group(2)
+    assert public_count == (29 if source.kind == "aiven" else 0)
+    _assert_no_managed_setting_names(source, summary, out, short_tmp / "out")
     assert f"- excluded_schemas: `{1 if source.kind == 'aiven' else 0}`" in summary
     # The summary passes its own leak check and is published (P1: user avnadmin vs _avnadmin_monitor).
     assert (short_tmp / "public.md").read_text() == summary
@@ -369,6 +387,11 @@ def test_backup_restore_verify_encrypt_roundtrip(source, short_tmp, capsys, monk
         assert "avnadmin_group <- avnadmin grantor=postgres admin=true inherit=true set=true" in manifest["memberships"]
     else:
         assert manifest["restore_test_skipped_role_settings"] == []
+    # The public digest is the manifest list in its documented canonical encoding.
+    listed = manifest["restore_test_skipped_role_settings"]
+    canonical = json.dumps(sorted(x.split(" ", 1) for x in listed), ensure_ascii=True, separators=(",", ":"))
+    assert len(listed) == public_count
+    assert hashlib.sha256(canonical.encode()).hexdigest() == public_digest == manifest["restore_test_skipped_role_settings_sha256"]
 
     # The passphrase never reached argv, a child environment, the output or the summary.
     assert rec.calls, "no subprocess recorded"

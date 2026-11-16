@@ -1006,8 +1006,9 @@ def run(args, env=None) -> int:
         # "GRANTED BY <bootstrap>" replay exactly; pg_dumpall's own CREATE ROLE of that name is the
         # one error that is expected (pg_dumpall emits CREATE ROLE knowing it may already exist).
         # The restore test replays roles.sql minus the allowlisted Aiven-managed role settings
-        # (AIVEN_MANAGED_ROLE_SETTINGS; names counted and reported, values never); the packaged
-        # roles.sql stays byte-identical to pg_dumpall's output.
+        # (AIVEN_MANAGED_ROLE_SETTINGS); the public summary gets only their count and digest, the
+        # names only the encrypted manifest, values nowhere. The packaged roles.sql stays
+        # byte-identical to pg_dumpall's output.
         restore_roles, skipped_settings = restore_test_roles_sql(roles_sql.read_text(encoding="utf-8"))
         restore_roles_path = workdir / "roles_restore_test.sql"
         restore_roles_path.write_text(restore_roles, encoding="utf-8")
@@ -1087,6 +1088,7 @@ def run(args, env=None) -> int:
             "roles": src_globals["roles"],
             "memberships": src_globals["memberships"],
             "restore_test_skipped_role_settings": skipped_settings,
+            "restore_test_skipped_role_settings_sha256": skipped_settings_digest(skipped_settings),
             "sequences": src["sequences"],
             "tables": src["tables"],
             "content_sha256": src["content_sha256"],
@@ -1380,16 +1382,26 @@ def restore_test_roles_sql(text: str) -> tuple[str, list[str]]:
         out.append(seg)
     if len(set(skipped)) != len(skipped):  # pg_dumpall emits each setting once
         raise BackupError("ROLES_SQL_UNPARSEABLE")
+    if not set(skipped) <= set(managed_setting_pairs()):  # never: managed_setting_of allows only these
+        raise BackupError("ROLES_SQL_UNPARSEABLE")
     return "".join(out), sorted(skipped)
 
 
+def skipped_settings_digest(skipped: list[str]) -> str:
+    """SHA-256 (hex) of the skipped pairs in one canonical encoding: the UTF-8 bytes of
+    json.dumps(sorted([[role, param], ...]), ensure_ascii=True, separators=(",", ":")), e.g.
+    `[["_aiven","pgaudit.log"],["postgres","pgaudit.log"]]`; no pairs: `[]`. Order-independent;
+    any added, removed or changed pair changes it. The manifest's
+    restore_test_skipped_role_settings, encoded the same way, gives the same digest."""
+    pairs = sorted([item.split(" ", 1) for item in skipped])
+    canonical = json.dumps(pairs, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def skipped_settings_info(skipped: list[str]) -> str:
-    """Summary text: count, then role[param,...] per role (allowlisted names only, no values)."""
-    by_role: dict[str, list[str]] = {}
-    for item in skipped:
-        role, param = item.split(" ", 1)
-        by_role.setdefault(role, []).append(param)
-    return f"skipped={len(skipped)}" + "".join(f" {r}[{','.join(sorted(p))}]" for r, p in sorted(by_role.items()))
+    """Public summary text: `skipped=<count> sha256=<digest>`. No role name, parameter name or
+    value: the list itself is only in the encrypted manifest."""
+    return f"skipped={len(skipped)} sha256={skipped_settings_digest(skipped)}"
 
 
 def _db_owner_from(database_sql: Path) -> str | None:
@@ -1435,6 +1447,16 @@ def _identifier_patterns(env) -> list[re.Pattern]:
     return [re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(user)}(?![A-Za-z0-9_$])")]
 
 
+# The allowlisted Aiven-managed role settings are named only in the encrypted manifest: a summary
+# that names a parameter of the allowlist, or the service roles _aiven/_aiven_repl (whole word,
+# case-sensitive), fails the leak check. `_avnadmin_monitor` is also Aiven's schema name and is
+# not a leak on its own (review #202 P1); `postgres` and the DSN user keep their own rules.
+def _managed_setting_names() -> list[re.Pattern]:
+    names = sorted({p for params in AIVEN_MANAGED_ROLE_SETTINGS.values() for p in params}
+                   | {r for r in AIVEN_MANAGED_ROLE_SETTINGS if r.startswith("_aiven")})
+    return [re.compile(rf"(?<![A-Za-z0-9_$.]){re.escape(n)}(?![A-Za-z0-9_$])") for n in names]
+
+
 FORBIDDEN_TEXT = (re.compile(r"postgres(?:ql)?://", re.I), re.compile(r"SCRAM-SHA-256\$", re.I),
                   re.compile(r"PGDMP"), re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY"),
                   re.compile(r"\b(?:access|refresh)_token\b", re.I))
@@ -1452,6 +1474,8 @@ def leak_problems(summary: Path | None, artifact_dir: Path | None, env=None) -> 
             problems.append("SUMMARY_CONTAINS_SECRET")
         if any(p.search(decoded) for p in FORBIDDEN_TEXT):
             problems.append("SUMMARY_CONTAINS_FORBIDDEN_TEXT")
+        if any(p.search(decoded) for p in _managed_setting_names()):
+            problems.append("SUMMARY_NAMES_MANAGED_ROLE_SETTINGS")
     if artifact_dir is None:
         return problems
     files = sorted(p for p in artifact_dir.iterdir()) if artifact_dir.is_dir() else []

@@ -10,6 +10,7 @@ behaviour on PostgreSQL 18 is tests/integration/test_defaultdb_backup_postgres.p
 from __future__ import annotations
 
 import hashlib
+import json
 import importlib.util
 import re
 from pathlib import Path
@@ -748,8 +749,7 @@ def test_restore_test_roles_sql_drops_only_the_allowlisted_managed_settings():
     assert filtered.count("\\restrict ") == filtered.count("\\unrestrict ") == 1
     # The summary carries names only.
     info = mod.skipped_settings_info(skipped)
-    assert info.startswith("skipped=29 _aiven[avn_wal_sender_stop_timeout,") and "'" not in info
-    assert "10s" not in info and "read committed" not in info and "none" not in info
+    assert info == f"skipped=29 sha256={mod.skipped_settings_digest(skipped)}"  # count and digest only
 
 
 def test_the_packaged_roles_sql_is_the_unfiltered_dump():
@@ -972,3 +972,95 @@ def test_f4_the_expected_bootstrap_error_alone_still_passes(monkeypatch, tmp_pat
     err = 'psql:/w/roles_restore_test.sql:32: ERROR:  role "postgres" already exists\n'
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **kw: sp.CompletedProcess(a[0], 0, "", err))
     mod.apply_roles_sql("psql", tmp_path / "r.sql", {}, "postgres")
+
+
+
+# ------------------------------------------------------------------ owner ratification FCB-WP009-PR204-F5-RUNBOOK
+
+def _fixture_skipped():
+    return _module().restore_test_roles_sql(AIVEN_ROLES_FIXTURE.read_text(encoding="utf-8"))[1]
+
+
+MANAGED_WORDS = sorted(SERVICE_PARAMS | MONITOR_PARAMS | {"_aiven", "_aiven_repl"})  # leak-check words
+
+
+def _names(word, text):
+    return re.search(rf"(?<![A-Za-z0-9_$.]){re.escape(word)}(?![A-Za-z0-9_$])", text)
+
+
+def test_f5_public_summary_row_is_count_and_digest_only():
+    mod = _module()
+    skipped = _fixture_skipped()
+    info = mod.skipped_settings_info(skipped)
+    assert re.fullmatch(r"skipped=29 sha256=[0-9a-f]{64}", info), info
+    for word in MANAGED_WORDS + ["_avnadmin_monitor", "postgres", "10s", "read committed", "none"]:
+        assert not _names(word, info), word
+    assert mod.skipped_settings_info([]) == "skipped=0 sha256=" + hashlib.sha256(b"[]").hexdigest()
+
+
+def test_f5_digest_is_the_documented_canonical_encoding_deterministic_and_sensitive():
+    mod = _module()
+    skipped = _fixture_skipped()
+    canonical = json.dumps(sorted(x.split(" ", 1) for x in skipped), ensure_ascii=True, separators=(",", ":"))
+    assert canonical.startswith('[["_aiven","avn_wal_sender_stop_timeout"],')
+    digest = mod.skipped_settings_digest(skipped)
+    assert digest == hashlib.sha256(canonical.encode()).hexdigest()
+    assert mod.skipped_settings_digest(list(reversed(skipped))) == digest           # order-independent
+    assert mod.skipped_settings_digest(skipped[1:]) != digest                       # a pair removed
+    changed = ["_aiven_repl pgaudit.log" if x == "_aiven pgaudit.log" else x for x in skipped]
+    assert mod.skipped_settings_digest(changed + ["_aiven pgaudit.logx"]) != digest  # a pair changed
+    # Unambiguous: the split between role and parameter matters.
+    assert mod.skipped_settings_digest(["a b.c"]) != mod.skipped_settings_digest(["a.b c"])
+    src = SCRIPT.read_text(encoding="utf-8")
+    pkg = src[src.index("# ---- 5. package"):]
+    assert '"restore_test_skipped_role_settings_sha256": skipped_settings_digest(skipped_settings)' in pkg
+
+
+@pytest.mark.parametrize("word", MANAGED_WORDS)
+def test_f5_leak_check_refuses_a_summary_naming_a_managed_pair(tmp_path, word):
+    mod = _module()
+    summary = tmp_path / "s.md"
+    summary.write_text(f"| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS | skipped=1 x[{word}] |\n")
+    assert "SUMMARY_NAMES_MANAGED_ROLE_SETTINGS" in mod.leak_problems(summary, None, AIVEN_ENV)
+
+
+def test_f5_leak_check_passes_the_new_row_and_has_no_false_positive(tmp_path):
+    mod = _module()
+    summary = tmp_path / "s.md"
+    summary.write_text("## FCB defaultdb encrypted backup: PASS\n"
+                       f"| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS | "
+                       f"{mod.skipped_settings_info(_fixture_skipped())} |\n"
+                       "- pg_dump: `pg_dump (PostgreSQL) 18.6`\n- extensions: `0`\n- excluded_schemas: `1`\n")
+    # The DSN user `avnadmin` and the bootstrap rule are unaffected; nothing here is a leak.
+    assert mod.leak_problems(summary, None, AIVEN_ENV) == []
+
+
+def test_f5_a_failed_run_summary_names_no_managed_pair(tmp_path, capsys):
+    mod = _module()
+    checks = mod.Checks()
+    checks.add("roles_sql_aiven_managed_settings_skipped_in_restore_test", True,
+               mod.skipped_settings_info(_fixture_skipped()))
+    checks.add("error", False, "ROLES_SQL_APPLY_FAILED class=INVALID_SETTING")
+    mod._write_summary(str(tmp_path / "s.md"), checks, {})
+    text = (tmp_path / "s.md").read_text()
+    assert mod.leak_problems(tmp_path / "s.md", None, AIVEN_ENV) == []
+    for word in MANAGED_WORDS + ["_avnadmin_monitor", "postgres"]:
+        assert not _names(word, text), word
+
+
+def test_f5_runbook_documents_codes_families_residual_p3_and_digest_check():
+    text = RUNBOOK.read_text(encoding="utf-8")
+    for needle in ("FCB-WP009-PR204-F5-RUNBOOK", "skipped=<N> sha256=<digest>", 'separators=(",", ":")',
+                   "SUMMARY_NAMES_MANAGED_ROLE_SETTINGS", "restore_test_skipped_role_settings_sha256",
+                   "Errori dei ruoli", "**(a) Errore nel file esportato**", "**(b) Compatibilità con Aiven**",
+                   "**(c) Fallimento del restore isolato**", "class=META_COMMAND_REFUSED", "class=INVALID_SETTING",
+                   "class=OTHER", "\\restrict <key>", "63 caratteri alfanumerici", "SET standard_conforming_strings = on;",
+                   "dollar quoting", "P3 residui accettati", "U&'…'", "set_config", "E'…'",
+                   "Confronto del digest pubblico con il manifest"):
+        assert needle in text, needle
+    assert "le coppie ruolo/parametro dell'allowlist nella riga" not in text
+    # The documented recipe gives the code's digest.
+    mod = _module()
+    skipped = _fixture_skipped()
+    c = json.dumps(sorted(x.split(" ", 1) for x in skipped), ensure_ascii=True, separators=(",", ":"))
+    assert hashlib.sha256(c.encode()).hexdigest() == mod.skipped_settings_digest(skipped)

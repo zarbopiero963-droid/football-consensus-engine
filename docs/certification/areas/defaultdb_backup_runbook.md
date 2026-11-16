@@ -97,7 +97,9 @@ Cosa viene **ricreato e confrontato** come prima:
 - tutte le membership con grantor e opzioni (per esempio `avnadmin` ∈ `avnadmin_group` ∈ `_avnadmin_managed`), owner, ACL e dipendenze che citano un ruolo gestito;
 - tutte le altre impostazioni di ruolo, comprese quelle di un ruolo gestito su un parametro fuori allowlist.
 
-Cosa viene **saltato**: solo le istruzioni delle coppie in tabella. Il confronto dei ruoli toglie le stesse coppie, in modo simmetrico, dalla `rolconfig` di sorgente e restore; il `manifest.json` cifrato conserva la `rolconfig` completa della sorgente (`roles`) e l'elenco delle coppie saltate (`restore_test_skipped_role_settings`). La riga di summary `roles_sql_aiven_managed_settings_skipped_in_restore_test` riporta il numero e le coppie `ruolo[parametro,…]`: solo nomi presi dall'allowlist del repository, **mai valori**.
+Cosa viene **saltato**: solo le istruzioni delle coppie in tabella. Il confronto dei ruoli toglie le stesse coppie, in modo simmetrico, dalla `rolconfig` di sorgente e restore; il `manifest.json` cifrato conserva la `rolconfig` completa della sorgente (`roles`) e l'elenco delle coppie saltate (`restore_test_skipped_role_settings`). La riga di summary `roles_sql_aiven_managed_settings_skipped_in_restore_test` riporta **solo** `skipped=<N> sha256=<digest>` (ratifica dell'owner FCB-WP009-PR204-F5-RUNBOOK): nessun nome di ruolo, nessun nome di parametro, nessun valore. L'elenco delle coppie sta solo nel `manifest.json` cifrato (`restore_test_skipped_role_settings`, più `restore_test_skipped_role_settings_sha256`); il leak check rifiuta un summary che nomini un parametro dell'allowlist o i ruoli `_aiven`/`_aiven_repl` (`SUMMARY_NAMES_MANAGED_ROLE_SETTINGS`).
+
+**Digest.** `sha256` è lo SHA-256 (esadecimale) dei byte UTF-8 di `json.dumps(sorted([[ruolo, parametro], …]), ensure_ascii=True, separators=(",", ":"))`, per esempio `[["_aiven","avn_wal_sender_stop_timeout"],["_aiven","default_transaction_isolation"],…]`; senza coppie è lo SHA-256 di `[]` (`skipped=0 sha256=4f53cda1…`). Non dipende dall'ordine e cambia se una coppia viene aggiunta, tolta o modificata. Sul servizio osservato: `skipped=29`.
 
 Decisioni di progetto:
 - `avnadmin` è il ruolo applicativo (owner di `defaultdb` e delle tabelle): le sue impostazioni non si saltano mai.
@@ -168,7 +170,7 @@ Gli altri segreti sono quelli già usati dai workflow di `defaultdb`: `FCB_DEFAU
   - `decrypt_roundtrip_plaintext_sha256`, `tampered_ciphertext_rejected`;
   - `plaintext_deleted_before_upload`, `artifact_dir_only_ciphertext_and_sha256`;
 - in fondo: `encrypted_file`, `encrypted_sha256`, `encrypted_bytes`, `plaintext_sha256`, `plaintext_bytes`, `excluded_schemas` (un numero), `extensions` (un numero), versioni, `source_commit`, `created_at_utc`;
-- il summary non contiene conteggi per tabella né nomi di schema o di ruolo, tranne le coppie ruolo/parametro dell'allowlist nella riga `roles_sql_aiven_managed_settings_skipped_in_restore_test`: i conteggi e gli hash per tabella stanno solo nel `manifest.json` cifrato. In caso di differenza il summary riporta solo i **nomi** delle tabelle (`mismatched=…`);
+- il summary non contiene conteggi per tabella né nomi di schema o di ruolo (le impostazioni gestite saltate compaiono solo come `skipped=N sha256=…`): i conteggi e gli hash per tabella stanno solo nel `manifest.json` cifrato. In caso di differenza il summary riporta solo i **nomi** delle tabelle (`mismatched=…`);
 - lo step "Leak check" stampa `leak check: PASS (summary and artifact directory)`;
 - un artifact `fcb-defaultdb-backup-<run_id>-<attempt>` con esattamente due file.
 
@@ -181,10 +183,27 @@ Qualunque `FAIL` significa nessun artifact e plaintext già eliminato. Il summar
 - `PUBLIC_OBJECT_NOT_OWNED_BY_SESSION_USER`;
 - `UNEXPECTED_SCHEMA`;
 - `SEQUENCE_MOVED_DURING_DUMP`: rilancia in un momento senza scritture;
-- `ROLES_SQL_APPLY_FAILED class=…` (`class=INVALID_SETTING`: un parametro sconosciuto fuori allowlist);
-- `ROLES_SQL_UNPARSEABLE`: `roles.sql` ha una forma che il lexer non classifica in modo esatto;
+- i codici dei ruoli, in tre famiglie (dettaglio in "Errori dei ruoli" qui sotto): `ROLES_SQL_UNPARSEABLE`, `ROLES_SQL_APPLY_FAILED class=INVALID_SETTING|META_COMMAND_REFUSED|OTHER|…`;
 - `EXTENSION_OUTSIDE_PUBLIC`;
 - `restore_rows_per_table … mismatched=<tabella>`.
+
+### Errori dei ruoli
+**(a) Errore nel file esportato** (`roles.sql` non ha la forma di `pg_dumpall`; nessun comando arriva a psql): `ROLES_SQL_UNPARSEABLE`. Motivi:
+- meta-comandi psql diversi dalla coppia di `pg_dumpall` (`\!`, `\i`, `\set`, `\c`, `\connect`, …) o un separatore `\\` su una riga meta;
+- coppia `\restrict <key>` / `\unrestrict <key>` mancante, doppia, con chiavi diverse, con una chiave che non è di 63 caratteri alfanumerici, con testo in più sulla riga, o con istruzioni prima di `\restrict` o dopo `\unrestrict`;
+- un'istruzione che nomina `standard_conforming_strings` diversa da esattamente `SET standard_conforming_strings = on;`;
+- sintassi non supportata dal lexer: dollar quoting, commenti `/* */`, backslash fuori da una stringa, stringa, identificatore o istruzione non terminati, una stessa impostazione gestita ripetuta.
+
+**(b) Compatibilità con Aiven** (il file è corretto, ma il PostgreSQL standard del restore-test non accetta qualcosa del provider): `ROLES_SQL_APPLY_FAILED class=INVALID_SETTING`, per un parametro sconosciuto fuori allowlist (per esempio un nuovo parametro `avn_*`, o un parametro sconosciuto su un ruolo applicativo o su un nome simile come `_aiven_x`). Richiede una PR dell'owner che aggiorni l'allowlist, mai un aggiramento.
+
+**(c) Fallimento del restore isolato** (psql rifiuta o non esegue qualcosa nel cluster di restore):
+- `ROLES_SQL_APPLY_FAILED class=META_COMMAND_REFUSED`: psql ha rifiutato un comando backslash (`backslash commands are restricted`, `invalid command`); qualunque riga `error:` del client psql fa fallire il job anche con exit code 0;
+- `ROLES_SQL_APPLY_FAILED class=OTHER` (o un'altra classe fissa, per esempio `PERMISSION_DENIED`, `ALREADY_EXISTS`): qualunque altro errore; l'unico ammesso è `role "<bootstrap>" already exists`;
+- `ROLES_MISMATCH`, `ROLES_SQL_INCOMPLETE`: ruoli, attributi o membership ripristinati diversi dalla sorgente.
+
+**P3 residui accettati dall'owner:**
+- il controllo su `standard_conforming_strings` è testuale: un aggiramento con `U&'…'` o `set_config(…)` richiederebbe un'istruzione di primo livello iniettata nel file, che `pg_dumpall` non produce; il file viene comunque dal `pg_dumpall` del workflow nella stessa esecuzione;
+- un valore in allowlist che contenga un backslash (scritto `E'…'`) non ha la forma attesa: non viene saltato, viene rieseguito e, se il parametro è sconosciuto, il job fallisce in modo chiuso (`INVALID_SETTING`).
 
 Gli errori di `pg_dump`, `pg_dumpall`, `pg_restore` e `psql` non vengono **mai** stampati: possono citare righe di produzione (`DETAIL`, `CONTEXT`, `Command was`). Il log mostra solo il codice e una classe fissa, per esempio `PG_RESTORE_FAILED class=ALREADY_EXISTS`, `class=PERMISSION_DENIED`, `class=UNIQUE_VIOLATION`, `class=OTHER`. Per la diagnosi serve un'indagine dell'owner fuori dal workflow.
 
@@ -228,6 +247,14 @@ umask 077; mkdir restore && tar -xf fcb-defaultdb-<run>.tar -C restore
 #    -> defaultdb.dump  roles.sql  database.sql  manifest.json
 ```
 
+**Confronto del digest pubblico con il manifest** (impostazioni gestite saltate nel restore-test). Ricalcola il digest dall'elenco cifrato con la codifica canonica documentata sopra; i due numeri devono essere uguali a `skipped=N sha256=…` della riga `roles_sql_aiven_managed_settings_skipped_in_restore_test` del summary del run e a `restore_test_skipped_role_settings_sha256` del manifest. Se differiscono, il pacchetto non corrisponde al run: fermati e annota sulla #130.
+
+```
+python3 -I -c 'import json,hashlib; m=json.load(open("restore/manifest.json")); l=m["restore_test_skipped_role_settings"]; c=json.dumps(sorted(x.split(" ",1) for x in l),ensure_ascii=True,separators=(",",":")); print(f"skipped={len(l)} sha256={hashlib.sha256(c.encode()).hexdigest()}", m["restore_test_skipped_role_settings_sha256"])'
+```
+
+L'elenco stampa nomi di ruoli e parametri solo sulla macchina fidata: non incollarlo in issue, PR o chat.
+
 **A. Restore su un PostgreSQL 18 di cui sei superuser** (verifica o recovery locale). È la procedura dei test.
 
 ```
@@ -238,6 +265,7 @@ pg_ctl -D ./pgdata -o "-c listen_addresses='' -c unix_socket_directories=$PWD" s
 grep -v -E '^ALTER ROLE (_aiven|_aiven_repl|postgres|_avnadmin_monitor) SET ' restore/roles.sql > restore/roles_local.sql
 diff restore/roles.sql restore/roles_local.sql | grep -c '^<'
 #    deve essere uguale al numero di voci di restore_test_skipped_role_settings nel manifest
+#    e allo skipped=N del summary del run
 #    (29 sul servizio osservato); se è diverso, fermati: c'è un valore su più righe o un parametro nuovo
 psql -h "$PWD" -U postgres -X -f restore/roles_local.sql
 #    unico errore atteso: role "postgres" already exists
@@ -294,4 +322,4 @@ Alla fine **elimina** tar, cartella `restore/` e cluster locale. Il `.tar.age` s
 - Il backup dopo la fase 2 di WP-009, cioè con il bridge di `fcb_migrator` (stati 0009 e 0010), richiede un'identità diversa (`fcb_migrator`) e nuovi valori fissati: serve una nuova decisione.
 - Il test di integrazione PG18 richiede i binari server di PostgreSQL 18 (`initdb`), che la CI attuale non installa. Senza una modifica alla CI, decisa dall'owner, in CI viene saltato.
 - Frequenza dei backup, numero di copie su Drive e rotazione della passphrase.
-- Ruoli gestiti da Aiven: la riga di summary con le coppie ruolo/parametro saltate (nomi dell'allowlist del repository, mai valori) è pubblica nel summary del job; se l'owner preferisce solo il numero e un hash, va deciso esplicitamente. Un helper che produca la versione filtrata di `roles.sql` per la recovery (oggi un `grep` manuale con controllo del conteggio) è una possibile evoluzione.
+- Ruoli gestiti da Aiven: un helper che produca la versione filtrata di `roles.sql` per la recovery (oggi un `grep` manuale con controllo del conteggio) è una possibile evoluzione.
