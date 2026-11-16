@@ -25,10 +25,11 @@ def run(c):
 
 
 # ---------------------------------------------------------------- shipped policy
-def test_shipped_policy_refuses_mainnet_and_cancel_under_kill_switch():
+def test_shipped_policy_refuses_mainnet_and_allows_only_cancels_under_kill_switch():
+    # Declared change (owner decision 16-11-2026, ratified): cancels of open orders allowed while ENGAGED.
     src = (ROOT / "bridge/sxbet/trading_mode.py").read_text(encoding="utf-8")
     assert "\nMAINNET_LIVE_TRADING_AUTHORIZED = False\n" in src
-    assert "\nCANCEL_ALLOWED_WHILE_KILL_SWITCH_ENGAGED = False\n" in src
+    assert "\nCANCEL_ALLOWED_WHILE_KILL_SWITCH_ENGAGED = True\n" in src
     assert tm.MAINNET_LIVE_TRADING_AUTHORIZED is False
 
 
@@ -117,13 +118,20 @@ def _row(**kw):
     ([_row(age_seconds=None)], "PLACE", "SIGNER_UNREACHABLE"),
     ([_row(age_seconds="1")], "PLACE", "SIGNER_UNREACHABLE"),
     ([_row(kill_switch="ENGAGED")], "PLACE", "KILL_SWITCH_ENGAGED"),
-    ([_row(kill_switch="ENGAGED")], "CANCEL", "KILL_SWITCH_ENGAGED"),
+    ([_row(kill_switch="ENGAGED")], "CANCEL", None),                       # owner decision 16-11 (declared)
+    ([_row(kill_switch="ENGAGED", age_seconds=500.0)], "CANCEL", "SIGNER_UNREACHABLE"),
+    ([_row(kill_switch="ENGAGED", live_trading="NOT_AUTHORIZED", live_reason="X")], "CANCEL",
+     "LIVE_TRADING_NOT_AUTHORIZED"),
+    ([_row(kill_switch="ENGAGED", last_cycle_ok=False)], "CANCEL", None),
+    ([_row(kill_switch="ENGAGED", last_cycle_ok=False)], "PLACE", "KILL_SWITCH_ENGAGED"),
+    ([_row()], "MODIFY", "REQUEST_KIND_INVALID"),
     ([_row(kill_switch="UNKNOWN")], "CANCEL", "KILL_SWITCH_STATE_UNKNOWN"),
     ([_row(kill_switch=None)], "PLACE", "KILL_SWITCH_STATE_UNKNOWN"),
     ([_row(live_trading="NOT_AUTHORIZED", live_reason="LIVE_TRADING_FLAG_EXPIRED")], "PLACE",
      "LIVE_TRADING_NOT_AUTHORIZED"),
     ([_row(live_trading=None)], "CANCEL", "LIVE_TRADING_NOT_AUTHORIZED"),
     ([_row(last_cycle_ok=False)], "PLACE", "SIGNER_LAST_CYCLE_FAILED"),
+    ([_row(last_cycle_ok=False)], "CANCEL", None),
     ([_row(last_cycle_ok=1)], "PLACE", "SIGNER_LAST_CYCLE_FAILED"),
     ([_row()], "PLACE", None),
     ([_row(age_seconds=120)], "CANCEL", None),
@@ -156,11 +164,14 @@ def test_place_and_cancel_are_refused_before_queue(live, rows, code):
     w.signer_rows = rows
     text, _ = s7.owner_text(s, "order-key-P5A")
     out = s7.place(t, s, "order-key-P5A", text)
-    assert out["status"] == "REFUSED_BEFORE_QUEUE" and out["error"]["code"] == code and out["queued"] is False
+    assert out["status"] == "REFUSED_BEFORE_QUEUE" and out["error"]["code"] == code and out["queued_by_this_call"] is False
     assert out["request_with_this_key_exists"] is False and q.requests == []
     c = run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
                                             idempotency_key="cancel-key-P5A"))
-    assert c["status"] == "REFUSED_BEFORE_QUEUE" and c["error"]["code"] == code and q.requests == []
+    if code == "KILL_SWITCH_ENGAGED":       # declared change: owner decision 16-11, cancels allowed while ENGAGED
+        assert c["status"] == "QUEUED" and [r[1] for r in q.requests] == ["CANCEL"]
+    else:
+        assert c["status"] == "REFUSED_BEFORE_QUEUE" and c["error"]["code"] == code and q.requests == []
 
 
 def test_status_read_error_refuses_without_leaking(live):
@@ -278,7 +289,7 @@ def test_p2_1_refused_cancel_reports_an_already_queued_identical_request(live):
     s, q, t, w = live
     kw = dict(owner_command="Cancel all my open orders", scope="ALL", idempotency_key="cancel-key-P5Z")
     assert run(t["sxbet_order_request_cancel"](**kw))["status"] == "QUEUED"
-    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    w.signer_rows = [_row(age_seconds=10_000.0)]           # signer silent (a kill switch no longer refuses cancels)
     c = run(t["sxbet_order_request_cancel"](**kw))
     assert c["status"] == "REFUSED_BEFORE_QUEUE" and c["request_with_this_key_exists"] is True
     assert len(q.requests) == 1
@@ -306,6 +317,7 @@ def test_p3_3_health_is_consistent_with_the_mode(tmp_path):
     h = run(t["sxbet_health"]())
     assert h["mode"] == "LIVE_TRADING" and h["available_modes"]["LIVE_TRADING"] == "ENABLED_QUEUE_TO_ISOLATED_SIGNER"
     assert h["live_trading"].startswith("UNAVAILABLE_IN_MCP") and h["order_requests"]["status"] == "ENABLED"
+    assert h["write_tools"] == [] and set(h["signer_queue_tools"]) == set(ORDER_REQUEST_TOOLS)
     (tmp_path / "b").mkdir()
     t2, _ = _register(Stack(tmp_path / "b"))
     assert run(t2["sxbet_health"]())["available_modes"]["LIVE_TRADING"] == "UNAVAILABLE"
@@ -328,3 +340,17 @@ def test_p3_7_malformed_status_shape_is_a_fixed_refusal(live):
     c = run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
                                             idempotency_key="cancel-key-P5N"))
     assert c["error"]["code"] == "SIGNER_STATUS_UNAVAILABLE" and q.requests == []
+
+
+def test_p3_max_age_with_non_ascii_digits_is_a_fixed_code():
+    m = tm.TradingMode.from_env("testnet", True, None,
+                                env={"SXBET_MCP_MODE": "LIVE_TRADING", "SXBET_SIGNER_STATUS_MAX_AGE_SECONDS": "6\u00b2"})
+    assert (m.mode, m.error) == ("READ_ONLY", "SXBET_SIGNER_STATUS_MAX_AGE_INVALID")
+
+
+def test_p3_refusal_does_not_claim_nothing_is_queued(live):
+    s, q, t, w = live
+    w.signer_rows = []
+    c = run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
+                                            idempotency_key="cancel-key-P5Q"))
+    assert c["state"] == "NOT_QUEUED_BY_THIS_CALL" and "queued" not in c

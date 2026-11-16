@@ -29,7 +29,8 @@ class FakeService:
     def sync_outcomes(self):
         return self._do("sync_outcomes", [])
 
-    def process_once(self, limit):
+    def process_once(self, limit, kinds=None):
+        self.kinds = kinds
         return self._do("process_once", [{"event": "SUBMITTED"}])
 
 
@@ -68,10 +69,11 @@ def test_cycle_order_and_counts(tmp_path):
 
 
 def test_kill_switch_engaged_skips_new_orders_but_keeps_reconciling(tmp_path):
+    # Declared change (owner decision 16-11-2026): while ENGAGED the worker still processes CANCEL requests only.
     svc, mon = FakeService(), FakeMonitor()
     r = worker(tmp_path, svc, mon, FakeKill(engaged=True)).run_cycle()
-    assert "process_once" not in svc.calls and mon.calls == 1 and "recover" in svc.calls
-    assert r["stages"]["process_once"] == {"ok": True, "skipped": "KILL_SWITCH_ENGAGED"}
+    assert svc.kinds == ("CANCEL",) and mon.calls == 1 and "recover" in svc.calls
+    assert r["stages"]["process_once"] == {"ok": True, "skipped": "KILL_SWITCH_ENGAGED", "only_kinds": ["CANCEL"]}
 
 
 def test_unknown_kill_switch_state_fails_closed(tmp_path):
@@ -115,7 +117,7 @@ def test_a_successful_cycle_resets_the_failure_counter(tmp_path):
 
 def test_claim_unavailable_counts_as_a_failure(tmp_path):
     class Svc(FakeService):
-        def process_once(self, limit):
+        def process_once(self, limit, kinds=None):
             raise QueueClaimUnavailable()
     r = worker(tmp_path, Svc()).run_cycle()
     assert r["stages"]["process_once"] == {"ok": False, "error_type": "QueueClaimUnavailable"}
@@ -228,3 +230,36 @@ def test_kill_switch_on_another_ledger_is_refused(tmp_path):
     assert e.value.code == "WORKER_LEDGER_MISMATCH"
     S._signer._ledger = L("a")
     worker(tmp_path, S(), M(), K()).close()
+
+
+def test_end_to_end_kill_switch_engaged_processes_owner_cancels_of_open_orders_only(tmp_path):
+    """Owner decision 16-11-2026: with the kill switch ENGAGED, a cancel of an order already open is processed (owner
+    command verified, idempotency, audit, reconciliation by the monitor); a new PLACE stays pending, never sent."""
+    from signer import cancellation as cx
+    from sxbet_queue_kit import cancel_request
+    s = Stack(tmp_path)
+    q = MemoryQueue()
+    svc = SignerService(q, s.signer, s.gw, s.cx, network="mainnet", signer_id=SIGNER_ID, clock=s.clock)
+    mon = Monitor(s.ledger, s.adapter, MonitorState.create(str(tmp_path / "mon.json"), ledger_id=s.ledger.ledger_id),
+                  clock=s.clock)
+    kill = ks.KillSwitch(s.ledger, AuditLog(str(tmp_path / "ks.jsonl")), owner_public_key=s.owner.public_key(),
+                         network="mainnet", clock=s.clock)
+    _, sg, _ = s.place("order-key-W010")                       # an order already open on the exchange
+    s.gw.reconcile("order-key-W010")
+    kill.engage("OWNER_TEST", source="MANUAL")
+    i2 = s.intent("order-key-W011")
+    ctx2 = s.context(i2)
+    s.signer.config.market_data.world = ctx2
+    p_place = place_request(i2, s.command(i2, ctx2), created_at=int(s.clock()))
+    q.insert(p_place)
+    auth = s.cancel_command(cx.SCOPE_ORDER_IDS, order_ids=[sg["order_id"]])
+    p_cancel = cancel_request(auth, scope="ORDER_IDS", order_ids=[sg["order_id"]], created_at=int(s.clock()))
+    q.insert(p_cancel)
+    posts_before = len([x for x in s.sim.writes() if x.method == "POST"])
+    with SignerWorker(svc, mon, kill, lock_path=str(tmp_path / "w.lock"), sleep=lambda x: None) as w:
+        r = w.run_cycle()
+    assert r["stages"]["process_once"]["only_kinds"] == ["CANCEL"] and r["counts"]["processed"] == 1
+    assert q.states(p_cancel["request_id"])[-1] == "DONE"
+    assert q.states(p_place["request_id"]) == []                # pending, unclaimed
+    assert len([x for x in s.sim.writes() if x.method == "POST"]) == posts_before
+    assert len([x for x in s.sim.writes() if x.method == "DELETE"]) == 1

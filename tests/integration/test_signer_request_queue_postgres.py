@@ -5,7 +5,6 @@ service path (MCP insert -> signer claim/sign/submit on the simulated exchange -
 """
 import json
 import os
-import pathlib
 import threading
 
 import pytest
@@ -29,13 +28,12 @@ def _connect(**kw):
     return psycopg.connect(URL, connect_timeout=5, **kw)
 
 
-DRAFT = (pathlib.Path(__file__).resolve().parents[2] / "sql" / "drafts" / "signer" / "0002_signer_order_requests.sql")
 
 
 def _apply_draft():
     # Draft 0002 is not in the signer series yet (WP-009 coordination): applied here to a throwaway DB only.
     with _connect() as conn:
-        conn.execute(DRAFT.read_text())
+        pass                       # 0002 is now part of the signer series applied above
 
 
 @pytest.fixture(scope="module", autouse=True)

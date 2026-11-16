@@ -82,7 +82,9 @@ def test_migrate_twice_is_idempotent_and_tracked():
         cur.execute("SELECT count(*) FROM schema_migrations WHERE name LIKE '%%signer%%'")
         signer_in_bridge = cur.fetchone()[0]
     expected = [(m.version, m.name, m.checksum) for m in migrations.load_migrations(migrations.SIGNER.directory)]
-    assert signer_rows == expected and signer_rows[-1][1] == "0001_signer_ledger_anchor.sql"
+    # Declared change (#187): the series ends at 0003 (0002 request queue, 0003 signer status).
+    assert signer_rows == expected and signer_rows[0][1] == "0001_signer_ledger_anchor.sql" \
+        and signer_rows[-1][1] == "0003_signer_status.sql"
     assert signer_in_bridge == 0     # signer DDL is never tracked in the bridge series
 
 

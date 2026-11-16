@@ -1,12 +1,12 @@
 -- SX Bet isolated signer: published status read by the MCP bridge before queueing a trading request (#187, P5).
--- DRAFT, NOT in the signer migration series yet (same promotion step as 0002, coordinated with WP-009 and the
--- owner). Signer database only, never the bridge database. Additive.
+-- Signer series migration 0003 (prepared, NOT applied: owner step, CLAUDE.md §2.6, coordinated with WP-009).
+-- Signer database only, never the bridge database. Additive.
 -- STATUS, not audit: one row per signer_id, overwritten in place by the signer after every worker cycle. The
 -- audit stays in the append-only ledger and signer_order_request_events. Roles (owner step, WP-009): signer
 -- INSERT/UPDATE/SELECT; MCP SELECT only. No DELETE/TRUNCATE for either. The MCP role must never own this table
 -- or receive default privileges on it (it could rewrite its own precheck input).
--- Promotion to the signer series requires a versioned migration with explicit GRANTs and a test on an already
--- initialised database (CLAUDE.md §5); `IF NOT EXISTS` is acceptable only while this stays a draft.
+-- Versioned and tracked in signer_schema_migrations; tested on an already initialised signer database
+-- (CLAUDE.md §5). Explicit GRANTs: sql/owner_steps/signer_roles_0002_0003.sql (owner step, WP-009).
 -- A row of a decommissioned or renamed signer makes the MCP refuse (SIGNER_STATUS_AMBIGUOUS or stale): removing
 -- it is an explicit owner step on the signer database, recorded in the issue.
 CREATE TABLE IF NOT EXISTS signer_status (

@@ -89,8 +89,8 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
             code = "SIGNER_STATUS_UNAVAILABLE"
         if code is None:
             return None
-        return {**out, "status": "REFUSED_BEFORE_QUEUE", "state": "NOT_QUEUED", "error": {"code": code},
-                "queued": False,
+        return {**out, "status": "REFUSED_BEFORE_QUEUE", "state": "NOT_QUEUED_BY_THIS_CALL", "error": {"code": code},
+                "queued_by_this_call": False,
                 "note": "This call wrote nothing: the signer cannot take trading requests now. Do not retry in a loop; "
                         "report the code to the owner. Kill switch release and LIVE authorization are owner acts "
                         "outside the MCP."}

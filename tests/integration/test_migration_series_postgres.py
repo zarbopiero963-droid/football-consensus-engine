@@ -252,8 +252,11 @@ def test_signer_series_is_tracked_separately_and_never_by_the_bridge(schema):
     bridge_rows = _rows(connect)
     migrations.apply_migrations(connect, series=migrations.SIGNER)
     signer_rows = _rows(connect, "signer_schema_migrations")
-    assert [(r["version"], r["name"], r["sha256"]) for r in signer_rows] == [
-        (1, "0001_signer_ledger_anchor.sql", LEGACY_SIGNER_0008[1])]  # same bytes as former 0008
+    # Declared change (#187): the series now also ships 0002/0003; 0001 keeps the bytes of the former 0008.
+    assert [(r["version"], r["name"], r["sha256"]) for r in signer_rows][0] == \
+        (1, "0001_signer_ledger_anchor.sql", LEGACY_SIGNER_0008[1])
+    assert [(r["version"], r["name"]) for r in signer_rows][1:] == [
+        (2, "0002_signer_order_requests.sql"), (3, "0003_signer_status.sql")]
     assert _rows(connect) == bridge_rows  # bridge history untouched
     assert all(_exists(connect, name, t) for t in SIGNER_TABLES)
     migrations.apply_migrations(connect, series=migrations.SIGNER)

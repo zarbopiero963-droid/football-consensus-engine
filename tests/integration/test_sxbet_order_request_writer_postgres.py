@@ -6,7 +6,6 @@ the throwaway database only (production roles are a WP-009 step).
 """
 import json
 import os
-import pathlib
 
 import pytest
 
@@ -19,7 +18,6 @@ pytestmark = [
     pytest.mark.skipif(bool(URL) and URL == os.environ.get("DATABASE_URL"),
                        reason="TEST_DATABASE_URL must not be the production DATABASE_URL"),
 ]
-DRAFT = (pathlib.Path(__file__).resolve().parents[2] / "sql" / "drafts" / "signer" / "0002_signer_order_requests.sql")
 MCP, SIG = "fce_it_s7_mcp", "fce_it_s7_signer"
 
 
@@ -41,7 +39,7 @@ def as_role(role):
 def schema_and_roles():
     migrations.apply_migrations(_connect, series=migrations.SIGNER)
     with _connect() as conn:
-        conn.execute(DRAFT.read_text())
+        pass                       # 0002 is now part of the signer series applied above
     with _connect(autocommit=True) as conn:
         for role in (MCP, SIG):
             conn.execute(f"DROP ROLE IF EXISTS {role}")

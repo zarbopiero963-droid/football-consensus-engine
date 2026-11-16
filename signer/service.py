@@ -65,10 +65,13 @@ class SignerService:
         self._lock = signer._ledger.service_lock
 
     # ---------------------------------------------------------------- loop
-    def process_once(self, limit: int = 10) -> list[dict[str, Any]]:
+    def process_once(self, limit: int = 10, kinds: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        """`kinds`: process only these request kinds (the worker passes ("CANCEL",) while the kill switch is
+        engaged, owner decision 16-11-2026); the others stay pending, unclaimed."""
         with self._lock:
             out = []
-            batch = self._q.pending(self._network, limit)
+            batch = self._q.pending(self._network, limit) if kinds is None else \
+                self._q.pending(self._network, limit, kinds)
             failed = 0
             for req in batch:
                 try:

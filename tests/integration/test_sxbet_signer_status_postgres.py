@@ -15,7 +15,7 @@ pytestmark = [
     pytest.mark.skipif(bool(URL) and URL == os.environ.get("DATABASE_URL"),
                        reason="TEST_DATABASE_URL must not be the production DATABASE_URL"),
 ]
-DRAFTS = pathlib.Path(__file__).resolve().parents[2] / "sql" / "drafts" / "signer"
+SERIES = pathlib.Path(__file__).resolve().parents[2] / "sql" / "migrations" / "signer"
 MCP, SIG = "fce_it_p5_mcp", "fce_it_p5_signer"
 
 
@@ -37,9 +37,7 @@ def as_role(role):
 def schema_and_roles():
     migrations.apply_migrations(_connect, series=migrations.SIGNER)
     with _connect() as conn:
-        conn.execute((DRAFTS / "0002_signer_order_requests.sql").read_text())
-        conn.execute((DRAFTS / "0003_signer_status.sql").read_text())
-        conn.execute((DRAFTS / "0003_signer_status.sql").read_text())          # idempotent
+        conn.execute((SERIES / "0003_signer_status.sql").read_text())          # idempotent re-run
         conn.execute("DELETE FROM signer_status")
     with _connect(autocommit=True) as conn:
         for role in (MCP, SIG):

@@ -18,9 +18,11 @@ class MemoryQueue:
         self.requests.append((rid, payload["kind"], json.loads(json.dumps(payload)),
                               sha or canonical_sha256(payload), row_network or payload["network"]))
 
-    def pending(self, network, limit):
+    def pending(self, network, limit, kinds=None):
+        kinds = ("PLACE", "CANCEL") if kinds is None else tuple(kinds)
+        assert kinds and set(kinds) <= {"PLACE", "CANCEL"}
         return [{"request_id": r[0], "kind": r[1], "payload": json.loads(json.dumps(r[2])), "payload_sha256": r[3]}
-                for r in self.requests if r[4] == network and r[0] not in self.events][:limit]
+                for r in self.requests if r[4] == network and r[1] in kinds and r[0] not in self.events][:limit]
 
     def claim(self, request_id, signer_id):
         evs = self.events.setdefault(request_id, [])

@@ -2,6 +2,8 @@ from pathlib import Path
 import pytest
 from app import migrations
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _write(directory, version, sql):
     p=directory / f'{version:04d}_test.sql'
@@ -193,3 +195,31 @@ def test_oauth_throttle_migration_0009_is_additive_and_keeps_0001_0008_bytes():
         assert word not in code, word
     statements=[st.strip() for st in code.split(';') if st.strip()]
     assert all(st.startswith(('CREATE TABLE IF NOT EXISTS','CREATE INDEX IF NOT EXISTS')) for st in statements)
+
+
+def test_signer_series_0002_0003_are_versioned_additive_and_grant_free():
+    # P5 / #187: request queue (0002) and signer status (0003) promoted from drafts; prepared, never auto-applied.
+    items=migrations.load_migrations(migrations.SIGNER.directory)
+    assert [(m.version, m.name) for m in items]==[(1,'0001_signer_ledger_anchor.sql'),
+                                                   (2,'0002_signer_order_requests.sql'),(3,'0003_signer_status.sql')]
+    for m in items[1:]:
+        sql='\n'.join(l.split('--',1)[0] for l in m.sql.splitlines()).upper()   # statements, not comments
+        for word in ('DROP ','ALTER TABLE','DELETE FROM','TRUNCATE TABLE','GRANT ','REVOKE ','CREATE ROLE',
+                     'INSERT INTO','UPDATE SIGNER'):
+            assert word not in sql, (m.name, word)
+    q=items[1].sql.upper()
+    assert 'CREATE TABLE IF NOT EXISTS SIGNER_ORDER_REQUESTS' in q and 'BEFORE UPDATE OR DELETE' in q \
+        and 'BEFORE TRUNCATE' in q
+    assert 'CREATE TABLE IF NOT EXISTS SIGNER_STATUS' in items[2].sql.upper()
+    assert not (ROOT/'sql'/'drafts').exists()
+
+
+def test_owner_grant_step_is_outside_every_series():
+    step=ROOT/'sql'/'owner_steps'/'signer_roles_0002_0003.sql'
+    assert step.exists()
+    for s in migrations.SERIES:
+        assert step.parent.resolve()!=s.directory.resolve()
+    text=step.read_text(encoding='utf-8').upper()
+    for line in text.splitlines():
+        if line.startswith('GRANT') and 'MCP_ROLE' in line:
+            assert 'UPDATE' not in line and 'DELETE' not in line and 'TRUNCATE' not in line, line

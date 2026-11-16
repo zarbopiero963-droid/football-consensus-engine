@@ -11,9 +11,10 @@ authorized working trading capabilities on mainnet (decision of 16-11-2026). Lif
 change merged by the owner (MAINNET_LIVE_TRADING_AUTHORIZED), never a variable.
 
 Before queueing, every trading request reads the signer's published status (signer/status.py) and is refused
-when: the status is missing, ambiguous or stale (signer unreachable), the kill switch is engaged or its state is
-unknown, the LIVE flag does not verify, or the signer's last cycle failed. This is an early refusal only: the
-signer re-checks everything itself.
+when: the status is missing, ambiguous or stale (signer unreachable), the kill switch is engaged (PLACE; a CANCEL
+is still allowed, owner decision) or its state is unknown, the LIVE flag does not verify, or the signer's last
+cycle failed (PLACE only: a risk-reducing cancel is not blocked by a degraded cycle, e.g. after the automatic kill
+switch). This is an early refusal only: the signer re-checks everything itself.
 """
 from __future__ import annotations
 
@@ -30,10 +31,10 @@ MODES = (READ_ONLY, LIVE_TRADING)
 MAINNET_LIVE_TRADING_AUTHORIZED = False
 DEFAULT_STATUS_MAX_AGE_SECONDS = 120
 _AGE_BOUNDS = (30, 900)
-# Owner decision 16-11-2026: EVERY trading request (place and cancel) is refused while the kill switch is engaged.
-# Note: the signer itself would still accept owner cancels under the kill switch (they reduce risk); this MCP
-# policy is stricter and is reported to the owner as a decision point.
-CANCEL_ALLOWED_WHILE_KILL_SWITCH_ENGAGED = False
+# Owner decision 16-11-2026 (ratified): while the kill switch is ENGAGED, owner cancels of orders ALREADY OPEN are
+# allowed (owner command verified by the signer, idempotency key, append-only audit, reconciliation by the monitor);
+# every new placement is refused. The worker processes CANCEL requests only while ENGAGED (signer/worker.py).
+CANCEL_ALLOWED_WHILE_KILL_SWITCH_ENGAGED = True
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,7 @@ class TradingMode:
         age_raw = e.get("SXBET_SIGNER_STATUS_MAX_AGE_SECONDS", "").strip()
         age = DEFAULT_STATUS_MAX_AGE_SECONDS
         if age_raw:
-            if not age_raw.isdigit() or not _AGE_BOUNDS[0] <= int(age_raw) <= _AGE_BOUNDS[1]:
+            if not (age_raw.isascii() and age_raw.isdigit()) or not _AGE_BOUNDS[0] <= int(age_raw) <= _AGE_BOUNDS[1]:
                 return cls(error="SXBET_SIGNER_STATUS_MAX_AGE_INVALID")
             age = int(age_raw)
         return cls.live_for(network, order_requests_enabled, order_requests_error, status_max_age_seconds=age)
@@ -92,6 +93,8 @@ class TradingMode:
 
 def precheck(rows: Iterable[Mapping[str, Any]] | None, *, max_age_seconds: int, kind: str) -> str | None:
     """None = the signer looks ready to consider the request; otherwise a fixed refusal code (fail closed)."""
+    if kind not in ("PLACE", "CANCEL"):
+        return "REQUEST_KIND_INVALID"
     if rows is None:
         return "SIGNER_STATUS_UNAVAILABLE"
     rows = list(rows)
@@ -112,7 +115,7 @@ def precheck(rows: Iterable[Mapping[str, Any]] | None, *, max_age_seconds: int, 
             return "KILL_SWITCH_STATE_UNKNOWN"
     if r.get("live_trading") != "AUTHORIZED":
         return "LIVE_TRADING_NOT_AUTHORIZED"
-    if r.get("last_cycle_ok") is not True:
+    if kind != "CANCEL" and r.get("last_cycle_ok") is not True:
         return "SIGNER_LAST_CYCLE_FAILED"
     return None
 

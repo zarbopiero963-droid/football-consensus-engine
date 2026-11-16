@@ -74,8 +74,10 @@ def _rows(ledger_id):
 
 def test_signer_migration_applied_once_and_tracked_in_its_own_series():
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT version, name FROM signer_schema_migrations")
-        assert cur.fetchall() == [(1, "0001_signer_ledger_anchor.sql")]
+        cur.execute("SELECT version, name FROM signer_schema_migrations ORDER BY version")
+        # Declared change (#187): 0002/0003 follow 0001 in the same series, each applied once.
+        assert cur.fetchall() == [(1, "0001_signer_ledger_anchor.sql"), (2, "0002_signer_order_requests.sql"),
+                                  (3, "0003_signer_status.sql")]
         cur.execute("SELECT count(*) FROM schema_migrations WHERE name LIKE '%%signer%%'")
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT to_regclass('signer_ledger_anchors'), to_regclass('signer_ledger_writer_leases')")

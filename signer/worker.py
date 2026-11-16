@@ -7,8 +7,10 @@ One `SignerWorker.run_cycle()` composes the existing, already-reviewed parts in 
    expired-unconfirmed, late fills until settlement), expiry and keep-alive renewal alerts, owner rules. It can
    only READ the exchange (by construction);
 3. `SignerService.sync_outcomes()`: final states learnt by step 2 are mirrored to the request queue;
-4. `SignerService.process_once()`: new owner requests. This step is SKIPPED while the persistent kill switch
-   is engaged or unreadable; steps 1-3 keep running so open exposure is still reconciled.
+4. `SignerService.process_once()`: new owner requests. While the persistent kill switch is ENGAGED only CANCEL
+   requests are processed (owner decision 16-11-2026: cancels of orders already open, with the owner command,
+   idempotency, audit and reconciliation of the signer); PLACE requests stay pending. While its state is
+   UNKNOWN nothing is processed (fail closed). Steps 1-3 keep running so open exposure is still reconciled.
 
 Note on step 1: `recover()` may re-run a PLACE request that was claimed but never reached the ledger. That path
 still goes through `Signer.sign_order` and the gateway, which re-check the kill switch under their own locks:
@@ -121,8 +123,13 @@ class SignerWorker:
             engaged = True                    # unknown kill-switch state: fail closed, no new order
             report["kill_switch_engaged"] = "UNKNOWN"
             report["stages"]["kill_switch_read"] = {"ok": False, "error_type": type(exc).__name__}
-        if engaged:
-            report["stages"]["process_once"] = {"ok": True, "skipped": "KILL_SWITCH_ENGAGED"}
+        if engaged is True and report["kill_switch_engaged"] is True:
+            # Known ENGAGED: cancels only (they reduce risk); new placements stay pending.
+            processed = self._stage(report, "process_once",
+                                    lambda: self._service.process_once(self._batch, kinds=("CANCEL",)))
+            report["stages"]["process_once"].update(skipped="KILL_SWITCH_ENGAGED", only_kinds=["CANCEL"])
+        elif engaged:
+            report["stages"]["process_once"] = {"ok": True, "skipped": "KILL_SWITCH_STATE_UNKNOWN"}
             processed = []
         else:
             processed = self._stage(report, "process_once", lambda: self._service.process_once(self._batch))

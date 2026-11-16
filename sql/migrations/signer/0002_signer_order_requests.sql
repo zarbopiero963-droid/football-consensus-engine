@@ -1,12 +1,13 @@
 -- SX Bet isolated signer: persistent request queue between the MCP bridge and the signer (issue #187, S6).
--- DRAFT, NOT in the signer migration series yet: promoting it to sql/migrations/signer/ (and updating the
--- series tests) is a step coordinated with WP-009 and the owner. Tests apply it only to a throwaway database.
+-- Signer series migration 0002 (prepared, NOT applied: applying the signer series to the signer database is an
+-- explicit owner step, CLAUDE.md §2.6, coordinated with WP-009). Tests apply it only to a throwaway database.
 -- Signer series only (never the bridge database: WP-009 guards refuse signer schema there). Additive.
 -- Both tables are APPEND-ONLY: the database refuses UPDATE, DELETE and TRUNCATE. A request is written once
 -- by the MCP side; every state change is a new row in signer_order_request_events written by the signer.
 -- No roles and no GRANT here: least-privilege roles (MCP: INSERT + SELECT requests, SELECT events -- SELECT
 -- on requests is needed by the S7 idempotent insert, ON CONFLICT ... RETURNING and the payload comparison;
--- signer: SELECT requests + SELECT, INSERT events) are an explicit owner step coordinated with WP-009.
+-- signer: SELECT requests + SELECT, INSERT events) are an explicit owner step coordinated with WP-009:
+-- sql/owner_steps/signer_roles_0002_0003.sql (never run by the migration runner).
 CREATE TABLE IF NOT EXISTS signer_order_requests (
     request_id TEXT PRIMARY KEY CHECK (request_id ~ '^[0-9a-f]{32}$'),
     kind TEXT NOT NULL CHECK (kind IN ('PLACE', 'CANCEL')),

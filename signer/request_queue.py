@@ -1,9 +1,9 @@
 """Persistent request queue between the MCP bridge and the isolated signer (issue #187, S6; governance §2.6).
 
 The MCP writes ONE row per owner request (`signer_order_requests`, append-only); the signer claims it and
-appends every state change as a new row (`signer_order_request_events`, append-only). The schema is the draft
-`sql/drafts/signer/0002_signer_order_requests.sql` (to be promoted to the signer series with WP-009; never the
-bridge database). This module imports no database driver: the
+appends every state change as a new row (`signer_order_request_events`, append-only). The schema is signer
+series migration `sql/migrations/signer/0002_signer_order_requests.sql` (prepared; applying it is an owner step
+with WP-009; never the bridge database). This module imports no database driver: the
 Postgres store takes an injected `connect()` (e.g. `psycopg.connect` with the signer's own DSN and role).
 
 Request contract `sxbet.order_request.v1` (the MCP side builds it; the signer re-validates everything and
@@ -105,8 +105,9 @@ def event_detail(**fields: Any) -> dict[str, Any]:
 
 
 class RequestQueue(Protocol):
-    def pending(self, network: str, limit: int) -> list[dict[str, Any]]:
-        """Requests of this network with no event yet, oldest first: {request_id, kind, payload, payload_sha256}."""
+    def pending(self, network: str, limit: int, kinds: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """Requests of this network with no event yet, oldest first: {request_id, kind, payload, payload_sha256}.
+        With `kinds`, only requests of those kinds (e.g. CANCEL only while the kill switch is engaged)."""
         ...
 
     def claim(self, request_id: str, signer_id: str) -> bool:
@@ -148,11 +149,15 @@ class PostgresRequestQueue:
         finally:
             conn.close()
 
-    def pending(self, network: str, limit: int) -> list[dict[str, Any]]:
+    def pending(self, network: str, limit: int, kinds: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        kinds = list(KINDS if kinds is None else kinds)
+        if not kinds or any(k not in KINDS for k in kinds):
+            raise QueueError("REQUEST_KINDS_INVALID")
         rows = self._run(
             "SELECT r.request_id, r.kind, r.payload::text, r.payload_sha256 FROM signer_order_requests r "
-            "WHERE r.network = %s AND NOT EXISTS (SELECT 1 FROM signer_order_request_events e "
-            "WHERE e.request_id = r.request_id) ORDER BY r.created_at, r.request_id LIMIT %s", (network, limit))
+            "WHERE r.network = %s AND r.kind = ANY(%s) AND NOT EXISTS (SELECT 1 FROM signer_order_request_events e "
+            "WHERE e.request_id = r.request_id) ORDER BY r.created_at, r.request_id LIMIT %s",
+            (network, kinds, limit))
         return [{"request_id": r[0], "kind": r[1], "payload": json.loads(r[2]), "payload_sha256": r[3]} for r in rows]
 
     def claim(self, request_id: str, signer_id: str) -> bool:
