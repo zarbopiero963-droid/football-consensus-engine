@@ -55,13 +55,15 @@ def test_every_temporary_owner_grant_is_revoked_in_the_same_transaction_and_asse
 
 
 def test_defaultdb_gets_only_two_roles_and_the_minimal_coordinator_grant():
-    # Post-WP-009 split (intentional change): the administrator's step 1 creates the roles and grants
-    # ONLY the explicit USAGE on public; the 9 coordinator grants are issued by the tables' owner
-    # (fcb_migrator after WP-009 phase 2) in the separate step 1b file, never in step 1.
+    # Owner ratification FCB-A2-R1-WP009-DECISIONS (intentional change): step 1 creates the roles and
+    # grants NOTHING; a runner USAGE on public left by the earlier variant is revoked (the SECURITY
+    # DEFINER functions need none, WP-009 phase 1 revoked PUBLIC's). No table or column grant at all.
     code = _code("apifootball_cert_path_a_roles.sql")
     assert code.index("SET LOCAL createrole_self_grant = '';") < code.index("CREATE ROLE")
     assert not re.search(r"GRANT [^;]*\bON TABLE\b", code)
-    assert re.findall(r"^GRANT [^;]*;", code, re.M) == ["GRANT USAGE ON SCHEMA public TO fcb_cert_runner;"]
+    assert re.findall(r"^GRANT [^;]*;", code, re.M) == []
+    assert re.findall(r"^REVOKE [^;]*;", code, re.M) == ["REVOKE USAGE, CREATE ON SCHEMA public FROM fcb_cert_runner;"]
+    assert "'api_football_quota_counters'" not in code  # no table is exempted from "no privilege"
     assert re.findall(r"CREATE ROLE (\w+) NOLOGIN", code) == ["fcb_cert_owner", "fcb_cert_runner"]
     assert "WITH LOGIN" in code and "PASSWORD %L" in code  # a SCRAM verifier, never a cleartext password
     # PATH A2 variant R1 (owner decision D2, intentional change): NO table or column GRANT to the runner;

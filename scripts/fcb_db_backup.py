@@ -18,7 +18,9 @@ Subcommands
      a READ ONLY REPEATABLE READ transaction with default_transaction_read_only=on and
      row_security=off exports its snapshot (pg_export_snapshot). Inside that transaction a
      catalog-only guard runs BEFORE any row is read: expected database, PostgreSQL 18, TLS when
-     required, no schema outside public except Aiven's _avnadmin_monitor (excluded and reported),
+     required, no schema outside public except Aiven's _avnadmin_monitor (excluded and reported) and
+     PATH A2 R1's fcb_cert_quota ONLY in its EXACT canonical state (dumped with the database; the
+     isolated restore must show the same state, check restore_cert_quota_state),
      every object of public owned by the session user, no other non-superuser able to act as it,
      no large object. Then, in the SAME snapshot: pinned object counts and structure fingerprint
      (sql/aiven/count_bridge_catalog.sql, sql/aiven/fingerprint_bridge_structure.sql), the
@@ -71,6 +73,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AIVEN = ROOT / "sql" / "aiven"
 COUNT_SQL = AIVEN / "count_bridge_catalog.sql"
 STRUCTURE_SQL = AIVEN / "fingerprint_bridge_structure.sql"
+CERT_QUOTA_SCHEMA = "fcb_cert_quota"
 
 URL_VAR = "FCB_DEFAULTDB_URL"
 PASSPHRASE_VAR = "FCB_BACKUP_PASSPHRASE"
@@ -84,6 +87,16 @@ ROLE_NAME_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 BOOTSTRAP_SQL = "SELECT r.rolname::pg_catalog.text FROM pg_catalog.pg_roles r WHERE r.oid OPERATOR(pg_catalog.=) 10::pg_catalog.oid"
 ALLOWED_QUERY_KEYS = {"sslmode"}
 EXCLUDABLE_SCHEMAS = ("_avnadmin_monitor",)
+
+
+# PATH A2 R1 (owner ratification FCB-A2-R1-WP009-DECISIONS): sql/aiven/apifootball_cert_quota_state.sql in
+# its one-line form (comment lines dropped, lines joined by one space, no final semicolon), byte-identical to
+# the text inside CERT_QUOTA_EXACT of the restore-guard generator (tests/test_defaultdb_backup_workflow.py
+# keeps them equal). Embedded so the backup runs no SQL file beyond the two pinned by its workflow.
+# Prints ABSENT, EXACT or DRIFT.
+CERT_QUOTA_STATE_SQL = (
+    '''SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name) THEN 'ABSENT'::pg_catalog.text WHEN COALESCE(( WITH w AS ( SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'fcb_cert_runner'::pg_catalog.name AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolbypassrls AND NOT r.rolreplication AND NOT r.rolinherit AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member OPERATOR(pg_catalog.=) r.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid AND NOT (m.admin_option AND NOT m.inherit_option AND NOT m.set_option AND m.grantor OPERATOR(pg_catalog.=) 10::pg_catalog.oid)) AND (SELECT pg_catalog.count(*) FROM pg_catalog.pg_auth_members m WHERE m.roleid OPERATOR(pg_catalog.=) r.oid) OPERATOR(pg_catalog.<=) 1::pg_catalog.int8), qt AS ( SELECT c.oid, c.relowner, c.relacl FROM pg_catalog.pg_class c WHERE c.relnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace AND c.relkind OPERATOR(pg_catalog.=) 'r'::pg_catalog."char" AND c.relname OPERATOR(pg_catalog.=) ANY (ARRAY['api_football_quota_counters', 'api_football_quota_leases', 'api_football_quota_attempts']::pg_catalog.name[])), t AS (SELECT pg_catalog.min(qt.relowner::pg_catalog.text)::pg_catalog.oid AS oid FROM qt HAVING pg_catalog.count(*) OPERATOR(pg_catalog.=) 3::pg_catalog.int8 AND pg_catalog.count(DISTINCT qt.relowner) OPERATOR(pg_catalog.=) 1::pg_catalog.int8), q AS (SELECT n.oid, n.nspowner, n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name), f AS (SELECT p.* FROM pg_catalog.pg_proc p, q WHERE p.pronamespace OPERATOR(pg_catalog.=) q.oid) SELECT (SELECT pg_catalog.count(*) FROM w) OPERATOR(pg_catalog.=) 1::pg_catalog.int8 AND (SELECT pg_catalog.count(*) FROM t) OPERATOR(pg_catalog.=) 1::pg_catalog.int8 AND (SELECT q.nspowner FROM q) OPERATOR(pg_catalog.=) (SELECT t.oid FROM t) AND (SELECT pg_catalog.string_agg(z.e, ','::pg_catalog.text ORDER BY z.e) FROM ( SELECT x.grantor::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.grantee::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.privilege_type::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.is_grantable::pg_catalog.text AS e FROM q, LATERAL pg_catalog.aclexplode(q.nspacl) x) z) OPERATOR(pg_catalog.=) (SELECT pg_catalog.string_agg(e.v, ','::pg_catalog.text ORDER BY e.v) FROM ( SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/CREATE/false'::pg_catalog.text AS v FROM t UNION ALL SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/USAGE/false'::pg_catalog.text FROM t UNION ALL SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) w.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/USAGE/false'::pg_catalog.text FROM t, w) e) AND (SELECT pg_catalog.string_agg(f.proname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_arguments(f.oid) OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_function_result(f.oid) OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) l.lanname::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) f.prokind::pg_catalog.text OPERATOR(pg_catalog.||) f.prosecdef::pg_catalog.text OPERATOR(pg_catalog.||) f.provolatile::pg_catalog.text OPERATOR(pg_catalog.||) f.proisstrict::pg_catalog.text OPERATOR(pg_catalog.||) f.proleakproof::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(f.proconfig::pg_catalog.text, '-'::pg_catalog.text) OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.md5(f.prosrc) OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) (f.proowner OPERATOR(pg_catalog.=) (SELECT t.oid FROM t))::pg_catalog.text OPERATOR(pg_catalog.||) '|'::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE((SELECT pg_catalog.string_agg(z.e, ','::pg_catalog.text ORDER BY z.e) FROM ( SELECT x.grantor::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.grantee::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.privilege_type::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) x.is_grantable::pg_catalog.text AS e FROM pg_catalog.aclexplode(f.proacl) x) z) OPERATOR(pg_catalog.=) (SELECT pg_catalog.string_agg(e.v, ','::pg_catalog.text ORDER BY e.v) FROM ( SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/EXECUTE/false'::pg_catalog.text AS v FROM t UNION ALL SELECT t.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/'::pg_catalog.text OPERATOR(pg_catalog.||) w.oid::pg_catalog.text OPERATOR(pg_catalog.||) '/EXECUTE/false'::pg_catalog.text FROM t, w) e), false)::pg_catalog.text, ';'::pg_catalog.text ORDER BY f.proname COLLATE "C") FROM f JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) f.prolang) OPERATOR(pg_catalog.=) ( 'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|a324fbae0bb6e11a5ef72a112fde1414|true|true;' OPERATOR(pg_catalog.||) 'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|3559bfb7badfed16609b58384a44ff96|true|true;' OPERATOR(pg_catalog.||) 'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|fcf76fe21351fb67f000845642d740ea|true|true;' OPERATOR(pg_catalog.||) 'snapshot|p_key_hash text|TABLE(remaining_minute integer, remaining_day integer, active_leases integer)|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|d50a603c2e2ba8ebfa5f9c7b3f369b3e|true|true')::pg_catalog.text AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class x, q WHERE x.relnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type x, q WHERE x.typnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_operator x, q WHERE x.oprnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_opclass x, q WHERE x.opcnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_opfamily x, q WHERE x.opfnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_collation x, q WHERE x.collnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_conversion x, q WHERE x.connamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_ts_config x, q WHERE x.cfgnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_ts_dict x, q WHERE x.dictnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_ts_parser x, q WHERE x.prsnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_ts_template x, q WHERE x.tmplnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_extension x, q WHERE x.extnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_statistic_ext x, q WHERE x.stxnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint x, q WHERE x.connamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl x, q WHERE x.defaclnamespace OPERATOR(pg_catalog.=) q.oid) AND NOT EXISTS (SELECT 1 FROM qt, LATERAL pg_catalog.aclexplode(qt.relacl) x WHERE x.grantee OPERATOR(pg_catalog.=) ANY (ARRAY[0::pg_catalog.oid, (SELECT w.oid FROM w)])) AND NOT EXISTS (SELECT 1 FROM qt JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) qt.oid, LATERAL pg_catalog.aclexplode(a.attacl) x WHERE x.grantee OPERATOR(pg_catalog.=) ANY (ARRAY[0::pg_catalog.oid, (SELECT w.oid FROM w)])) AND NOT pg_catalog.has_schema_privilege((SELECT w.oid FROM w), 'public'::pg_catalog.text, 'CREATE'::pg_catalog.text) ), false) THEN 'EXACT'::pg_catalog.text ELSE 'DRIFT'::pg_catalog.text END AS state'''
+)
 # Session settings for every verification read, identical on both sides so the text form of each
 # row (hence its hash) does not depend on server or role defaults.
 READ_GUCS = ("-c search_path=pg_catalog -c default_transaction_read_only=on -c row_security=off "
@@ -326,8 +339,9 @@ SELECT pg_catalog.current_database()::pg_catalog.text AS db,
          WHERE e.extname OPERATOR(pg_catalog.<>) 'plpgsql'::pg_catalog.name
            AND n.nspname OPERATOR(pg_catalog.<>) 'public'::pg_catalog.name) AS extensions_outside_public,
        (SELECT pg_catalog.count(*) FROM pg_catalog.pg_extension e
-         WHERE e.extname OPERATOR(pg_catalog.<>) 'plpgsql'::pg_catalog.name) AS extensions
-"""
+         WHERE e.extname OPERATOR(pg_catalog.<>) 'plpgsql'::pg_catalog.name) AS extensions,
+       (@CERT_QUOTA_STATE@) AS cert_quota_state
+""".replace("@CERT_QUOTA_STATE@", CERT_QUOTA_STATE_SQL)
 
 TABLES_SQL = """
 SELECT c.relname::pg_catalog.text FROM pg_catalog.pg_class c
@@ -363,6 +377,9 @@ WITH acl(a) AS (
   UNION ALL SELECT t.typacl FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) t.typnamespace
    WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND t.typacl IS NOT NULL
   UNION ALL SELECT n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND n.nspacl IS NOT NULL
+  UNION ALL SELECT n.nspacl FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name AND n.nspacl IS NOT NULL
+  UNION ALL SELECT p.proacl FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+   WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name AND p.proacl IS NOT NULL
   UNION ALL SELECT d.defaclacl FROM pg_catalog.pg_default_acl d
 ), oids(o) AS (
   SELECT e.grantee FROM acl, LATERAL pg_catalog.aclexplode(acl.a) e
@@ -371,7 +388,8 @@ WITH acl(a) AS (
   UNION SELECT c.relowner FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
    WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
   UNION SELECT p.proowner FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
-   WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name
+   WHERE n.nspname OPERATOR(pg_catalog.=) ANY (ARRAY['public', 'fcb_cert_quota']::pg_catalog.name[])
+  UNION SELECT n.nspowner FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name
   UNION SELECT d.datdba FROM pg_catalog.pg_database d WHERE d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()
 )
 SELECT r.rolname::pg_catalog.text FROM oids JOIN pg_catalog.pg_roles r ON r.oid OPERATOR(pg_catalog.=) oids.o
@@ -626,6 +644,7 @@ def read_evidence(conn) -> dict:
     owners = [r[0] for r in conn.execute(OWNERS_SQL).fetchall()]
     acls = read_acls(conn)
     column_options = [r[0] for r in conn.execute(COLUMN_OPTIONS_SQL).fetchall()]
+    cert_quota_state = conn.execute(CERT_QUOTA_STATE_SQL).fetchone()[0]
     tables = {}
     for (table,) in conn.execute(TABLES_SQL).fetchall():
         rows, digest = conn.execute(_table_hash_sql(table)).fetchone()
@@ -634,6 +653,7 @@ def read_evidence(conn) -> dict:
         "catalog_counts": catalog,
         "structure": structure,
         "migrations": migrations,
+        "cert_quota_state": cert_quota_state,
         "functions": functions,
         "functions_sha256": hashlib.sha256("\n".join(functions).encode()).hexdigest(),
         "owners": owners,
@@ -664,8 +684,11 @@ def check_guard(row: dict, *, expected_db: str, require_tls: bool) -> tuple[list
         problems.append("TRANSACTION_NOT_SNAPSHOT")
     others = list(row["other_schemas"] or [])
     excluded = [s for s in others if s in EXCLUDABLE_SCHEMAS and s not in (row["own_other_schemas"] or [])]
-    if set(others) - set(excluded):
-        problems.append("UNEXPECTED_SCHEMA")  # not dumped by --schema=public: refuse, never truncate silently
+    # PATH A2 R1 (FCB-A2-R1-WP009-DECISIONS): fcb_cert_quota is admitted ONLY in its EXACT canonical
+    # state; it is then DUMPED (not excluded) and its state re-checked on the isolated restore.
+    admitted = [CERT_QUOTA_SCHEMA] if CERT_QUOTA_SCHEMA in others and row.get("cert_quota_state") == "EXACT" else []
+    if set(others) - set(excluded) - set(admitted):
+        problems.append("UNEXPECTED_SCHEMA")  # never dumped: refuse, never truncate silently
     if row["foreign_owned"]:
         problems.append("PUBLIC_OBJECT_NOT_OWNED_BY_SESSION_USER")
     if row["acting_members"]:
@@ -852,6 +875,9 @@ def _compare(checks: Checks, src: dict, dst: dict, expected_catalog: str, expect
     checks.add("restore_structure", dst["structure"] == src["structure"] == expected_structure, dst["structure"])
     checks.add("restore_schema_migrations_1_8", dst["migrations"] == src["migrations"] == expected_rows,
                f"rows={len(dst['migrations'])}")
+    # PATH A2 R1: schema fcb_cert_quota absent on both sides, or EXACT on both (dumped with the database)
+    checks.add("restore_cert_quota_state", dst.get("cert_quota_state") == src.get("cert_quota_state")
+               and src.get("cert_quota_state") in ("ABSENT", "EXACT"), str(dst.get("cert_quota_state")))
     checks.add("restore_functions", dst["functions"] == src["functions"],
                f"functions={len(dst['functions'])} sha256={dst['functions_sha256']}")
     checks.add("restore_sequences_last_value_is_called", dst["sequences"] == src["sequences"],

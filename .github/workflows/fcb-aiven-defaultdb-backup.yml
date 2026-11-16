@@ -57,7 +57,7 @@ jobs:
       # tests/test_defaultdb_backup_workflow.py). Both are catalog-only and read no row.
       EXPECTED_SQL_SHA256: |
         sql/aiven/count_bridge_catalog.sql=ab0317404cf0ac9a3722a808f2e9f6c1ac4a75503ccac8c508aa2eb5aa304fae
-        sql/aiven/fingerprint_bridge_structure.sql=3d03f05174b7fb50bfda83e936cc4969dacf8185a39db72845f6ce95e6c5564f
+        sql/aiven/fingerprint_bridge_structure.sql=995ba192e5c8c93b70b484d71f110a3b955a8e1b6b3298db74d6eed557ec092c
       # The bridge 0001-0008 object counts and structure fingerprint pinned by the roles workflow
       # (PostgreSQL 18): the source snapshot AND the restore must both equal them.
       EXPECTED_COUNTS: 'tables=33 functions=4 triggers=9 indexes=60 constraints_information_schema=325 constraints_pg_constraint=65 schema_migrations_rows=8'

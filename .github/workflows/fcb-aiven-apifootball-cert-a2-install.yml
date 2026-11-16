@@ -61,15 +61,15 @@ jobs:
       CONFIRM_ROTATE: ROTATE fcb_cert_runner PASSWORD
       # SHA-256 of every file this workflow runs (tests/test_apifootball_cert_a2_workflows.py).
       EXPECTED_FILE_SHA256: |
-        sql/aiven/apifootball_cert_path_a_roles.sql=ae7f11c4e88d458b5e46ac28d915019b6d0ee495ecb86c2fe53a141f8c4ed6c2
+        sql/aiven/apifootball_cert_path_a_roles.sql=bcbc46d31de63e023a9a57490859971729f576c6bedc77848482e0de2488eb8f
         sql/aiven/apifootball_cert_path_a_quota_schema.sql=b323793b5839c52f3b81b6e52f49b3a86231d3bb87f8cdce9c6ca7d8b5d40c9c
         sql/aiven/apifootball_cert_path_a_quota_functions.sql=ee6140d09927b9f2535b51e22b4fc4fb4149cab4f910ac746d06941a162384d3
-        sql/aiven/apifootball_cert_path_a_quota_assert.sql=7339a9ffcd1ac60b2a21bd6dbf832d8bdb08292ce1b878537ed08619363f3682
+        sql/aiven/apifootball_cert_path_a_quota_assert.sql=83a60a6e00d775b3fbd93763fe5738ae41e459b45699280173200f7312ea1042
         sql/aiven/apifootball_cert_path_a_ledger_pre.sql=795d02c144c0f2b128bac3e75d03943f1a9f2b8027e5cb695b79ff4beb0f8e56
         sql/aiven/apifootball_cert_path_a_ledger_post.sql=8d9bf2565fa11864bb9a0a48a07fbf425111cbfa8077c9ae8048c356072d0fdc
         sql/migrations/bridge/0010_apifootball_cert_campaign_ledger.sql=64fc8345f9ae6ec5a601acd4f2240865bfe35f1af60d47528993c8d511dc2ea8
-        scripts/apifootball_cert_path_a.py=d8809f3df52edcdb6c8b40b1c6b43dfd2d9a746c0567fa5e9ffff143abfdd553
-        scripts/fcb_db_roles.py=1a48c678934f91d14acfb10711884e64b3ba4c06578c3473eca28cebdce349b9
+        scripts/apifootball_cert_path_a.py=6ba14b0f3884511dc1858803f34583930512d6e48397160e643f360e0eac7631
+        scripts/fcb_db_roles.py=63e4e23ff7fadcb978a9ac960aff7f17032cbe895028316d94735fddfb1b8da6
         scripts/aiven_pg18_diag.py=825235c2b70126f438343efd61ab6805b1b498848cb294ee1efa494e8812d8e6
       PGCONNECT_TIMEOUT: '15'
       EXPECTED_HOST_SHA256: 17d6eaa1929aefc16dcdbc6496ab9159944df8b8944e96d1012c555394e8d42b
