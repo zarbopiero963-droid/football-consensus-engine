@@ -422,7 +422,8 @@ class OfficialRestAdapter:
         SenderRefusedBeforeSend when they refuse; a sender without a preflight accepts (nothing to check)."""
         # Only a sender that DECLARES a pure preflight is trusted to mean "nothing left" on refusal: a preflight that
         # could do I/O would turn a possible send into a false "not sent" (§2.6, review 9ddcfbf P3-1).
-        if getattr(type(self._sender), "PREFLIGHT_IS_PURE", False) is not True:
+        # Declared on the concrete class itself: a subclass that overrides preflight() does not inherit trust.
+        if type(self._sender).__dict__.get("PREFLIGHT_IS_PURE", False) is not True:
             return
         check = getattr(self._sender, "preflight", None)
         if check is None:

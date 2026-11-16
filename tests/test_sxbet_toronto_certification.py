@@ -145,3 +145,55 @@ def test_workflow_is_manual_main_only_protected_and_secret_free():
     assert "SEND TESTNET ORDERS" in send_if and "vars.SXBET_TORONTO_ORDERS_ENABLED == 'true'" in send_if
     assert data["jobs"]["send"]["needs"] == "preflight"
     assert "--send" in yaml.safe_dump(data["jobs"]["send"]["steps"])
+
+
+# ---------------------------------------------------------------- S8.2 review P2-1 (RED before the fix: exit 0)
+def test_exit_code_is_zero_only_when_every_check_passes():
+    ok = cert.preflight(env_for(), lambda url: META)
+    assert cert.exit_code(ok) == 0
+    assert cert.exit_code(cert.preflight({}, lambda url: META)) == 2          # NOT_CONFIGURED is not ready
+    bad = json.loads(json.dumps(META))
+    bad["data"]["chainId"] = 4162
+    assert cert.exit_code(cert.preflight(env_for(), lambda url: bad)) == 1
+    forged = dict(ok, ready_for_send=True,
+                  results=dict(ok["results"], makers={"outcome": "NOT_CONFIGURED", "reason": "X"}))
+    assert cert.exit_code(forged) != 0
+
+
+def test_unconfigured_preflight_script_exits_non_zero(tmp_path):
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--output", str(tmp_path / "p.json")],
+                          capture_output=True, text=True, timeout=60,
+                          env={"PYTHONPATH": str(ROOT), "SXBET_SIGNER_PROCESS": "1", "PATH": "/usr/bin:/bin",
+                               "HTTPS_PROXY": "http://127.0.0.1:9"})        # unreachable: no network in tests
+    assert proc.returncode != 0
+
+
+def test_send_job_requires_a_successful_ready_preflight_and_both_gates_run_first():
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    pre = data["jobs"]["preflight"]
+    assert pre["outputs"]["ready_for_send"] == "${{ steps.ready.outputs.ready_for_send }}"
+    send_if = str(data["jobs"]["send"]["if"])
+    assert "needs.preflight.outputs.ready_for_send == 'true'" in send_if
+    assert "needs.preflight.result == 'success'" in send_if
+    for name, job in data["jobs"].items():
+        runs = [str(s.get("run", "")) for s in job["steps"]]
+        gate = next(i for i, r in enumerate(runs) if "require_owner_main_dispatch.sh" in r)
+        assert "require_protected_environment.sh" in runs[gate] and "sxbet-toronto" in runs[gate], name
+        python_steps = [i for i, r in enumerate(runs) if "sxbet_toronto_certification.py" in r]
+        assert python_steps and all(i > gate for i in python_steps), name
+
+
+@pytest.mark.parametrize("maker", ["0x" + "00" * 20, "0x1BC6326EA6aF2aB8E4b6Bc83418044B1923b2956",
+                                   "0x0Db3aBA7de0BCb41FF99D35306f366cFFEEede38"])
+def test_maker_cannot_be_zero_or_a_toronto_contract(maker):
+    assert cert.check_makers(env_for(SXBET_TORONTO_MAKER_ADDRESS=maker))["reason"] == "MAKER_IS_NOT_AN_EOA"
+
+
+@pytest.mark.parametrize("value", [79479957.0, "79479957", True])
+def test_metadata_chain_id_must_be_an_exact_int(value):
+    meta = json.loads(json.dumps(META))
+    meta["data"]["chainId"] = value
+    assert cert.preflight(env_for(), lambda url: meta)["results"]["toronto_metadata"]["outcome"] == "FAIL"
+    meta = json.loads(json.dumps(META))
+    meta["data"]["domain"]["chainId"] = value
+    assert cert.preflight(env_for(), lambda url: meta)["results"]["toronto_metadata"]["outcome"] == "FAIL"

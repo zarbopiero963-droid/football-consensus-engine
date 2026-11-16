@@ -392,3 +392,19 @@ def test_review_9ddcfbf_p3_3_cancel_refusal_is_audited_with_the_exact_code(tmp_p
         s.cx.cancel_orders([sg["order_id"]], auth)
     audit = (tmp_path / "gw-audit.jsonl").read_text()
     assert "CANCEL_NOT_SENT" in audit and "SENDER_REFUSED_BEFORE_SEND_TEST_LOCAL_GUARD" in audit
+
+
+def test_a_subclass_does_not_inherit_the_pure_preflight_marker(tmp_path):
+    """Review 91f2f65 P3: trust is declared per concrete class; an inherited marker is ignored (no preflight)."""
+    from sxbet_e2e_kit import Stack
+
+    class Child(_RefusingSender):
+        pass
+
+    s = Stack(tmp_path)
+    i = s.intent("order-key-PF09")
+    signed = s.sign(i)
+    s.adapter._sender = Child(s.sim)
+    s.gw.submit(signed, i)                                 # inherited marker ignored: no preflight, normal send
+    assert s.state("order-key-PF09") != "SIGNED"
+    assert len([r for r in s.sim.writes() if r.method == "POST"]) == 1

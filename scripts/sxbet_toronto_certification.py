@@ -56,6 +56,9 @@ def check_makers(env: Mapping[str, str]) -> dict[str, Any]:
     from signer.toronto_sender import MAINNET_MARKERS
     if maker.lower() in MAINNET_MARKERS:
         return {"outcome": "FAIL", "reason": "MAKER_IS_A_MAINNET_CONTRACT"}
+    from signer.toronto_sender import TORONTO
+    if int(maker, 16) == 0 or maker.lower() in (TORONTO["usdc"], TORONTO["escrow"]):
+        return {"outcome": "FAIL", "reason": "MAKER_IS_NOT_AN_EOA"}                     # zero or a contract
     return {"outcome": "PASS", "reason": "DEDICATED_TESTNET_MAKER"}
 
 
@@ -127,7 +130,18 @@ def main() -> int:
     with open(args.output, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1)
     print(json.dumps({k: report[k] for k in ("ready_for_send", "orders_sent")}))
-    return 1 if any(r["outcome"] == "FAIL" for r in report["results"].values()) else 0
+    return exit_code(report)
+
+
+def exit_code(report: dict) -> int:
+    """0 ONLY when every check PASSed (ready_for_send). 1 on any FAIL, 2 when something is NOT_CONFIGURED.
+    A non-ready preflight must never let a dependent job run (fail closed)."""
+    if report.get("ready_for_send") is True and all(
+            r.get("outcome") == "PASS" for r in report["results"].values()):
+        return 0
+    if any(r.get("outcome") == "FAIL" for r in report["results"].values()):
+        return 1
+    return 2
 
 
 if __name__ == "__main__":

@@ -78,7 +78,8 @@ def verify_toronto_metadata(meta: Any) -> None:
         raise TorontoGuardError("METADATA_MISSING")
     domain = meta.get("domain") if isinstance(meta.get("domain"), Mapping) else {}
     asset = meta.get("activeAsset") if isinstance(meta.get("activeAsset"), Mapping) else {}
-    if meta.get("chainId") != TORONTO["chain_id"] or domain.get("chainId") != TORONTO["chain_id"]:
+    if (type(meta.get("chainId")) is not int or type(domain.get("chainId")) is not int  # no 79479957.0 / "…"
+            or meta.get("chainId") != TORONTO["chain_id"] or domain.get("chainId") != TORONTO["chain_id"]):
         raise TorontoGuardError("METADATA_CHAIN_NOT_TORONTO")
     if (domain.get("name"), domain.get("version")) != TORONTO["domain"]:
         raise TorontoGuardError("METADATA_DOMAIN_UNEXPECTED")
