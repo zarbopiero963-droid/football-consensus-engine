@@ -2,11 +2,12 @@
 ledger in a DEDICATED database `fcb_cert` on the same Aiven service, without WP-009.
 
 * No ownership change of any existing object, no change to the Render DATABASE_URL, no new service.
-* defaultdb only gains two roles, the runner's explicit USAGE on public and (variant R1, owner decision
-  D2) the schema fcb_cert_quota with four SECURITY DEFINER functions that are the runner's ONLY access to
-  the three shared quota-coordinator tables (CLAUDE.md §2.4): no table or column privilege at all.
+* defaultdb only gains two roles and (variant R1, owner decision D2, ratified FCB-A2-R1-WP009-DECISIONS)
+  the schema fcb_cert_quota with four SECURITY DEFINER functions that are the runner's ONLY access to
+  the three shared quota-coordinator tables (CLAUDE.md §2.4): no table or column privilege at all and
+  no entry on schema public (the functions need no USAGE there; WP-009 phase 1 revoked PUBLIC's).
 * Post-WP-009 (owner decision: A2 is installed only after WP-009 phase 2, when fcb_migrator owns the
-  bridge): step 1 (roles, runner password, USAGE on public) runs as the administrator; step 1a (the
+  bridge): step 1 (roles, runner password; any runner USAGE on public revoked) runs as the administrator; step 1a (the
   empty schema fcb_cert_quota, owned by the tables' owner) runs as the administrator; step 1b (the four
   quota functions and their EXECUTE grant) runs as the OWNER of the coordinator tables (fcb_migrator;
   the workflow requires that identity). A runner password rotation re-runs step 1 only (no re-grant) and then

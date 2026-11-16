@@ -13,6 +13,11 @@
 --     quota tables, and the runner has no CREATE on public.
 -- Used by apifootball_cert_path_a_quota_assert.sql (embedded byte-for-byte) and by the campaign
 -- runner's pre-flight (scripts/apifootball_cert_batch1.py). Every catalog object is qualified.
+-- Also embedded, as ONE line (comment lines dropped, lines joined by one space: no adjacent string
+-- literals, so the one-line form is the same query), in every check that admits the schema only
+-- when it is EXACT: defaultdb_precheck.sql (and the generated restore guards), the session-guard
+-- constant UNEXPECTED_SCHEMA_EXISTS of scripts/generate_aiven_migrations.py and the workflows'
+-- $GUARD, verify_bridge_roles.sql and the backup guard (scripts/fcb_db_backup.py).
 SELECT CASE
     WHEN NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name)
         THEN 'ABSENT'::pg_catalog.text
@@ -85,9 +90,9 @@ SELECT CASE
                        ';'::pg_catalog.text ORDER BY f.proname COLLATE "C")
                 FROM f JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) f.prolang)
                OPERATOR(pg_catalog.=) (
-                'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|a324fbae0bb6e11a5ef72a112fde1414|true|true;'
-                'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|3559bfb7badfed16609b58384a44ff96|true|true;'
-                'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|fcf76fe21351fb67f000845642d740ea|true|true;'
+                'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|a324fbae0bb6e11a5ef72a112fde1414|true|true;' OPERATOR(pg_catalog.||)
+                'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|3559bfb7badfed16609b58384a44ff96|true|true;' OPERATOR(pg_catalog.||)
+                'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|fcf76fe21351fb67f000845642d740ea|true|true;' OPERATOR(pg_catalog.||)
                 'snapshot|p_key_hash text|TABLE(remaining_minute integer, remaining_day integer, active_leases integer)|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|d50a603c2e2ba8ebfa5f9c7b3f369b3e|true|true')::pg_catalog.text
            -- nothing else in the schema
            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class x, q WHERE x.relnamespace OPERATOR(pg_catalog.=) q.oid)

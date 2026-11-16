@@ -110,6 +110,12 @@ RELATION_HAZARDS_SQL = (
     "OR EXISTS (SELECT 1 FROM pg_catalog.pg_inherits ih WHERE ih.inhrelid OPERATOR(pg_catalog.=) c.oid "
     "OR ih.inhparent OPERATOR(pg_catalog.=) c.oid)")
 COORDINATOR_TABLES = ("api_football_quota_counters", "api_football_quota_leases", "api_football_quota_attempts")
+# PATH A2: a legacy bridge-0010 ledger table in the coordinator database (catalog only: the runner has
+# no USAGE on public under R1, so to_regclass('public.…') would fail with permission denied).
+SECOND_LEDGER_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
+    "ON n.oid OPERATOR(pg_catalog.=) c.relnamespace WHERE n.nspname OPERATOR(pg_catalog.=) 'public' "
+    "AND c.relname OPERATOR(pg_catalog.=) 'api_football_cert_plans') AS x")
 COORDINATOR_TABLES_SQL = (
     "SELECT (pg_catalog.count(*) OPERATOR(pg_catalog.=) 3 AND NOT pg_catalog.bool_or(" + RELATION_HAZARDS_SQL + ")) AS ok "
     "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace "
@@ -1379,8 +1385,8 @@ def main(argv: list[str] | None = None) -> int:
             identity = runner_identity_problem(conn)
             # PATH A2: the ONLY ledger is fcb_cert; a ledger in the coordinator database would be a
             # second, independent budget (legacy bridge 0010 in defaultdb): refused before any request.
-            if identity is None and conn.execute(
-                    "SELECT pg_catalog.to_regclass('public.api_football_cert_plans') IS NOT NULL AS x").fetchone()["x"]:
+            # Catalog lookup, not to_regclass: R1 gives the runner no USAGE on public (FCB-A2-R1-WP009-DECISIONS).
+            if identity is None and conn.execute(SECOND_LEDGER_SQL).fetchone()["x"]:
                 identity = "SECOND_LEDGER_PRESENT"
             # review #201 P1-A / P1-B: the coordinator tables are plain tables, without rule, RLS or policy
             if identity is None and not conn.execute(COORDINATOR_TABLES_SQL,

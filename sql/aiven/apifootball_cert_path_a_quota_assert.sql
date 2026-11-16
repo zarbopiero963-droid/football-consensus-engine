@@ -7,7 +7,9 @@
 --     functions, their exact EXECUTE ACL, the exact schema ACL, nothing else in fcb_cert_quota;
 --   * fcb_cert_runner holds NO privilege (table, column or sequence; any privilege type, with or without
 --     grant option) on ANY relation of public: no direct SQL on the shared quota tables or anything else;
---   * on schema public exactly one explicit entry for the runner: USAGE, no grant option, no CREATE.
+--   * on schema public NO explicit entry for the runner (owner ratification FCB-A2-R1-WP009-DECISIONS:
+--     the SECURITY DEFINER functions need no USAGE on public; WP-009 phase 1 revoked PUBLIC's) and no
+--     CREATE.
 -- Any difference raises FCB_CERT_PATH_A_QUOTA_STATE_UNEXPECTED.
 DO $fcbcertquotaassert$
 DECLARE
@@ -85,9 +87,9 @@ SELECT CASE
                        ';'::pg_catalog.text ORDER BY f.proname COLLATE "C")
                 FROM f JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) f.prolang)
                OPERATOR(pg_catalog.=) (
-                'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|a324fbae0bb6e11a5ef72a112fde1414|true|true;'
-                'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|3559bfb7badfed16609b58384a44ff96|true|true;'
-                'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|fcf76fe21351fb67f000845642d740ea|true|true;'
+                'mark_exhausted|p_key_hash text, p_kind text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|a324fbae0bb6e11a5ef72a112fde1414|true|true;' OPERATOR(pg_catalog.||)
+                'release|p_key_hash text, p_lease_id text|void|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|3559bfb7badfed16609b58384a44ff96|true|true;' OPERATOR(pg_catalog.||)
+                'reserve|p_key_hash text|text|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|fcf76fe21351fb67f000845642d740ea|true|true;' OPERATOR(pg_catalog.||)
                 'snapshot|p_key_hash text|TABLE(remaining_minute integer, remaining_day integer, active_leases integer)|plpgsql|ftruevfalsefalse|{"search_path=pg_catalog, pg_temp"}|d50a603c2e2ba8ebfa5f9c7b3f369b3e|true|true')::pg_catalog.text
            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class x, q WHERE x.relnamespace OPERATOR(pg_catalog.=) q.oid)
            AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type x, q WHERE x.typnamespace OPERATOR(pg_catalog.=) q.oid)
@@ -122,11 +124,8 @@ END AS state
                   LATERAL pg_catalog.aclexplode(a.attacl) x
                   WHERE c.relnamespace OPERATOR(pg_catalog.=) 'public'::pg_catalog.regnamespace
                     AND x.grantee OPERATOR(pg_catalog.=) runner)
-       OR (SELECT pg_catalog.string_agg(x.privilege_type::pg_catalog.text OPERATOR(pg_catalog.||) ':'::pg_catalog.text
-                  OPERATOR(pg_catalog.||) x.is_grantable::pg_catalog.text, ','::pg_catalog.text)
-           FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) x
-           WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND x.grantee OPERATOR(pg_catalog.=) runner)
-          IS DISTINCT FROM 'USAGE:false'::pg_catalog.text
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n, LATERAL pg_catalog.aclexplode(n.nspacl) x
+                  WHERE n.nspname OPERATOR(pg_catalog.=) 'public'::pg_catalog.name AND x.grantee OPERATOR(pg_catalog.=) runner)
        OR pg_catalog.has_schema_privilege(runner, 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FCB_CERT_PATH_A_QUOTA_STATE_UNEXPECTED';
     END IF;
