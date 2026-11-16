@@ -382,3 +382,17 @@ Vedi la checklist in [`docs/sxbet/wallet_and_signing.md`](../docs/sxbet/wallet_a
 - solo un errore **dopo** il write-ahead (trasporto, timeout) resta `UNKNOWN`.
 
 In entrambi i casi non ci sono nuovi invii senza un nuovo comando.
+
+### S8.2 — Workflow Toronto (manuale, invio disattivato)
+
+`.github/workflows/sxbet-toronto-certification.yml` si avvia solo a mano, solo da `main`, nell'Environment protetto `sxbet-toronto`. Oggi esegue solo il **preflight** di `scripts/sxbet_toronto_certification.py`, che:
+- non usa segreti, non firma e non invia nulla;
+- legge in GET pubblica `https://api.toronto.sx.bet/metadata/obv3`, senza seguire redirect, e la confronta con il dominio Toronto fissato;
+- controlla le **variabili** dell'Environment:
+  - `SXBET_TORONTO_MAKER_ADDRESS`, che deve essere diverso da `SXBET_LIVE_MAKER_ADDRESS`;
+  - `SXBET_OWNER_ED25519_PUBLIC_KEY_HEX`;
+  - `SXBET_TORONTO_RISK_CONFIG_B64`, firmata dall'owner, con il **solo** blocco testnet.
+
+Una variabile mancante è `NOT_CONFIGURED`, mai un esito positivo.
+
+Il job di invio parte solo con **due** autorizzazioni distinte: l'input esatto `SEND TESTNET ORDERS` al lancio e `SXBET_TORONTO_ORDERS_ENABLED == 'true'`. Anche così oggi **rifiuta sempre** (`SEND_PATH_NOT_ENABLED_PENDING_OWNER_GO`) e non riceve segreti. Gli scenari d'invio (Market, Limit, cancel, fill parziale, timeout, riavvio, riconciliazione) e i segreti Toronto, che passeranno dai gate protetti previsti dalla policy dei segreti, arriveranno in una modifica separata, dopo il GO dell'owner e i fondi di test.

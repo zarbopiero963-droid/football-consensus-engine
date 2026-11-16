@@ -1,0 +1,76 @@
+name: SX Bet Toronto (testnet) certification
+# Manual only, from main only, in the protected GitHub Environment `sxbet-toronto` (required reviewer: owner,
+# admin bypass OFF, deployment branch main). Issue #187 S8.2, governance §2.6.
+# TODAY: preflight only (public Toronto metadata + Environment VARIABLES); no secret, no key, no signature,
+# no order. The send job always refuses (SEND_PATH_NOT_ENABLED_PENDING_OWNER_GO) until the owner's GO and a
+# separate, reviewed change implement it; even then it needs BOTH the explicit dispatch input and the
+# Environment variable SXBET_TORONTO_ORDERS_ENABLED == 'true'. Mainnet is unreachable: the only host in the
+# code path is api.toronto.sx.bet (signer/toronto_sender.py, pinned).
+on:
+  workflow_dispatch:
+    inputs:
+      send_orders:
+        description: "Type exactly: SEND TESTNET ORDERS (refused today: no GO)"
+        required: false
+        default: "no"
+permissions:
+  contents: read
+concurrency:
+  group: sxbet-toronto-certification
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    environment: sxbet-toronto
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      SXBET_SIGNER_PROCESS: "1"
+      SXBET_TORONTO_MAKER_ADDRESS: ${{ vars.SXBET_TORONTO_MAKER_ADDRESS }}
+      SXBET_LIVE_MAKER_ADDRESS: ${{ vars.SXBET_LIVE_MAKER_ADDRESS }}
+      SXBET_OWNER_ED25519_PUBLIC_KEY_HEX: ${{ vars.SXBET_OWNER_ED25519_PUBLIC_KEY_HEX }}
+      SXBET_TORONTO_RISK_CONFIG_B64: ${{ vars.SXBET_TORONTO_RISK_CONFIG_B64 }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies (signer extras for the risk-config check)
+        run: python -m pip install -r requirements.txt cryptography
+      - name: Toronto preflight (read-only, no secret)
+        run: python scripts/sxbet_toronto_certification.py --output "$RUNNER_TEMP/toronto_preflight.json"
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/toronto_preflight.json" ]; then
+            { echo '### SX Bet Toronto preflight (testnet, no order)'; echo '```json'; cat "$RUNNER_TEMP/toronto_preflight.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+  send:
+    needs: preflight
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.inputs.send_orders == 'SEND TESTNET ORDERS' &&
+      vars.SXBET_TORONTO_ORDERS_ENABLED == 'true'
+    environment: sxbet-toronto
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: .
+      SXBET_SIGNER_PROCESS: "1"
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Refused until the owner's GO (no secret is passed to this job)
+        run: python scripts/sxbet_toronto_certification.py --send --output "$RUNNER_TEMP/unused.json"
