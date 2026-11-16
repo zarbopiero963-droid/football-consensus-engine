@@ -1094,5 +1094,70 @@ def test_review_03828f9_p3_4_filled_from_the_row_reports_the_row_amount():
 def test_review_03828f9_p3_4_end_to_end_filled_row_without_fills_is_not_proven(s, monkeypatch):
     st = _status_with_row(s, monkeypatch, "order-key-S7701", {"status": "INACTIVE", "inactiveReason": "FILLED",
                                                               "remainingSize": "0"}, fills=[], timeout=False)
-    assert st["state"] == "FILLED" and st["fills_consistent"] is False
+    # Changed by the review of dc45c5f (P2-1, declared): an empty complete fills read now contradicts the fill.
+    assert st["state"] == "UNKNOWN" and st["final"] is False and st["code"] == "FILLS_DO_NOT_CONFIRM_FILL"
+    assert st["fills_consistent"] is False
     assert (st["reconciliation_required"], st["evidence_insufficient"]) == ("YES", "YES")
+
+
+# ---------------------------------------------------------------- review of dc45c5f (NOT SAFE): regressions
+def _fill(amount, status="MATCHED", order=OID):
+    return {"orderId": order, "fillAmount": amount, "status": status}
+
+
+@pytest.mark.parametrize("state_result, rows, expect_state, final, consistent", [
+    ({"state": "FILLED", "final": True}, [], "UNKNOWN", False, False),                       # P2-1
+    ({"state": "FILLED", "final": True}, [_fill("5000000", "FAILED")], "UNKNOWN", False, False),
+    ({"state": "SETTLED", "final": True, "filled_base_units": "1000000"}, [], "UNKNOWN", False, False),  # P3-1
+    ({"state": "FILLED", "final": True}, [_fill("1000000")], "FILLED", False, False),       # P3-2: sum differs
+    ({"state": "FILLED", "final": True}, [_fill("2000000"), _fill("3000000", "SETTLED")], "FILLED", True, True),
+    ({"state": "PARTIALLY_FILLED", "final": False, "filled_base_units": "1000000"}, [_fill("1000000")],
+     "PARTIALLY_FILLED", False, True),
+])
+def test_review_dc45c5f_claimed_amount_is_checked_against_a_complete_fills_read(state_result, rows, expect_state,
+                                                                               final, consistent):
+    out = oreq.apply_fills_check(dict(state_result), rows, complete=True, order_id=OID, intent_total="5000000")
+    assert (out["state"], out["final"], out["fills_consistent"]) == (expect_state, final, consistent)
+
+
+@pytest.mark.parametrize("rows, complete", [([_fill("1000000", order="0x" + "d" * 64)], True),
+                                            ([_fill("1.5")], True), ([], False), (None, True)])
+def test_review_dc45c5f_unreadable_or_incomplete_fills_draw_no_conclusion(rows, complete):
+    r = {"state": "FILLED", "final": True}
+    assert oreq.apply_fills_check(dict(r), rows, complete=complete, order_id=OID, intent_total="5000000") == r
+
+
+def test_review_dc45c5f_p2_1_ledger_filled_with_agreeing_row_but_no_fills_is_never_final(s, monkeypatch):
+    q = MemoryQueue()
+    t, _ = tools(s, q)
+    text, _ = owner_text(s, "order-key-S7801")
+    res = place(t, s, "order-key-S7801", text)
+    svc = signer_service(s, q)
+    svc.process_once()
+    oid = status(t, res["request_id"])["order_id"]
+    s.sim.fill_maker_order(oid, 5 * USDC)
+    s.gw.reconcile("order-key-S7801")
+    svc.sync_outcomes()
+    real = SimClient.get
+
+    async def no_fills(self, path, params, *, auth):
+        r = await real(self, path, params, auth=auth)
+        if path == "/fills-v3":
+            r["data"] = {"fills": []}
+        return r
+    monkeypatch.setattr(SimClient, "get", no_fills)
+    st = status(t, res["request_id"])
+    assert st["state"] == "UNKNOWN" and st["final"] is False and st["code"] == "FILLS_DO_NOT_CONFIRM_FILL"
+    assert st["reconciliation_required"] == "YES"
+
+
+@pytest.mark.parametrize("ledger, filled, r, state", [
+    ("CANCELLED", "0", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2500000"),
+     "PARTIALLY_FILLED"),
+    ("EXPIRED", "0", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="2500000"), "PARTIALLY_FILLED"),
+    ("EXPIRED", "1000000", row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0"), "FILLED"),
+])
+def test_review_dc45c5f_p3_3_late_fill_growth_from_a_final_ledger_state_is_reported(ledger, filled, r, state):
+    out = _read(_done(state=ledger, filled=filled), r)
+    assert out["state"] == state and out["final"] is False and out["evidence"] == "EXCHANGE_READ"
+    assert out["queue_filled_base_units"] == filled and out["filled_source"] == "EXCHANGE_ORDER_ROW"

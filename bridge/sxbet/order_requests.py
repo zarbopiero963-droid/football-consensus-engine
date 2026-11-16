@@ -448,6 +448,23 @@ def _conflict(out: dict[str, Any], view: Mapping[str, Any], code: str) -> dict[s
 def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False,
                    ex_resting: bool | None = None, row_filled: int | None = None,
                    row_filled_unaccepted: int | None = None) -> dict[str, Any]:
+    ledger_amount = _units(view.get("filled_base_units"))
+    if (view.get("ledger_final") and view["state"] in ("CANCELLED", "EXPIRED", "PARTIALLY_FILLED")
+            and lookup_state in ("PARTIALLY_FILLED", "FILLED") and ex_resting is False and row_filled is not None
+            and ledger_amount is not None and row_filled > ledger_amount):
+        # A legitimate late fill after a final ledger state (signer: CANCELLED / EXPIRED self-transitions that
+        # raise filled, EXPIRED -> FILLED): the inactive row's larger amount is reported, never a false conflict
+        # (review of dc45c5f, P3-3). Not final: the ledger has not caught up yet.
+        out = dict(view)
+        out.update(exchange_state=lookup_state, state=_LOOKUP_TO_MCP[lookup_state], final=False,
+                   evidence="EXCHANGE_READ", resting=False, queue_state=view["state"],
+                   queue_filled_base_units=view["filled_base_units"], filled_base_units=str(row_filled),
+                   filled_source="EXCHANGE_ORDER_ROW")
+        for k in ("code", "note", "warning"):
+            if out.get(k) is not None:
+                out["queue_" + k] = out.pop(k)
+        out.pop("ledger_final", None)
+        return out
     out = _merge_exchange(view, lookup_state, fills_seen=fills_seen, ex_resting=ex_resting)
     if out.get("evidence") == "CONFLICT":
         return out
@@ -526,6 +543,47 @@ def _merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_
         out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="FILLS_SEEN_ON_EXCHANGE",
                    queue_state=view["state"])
         out.pop("resting", None)  # review 47a770b P3-4
+    return out
+
+
+def apply_fills_check(result: dict[str, Any], rows: Any, *, complete: bool, order_id: str,
+                      intent_total: Any) -> dict[str, Any]:
+    """Cross-check a matched amount claimed by the result (FILLED = the signed stake; PARTIALLY_FILLED / SETTLED =
+    filled_base_units) with a COMPLETE fills read of this order, whatever the order-row lookup gave (review of
+    dc45c5f, P2-1 / P3-1 / P3-2). Counted rows: every fill of this order except FAILED.
+    - claimed > 0 and the complete read has no counted fill: a contradiction -> UNKNOWN / CONFLICT, never final;
+    - another sum: fills_consistent=false and never final (the fills / row equality is DOCS_UNVERIFIED in the
+      signer, so this alone is not a conflict, but it is not proof either);
+    - an unreadable row (other order, malformed amount): no conclusion (fills_consistent stays unset)."""
+    state = result.get("state")
+    if state not in ("FILLED", "PARTIALLY_FILLED", "SETTLED") or not complete or not isinstance(rows, list):
+        return result
+    claimed = _units(intent_total) if state == "FILLED" else _units(result.get("filled_base_units"))
+    if claimed is None:
+        return result
+    total = 0
+    for r in rows:
+        if not isinstance(r, Mapping):
+            return result
+        rid = r.get("orderId")
+        if rid is not None and (not isinstance(rid, str) or rid.lower() != order_id.lower()):
+            return result
+        if r.get("status") == "FAILED":
+            continue
+        amount = _units(r.get("fillAmount"))
+        if amount is None:
+            return result
+        total += amount
+    out = dict(result)
+    if claimed > 0 and total == 0:
+        out.update(state="UNKNOWN", final=False, evidence="CONFLICT", code="FILLS_DO_NOT_CONFIRM_FILL",
+                   queue_state=state, fills_consistent=False)
+        out.pop("resting", None)
+        return out
+    out["fills_consistent"] = total == claimed
+    out["fills_counted_base_units"] = str(total)
+    if total != claimed:
+        out["final"] = False
     return out
 
 
@@ -729,4 +787,4 @@ __all__ = ["CANCEL_SCOPES", "CLIENT_REF_UNAVAILABLE", "EVENT_STATES", "KINDS", "
            "OrderRequestSettings", "PostgresRequestWriter", "QueueUnavailable", "REQUEST_SCHEMA",
            "RequestInvalid", "build_cancel_request", "build_place_request", "canonical_sha256",
            "deterministic_salt", "merge_exchange", "postgres_connect", "queue_view", "request_id_for",
-           "same_request", "status_contract", "valid_request_id"]
+           "same_request", "status_contract", "valid_request_id", "apply_fills_check"]

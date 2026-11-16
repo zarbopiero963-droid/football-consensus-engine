@@ -228,7 +228,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         out.update({"kind": kind, "created_at_unix": payload.get("created_at"),
                     "events": [{"seq": e["seq"], "event": e["state"], "detail": e["detail"]} for e in events]})
         lookup_state = None
-        ex_filled = row_unaccepted = None
+        ex_filled = row_unaccepted = fill_rows = None
         oid = view.get("order_id")
         intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else {}
         if kind == "PLACE" and isinstance(oid, str) and _HASH.fullmatch(oid) and view["state"] != "REFUSED":
@@ -238,6 +238,7 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 order_data, oerr = await get(out, f"/orders-v3/{oid.lower()}", {}, auth=True)
                 fills, ferr = await get(out, "/fills-v3", {"orderId": oid.lower(), "perPage": 100}, auth=True)
                 rows = fills.get("fills") if isinstance(fills, dict) else None
+                fill_rows = rows
                 complete_fills = isinstance(rows, list) and not fills.get("nextKey")
                 if oerr and oerr.get("http_status") == 404 and not ferr:
                     lookup = {"kind": "NOT_FOUND", "fills": rows if complete_fills else None}
@@ -279,10 +280,11 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                 "SIGNER_EVENT_SNAPSHOT_ONLY")
         if result["state"] == "UNKNOWN":
             result["final"] = False          # D01: never final, whatever the view carried
-        if (kind == "PLACE" and result["state"] in ("FILLED", "PARTIALLY_FILLED") and lookup_state is not None
-                and read.get("fills_complete") and not read.get("fills_count")):
-            # The row shows a fill, the complete fills read shows none: not proven (review 03828f9 P3-4).
-            result["fills_consistent"] = False
+        if kind == "PLACE" and read.get("fills_complete"):
+            # Claimed matched amount vs a complete fills read, whatever the row lookup gave (review dc45c5f
+            # P2-1 / P3-1 / P3-2; earlier 03828f9 P3-4).
+            result = oreq.apply_fills_check(result, fill_rows, complete=True, order_id=oid,
+                                            intent_total=intent.get("total_bet_size"))
         result.update(oreq.status_contract(result, kind, row_resting=read.get("resting") if lookup_state else None,
                                            intent_expiry=intent.get("expiry"), now=int(clock())))
         return {**out, "status": "OK", **result}
