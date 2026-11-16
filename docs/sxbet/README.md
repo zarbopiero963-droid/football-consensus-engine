@@ -327,12 +327,13 @@ Inoltre:
 - `SETTLED` richiede un importo abbinato > 0, non superiore allo stake; contro una riga fresca che risulta attiva o mostra un altro importo è un conflitto;
 - un importo **maggiore** sulla riga rispetto al ledger è un fill tardivo legittimo (il signer ammette la crescita): viene riportato l'importo della riga (`filled_source: EXCHANGE_ORDER_ROW`), quello del ledger resta in `queue_filled_base_units`; un importo **minore** è un conflitto;
 - quando decide la riga, l'importo riportato è quello della riga;
-- un fill tardivo dopo uno stato finale del ledger (`CANCELLED` o `EXPIRED` con 0 o meno, `EXPIRED` → `FILLED`, crescite ammesse dal signer) è riportato dalla riga, **non finale**, mai come conflitto falso.
+- un fill tardivo dopo uno stato finale del ledger è riportato dalla riga, **non finale**, solo per le transizioni che il signer stesso registra (`CANCELLED` → `CANCELLED`, `EXPIRED` → `EXPIRED`, `EXPIRED` → `FILLED`, `FILLED` → `FILLED`) e mai sotto un importo che il signer ha già registrato. Qualunque altra coppia (per esempio `CANCELLED` → `FILLED`) è per il signer un `EVIDENCE_CONFLICT`, quindi qui è un conflitto: `UNKNOWN`, riconciliazione richiesta (review indipendente di `c8926cc`);
+- `CANCELLED` o `EXPIRED` del ledger con l'intero stake abbinato è `FILLED`, non finale (`FULL_STAKE_MATCHED_LEDGER_*`).
 
 **Importo rivendicato contro i fill letti** (review indipendente di `dc45c5f`). Quando la lettura dei fill di questo ordine è completa, qualunque sia l'esito della lettura della riga (anche un 404), l'importo dichiarato si confronta con la somma dei fill contati (tutti tranne `FAILED`). Per `FILLED` l'importo è lo stake; per `PARTIALLY_FILLED` e `SETTLED` è `filled_base_units`.
 - Un importo maggiore di zero con **nessun** fill contato è una contraddizione: `UNKNOWN` / `FILLS_DO_NOT_CONFIRM_FILL`, mai finale.
 - Una somma diversa dà `fills_consistent: false` e **mai** `final: true`. L'uguaglianza tra fill e riga è `DOCS_UNVERIFIED` nel signer, quindi non è da sola un conflitto, ma non è nemmeno una prova.
-- Righe illeggibili (altro ordine, importo malformato) o lettura incompleta: nessuna conclusione.
+- Lettura incompleta: nessuna conclusione. Lettura completa ma con righe illeggibili (altro ordine, `orderId` assente, stato non documentato, importo malformato, stessa regola di `_own_fill_sum` del signer): `fills_readable: false`, **mai finale**, riconciliazione richiesta.
 
 Per una cancellazione, le tre condizioni riguardano gli **ordini bersaglio**: `may_still_be_open` resta `NOT_DETERMINABLE` finché ogni ordine non viene letto.
 

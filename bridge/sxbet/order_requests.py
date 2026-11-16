@@ -292,6 +292,10 @@ def _place_view(events: Sequence[Mapping[str, Any]], out: dict[str, Any], stake:
         if filled == 0:
             return {**out, "state": ledger, "final": False, "ledger_final": True, "ledger_state": ledger,
                     "warning": late}
+        if stake is not None and filled == stake:
+            # The whole signed stake matched (exact units): FILLED, not "partial"; not final (review c8926cc P3-3).
+            return {**out, "state": "FILLED", "final": False, "ledger_final": True, "ledger_state": ledger,
+                    "code": "FULL_STAKE_MATCHED_LEDGER_" + ledger, "warning": late}
         return {**out, "state": "PARTIALLY_FILLED", "final": False, "ledger_final": True, "resting": False,
                 "ledger_state": ledger, "warning": late}
     return {**out, "state": "UNKNOWN", "final": False, "ledger_state": ledger,
@@ -403,7 +407,10 @@ def exchange_row_state(row: Any, *, order_id: str, intent_total: Any) -> dict[st
         st = "PARTIALLY_FILLED" if filled else "CANCELLED"
     else:
         return none("EVIDENCE_INACTIVE_REASON_UNKNOWN", filled)
-    return {"state": st, "reason": "EXCHANGE_ORDER_INACTIVE_" + str(reason), "resting": False, "filled": filled}
+    # `target`: the ledger state the signer's evidence_from_exchange derives from this inactive row.
+    target = "FILLED" if reason == "FILLED" else "EXPIRED" if reason == "EXPIRED" else "CANCELLED"
+    return {"state": st, "reason": "EXCHANGE_ORDER_INACTIVE_" + str(reason), "resting": False, "filled": filled,
+            "target": target}
 
 
 def _merge(view: Mapping[str, Any], lookup_state: str | None, fills_seen: bool) -> dict[str, Any]:
@@ -445,13 +452,28 @@ def _conflict(out: dict[str, Any], view: Mapping[str, Any], code: str) -> dict[s
     return out
 
 
+# Late-fill moves the signer ledger accepts after a final state (signer/orders.py TRANSITIONS): CANCELLED and
+# EXPIRED self-transitions, EXPIRED -> FILLED, FILLED -> FILLED. Any other pair is EVIDENCE_CONFLICT in the signer.
+_LATE_FILL_MOVES = frozenset({("CANCELLED", "CANCELLED"), ("EXPIRED", "EXPIRED"), ("EXPIRED", "FILLED"),
+                              ("FILLED", "FILLED")})
+
+
 def merge_exchange(view: Mapping[str, Any], lookup_state: str | None, *, fills_seen: bool = False,
                    ex_resting: bool | None = None, row_filled: int | None = None,
-                   row_filled_unaccepted: int | None = None) -> dict[str, Any]:
+                   row_filled_unaccepted: int | None = None, row_target: str | None = None) -> dict[str, Any]:
     ledger_amount = _units(view.get("filled_base_units"))
+    queue_max = _units(view.get("queue_max_filled_base_units"))
     if (view.get("ledger_final") and view["state"] in ("CANCELLED", "EXPIRED", "PARTIALLY_FILLED")
             and lookup_state in ("PARTIALLY_FILLED", "FILLED") and ex_resting is False and row_filled is not None
             and ledger_amount is not None and row_filled > ledger_amount):
+        # Only the late-fill moves the signer itself records; anything else, or a row below an amount the signer
+        # ever recorded, is a conflict the ledger can never resolve on its own (review of c8926cc, P2-1 / P3-1).
+        move = (view.get("ledger_state"), row_target)
+        if move not in _LATE_FILL_MOVES or (queue_max is not None and row_filled < queue_max) or (
+                view.get("queue_ledger_filled") and row_target != "FILLED"):
+            out = dict(view)
+            out["exchange_state"] = lookup_state
+            return _conflict(out, view, "QUEUE_AND_EXCHANGE_DISAGREE")
         # A legitimate late fill after a final ledger state (signer: CANCELLED / EXPIRED self-transitions that
         # raise filled, EXPIRED -> FILLED): the inactive row's larger amount is reported, never a false conflict
         # (review of dc45c5f, P3-3). Not final: the ledger has not caught up yet.
@@ -561,18 +583,28 @@ def apply_fills_check(result: dict[str, Any], rows: Any, *, complete: bool, orde
     claimed = _units(intent_total) if state == "FILLED" else _units(result.get("filled_base_units"))
     if claimed is None:
         return result
+    def unreadable() -> dict[str, Any]:
+        # Same rule as the signer's _own_fill_sum: a row without this orderId or with an undocumented status
+        # proves nothing; a complete read that cannot be judged is not proof either (review of c8926cc, P3-2).
+        out = dict(result)
+        out.update(fills_consistent=None, fills_readable=False)
+        if state in ("FILLED", "SETTLED"):
+            out["final"] = False
+        return out
     total = 0
     for r in rows:
         if not isinstance(r, Mapping):
-            return result
+            return unreadable()
         rid = r.get("orderId")
-        if rid is not None and (not isinstance(rid, str) or rid.lower() != order_id.lower()):
-            return result
+        if not isinstance(rid, str) or rid.lower() != order_id.lower():
+            return unreadable()
+        if r.get("status") not in ("MATCHED", "LOCKED", "SETTLED", "FAILED"):
+            return unreadable()
         if r.get("status") == "FAILED":
             continue
         amount = _units(r.get("fillAmount"))
         if amount is None:
-            return result
+            return unreadable()
         total += amount
     out = dict(result)
     if claimed > 0 and total == 0:
@@ -620,7 +652,7 @@ def status_contract(result: Mapping[str, Any], kind: str, *, row_resting: bool |
         return NOT_DETERMINABLE
 
     signed = result.get("last_event") == "SIGNED" or result.get("queue_last_event") == "SIGNED"
-    fills_inconsistent = result.get("fills_consistent") is False
+    fills_inconsistent = result.get("fills_consistent") is False or result.get("fills_readable") is False
     live_after_expiry = row_resting is True and expired   # the exchange shows it resting past its signed expiry
 
     if kind == "CANCEL":

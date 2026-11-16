@@ -977,7 +977,7 @@ def _read(view_events, r, *, fills_seen=False):
     x = oreq.exchange_row_state(r, order_id=OID, intent_total="5000000")
     return oreq.merge_exchange(v, x["state"], fills_seen=fills_seen, ex_resting=x["resting"],
                                row_filled=x.get("filled") if x["state"] else None,
-                               row_filled_unaccepted=x.get("row_filled_unaccepted"))
+                               row_filled_unaccepted=x.get("row_filled_unaccepted"), row_target=x.get("target"))
 
 
 @pytest.mark.parametrize("events, r, code", [
@@ -1120,11 +1120,23 @@ def test_review_dc45c5f_claimed_amount_is_checked_against_a_complete_fills_read(
     assert (out["state"], out["final"], out["fills_consistent"]) == (expect_state, final, consistent)
 
 
-@pytest.mark.parametrize("rows, complete", [([_fill("1000000", order="0x" + "d" * 64)], True),
-                                            ([_fill("1.5")], True), ([], False), (None, True)])
+@pytest.mark.parametrize("rows, complete", [([], False), (None, True)])
 def test_review_dc45c5f_unreadable_or_incomplete_fills_draw_no_conclusion(rows, complete):
     r = {"state": "FILLED", "final": True}
     assert oreq.apply_fills_check(dict(r), rows, complete=complete, order_id=OID, intent_total="5000000") == r
+
+
+# Changed by the review of c8926cc (P3-2, declared): a COMPLETE read with unreadable rows (other order, missing
+# orderId, undocumented status, malformed amount) is not proof: never final, reconciliation required.
+@pytest.mark.parametrize("rows", [[_fill("1000000", order="0x" + "d" * 64)], [_fill("1.5")],
+                                  [{"fillAmount": "5000000", "status": "MATCHED"}],
+                                  [_fill("5000000", "failed")], [_fill("5000000", "REVERTED")],
+                                  [{"orderId": OID, "fillAmount": "5000000"}]])
+def test_review_c8926cc_p3_2_unreadable_complete_fills_are_never_proof(rows):
+    out = oreq.apply_fills_check({"state": "FILLED", "final": True}, rows, complete=True, order_id=OID,
+                                 intent_total="5000000")
+    assert out["final"] is False and out["fills_readable"] is False and out["fills_consistent"] is None
+    assert triple(contract(out))[1:] == ("YES", "YES")
 
 
 def test_review_dc45c5f_p2_1_ledger_filled_with_agreeing_row_but_no_fills_is_never_final(s, monkeypatch):
@@ -1161,3 +1173,38 @@ def test_review_dc45c5f_p3_3_late_fill_growth_from_a_final_ledger_state_is_repor
     out = _read(_done(state=ledger, filled=filled), r)
     assert out["state"] == state and out["final"] is False and out["evidence"] == "EXCHANGE_READ"
     assert out["queue_filled_base_units"] == filled and out["filled_source"] == "EXCHANGE_ORDER_ROW"
+
+
+# ---------------------------------------------------------------- review of c8926cc (NOT SAFE): regressions
+@pytest.mark.parametrize("ledger, filled, r", [
+    ("CANCELLED", "0", row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0")),              # L1
+    ("CANCELLED", "1000000", row(status="INACTIVE", inactiveReason="FILLED", remainingSize="0")),        # L2
+    ("EXPIRED", "0", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2500000")),  # L3
+    ("CANCELLED", "0", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="2500000")),       # L4
+    ("FILLED", "1000000", row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2500000")),  # M1
+    ("FILLED", "1000000", row(status="INACTIVE", inactiveReason="EXPIRED", remainingSize="2500000")),         # M2
+])
+def test_review_c8926cc_p2_1_moves_the_signer_refuses_are_conflicts(ledger, filled, r):
+    out = _read(_done(state=ledger, filled=filled), r)
+    assert out["state"] == "UNKNOWN" and out["evidence"] == "CONFLICT" and out["final"] is False
+    assert triple(contract(out))[1:] == ("YES", "YES")
+
+
+@pytest.mark.parametrize("events, r", [
+    # P3-1: a row below an amount the signer ever recorded (non-monotone evidence)
+    (ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}), ("SUBMITTED", {"state": "PARTIALLY_FILLED", "filled": "3000000"}),
+        ("DONE", {"state": "CANCELLED", "filled": "0"})),
+     row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="4000000")),
+    (ev(("CLAIMED", {}), ("SIGNED", {"order_id": OID}), ("SUBMITTED", {"state": "PARTIALLY_FILLED", "filled": "3000000"}),
+        ("DONE", {"state": "CANCELLED", "filled": "2000000"})),
+     row(status="INACTIVE", inactiveReason="USER_REQUESTED", remainingSize="2500000")),
+])
+def test_review_c8926cc_p3_1_growth_never_below_a_recorded_amount(events, r):
+    out = _read(events, r)
+    assert out["state"] == "UNKNOWN" and out["evidence"] == "CONFLICT"
+
+
+@pytest.mark.parametrize("ledger", ["CANCELLED", "EXPIRED"])
+def test_review_c8926cc_p3_3_full_stake_on_an_inactive_ledger_state_is_filled_not_partial(ledger):
+    v = oreq.queue_view("PLACE", _done(state=ledger, filled="5000000"), intent_total="5000000")
+    assert v["state"] == "FILLED" and v["final"] is False and v["code"] == "FULL_STAKE_MATCHED_LEDGER_" + ledger
