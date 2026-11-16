@@ -600,29 +600,91 @@ def test_column_options_ignore_only_a_well_formed_pg_attver():
     assert sql_text.count("pg_attver") == 1
 
 
-# Review #203 F1: the secret may reach the job with no port or an empty one ("host:"). libpq would
-# use PGPORT, but explicit params override it, so the script must resolve the port the same way the
-# target check accepts it, never silently fall back to 5432.
-_PORT_ENV = {"PGSSLMODE": "verify-full", "PGSSLROOTCERT": "/ca", "EXPECTED_PORT": "14274", "PGPORT": "14274"}
+# Review #203 F1 (owner contract FCB-WP009-PR203-F1-PORT-RESOLUTION): the secret may reach the job
+# with no port or an empty one ("host:"). libpq would use PGPORT, but explicit params override it,
+# so the script resolves the port from libpq's own parse and never falls back to 5432.
+_PIN = "14274"
+_PORT_ENV = {"PGSSLMODE": "verify-full", "PGSSLROOTCERT": "/ca", "EXPECTED_PORT": _PIN, "PGPORT": _PIN}
 
 
-@pytest.mark.parametrize("netloc", ["adm:pw@db.example", "adm:pw@db.example:", "adm:pw@db.example:14274"])
-def test_source_port_absent_empty_or_expected_resolves_to_the_pinned_port(netloc):
-    mod = _module()
-    p = mod.source_params({**_PORT_ENV, "FCB_DEFAULTDB_URL": f"postgresql://{netloc}/defaultdb?sslmode=verify-full"},
-                          expected_db="defaultdb", require_tls=True)
-    assert p["port"] == "14274"
-    assert mod.child_env(p)["PGPORT"] == "14274"
+def _params(netloc, mod=None, **env_patch):
+    mod = mod or _module()
+    env = {**_PORT_ENV, **env_patch, "FCB_DEFAULTDB_URL": f"postgresql://adm:pw@{netloc}/defaultdb?sslmode=verify-full"}
+    return mod, mod.source_params({k: v for k, v in env.items() if v is not None},
+                                  expected_db="defaultdb", require_tls=True)
 
 
-@pytest.mark.parametrize("env_patch,netloc", [
-    ({}, "adm:pw@db.example:5432"),                         # explicit port other than the pinned one
-    ({"PGPORT": "5432"}, "adm:pw@db.example"),              # PGPORT disagreeing with EXPECTED_PORT
-    ({"PGPORT": ""}, "adm:pw@db.example"),                  # no port anywhere while one is pinned
+@pytest.mark.parametrize("netloc,pgport", [
+    ("db.example:14274", _PIN),   # :14274 + PGPORT 14274 -> accept
+    ("db.example:14274", None),   # explicit pinned port, PGPORT unset -> accept
+    ("db.example", _PIN),         # absent -> PGPORT
+    ("db.example:", _PIN),        # empty "host:" -> PGPORT
 ])
-def test_source_port_mismatch_or_missing_is_refused(env_patch, netloc):
+def test_source_port_contract_accepts_only_the_pinned_port(netloc, pgport):
+    mod, p = _params(netloc, PGPORT=pgport)
+    assert p["port"] == _PIN
+    assert mod.child_env(p)["PGPORT"] == _PIN   # pg_dump / pg_dumpall get the same port
+
+
+@pytest.mark.parametrize("netloc,pgport", [
+    ("db.example:5432", _PIN),     # explicit port other than the pinned one, whatever PGPORT says
+    ("db.example:15000", "15000"),
+    ("db.example:014274", _PIN),   # Python reads 14274, libpq passes "014274": no divergence allowed
+    ("db.example", None),          # absent + PGPORT absent
+    ("db.example:", None),         # empty + PGPORT absent
+    ("db.example", "5432"),        # absent + PGPORT different
+    ("db.example:", "5432"),       # empty + PGPORT different
+    ("db.example", ""),            # absent + PGPORT empty
+])
+def test_source_port_contract_refuses_everything_else(netloc, pgport):
     mod = _module()
     with pytest.raises(mod.BackupError) as exc:
-        mod.source_params({**_PORT_ENV, **env_patch, "FCB_DEFAULTDB_URL": f"postgresql://{netloc}/defaultdb?sslmode=verify-full"},
-                          expected_db="defaultdb", require_tls=True)
-    assert exc.value.code == "SOURCE_URL_PORT" and "pw" not in str(exc.value)
+        _params(netloc, mod, PGPORT=pgport)
+    assert exc.value.code in ("SOURCE_URL_PORT", "SOURCE_URL_UNPARSEABLE") and "pw" not in str(exc.value)
+    if netloc != "db.example:014274":
+        assert exc.value.code == "SOURCE_URL_PORT"
+
+
+@pytest.mark.parametrize("netloc", ["db.example:14274", "db.example", "db.example:"])
+def test_resolved_port_matches_libpq_and_never_5432(netloc):
+    """The resolved port equals what libpq itself would use: its parsed port, else PGPORT."""
+    from psycopg.conninfo import conninfo_to_dict
+    _, p = _params(netloc)
+    libpq = conninfo_to_dict(f"postgresql://adm:pw@{netloc}/defaultdb?sslmode=verify-full").get("port") or _PIN
+    assert p["port"] == libpq == _PIN != "5432"
+
+
+def test_the_real_postgresql_client_connects_to_the_resolved_port(monkeypatch):
+    """psycopg/libpq, given the resolved params, opens its TCP connection on exactly that port:
+    a local listener on the pinned port receives it (TLS then fails against the dummy, by design)."""
+    import socket
+    import threading
+    import psycopg
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = str(srv.getsockname()[1])
+    hits = []
+
+    def accept():
+        srv.settimeout(5)
+        try:
+            c, _ = srv.accept()
+            hits.append(True)
+            c.close()
+        except OSError:
+            pass
+    t = threading.Thread(target=accept)
+    t.start()
+    mod = _module()
+    p = mod.source_params({"FCB_DEFAULTDB_URL": "postgresql://adm:pw@127.0.0.1:/defaultdb?sslmode=require",
+                           "EXPECTED_PORT": port, "PGPORT": port}, expected_db="defaultdb", require_tls=False)
+    assert p["port"] == port
+    for k in ("PGPORT", "PGHOST", "PGSERVICE"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(psycopg.OperationalError):
+        psycopg.connect(**p, connect_timeout=3)
+    t.join(6)
+    srv.close()
+    assert hits, "libpq did not connect to the resolved port"
