@@ -169,7 +169,8 @@ def _fake_io(monkeypatch, *, recovered=True, rest_trades=("t1", "t2"), proxy_usd
         calls["rest"].append(path)
         return {"/trades-v3/public": {"trades": [{"tradeId": t, "betTime": "2000-01-01T00:00:00Z"}
                                                  for t in rest_trades], "nextKey": None},
-                "/orderbook-v3/snapshot/market": {"version": "0002", "outcomeOne": [], "outcomeTwo": []},
+                "/orderbook-v3/snapshot/market": {"version": "0002", "marketHash": "0x" + "ab" * 32,   # documented echo
+                                                  "outcomeOne": [], "outcomeTwo": []},
                 "/user/proxy": {"obv3ProxyWalletAddress": PROXY, "deployed": True},
                 "/user/balance-v3": {"balances": [{"userAddress": EOA, "wallet": PROXY,
                                                    "tokenAddress": "0x6629Ce1Cf35Cc1329ebB4F63202F3f197b3F050B",

@@ -267,11 +267,18 @@ def test_review_796fce2_p3_1_socket_trades_without_id_are_never_pass():
 
 @pytest.mark.parametrize("replayed, reason", [
     ([{"offset": 11, "message_id": "z"}], "OFFSETS_OUT_OF_ORDER"),         # new id at an old offset
-    ([{"offset": 12, "message_id": "m10"}], "MESSAGE_ID_WITH_TWO_OFFSETS"),  # known id, other offset
 ])
 def test_review_796fce2_p3_2_inconsistent_replay_is_fail_not_duplicates(replayed, reason):
     out = rc.analyze_recovery(CH, before=pubs(10, 11), resubscribe=REC, replayed=replayed, after=[])
     assert (out["outcome"], out["reason"]) == ("FAIL", reason)
+
+
+# Changed by the review of be389cd (P3-A, declared): the same messageId at a new offset is legal per
+# realtime-reliability (dedup by messageId "whatever the cause"): PARTIAL, not FAIL, never PASS.
+def test_review_be389cd_p3_a_republished_message_id_is_partial():
+    out = rc.analyze_recovery(CH, before=pubs(10, 11, ids=["a", "b"]), resubscribe=REC,
+                              replayed=pubs(12, 13, ids=["b", "c"]), after=[])
+    assert (out["outcome"], out["reason"]) == ("PARTIAL", "MESSAGE_ID_REPUBLISHED_AT_NEW_OFFSET")
 
 
 def test_review_796fce2_p3_3_books_of_another_market_fail():
@@ -281,8 +288,11 @@ def test_review_796fce2_p3_3_books_of_another_market_fail():
     rest_other = rc.compare_book_versions([{"version": V1, "marketHash": "0xab"}],
                                           {"version": V2, "marketHash": "0xother"}, market_hash="0xab")
     assert rest_other["outcome"] == "FAIL"
+    # Changed by the review of be389cd (P3-B, declared): the echo is documented, its absence is PARTIAL.
     no_echo = rc.compare_book_versions([{"version": V1, "marketHash": "0xab"}], {"version": V2}, market_hash="0xab")
-    assert no_echo["outcome"] == "PASS"                                     # REST echo checked only if present
+    assert (no_echo["outcome"], no_echo["reason"]) == ("PARTIAL", "REST_MARKET_ECHO_MISSING")
+    missing = rc.compare_book_versions([{"version": V1}], {"version": V2, "marketHash": "0xab"}, market_hash="0xab")
+    assert (missing["outcome"], missing["reason"]) == ("FAIL", "BOOK_MARKET_MISSING")             # P3-D
 
 
 @pytest.mark.parametrize("onchain, outcome, reason", [
@@ -295,3 +305,10 @@ def test_review_796fce2_p3_4_balance_hardening(onchain, outcome, reason):
     out = rc.classify_balances(api_rows=[row(available="100", escrowed="50")], proxy=PROXY, eoa=None,
                                onchain={**OK_CHAIN, **onchain})
     assert (out["outcome"], out["reason"]) == (outcome, reason)
+
+
+@pytest.mark.parametrize("onchain", [{"proxy_usdc": -5}, {"proxy_usdc": 0, "eoa_usdc": True},
+                                     {"proxy_usdc": 0, "escrow_usdc": -1}])
+def test_review_be389cd_p3_c_onchain_amounts_validated_before_anything_else(onchain):
+    out = rc.classify_balances(api_rows=[], proxy=PROXY, eoa=None, onchain={**OK_CHAIN, **onchain})
+    assert (out["outcome"], out["reason"]) == ("FAIL", "ONCHAIN_AMOUNT_INVALID")

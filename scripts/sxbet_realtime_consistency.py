@@ -121,7 +121,10 @@ def analyze_recovery(channel: str, *, before: Sequence[Mapping[str, Any]], resub
         if isinstance(p.get("message_id"), str) and type(p.get("offset")) is int:
             offsets_by_id.setdefault(p["message_id"], set()).add(p["offset"])
     if any(len(v) > 1 for v in offsets_by_id.values()):
-        return {"outcome": "FAIL", "reason": "MESSAGE_ID_WITH_TWO_OFFSETS", "replayed": len(replayed)}  # P3-2
+        # realtime-reliability: a repeated publication is deduped by messageId "whatever the cause", so the same id
+        # republished at a new offset is legal; it proves no clean recovery either: PARTIAL, never PASS or FAIL
+        # (review be389cd P3-A).
+        return {"outcome": "PARTIAL", "reason": "MESSAGE_ID_REPUBLISHED_AT_NEW_OFFSET", "replayed": len(replayed)}
     if stream["out_of_order"]:
         return {"outcome": "FAIL", "reason": "OFFSETS_OUT_OF_ORDER", "replayed": len(replayed)}
     seen_before = {p.get("message_id") for p in before}
@@ -206,10 +209,15 @@ def compare_book_versions(ws_books: Sequence[Mapping[str, Any]], rest_book: Mapp
     versions = [_version_key(b.get("version")) for b in ws_books]
     if not ws_books:
         return {"outcome": "NOT_TESTED", "reason": "NO_BOOK_PUBLICATION_IN_WINDOW"}
-    echoed = [rest_book] if rest_book and "marketHash" in rest_book else []   # REST echo checked only if present
-    if market_hash is not None and any(str(b.get("marketHash", "")).lower() != market_hash.lower()
-                                       for b in [*ws_books, *echoed]):
-        return {"outcome": "FAIL", "reason": "BOOK_OF_ANOTHER_MARKET"}                           # P3-3
+    if market_hash is not None:
+        if any(not isinstance(b.get("marketHash"), str) for b in ws_books):
+            return {"outcome": "FAIL", "reason": "BOOK_MARKET_MISSING"}                          # be389cd P3-D
+        echoed = [rest_book] if rest_book and "marketHash" in rest_book else []
+        if any(str(b.get("marketHash", "")).lower() != market_hash.lower() for b in [*ws_books, *echoed]):
+            return {"outcome": "FAIL", "reason": "BOOK_OF_ANOTHER_MARKET"}                       # P3-3
+        if rest_book and "marketHash" not in rest_book:
+            # The OpenAPI documents the echo (be389cd P3-B): its absence is not proof of the market.
+            return {"outcome": "PARTIAL", "reason": "REST_MARKET_ECHO_MISSING"}
     if None in versions:
         return {"outcome": "FAIL", "reason": "BOOK_VERSION_MALFORMED"}
     stale = sum(1 for a, b in zip(versions, versions[1:]) if b <= a)
@@ -261,6 +269,9 @@ def classify_balances(*, api_rows: Sequence[Mapping[str, Any]] | None, proxy: st
     if api_rows is None or proxy is None:
         return {"outcome": "NOT_TESTED", "reason": "API_BALANCE_OR_PROXY_NOT_READ"}
     proxy_usdc, eoa_usdc, escrow_usdc = onchain.get("proxy_usdc"), onchain.get("eoa_usdc"), onchain.get("escrow_usdc")
+    for v in (proxy_usdc, eoa_usdc, escrow_usdc):   # validated first, whatever the API rows say (be389cd P3-C)
+        if v is not None and (type(v) is not int or v < 0):
+            return {"outcome": "FAIL", "reason": "ONCHAIN_AMOUNT_INVALID"}
     rows = [r for r in api_rows if isinstance(r, Mapping)
             and str(r.get("tokenAddress", "")).lower() == MAINNET["usdc"]]
     if not rows:
@@ -275,9 +286,6 @@ def classify_balances(*, api_rows: Sequence[Mapping[str, Any]] | None, proxy: st
         return {"outcome": "PARTIAL", "reason": "NO_USDC_ROW_FOR_THE_DOCUMENTED_ESCROW"}           # P3-4c
     if len(mine) != 1:
         return {"outcome": "FAIL", "reason": "NO_SINGLE_USDC_ROW_ON_THE_DOCUMENTED_ESCROW"}
-    for v in (proxy_usdc, escrow_usdc):
-        if v is not None and (type(v) is not int or v < 0):
-            return {"outcome": "FAIL", "reason": "ONCHAIN_AMOUNT_INVALID"}                          # P3-4b
     other_rows = len(rows) - 1
     r = mine[0]
     if str(r.get("wallet", "")).lower() != proxy.lower():
