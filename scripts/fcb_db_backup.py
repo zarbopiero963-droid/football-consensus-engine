@@ -29,7 +29,9 @@ Subcommands
      (`pg_dump --create --schema-only --exclude-schema=*`).
   2. Roles SQL and database SQL must contain no PASSWORD clause, SCRAM verifier or md5 hash.
   3. Isolated restore: a throwaway PostgreSQL 18 cluster on a private unix socket (no TCP listener,
-     started with a scrubbed environment), the roles SQL applied with ON_ERROR_STOP, every role the
+     started with a scrubbed environment), the roles SQL applied with ON_ERROR_STOP (minus only the
+     allowlisted Aiven-managed role settings, AIVEN_MANAGED_ROLE_SETTINGS, counted and reported by
+     role and parameter name and left out of the roles comparison on both sides), every role the
      dump references present, then `pg_restore --exit-on-error --single-transaction` into a
      database named defaultdb. The source connection is closed before the restore starts.
   4. Verification, source snapshot vs restore: counts and structure (also against the pinned
@@ -486,7 +488,12 @@ SELECT r.rolname::pg_catalog.text OPERATOR(pg_catalog.||) ' super='::pg_catalog.
        OPERATOR(pg_catalog.||) ' bypassrls='::pg_catalog.text OPERATOR(pg_catalog.||) r.rolbypassrls::pg_catalog.text
        OPERATOR(pg_catalog.||) ' connlimit='::pg_catalog.text OPERATOR(pg_catalog.||) r.rolconnlimit::pg_catalog.text
        OPERATOR(pg_catalog.||) ' validuntil='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(r.rolvaliduntil::pg_catalog.text, '-'::pg_catalog.text)
-       OPERATOR(pg_catalog.||) ' config='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE(r.rolconfig::pg_catalog.text, '-'::pg_catalog.text)
+       OPERATOR(pg_catalog.||) ' config='::pg_catalog.text OPERATOR(pg_catalog.||) COALESCE((
+         -- rolconfig in its own order, minus the `role param` pairs of the skip list (empty: all of it)
+         SELECT pg_catalog.array_agg(u.c ORDER BY u.n) FROM pg_catalog.unnest(r.rolconfig) WITH ORDINALITY u(c, n)
+          WHERE NOT ((r.rolname::pg_catalog.text OPERATOR(pg_catalog.||) ' '::pg_catalog.text
+                      OPERATOR(pg_catalog.||) pg_catalog.split_part(u.c, '='::pg_catalog.text, 1))
+                     OPERATOR(pg_catalog.=) ANY (%(skip)s::pg_catalog.text[])))::pg_catalog.text, '-'::pg_catalog.text)
   FROM pg_catalog.pg_roles r
  WHERE r.rolname OPERATOR(pg_catalog.!~) '^pg_'::pg_catalog.text AND r.rolname OPERATOR(pg_catalog.<>) %(bootstrap)s
  ORDER BY 1
@@ -572,10 +579,14 @@ def database_replay_sql(text: str, source_db: str, target_db: str) -> str:
 
 
 def read_globals(conn, exclude: str = "") -> dict:
-    """Role names/attributes and memberships of the cluster (`exclude`: a role left out, none by default)."""
-    roles = [r[0] for r in conn.execute(ROLES_SQL, {"bootstrap": exclude}).fetchall()]
+    """Role names/attributes and memberships of the cluster (`exclude`: a role left out, none by
+    default). `roles` is complete; `roles_compared` leaves out of each role's config only the
+    allowlisted Aiven-managed settings (managed_setting_pairs), which the restore test does not
+    replay: the restore comparison uses it on both sides."""
+    roles = [r[0] for r in conn.execute(ROLES_SQL, {"bootstrap": exclude, "skip": []}).fetchall()]
+    compared = [r[0] for r in conn.execute(ROLES_SQL, {"bootstrap": exclude, "skip": managed_setting_pairs()}).fetchall()]
     members = [r[0] for r in conn.execute(MEMBERSHIPS_SQL, {"bootstrap": exclude}).fetchall()]
-    return {"roles": roles, "memberships": members,
+    return {"roles": roles, "roles_compared": compared, "memberships": members,
             "roles_sha256": hashlib.sha256("\n".join(roles + ["--"] + members).encode()).hexdigest()}
 
 
@@ -993,9 +1004,17 @@ def run(args, env=None) -> int:
         # The cluster's bootstrap superuser gets the SOURCE's bootstrap name, so grants recorded
         # "GRANTED BY <bootstrap>" replay exactly; pg_dumpall's own CREATE ROLE of that name is the
         # one error that is expected (pg_dumpall emits CREATE ROLE knowing it may already exist).
+        # The restore test replays roles.sql minus the allowlisted Aiven-managed role settings
+        # (AIVEN_MANAGED_ROLE_SETTINGS; names counted and reported, values never); the packaged
+        # roles.sql stays byte-identical to pg_dumpall's output.
+        restore_roles, skipped_settings = restore_test_roles_sql(roles_sql.read_text(encoding="utf-8"))
+        restore_roles_path = workdir / "roles_restore_test.sql"
+        restore_roles_path.write_text(restore_roles, encoding="utf-8")
+        checks.add("roles_sql_aiven_managed_settings_skipped_in_restore_test", True,
+                   skipped_settings_info(skipped_settings))
         cluster = RestoreCluster(bindir, workdir / "restore", port=args.restore_port, bootstrap=bootstrap)
         cluster.start()
-        apply_roles_sql(bin_("psql"), roles_sql, child_env(cluster.params("postgres")), bootstrap)
+        apply_roles_sql(bin_("psql"), restore_roles_path, child_env(cluster.params("postgres")), bootstrap)
         checks.add("roles_sql_applied", True, "only expected error: bootstrap role already exists")
         with cluster.connect("postgres") as lc:
             present = {r[0] for r in lc.execute("SELECT rolname::text FROM pg_catalog.pg_roles").fetchall()}
@@ -1003,7 +1022,8 @@ def run(args, env=None) -> int:
             if not checks.add("roles_cover_dump", not missing, f"referenced={len(referenced_roles)} missing={len(missing)}"):
                 raise BackupError("ROLES_SQL_INCOMPLETE")
             dst_globals = read_globals(lc)
-            checks.add("roles_names_attributes_match_source", dst_globals["roles"] == src_globals["roles"],
+            checks.add("roles_names_attributes_match_source",
+                       dst_globals["roles_compared"] == src_globals["roles_compared"],
                        f"roles={len(dst_globals['roles'])}")
             if not checks.add("role_memberships_match_source", dst_globals["memberships"] == src_globals["memberships"],
                               f"memberships={len(dst_globals['memberships'])} sha256={dst_globals['roles_sha256']}") \
@@ -1065,6 +1085,7 @@ def run(args, env=None) -> int:
             "acls_sha256": src["acls_sha256"],
             "roles": src_globals["roles"],
             "memberships": src_globals["memberships"],
+            "restore_test_skipped_role_settings": skipped_settings,
             "sequences": src["sequences"],
             "tables": src["tables"],
             "content_sha256": src["content_sha256"],
@@ -1151,6 +1172,187 @@ def apply_roles_sql(psql: str, roles_sql: Path, env: dict, bootstrap: str) -> No
     unexpected = [e for e in errors if not e.endswith(allowed)]
     if proc.returncode != 0 or unexpected or len(errors) > 1:
         raise BackupError("ROLES_SQL_APPLY_FAILED", f"class={error_class(chr(10).join(unexpected or errors) or proc.stderr)}")
+
+
+# ------------------------------------------------------------------ Aiven-managed role settings
+
+# FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX. pg_dumpall --roles-only on Aiven also dumps the
+# role-level settings of the provider's own service roles; some name parameters that exist only in
+# Aiven's server build (avn_wal_sender_stop_timeout: "unrecognized configuration parameter" on stock
+# PostgreSQL 18, hence ROLES_SQL_APPLY_FAILED class=INVALID_SETTING in run 43870519736) or that would
+# change the restore cluster's own bootstrap sessions (default_transaction_* on `postgres`).
+# ONLY in the isolated restore test, and ONLY for these exact (role, parameter) pairs, the
+# `ALTER ROLE <role> SET <param> TO ...;` statement is not replayed; the role itself is still
+# created with its attributes and memberships and compared. Exact names, never a prefix: `_aiven_x`
+# or `_avnadmin_evil` are application roles. Roles with no observed setting (_aiven_rewind,
+# _avnadmin_auditing, _avnadmin_managed, avnadmin_group) and avnadmin have no entry: any setting on
+# them is replayed and compared like any application role's. The stored roles.sql is never changed.
+_AIVEN_SERVICE_ROLE_PARAMS = frozenset({
+    "avn_wal_sender_stop_timeout", "default_transaction_isolation", "default_transaction_read_only",
+    "pg_stat_monitor.pgsm_track", "pg_stat_plans.track", "pg_stat_statements.track", "pgaudit.log",
+    "timescaledb.disable_load"})
+_AIVEN_MONITOR_ROLE_PARAMS = frozenset({
+    "extwlist.extensions", "pg_stat_monitor.pgsm_track", "pg_stat_plans.track", "pg_stat_statements.track",
+    "pgaudit.log"})
+AIVEN_MANAGED_ROLE_SETTINGS: dict[str, frozenset[str]] = {
+    "_aiven": _AIVEN_SERVICE_ROLE_PARAMS,
+    "_aiven_repl": _AIVEN_SERVICE_ROLE_PARAMS,
+    "postgres": _AIVEN_SERVICE_ROLE_PARAMS,
+    "_avnadmin_monitor": _AIVEN_MONITOR_ROLE_PARAMS,
+}
+# Aiven's service roles (documentation of the recovery procedure and of the restore test).
+AIVEN_MANAGED_ROLES = frozenset({"_aiven", "_aiven_repl", "_aiven_rewind", "_avnadmin_auditing",
+                                 "_avnadmin_managed", "_avnadmin_monitor", "postgres"})
+
+
+def managed_setting_pairs() -> list[str]:
+    """Every allowlisted pair as `role param`, sorted (excluded symmetrically from the comparison)."""
+    return sorted(f"{r} {p}" for r, params in AIVEN_MANAGED_ROLE_SETTINGS.items() for p in params)
+
+
+_BARE_IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+_IDENT = r'(?:[a-z_][a-z0-9_$]*|"(?:[^"]|"")+")'
+_ALTER_ROLE_SET = re.compile(rf"ALTER ROLE (?P<role>{_IDENT}) SET (?P<param>{_IDENT}) TO (?P<value>.+);", re.S)
+
+
+def _unquote_ident(token: str) -> str:
+    return token[1:-1].replace('""', '"') if token.startswith('"') else token
+
+
+def _fmt_ident(name: str) -> str:
+    """pg_dumpall's fmtId for the names this module compares (no keyword among them)."""
+    return name if _BARE_IDENT.fullmatch(name) else '"' + name.replace('"', '""') + '"'
+
+
+def split_psql_script(text: str) -> list[tuple[str, str]]:
+    r"""Split a pg_dumpall script into ("gap" | "meta" | "stmt", text) segments whose concatenation
+    is exactly `text`. Gaps are whitespace and `--` comment lines between statements; a meta
+    segment is one psql backslash line (\restrict, \unrestrict, \connect) at a statement boundary;
+    a statement runs up to its `;` outside single-quoted strings (E'' escapes included), quoted
+    identifiers and `--` comments. Anything this lexer cannot classify exactly (dollar quoting,
+    block comments, a backslash outside a literal, an unterminated literal or statement) raises
+    ROLES_SQL_UNPARSEABLE: the restore test then fails closed instead of guessing."""
+    segments: list[tuple[str, str]] = []
+    i, n = 0, len(text)
+    while i < n:
+        # ---- gap: whitespace and whole comment lines
+        start = i
+        while i < n:
+            if text[i] in " \t\r\n":
+                i += 1
+            elif text.startswith("--", i):
+                j = text.find("\n", i)
+                i = n if j < 0 else j + 1
+            else:
+                break
+        if i > start:
+            segments.append(("gap", text[start:i]))
+        if i >= n:
+            break
+        if text[i] == "\\":
+            if i and text[i - 1] != "\n":
+                raise BackupError("ROLES_SQL_UNPARSEABLE")
+            j = text.find("\n", i)
+            j = n if j < 0 else j + 1
+            segments.append(("meta", text[i:j]))
+            i = j
+            continue
+        # ---- statement
+        start = i
+        while True:
+            if i >= n:
+                raise BackupError("ROLES_SQL_UNPARSEABLE")
+            c = text[i]
+            if c == ";":
+                i += 1
+                break
+            if c == "'":
+                escape = i > start and text[i - 1] in "Ee" and (i - 1 == start or not re.match(r"[A-Za-z0-9_$]", text[i - 2]))
+                i += 1
+                while True:
+                    if i >= n:
+                        raise BackupError("ROLES_SQL_UNPARSEABLE")
+                    if escape and text[i] == "\\":
+                        i += 2
+                        continue
+                    if text[i] == "'":
+                        if text.startswith("''", i):
+                            i += 2
+                            continue
+                        i += 1
+                        break
+                    i += 1
+                continue
+            if c == '"':
+                j = i + 1
+                while True:
+                    j = text.find('"', j)
+                    if j < 0:
+                        raise BackupError("ROLES_SQL_UNPARSEABLE")
+                    if text.startswith('""', j):
+                        j += 2
+                        continue
+                    break
+                i = j + 1
+                continue
+            if text.startswith("--", i):
+                j = text.find("\n", i)
+                if j < 0:
+                    raise BackupError("ROLES_SQL_UNPARSEABLE")
+                i = j + 1
+                continue
+            if c in "$\\" or text.startswith("/*", i):
+                raise BackupError("ROLES_SQL_UNPARSEABLE")
+            i += 1
+        segments.append(("stmt", text[start:i]))
+    if "".join(s for _, s in segments) != text:  # never: the segments are slices of the text
+        raise BackupError("ROLES_SQL_UNPARSEABLE")
+    return segments
+
+
+def managed_setting_of(statement: str) -> tuple[str, str] | None:
+    """(role, param) when `statement` is exactly pg_dumpall's `ALTER ROLE <role> SET <param> TO
+    <value>;` for an allowlisted pair, written in pg_dumpall's canonical identifier form; else None
+    (the statement is replayed). IN DATABASE, a quoted spelling of a bare name, another role or
+    another parameter never match."""
+    m = _ALTER_ROLE_SET.fullmatch(statement)
+    if not m:
+        return None
+    role, param = _unquote_ident(m.group("role")), _unquote_ident(m.group("param"))
+    if m.group("role") != _fmt_ident(role) or m.group("param") != _fmt_ident(param):
+        return None
+    if param not in AIVEN_MANAGED_ROLE_SETTINGS.get(role, frozenset()):
+        return None
+    return role, param
+
+
+def restore_test_roles_sql(text: str) -> tuple[str, list[str]]:
+    """roles.sql for the isolated restore test only: `text` minus the allowlisted Aiven-managed
+    settings statements (and the line break that ends each), every other byte unchanged. Returns
+    the filtered script and the skipped pairs as sorted `role param` (names only, never values)."""
+    out, skipped, drop_newline = [], [], False
+    for kind, seg in split_psql_script(text):
+        if drop_newline and kind == "gap" and seg.startswith("\n"):
+            seg = seg[1:]
+        drop_newline = False
+        pair = managed_setting_of(seg) if kind == "stmt" else None
+        if pair:
+            skipped.append(f"{pair[0]} {pair[1]}")
+            drop_newline = True
+            continue
+        out.append(seg)
+    if len(set(skipped)) != len(skipped):  # pg_dumpall emits each setting once
+        raise BackupError("ROLES_SQL_UNPARSEABLE")
+    return "".join(out), sorted(skipped)
+
+
+def skipped_settings_info(skipped: list[str]) -> str:
+    """Summary text: count, then role[param,...] per role (allowlisted names only, no values)."""
+    by_role: dict[str, list[str]] = {}
+    for item in skipped:
+        role, param = item.split(" ", 1)
+        by_role.setdefault(role, []).append(param)
+    return f"skipped={len(skipped)}" + "".join(f" {r}[{','.join(sorted(p))}]" for r, p in sorted(by_role.items()))
 
 
 def _db_owner_from(database_sql: Path) -> str | None:

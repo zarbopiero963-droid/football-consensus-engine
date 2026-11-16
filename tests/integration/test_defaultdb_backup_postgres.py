@@ -119,6 +119,72 @@ def _aiven_monitor_schema(env):
                   "REVOKE ALL ON SCHEMA _avnadmin_monitor FROM PUBLIC")
 
 
+# FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX: Aiven's service roles, memberships and role-level
+# settings as observed read-only on the production service (run 43870519736 failed on them with
+# ROLES_SQL_APPLY_FAILED class=INVALID_SETTING). Values are placeholders; the dotted names are SET-able
+# placeholder GUCs on a stock server. avn_wal_sender_stop_timeout exists only in Aiven's build, so it
+# is injected into the dumped roles.sql, exactly where pg_dumpall writes it (first line of the role's
+# User Config block, sorted by name).
+AIVEN_SERVICE_ROLES = (("_aiven", "SUPERUSER LOGIN"), ("_aiven_repl", "LOGIN"), ("_aiven_rewind", "LOGIN"),
+                       ("_avnadmin_auditing", "NOLOGIN"), ("_avnadmin_managed", "NOLOGIN"),
+                       ("_avnadmin_monitor", "LOGIN"), ("avnadmin_group", "NOLOGIN"))
+AIVEN_SERVICE_SETTINGS = (("default_transaction_isolation", "read committed"), ("default_transaction_read_only", "off"),
+                          ("pg_stat_monitor.pgsm_track", "none"), ("pg_stat_plans.track", "none"),
+                          ("pg_stat_statements.track", "none"), ("pgaudit.log", "none"),
+                          ("timescaledb.disable_load", "true"))
+AIVEN_MONITOR_SETTINGS = (("extwlist.extensions", "pg_stat_statements"), ("pg_stat_monitor.pgsm_track", "none"),
+                          ("pg_stat_plans.track", "none"), ("pg_stat_statements.track", "none"), ("pgaudit.log", "none"))
+AVN_ONLY_PARAM = "avn_wal_sender_stop_timeout"
+
+
+def _aiven_service_roles(env):
+    """Create the Aiven service roles, memberships and settings on the test server (cluster-wide:
+    removed again by _drop_aiven_service_roles). The bootstrap superuser must be `postgres`."""
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+        if conn.execute("SELECT rolname FROM pg_roles WHERE oid = 10").fetchone()[0] != "postgres":
+            pytest.skip("the Aiven shape needs a test server whose bootstrap superuser is postgres")
+        taken = conn.execute("SELECT count(*) FROM pg_roles WHERE rolname = ANY(%s)",
+                             ([r for r, _ in AIVEN_SERVICE_ROLES],)).fetchone()[0]
+        preset = conn.execute("SELECT count(*) FROM pg_db_role_setting WHERE setrole = 10 AND setdatabase = 0").fetchone()[0]
+        if taken or preset:
+            pytest.skip("the test server already has Aiven-like roles or postgres settings")
+        env.aiven_service_roles = True
+        for role, attrs in AIVEN_SERVICE_ROLES:
+            conn.execute(f"CREATE ROLE {role} {attrs}")
+        conn.execute("ALTER ROLE _aiven_repl REPLICATION")
+        conn.execute(f'GRANT avnadmin_group TO "{env.admin_role}" WITH ADMIN TRUE, INHERIT TRUE, SET TRUE GRANTED BY postgres')
+        conn.execute("GRANT _avnadmin_managed TO avnadmin_group GRANTED BY postgres")
+        conn.execute("GRANT _avnadmin_auditing, pg_create_subscription, pg_read_all_stats, pg_signal_autovacuum_worker, "
+                     "pg_signal_backend, pg_stat_scan_tables TO _avnadmin_managed GRANTED BY postgres")
+        conn.execute("GRANT pg_monitor, pg_use_reserved_connections TO _avnadmin_monitor GRANTED BY postgres")
+        for role in ("_aiven", "_aiven_repl", "postgres"):
+            for param, value in AIVEN_SERVICE_SETTINGS:
+                conn.execute(f"ALTER ROLE {role} SET \"{param}\" TO '{value}'")
+        for param, value in AIVEN_MONITOR_SETTINGS:
+            conn.execute(f"ALTER ROLE _avnadmin_monitor SET \"{param}\" TO '{value}'")
+    env.roles_sql_inject = {r: f"ALTER ROLE {r} SET {AVN_ONLY_PARAM} TO '10s';" for r in ("_aiven", "_aiven_repl", "postgres")}
+
+
+def _drop_aiven_service_roles(env):
+    if not getattr(env, "aiven_service_roles", False):
+        return
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("ALTER ROLE postgres RESET ALL")  # there was none before (checked above)
+        for role, _ in reversed(AIVEN_SERVICE_ROLES):
+            conn.execute(f"DROP ROLE IF EXISTS {role}")
+
+
+def _inject_into_roles_sql(path: Path, lines: dict) -> None:
+    """Add `lines[role]` as the first statement of that role's pg_dumpall User Config block."""
+    text = path.read_text()
+    for role, line in lines.items():
+        marker = f"ALTER ROLE {role} SET "
+        assert text.count(f'-- User Config "{role}"') == 1 and marker in text, role
+        i = text.index(marker)
+        text = text[:i] + line + "\n" + text[i:]
+    path.write_text(text)
+
+
 @pytest.fixture(params=["fresh", "phase1", "aiven"])
 def source(request, monkeypatch):
     if request.param == "aiven":
@@ -128,6 +194,7 @@ def source(request, monkeypatch):
     try:
         if request.param == "aiven":
             _aiven_monitor_schema(env)
+            _aiven_service_roles(env)
         if request.param == "phase1":
             rc, _, err = rr._roles_tx(env)
             assert rc == 0, err
@@ -136,6 +203,7 @@ def source(request, monkeypatch):
         yield env
     finally:
         rr._destroy_env(env)
+        _drop_aiven_service_roles(env)
 
 
 def _url(env):
@@ -205,7 +273,19 @@ def _source_state(env):
 
 
 def _run(mod, env, tmp, capsys, **over):
-    rc = mod.run(_args(env, tmp, **over), env=_proc_env(env))
+    inject = getattr(env, "roles_sql_inject", None)
+    real = mod._run
+    if inject:
+        def run_injecting(argv, env_, code, timeout=3600):
+            out = real(argv, env_, code, timeout)
+            if "--roles-only" in argv:  # what Aiven's pg_dumpall writes and a stock server cannot
+                _inject_into_roles_sql(Path(argv[argv.index("--file") + 1]), inject)
+            return out
+        mod._run = run_injecting
+    try:
+        rc = mod.run(_args(env, tmp, **over), env=_proc_env(env))
+    finally:
+        mod._run = real
     out = capsys.readouterr()
     return rc, out.out + out.err, (tmp / "summary.md").read_text(encoding="utf-8") if (tmp / "summary.md").exists() else ""
 
@@ -232,7 +312,22 @@ def test_backup_restore_verify_encrypt_roundtrip(source, short_tmp, capsys, monk
                   "plaintext_deleted_before_upload", "artifact_dir_only_ciphertext_and_sha256"):
         assert f"| {check} | PASS |" in summary, check
     # No per-table counts and no schema/role names in the public summary (review #202).
-    assert "rows ingest_runs" not in summary and "| 25 " not in summary and "_avnadmin_monitor" not in summary
+    # The skipped Aiven-managed settings row names allowlisted roles and parameters only (by design,
+    # FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX); nothing else names a schema or a role.
+    skipped_row = next(l for l in summary.splitlines()
+                       if l.startswith("| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS |"))
+    assert "rows ingest_runs" not in summary and "| 25 " not in summary
+    assert "_avnadmin_monitor" not in summary.replace(skipped_row, "")
+    if source.kind == "aiven":
+        assert skipped_row == ("| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS | skipped=29 "
+                               "_aiven[" + ",".join(sorted(["avn_wal_sender_stop_timeout", *[p for p, _ in AIVEN_SERVICE_SETTINGS]]))
+                               + "] _aiven_repl[" + ",".join(sorted(["avn_wal_sender_stop_timeout", *[p for p, _ in AIVEN_SERVICE_SETTINGS]]))
+                               + "] _avnadmin_monitor[" + ",".join(sorted(p for p, _ in AIVEN_MONITOR_SETTINGS))
+                               + "] postgres[" + ",".join(sorted(["avn_wal_sender_stop_timeout", *[p for p, _ in AIVEN_SERVICE_SETTINGS]]))
+                               + "] |")
+        assert "'10s'" not in summary and "read committed" not in summary
+    else:
+        assert skipped_row.endswith("| skipped=0 |")
     assert f"- excluded_schemas: `{1 if source.kind == 'aiven' else 0}`" in summary
     # The summary passes its own leak check and is published (P1: user avnadmin vs _avnadmin_monitor).
     assert (short_tmp / "public.md").read_text() == summary
@@ -261,6 +356,19 @@ def test_backup_restore_verify_encrypt_roundtrip(source, short_tmp, capsys, monk
     assert manifest["tables"]["ingest_runs"]["rows"] == 25 and manifest["sequences"]["ingest_runs_id_seq"] == "25:true"
     assert manifest["restore_test"] == "PASS"
     assert any(r.startswith("fcb_app ") for r in manifest["roles"]) == (source.kind == "phase1")
+    if source.kind == "aiven":
+        # The packaged roles.sql is the complete dump (avn_* lines included); the restore test
+        # skipped exactly the allowlisted settings, and the managed roles were still recreated.
+        assert roles_sql.count(f"SET {AVN_ONLY_PARAM} TO") == 3 and roles_sql.count('SET "pgaudit.log" TO') == 4
+        assert len(manifest["restore_test_skipped_role_settings"]) == 29
+        assert "_aiven pgaudit.log" in manifest["restore_test_skipped_role_settings"]
+        for role, _ in AIVEN_SERVICE_ROLES:
+            assert any(r.startswith(role + " ") for r in manifest["roles"]), role
+        assert any(r.startswith("_aiven ") and "pgaudit.log=none" in r for r in manifest["roles"])
+        assert "_avnadmin_managed <- avnadmin_group grantor=postgres admin=false inherit=true set=true" in manifest["memberships"]
+        assert "avnadmin_group <- avnadmin grantor=postgres admin=true inherit=true set=true" in manifest["memberships"]
+    else:
+        assert manifest["restore_test_skipped_role_settings"] == []
 
     # The passphrase never reached argv, a child environment, the output or the summary.
     assert rec.calls, "no subprocess recorded"
@@ -540,3 +648,59 @@ def test_a_lost_column_option_fails_the_restore_verification(source, short_tmp, 
     _tamper_restore(mod, monkeypatch, short_tmp, "ALTER TABLE public.ingest_runs ALTER COLUMN source RESET (n_distinct)")
     rc, out, summary = _run(mod, source, short_tmp, capsys)
     _assert_failed_clean(rc, out, summary, short_tmp, "restore_column_options")
+
+
+# ------------------------------------------------------------------ Aiven-managed role settings
+
+@pytest.mark.parametrize("extra", [
+    "ALTER ROLE avnadmin SET avn_wal_sender_stop_timeout TO '10s';",                           # application role
+    "CREATE ROLE _aiven_x;\nALTER ROLE _aiven_x SET avn_wal_sender_stop_timeout TO '10s';",     # look-alike
+    "CREATE ROLE _avnadmin_evil;\nALTER ROLE _avnadmin_evil SET avn_wal_sender_stop_timeout TO '10s';",
+    "ALTER ROLE _aiven SET avn_unobserved_param TO '1';",                                      # param not allowlisted
+    "ALTER ROLE \"_aiven\" SET avn_wal_sender_stop_timeout TO '10s';",                         # not pg_dumpall's form
+    "ALTER ROLE _aiven_rewind SET avn_wal_sender_stop_timeout TO '10s';",                      # managed, no observed setting
+], ids=["app-role", "aiven-x", "avnadmin-evil", "unlisted-param", "quoted-name", "rewind"])
+def test_unknown_settings_outside_the_allowlist_still_fail_closed(source, short_tmp, capsys, extra):
+    if source.kind != "aiven":
+        pytest.skip("the Aiven shape only")
+    mod = _module()
+    real = mod._run
+
+    def run(argv, env, code, timeout=3600):
+        out = real(argv, env, code, timeout)
+        if "--roles-only" in argv:
+            path = Path(argv[argv.index("--file") + 1])
+            path.write_text(path.read_text() + extra + "\n")
+        return out
+    mod._run = run
+    rc, out, summary = _run(mod, source, short_tmp, capsys)
+    _assert_failed_clean(rc, out, summary, short_tmp)
+    assert out.strip() == "::error::ROLES_SQL_APPLY_FAILED class=INVALID_SETTING", out
+    assert "| roles_sql_aiven_managed_settings_skipped_in_restore_test | PASS | skipped=29 " in summary
+    assert "10s" not in out + summary
+
+
+@pytest.mark.parametrize("statement, failing", [
+    ("ALTER ROLE _aiven NOSUPERUSER", "roles_names_attributes_match_source"),
+    ("ALTER ROLE _aiven_rewind SET \"pgaudit.log\" TO 'all'", "roles_names_attributes_match_source"),
+    ("ALTER ROLE _avnadmin_monitor SET \"pgaudit.log.extra\" TO 'all'", "roles_names_attributes_match_source"),
+    ("REVOKE _avnadmin_managed FROM avnadmin_group", "role_memberships_match_source"),
+    ("DROP ROLE _avnadmin_auditing", "role_memberships_match_source"),
+], ids=["managed-attribute", "unlisted-role-setting", "unlisted-param", "managed-membership", "managed-role-dropped"])
+def test_managed_roles_stay_in_the_attribute_and_membership_comparison(source, short_tmp, capsys, monkeypatch,
+                                                                       statement, failing):
+    if source.kind != "aiven":
+        pytest.skip("the Aiven shape only")
+    mod = _module()
+    real = mod.read_globals
+    calls = []
+
+    def tampered(conn, *a, **kw):
+        calls.append(1)
+        if len(calls) == 2:  # the restore cluster, after roles.sql
+            conn.execute(statement)
+        return real(conn, *a, **kw)
+    monkeypatch.setattr(mod, "read_globals", tampered)
+    rc, out, summary = _run(mod, source, short_tmp, capsys)
+    _assert_failed_clean(rc, out, summary, short_tmp, failing)
+    assert "pg_restore_exit_on_error" not in summary

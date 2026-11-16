@@ -688,3 +688,172 @@ def test_the_real_postgresql_client_connects_to_the_resolved_port(monkeypatch):
     t.join(6)
     srv.close()
     assert hits, "libpq did not connect to the resolved port"
+
+
+# ------------------------------------------------------------------ FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX
+# Run 43870519736 (main 5e6bc1d) failed with ROLES_SQL_APPLY_FAILED class=INVALID_SETTING: Aiven's
+# roles dump sets avn_wal_sender_stop_timeout (unknown to stock PostgreSQL) on its service roles.
+# The fixture is real `pg_dumpall --roles-only --no-role-passwords` output of PostgreSQL 18.6 for a
+# local cluster holding the observed Aiven roles, memberships and settings (placeholder values; the
+# dotted names are SET-able placeholders), with the three avn_wal_sender_stop_timeout lines injected
+# because no stock server accepts them.
+
+AIVEN_ROLES_FIXTURE = ROOT / "tests" / "fixtures" / "wp009_backup" / "aiven_roles_pg18.sql"
+SERVICE_PARAMS = {"avn_wal_sender_stop_timeout", "default_transaction_isolation", "default_transaction_read_only",
+                  "pg_stat_monitor.pgsm_track", "pg_stat_plans.track", "pg_stat_statements.track", "pgaudit.log",
+                  "timescaledb.disable_load"}
+MONITOR_PARAMS = {"extwlist.extensions", "pg_stat_monitor.pgsm_track", "pg_stat_plans.track",
+                  "pg_stat_statements.track", "pgaudit.log"}
+
+
+def test_aiven_managed_allowlist_is_exact_names_and_observed_params_only():
+    mod = _module()
+    assert {r: set(p) for r, p in mod.AIVEN_MANAGED_ROLE_SETTINGS.items()} == {
+        "_aiven": SERVICE_PARAMS, "_aiven_repl": SERVICE_PARAMS, "postgres": SERVICE_PARAMS,
+        "_avnadmin_monitor": MONITOR_PARAMS}
+    assert mod.AIVEN_MANAGED_ROLES == {"_aiven", "_aiven_repl", "_aiven_rewind", "_avnadmin_auditing",
+                                       "_avnadmin_managed", "_avnadmin_monitor", "postgres"}
+    # The application roles are never managed, whatever their settings.
+    assert not {"avnadmin", "avnadmin_group", "fcb_app", "fcb_migrator"} & set(mod.AIVEN_MANAGED_ROLE_SETTINGS)
+    assert len(mod.managed_setting_pairs()) == 3 * 8 + 5
+    # No prefix logic anywhere in the decision.
+    src = SCRIPT.read_text(encoding="utf-8")
+    body = src[src.index("def managed_setting_of"):src.index("def restore_test_roles_sql")]
+    assert "startswith" not in body and "_aiven" not in body
+
+
+def test_red_the_real_aiven_roles_dump_carries_a_setting_stock_postgresql_rejects():
+    text = AIVEN_ROLES_FIXTURE.read_text(encoding="utf-8")
+    assert text.count("SET avn_wal_sender_stop_timeout TO") == 3
+    assert "\\restrict " in text and "\\unrestrict " in text and "GRANTED BY postgres" in text
+
+
+def test_restore_test_roles_sql_drops_only_the_allowlisted_managed_settings():
+    mod = _module()
+    text = AIVEN_ROLES_FIXTURE.read_text(encoding="utf-8")
+    filtered, skipped = mod.restore_test_roles_sql(text)
+    assert len(skipped) == 29 and skipped == sorted(skipped)
+    assert set(skipped) == set(mod.managed_setting_pairs())
+    removed = [l for l in text.splitlines() if l.startswith("ALTER ROLE ") and " SET " in l]
+    assert len(removed) == 29
+    # Every other line, in order and byte for byte, is still there.
+    assert filtered.splitlines() == [l for l in text.splitlines() if l not in removed]
+    assert "avn_wal_sender_stop_timeout" not in filtered and " SET " not in filtered.replace("SET client_encoding", "") \
+        .replace("SET standard_conforming_strings", "").replace("SET default_transaction_read_only = off", "")
+    # Every role is still created with its attributes; every membership and grantor is kept.
+    for role in ("_aiven", "_aiven_repl", "_aiven_rewind", "_avnadmin_auditing", "_avnadmin_managed",
+                 "_avnadmin_monitor", "avnadmin", "avnadmin_group", "postgres"):
+        assert f"CREATE ROLE {role};\nALTER ROLE {role} WITH " in filtered, role
+    assert filtered.count("GRANT ") == text.count("GRANT ") == 10
+    assert filtered.count("\\restrict ") == filtered.count("\\unrestrict ") == 1
+    # The summary carries names only.
+    info = mod.skipped_settings_info(skipped)
+    assert info.startswith("skipped=29 _aiven[avn_wal_sender_stop_timeout,") and "'" not in info
+    assert "10s" not in info and "read committed" not in info and "none" not in info
+
+
+def test_the_packaged_roles_sql_is_the_unfiltered_dump():
+    src = SCRIPT.read_text(encoding="utf-8")
+    run = src[src.index("# ---- 3. isolated restore"):src.index("# ---- 4. verification")]
+    assert "restore_test_roles_sql(roles_sql.read_text(" in run
+    assert 'apply_roles_sql(bin_("psql"), restore_roles_path,' in run and "roles_sql.write" not in src
+    pkg = src[src.index("# ---- 5. package"):]
+    assert '"roles.sql": roles_sql,' in pkg and '"roles.sql": sha256_file(roles_sql)' in pkg
+    assert "restore_roles_path" not in pkg and '"restore_test_skipped_role_settings": skipped_settings' in pkg
+    # The comparison uses the symmetric view on both sides; the manifest keeps the complete one.
+    assert 'dst_globals["roles_compared"] == src_globals["roles_compared"]' in run
+    assert '"roles": src_globals["roles"],' in pkg
+
+
+def _one(mod, text):
+    return mod.restore_test_roles_sql(text)
+
+
+@pytest.mark.parametrize("statement", [
+    "ALTER ROLE _aiven_x SET avn_wal_sender_stop_timeout TO '10s';",            # look-alike, not a prefix match
+    "ALTER ROLE _avnadmin_evil SET \"pgaudit.log\" TO 'none';",
+    "ALTER ROLE _aiven_repl2 SET \"pgaudit.log\" TO 'none';",
+    "ALTER ROLE \"_aiven\" SET \"pgaudit.log\" TO 'none';",                     # not pg_dumpall's spelling
+    "ALTER ROLE \"_aiven \" SET \"pgaudit.log\" TO 'none';",
+    "ALTER ROLE \"_AIVEN\" SET \"pgaudit.log\" TO 'none';",
+    "ALTER ROLE avnadmin SET \"pgaudit.log\" TO 'none';",                       # application role
+    "ALTER ROLE avnadmin_group SET avn_wal_sender_stop_timeout TO '10s';",
+    "ALTER ROLE _aiven_rewind SET avn_wal_sender_stop_timeout TO '10s';",       # managed, no observed setting
+    "ALTER ROLE _avnadmin_monitor SET avn_wal_sender_stop_timeout TO '10s';",   # param not observed there
+    "ALTER ROLE _aiven SET search_path TO 'evil';",                             # param not allowlisted
+    "ALTER ROLE _aiven SET \"avn_wal_sender_stop_timeout\" TO '10s';",          # not pg_dumpall's spelling
+    "ALTER ROLE _aiven SET \"pgaudit.log.x\" TO 'none';",
+    "ALTER ROLE _aiven IN DATABASE defaultdb SET \"pgaudit.log\" TO 'none';",   # IN DATABASE variant
+    "ALTER ROLE _aiven RESET \"pgaudit.log\";",
+    "ALTER ROLE _aiven WITH SUPERUSER;",
+])
+def test_anything_but_an_exact_allowlisted_pair_is_replayed_unchanged(statement):
+    mod = _module()
+    text = f"CREATE ROLE x;\n{statement}\nGRANT a TO b;\n"
+    assert _one(mod, text) == (text, [])
+
+
+def test_a_value_with_semicolons_and_newlines_never_moves_a_statement_boundary():
+    mod = _module()
+    # An application role's value that LOOKS like a managed statement: one statement, replayed.
+    app = ("ALTER ROLE app SET \"pgaudit.log\" TO 'x;\nALTER ROLE _aiven SET \"pgaudit.log\" TO ''y'';\n';\n"
+           "ALTER ROLE app2 SET application_name TO E'a\\';\\nALTER ROLE postgres SET \"pgaudit.log\" TO ''z'';';\n")
+    assert _one(mod, app) == (app, [])
+    # A managed statement whose value hides another statement: only that one statement goes.
+    managed = ("ALTER ROLE _aiven SET \"pgaudit.log\" TO 'a;\nALTER ROLE app SET work_mem TO ''1MB'';';\n"
+               "ALTER ROLE app SET work_mem TO '2MB';\n")
+    assert _one(mod, managed) == ("ALTER ROLE app SET work_mem TO '2MB';\n", ["_aiven pgaudit.log"])
+    # Two statements on one line: each is judged on its own.
+    line = "ALTER ROLE _aiven SET \"pgaudit.log\" TO 'none'; ALTER ROLE app SET \"pgaudit.log\" TO 'none';\n"
+    assert _one(mod, line) == (" ALTER ROLE app SET \"pgaudit.log\" TO 'none';\n", ["_aiven pgaudit.log"])
+
+
+def test_quoted_identifiers_with_quotes_and_semicolons_are_kept_intact():
+    mod = _module()
+    text = ('CREATE ROLE "we;ird\'""name";\n'
+            'ALTER ROLE "we;ird\'""name" SET "pgaudit.log" TO \'none\';\n'
+            'GRANT "_aiven" TO "we;ird\'""name" GRANTED BY postgres;\n'
+            'ALTER ROLE postgres SET "pg_stat_plans.track" TO \'none\';\n'
+            '-- a comment; with ALTER ROLE _aiven SET "pgaudit.log" TO \'x\';\n')
+    filtered, skipped = _one(mod, text)
+    assert skipped == ["postgres pg_stat_plans.track"]
+    assert filtered == text.replace('ALTER ROLE postgres SET "pg_stat_plans.track" TO \'none\';\n', "")
+
+
+@pytest.mark.parametrize("text", [
+    "ALTER ROLE app SET x TO $$a$$;\n",
+    "ALTER ROLE app SET x TO 'a' /* c */;\n",
+    "ALTER ROLE app SET x TO 'unterminated;\n",
+    'ALTER ROLE "unterminated SET x TO \'a\';\n',
+    "ALTER ROLE app SET x TO 'a'\n",                     # no final semicolon
+    "ALTER ROLE app SET x TO 'a' \\gexec\n",             # a backslash outside a literal
+    "  \\restrict key\n",                                # a meta command not at a line start
+    "ALTER ROLE _aiven SET \"pgaudit.log\" TO 'a';\nALTER ROLE _aiven SET \"pgaudit.log\" TO 'b';\n",  # duplicate
+])
+def test_anything_the_lexer_cannot_classify_fails_closed(text):
+    mod = _module()
+    with pytest.raises(mod.BackupError) as exc:
+        mod.restore_test_roles_sql(text)
+    assert exc.value.code == "ROLES_SQL_UNPARSEABLE"
+
+
+def test_unknown_settings_still_fail_with_invalid_setting():
+    mod = _module()
+    stderr = 'psql:roles.sql:43: ERROR:  unrecognized configuration parameter "avn_wal_sender_stop_timeout"'
+    assert mod.error_class(stderr) == "INVALID_SETTING"
+
+
+def test_roles_comparison_sql_filters_only_the_given_pairs():
+    mod = _module()
+    assert "%(skip)s::pg_catalog.text[]" in mod.ROLES_SQL and mod.ROLES_SQL.count("%(skip)s") == 1
+    assert "pg_catalog.split_part(u.c, '='::pg_catalog.text, 1)" in mod.ROLES_SQL
+    assert "WITH ORDINALITY" in mod.ROLES_SQL and "ORDER BY u.n" in mod.ROLES_SQL
+
+
+def test_runbook_explains_the_managed_roles_restore_fix():
+    text = RUNBOOK.read_text(encoding="utf-8")
+    for needle in ("FCB-WP009-AIVEN-MANAGED-ROLES-RESTORE-FIX", "AIVEN_MANAGED_ROLE_SETTINGS", "avn_wal_sender_stop_timeout",
+                   "identico byte per byte", "roles_sql_aiven_managed_settings_skipped_in_restore_test",
+                   "restore_test_skipped_role_settings", "ROLES_SQL_UNPARSEABLE", "Limiti della verifica dei ruoli gestiti",
+                   "Non eseguire `roles.sql` per intero", "roles_local.sql", "_aiven_x"):
+        assert needle in text, needle
