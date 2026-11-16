@@ -119,7 +119,9 @@ OK_CHAIN = {"chain_id": 4162, "usdc_decimals": 6}
     ([row()], 0, "PARTIAL", "EXPLANATION_UNVERIFIED"),
     ([row()], 9, "PARTIAL", "DIFFERENCE_NOT_EXPLAINED_BY_DOCUMENTED_FIELDS"),          # explained, never "anomaly"
     # Reason renamed by the review of 53a5b84 (P3-8, declared): rows are selected by the documented escrow.
-    ([row(escrowAddress="0x" + "11" * 20)], 14140000, "FAIL", "NO_SINGLE_USDC_ROW_ON_THE_DOCUMENTED_ESCROW"),
+    # Changed by the review of 796fce2 (P3-4c, declared): rows are keyed by (token, escrow), a row only on another
+    # escrow is legal: no row for the documented escrow -> PARTIAL, not FAIL.
+    ([row(escrowAddress="0x" + "11" * 20)], 14140000, "PARTIAL", "NO_USDC_ROW_FOR_THE_DOCUMENTED_ESCROW"),
     ([row(wallet="0x" + "22" * 20)], 14140000, "FAIL", "BALANCE_ROW_WALLET_IS_NOT_THE_PROXY"),
     ([], 0, "EMPTY_VALID", "NO_USDC_ROW"),
     ([row(tokenAddress="0x" + "33" * 20)], 0, "PARTIAL", "NO_ROW_FOR_THE_DOCUMENTED_USDC"),
@@ -253,3 +255,43 @@ def test_review_53a5b84_p3_4_junk_levels_are_never_equal(levels):
     out = rc.compare_book_versions([{"version": V1, "outcomeOne": levels, "outcomeTwo": []}],
                                    {"version": V1, "outcomeOne": levels, "outcomeTwo": []})
     assert (out["outcome"], out["reason"]) == ("PARTIAL", "LEVELS_MISSING")
+
+
+# ---------------------------------------------------------------- review of 796fce2 (SAFE, P3 hardening)
+def test_review_796fce2_p3_1_socket_trades_without_id_are_never_pass():
+    out = rc.compare_trades(["t1", None, None, None], ["t1"], rest_complete=True)
+    assert (out["outcome"], out["reason"], out["malformed"]) == ("PARTIAL", "WS_TRADE_WITHOUT_ID", 3)
+    out = rc.compare_trades(["t1"], ["t1"], rest_complete=True, ws_publications=4)
+    assert out["outcome"] == "PARTIAL"
+
+
+@pytest.mark.parametrize("replayed, reason", [
+    ([{"offset": 11, "message_id": "z"}], "OFFSETS_OUT_OF_ORDER"),         # new id at an old offset
+    ([{"offset": 12, "message_id": "m10"}], "MESSAGE_ID_WITH_TWO_OFFSETS"),  # known id, other offset
+])
+def test_review_796fce2_p3_2_inconsistent_replay_is_fail_not_duplicates(replayed, reason):
+    out = rc.analyze_recovery(CH, before=pubs(10, 11), resubscribe=REC, replayed=replayed, after=[])
+    assert (out["outcome"], out["reason"]) == ("FAIL", reason)
+
+
+def test_review_796fce2_p3_3_books_of_another_market_fail():
+    assert rc.analyze_book_channel([_book(V1, m="0xother")], market_hash="0xab")["reason"] == "BOOK_OF_ANOTHER_MARKET"
+    out = rc.compare_book_versions([{"version": V1, "marketHash": "0xother"}], {"version": V2}, market_hash="0xab")
+    assert (out["outcome"], out["reason"]) == ("FAIL", "BOOK_OF_ANOTHER_MARKET")
+    rest_other = rc.compare_book_versions([{"version": V1, "marketHash": "0xab"}],
+                                          {"version": V2, "marketHash": "0xother"}, market_hash="0xab")
+    assert rest_other["outcome"] == "FAIL"
+    no_echo = rc.compare_book_versions([{"version": V1, "marketHash": "0xab"}], {"version": V2}, market_hash="0xab")
+    assert no_echo["outcome"] == "PASS"                                     # REST echo checked only if present
+
+
+@pytest.mark.parametrize("onchain, outcome, reason", [
+    ({"proxy_usdc": 100, "escrow_usdc": 0}, "PARTIAL", "PROXY_TOKEN_EQUALS_AVAILABLE_ESCROWED_UNVERIFIED"),   # 4a
+    ({"proxy_usdc": 100, "escrow_usdc": 50}, "PASS", "PROXY_TOKEN_EQUALS_AVAILABLE"),
+    ({"proxy_usdc": -1, "escrow_usdc": 50}, "FAIL", "ONCHAIN_AMOUNT_INVALID"),                              # 4b
+    ({"proxy_usdc": True, "escrow_usdc": 50}, "FAIL", "ONCHAIN_AMOUNT_INVALID"),
+])
+def test_review_796fce2_p3_4_balance_hardening(onchain, outcome, reason):
+    out = rc.classify_balances(api_rows=[row(available="100", escrowed="50")], proxy=PROXY, eoa=None,
+                               onchain={**OK_CHAIN, **onchain})
+    assert (out["outcome"], out["reason"]) == (outcome, reason)

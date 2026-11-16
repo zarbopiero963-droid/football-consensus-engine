@@ -685,7 +685,7 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
                         error_code=sub_res.get("error_code"))
                 continue
             out = (rcx.analyze_channel(first["pubs"][ch]) if rcx.requires_message_id(ch)
-                   else rcx.analyze_book_channel(first["pubs"][ch]))   # book: by version (review 53a5b84 P3-3)
+                   else rcx.analyze_book_channel(first["pubs"][ch], market_hash=market_hash))   # book: by version (review 53a5b84 P3-3)
             rec.add(f"realtime_stream_integrity {label}", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
         before = first["pubs"][trades_ch]
     elif token and "realtime_stream_integrity" not in {r["test"] for r in rec.rows}:
@@ -732,7 +732,7 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
             complete = not tape.get("nextKey") or (oldest is not None and oldest <= window_start.isoformat())
             ws_ids = [((p["data"] or {}).get("trade") or {}).get("tradeId") for p in before
                       if isinstance(p["data"], dict)]
-            out = rcx.compare_trades(ws_ids, rest_ids, rest_complete=complete)
+            out = rcx.compare_trades(ws_ids, rest_ids, rest_complete=complete, ws_publications=len(before))
             rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
     except Exception as exc:
         rec.add("rest_vs_realtime trades (tradeId)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)
@@ -740,7 +740,7 @@ async def consistency_probe(rec: Recorder, api_key: str, market_hash: str | None
         try:
             snap = await _rest_get("/orderbook-v3/snapshot/market", {"marketHash": market_hash}, api_key)
             books = [p["data"] for p in first["pubs"][book_ch] if isinstance(p["data"], dict)]
-            out = rcx.compare_book_versions(books, snap if isinstance(snap, dict) else None)
+            out = rcx.compare_book_versions(books, snap if isinstance(snap, dict) else None, market_hash=market_hash)
             rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", out.pop("outcome"), detail=out)
         except Exception as exc:
             rec.add("rest_vs_realtime orderbook (version)", "REAL_CONSISTENCY", "FAIL", error_type=type(exc).__name__)

@@ -116,6 +116,14 @@ def analyze_recovery(channel: str, *, before: Sequence[Mapping[str, Any]], resub
         return {"outcome": "NOT_TESTED", "reason": "RECOVERED_NOTHING_DELIVERED_AFTER_RECONNECT", "replayed": 0}
     if first_next is None:
         return {"outcome": "PARTIAL", "reason": "NO_OFFSET_AFTER_RECONNECT", "replayed": len(replayed)}
+    offsets_by_id: dict[str, set[int]] = {}
+    for p in [*before, *replayed, *after]:
+        if isinstance(p.get("message_id"), str) and type(p.get("offset")) is int:
+            offsets_by_id.setdefault(p["message_id"], set()).add(p["offset"])
+    if any(len(v) > 1 for v in offsets_by_id.values()):
+        return {"outcome": "FAIL", "reason": "MESSAGE_ID_WITH_TWO_OFFSETS", "replayed": len(replayed)}  # P3-2
+    if stream["out_of_order"]:
+        return {"outcome": "FAIL", "reason": "OFFSETS_OUT_OF_ORDER", "replayed": len(replayed)}
     seen_before = {p.get("message_id") for p in before}
     fresh = [p["offset"] for p in [*replayed, *after]
              if type(p.get("offset")) is int and p.get("message_id") not in seen_before and p["offset"] > last_before]
@@ -137,7 +145,7 @@ def analyze_recovery(channel: str, *, before: Sequence[Mapping[str, Any]], resub
             "first_offset_after": first_next}
 
 
-def analyze_book_channel(pubs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def analyze_book_channel(pubs: Sequence[Mapping[str, Any]], *, market_hash: str | None = None) -> dict[str, Any]:
     """Book channels (orderbook_v3 / orderbook_v3_event): each publication is the full book of one market with a
     per-market `version`; a client keeps a publication only when its version is strictly greater, as strings
     (book-versioning). Duplicates and older versions are legal at-least-once effects: counted, never a FAIL
@@ -151,22 +159,30 @@ def analyze_book_channel(pubs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         v, m = d.get("version"), d.get("marketHash")
         if not isinstance(v, str) or _VERSION.fullmatch(v) is None or not isinstance(m, str):
             return {"outcome": "FAIL", "reason": "BOOK_VERSION_OR_MARKET_MALFORMED", "publications": len(pubs)}
+        if market_hash is not None and m.lower() != market_hash.lower():
+            return {"outcome": "FAIL", "reason": "BOOK_OF_ANOTHER_MARKET", "publications": len(pubs)}  # P3-3
         if m not in latest or v > latest[m]:
             latest[m], applied = v, applied + 1
         else:
             ignored += 1
-    return {"outcome": "PASS", "reason": "VERSIONS_APPLIED_STRICTLY_INCREASING", "publications": len(pubs),
+    return {"outcome": "PASS", "reason": "WELL_FORMED_VERSIONED_BOOKS", "publications": len(pubs),
             "applied": applied, "ignored_not_newer": ignored, "markets": len(latest)}
 
 
 # ---------------------------------------------------------------- REST vs realtime, same identifiers
-def compare_trades(ws_trade_ids: Iterable[str], rest_trade_ids: Iterable[str], *, rest_complete: bool) -> dict:
+def compare_trades(ws_trade_ids: Iterable[str], rest_trade_ids: Iterable[str], *, rest_complete: bool,
+                   ws_publications: int | None = None) -> dict:
     """recent_trades_v3:global vs GET /trades-v3/public read AFTER the listen window. The OpenAPI documents the
     REST tape as LOCKED bets only (taker side), and does not say when the channel publishes: a socket trade still
     MATCHED (or later FAILED) can be absent from REST. A miss is therefore PARTIAL, never FAIL (review 9729fe1 P2,
     DOCS_UNVERIFIED timing); PASS needs every socket tradeId on REST."""
-    ws = [t for t in ws_trade_ids if isinstance(t, str) and t]
+    raw = list(ws_trade_ids)
+    ws = [t for t in raw if isinstance(t, str) and t]
     rest = {t for t in rest_trade_ids if isinstance(t, str) and t}
+    malformed = (len(raw) - len(ws)) + max(0, (ws_publications or 0) - len(raw))
+    if malformed:
+        # A socket trade without tradeId is incomplete evidence: never PASS (review 796fce2 P3-1).
+        return {"outcome": "PARTIAL", "reason": "WS_TRADE_WITHOUT_ID", "ws": len(set(ws)), "malformed": malformed}
     if not ws:
         return {"outcome": "NOT_TESTED", "reason": "NO_TRADE_ON_THE_SOCKET_IN_WINDOW", "ws": 0}
     missing = sorted(set(ws) - rest)
@@ -182,13 +198,18 @@ def _version_key(v: Any) -> str | None:
     return v if isinstance(v, str) and _VERSION.fullmatch(v) else None
 
 
-def compare_book_versions(ws_books: Sequence[Mapping[str, Any]], rest_book: Mapping[str, Any] | None) -> dict:
+def compare_book_versions(ws_books: Sequence[Mapping[str, Any]], rest_book: Mapping[str, Any] | None, *,
+                          market_hash: str | None = None) -> dict:
     """orderbook_v3(_event) publications for ONE market vs GET /orderbook-v3/snapshot/market read after them.
     Per-market versions must strictly increase on the socket (a non-increasing one must be ignored by a client) and
     the REST snapshot must not be older than the last socket version. Equal versions must carry the same levels."""
     versions = [_version_key(b.get("version")) for b in ws_books]
     if not ws_books:
         return {"outcome": "NOT_TESTED", "reason": "NO_BOOK_PUBLICATION_IN_WINDOW"}
+    echoed = [rest_book] if rest_book and "marketHash" in rest_book else []   # REST echo checked only if present
+    if market_hash is not None and any(str(b.get("marketHash", "")).lower() != market_hash.lower()
+                                       for b in [*ws_books, *echoed]):
+        return {"outcome": "FAIL", "reason": "BOOK_OF_ANOTHER_MARKET"}                           # P3-3
     if None in versions:
         return {"outcome": "FAIL", "reason": "BOOK_VERSION_MALFORMED"}
     stale = sum(1 for a, b in zip(versions, versions[1:]) if b <= a)
@@ -250,8 +271,13 @@ def classify_balances(*, api_rows: Sequence[Mapping[str, Any]] | None, proxy: st
                 "reason": "NO_USDC_ROW" if not api_rows else "NO_ROW_FOR_THE_DOCUMENTED_USDC"}
     # Rows are keyed by (token, escrow): pick the documented escrow, keep the others as information (P3-8).
     mine = [x for x in rows if str(x.get("escrowAddress", "")).lower() == MAINNET["escrow"]]
+    if not mine:
+        return {"outcome": "PARTIAL", "reason": "NO_USDC_ROW_FOR_THE_DOCUMENTED_ESCROW"}           # P3-4c
     if len(mine) != 1:
         return {"outcome": "FAIL", "reason": "NO_SINGLE_USDC_ROW_ON_THE_DOCUMENTED_ESCROW"}
+    for v in (proxy_usdc, escrow_usdc):
+        if v is not None and (type(v) is not int or v < 0):
+            return {"outcome": "FAIL", "reason": "ONCHAIN_AMOUNT_INVALID"}                          # P3-4b
     other_rows = len(rows) - 1
     r = mine[0]
     if str(r.get("wallet", "")).lower() != proxy.lower():
@@ -278,6 +304,9 @@ def classify_balances(*, api_rows: Sequence[Mapping[str, Any]] | None, proxy: st
         relation = "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING"
     else:
         relation = "DIFFERENT"
+    if relation in ("PROXY_TOKEN_EQUALS_AVAILABLE", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING") and escrowed > 0 \
+            and not (type(escrow_usdc) is int and escrow_usdc >= escrowed):
+        relation += "_ESCROWED_UNVERIFIED"   # escrowed collateral not covered by the escrow read (P3-4a)
     explained = relation in ("PROXY_TOKEN_EQUALS_AVAILABLE", "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_ESCROWED",
                              "PROXY_TOKEN_EQUALS_AVAILABLE_PLUS_PENDING")
     return {"outcome": "PASS" if explained else "PARTIAL",
