@@ -472,7 +472,10 @@ def test_signer_never_imports_bridge_or_network_libraries():
 
 # The only `send` methods allowed in signer/: the abstract RestSender Protocol and the adapter that
 # delegates to an injected RestSender. No concrete sender (I/O) exists in the repository.
-_SEND_ALLOWED = {("rest_adapter.py", "RestSender"), ("rest_adapter.py", "OfficialRestAdapter")}
+# Intentional change (S8, issue #187, owner-reserved merge §2.6): the first concrete sender, TorontoRestSender, is
+# allowed ONLY in signer/toronto_sender.py and only as pinned below (test_toronto_sender_is_the_only_concrete_sender).
+_SEND_ALLOWED = {("rest_adapter.py", "RestSender"), ("rest_adapter.py", "OfficialRestAdapter"),
+                 ("toronto_sender.py", "TorontoRestSender")}
 
 
 def test_no_concrete_sender_class_in_signer():
@@ -498,6 +501,25 @@ def test_no_concrete_sender_class_in_signer():
         c in ("self._sender.send", "isinstance", "type", "RestResponse") for c in calls), calls
 
 
+def test_toronto_sender_is_the_only_concrete_sender_and_cannot_reach_mainnet():
+    """S8 guard: the sender's send() only calls the injected transport and the guards; the only base URL is the
+    pinned Toronto one; writes stay off unless the constructor receives writes_enabled=True."""
+    p = ROOT / "signer" / "toronto_sender.py"
+    src = p.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    cls = next(c for c in ast.walk(tree) if isinstance(c, ast.ClassDef) and c.name == "TorontoRestSender")
+    (send,) = [f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "send"]
+    calls = {ast.unparse(c.func) for c in ast.walk(send) if isinstance(c, ast.Call)}
+    assert calls <= {"_route", "TorontoGuardError", "_no_mainnet", "_check_body", "self._transport", "tuple",
+                     "SenderTimeout", "type", "RestResponse"}, calls
+    urls = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and n.value.startswith("http")}
+    assert urls == {"https://api.toronto.sx.bet"}, urls
+    init = next(f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "__init__")
+    default = {a.arg: d for a, d in zip(init.args.kwonlyargs, init.args.kw_defaults)}["writes_enabled"]
+    assert isinstance(default, ast.Constant) and default.value is False
+
+
 def test_no_submission_code_in_signer_or_sxbet_module():
     # Intentional change (PR feat/sxbet-signer-adapter-cancel-ledger): signer/rest_adapter.py and
     # signer/cancellation.py are request BUILDERS for the documented POST /orders-v3 and DELETE /orders-v3*
@@ -509,6 +531,10 @@ def test_no_submission_code_in_signer_or_sxbet_module():
     # exempt from the "heartbeat" word ONLY; every other needle still applies to it, and it must not build or
     # send any request at all (stricter than the builders): no RestRequest(, no .send(, no POST/DELETE.
     builders = {ROOT / "signer" / "rest_adapter.py", ROOT / "signer" / "cancellation.py"}
+    # Intentional change (S8): signer/toronto_sender.py names "POST"/"DELETE" only in its route ALLOWLIST. It
+    # builds no request (no RestRequest() and calls no client library: the transport is injected; every other
+    # needle still applies, including "heartbeat").
+    route_table = {ROOT / "signer" / "toronto_sender.py"}
     policy_only = {ROOT / "signer" / "monitor.py"}
     files = list((ROOT / "signer").rglob("*.py")) + list((ROOT / "bridge" / "sxbet").rglob("*.py"))
     for p in files:
@@ -518,7 +544,9 @@ def test_no_submission_code_in_signer_or_sxbet_module():
             needles.append("heartbeat")
         else:
             needles += ["RestRequest(", ".send(", "submit_orders(", "send_heartbeat"]
-        if p not in builders:
+        if p in route_table:
+            needles += ["RestRequest(", "'POST'", "'DELETE'"]
+        elif p not in builders:
             needles += ['"POST"', '"DELETE"', "'POST'", "'DELETE'"]
         for needle in needles:
             assert needle not in src, (p, needle)
