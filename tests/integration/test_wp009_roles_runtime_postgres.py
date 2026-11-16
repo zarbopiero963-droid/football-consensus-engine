@@ -127,7 +127,7 @@ def _guard_from(step_prefix, dbname):
     wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     step = next(s for s in wf["jobs"]["roles"]["steps"] if s.get("name", "").startswith(step_prefix))
     line = next(l.strip() for l in step["run"].splitlines() if l.strip().startswith('GUARD="DO'))
-    guard = line[len('GUARD="'):-1].replace("\\$", "$")
+    guard = line[len('GUARD="'):-1].replace("\\$", "$").replace('\\"', '"')  # bash double-quote escapes (R1 embeds "char")
     assert guard.count(_TLS_PG18) == 1
     return guard.replace(_TLS_PG18, "").replace("$EXPECTED_DB", dbname)
 

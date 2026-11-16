@@ -449,7 +449,7 @@ def _workflow_guard():
     wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     restore = next(s for s in wf["jobs"]["restore"]["steps"] if "Restore bridge" in s.get("name", ""))["run"]
     line = next(l.strip() for l in restore.splitlines() if l.strip().startswith('GUARD="DO'))
-    return line[len('GUARD="'):-1].replace("\\$", "$")
+    return line[len('GUARD="'):-1].replace("\\$", "$").replace('\\"', '"')  # bash double-quote escapes (R1 embeds "char")
 
 
 def test_the_workflow_target_guard_itself(schema):
@@ -1048,40 +1048,53 @@ def test_the_post_guard_needs_the_state_recorded_by_the_guard(schema):
     assert _nothing_written(schema)
 
 
-# ---------------------------------------------------------------- PATH A2 (owner GO): fcb_cert_runner
-# The ONLY change PATH A2 makes to defaultdb is the exact quota-coordinator grant to the plain role
-# fcb_cert_runner (sql/aiven/apifootball_cert_path_a_roles.sql + _coordinator_grants.sql) and its
-# explicit USAGE on public (not part of the restore fingerprint). The restore precheck, its in-
-# transaction guards and the catalog fingerprint accept exactly that grant (the fingerprint renders it
-# as no ACL), and keep refusing every other privilege, owner change or role shape.
+# ---------------------------------------------------------------- PATH A2 R1 (FCB-A2-R1-WP009-DECISIONS)
+# PATH A2 variant R1 adds to defaultdb two roles and the schema fcb_cert_quota (four SECURITY DEFINER
+# functions, steps 1a/1b): fcb_cert_runner holds NO privilege on any relation of public and no entry on
+# schema public. The restore precheck, its in-transaction guards, the workflow $GUARD and the catalog
+# fingerprint accept fcb_cert_quota ONLY in the EXACT state of sql/aiven/apifootball_cert_quota_state.sql;
+# the earlier nine-privilege runner exception is gone (intentional change: those tests now prove refusal).
 
 A2_ROLES = ("fcb_cert_runner", "fcb_cert_owner")
+R1_FILES = ("apifootball_cert_path_a_quota_schema.sql", "apifootball_cert_path_a_quota_functions.sql",
+            "apifootball_cert_path_a_quota_assert.sql")
+
+
+def _a2_sql(name, owner):
+    sql = (AIVEN / name).read_text(encoding="utf-8")
+    assert sql.count("'defaultdb'::pg_catalog.name") == 1, name
+    return sql.replace("'defaultdb'::pg_catalog.name", f"'{owner.dbname}'::pg_catalog.name")
 
 
 def _a2_install_roles(schema_name, owner):
-    """The real A2 step 1 file, run by the database owner (given CREATEROLE like Aiven's avnadmin);
-    only the database-name pin is adapted to this throwaway database."""
+    """The real A2 step 1, 1a and 1b files, run by the database owner (given CREATEROLE like Aiven's
+    avnadmin; it owns the restored quota tables, the pre-WP-009 shape of this module); only the
+    database-name pin is adapted to this throwaway database."""
     import sys
     sys.path.insert(0, str(ROOT / "scripts"))
     from fcb_db_roles import scram_verifier
-    sql = (AIVEN / "apifootball_cert_path_a_roles.sql").read_text(encoding="utf-8")
-    assert sql.count("'defaultdb'::pg_catalog.name") == 1
-    sql = sql.replace("'defaultdb'::pg_catalog.name", f"'{owner.dbname}'::pg_catalog.name")
     _exec(schema_name.dsn, SQL("ALTER ROLE {} CREATEROLE CREATEDB BYPASSRLS").format(Identifier(owner.role)))  # Aiven shape
     with psycopg.connect(owner.dsn, options="-c search_path=public -c createrole_self_grant=inherit,set") as conn:
         conn.execute("SELECT pg_catalog.set_config('fcb_cert.runner_verifier', %s, true)",
                      (scram_verifier("a2-" + uuid.uuid4().hex + uuid.uuid4().hex),))
-        conn.execute(sql)
-        # step 1b (post-WP-009 split): the coordinator grants AS the tables' owner, here the database
-        # owner (pre-WP-009 shape of this module), then the exact-set assertion
-        for name in ("apifootball_cert_path_a_coordinator_grants.sql", "apifootball_cert_path_a_coordinator_assert.sql"):
-            step = (AIVEN / name).read_text(encoding="utf-8")
-            assert step.count("'defaultdb'::pg_catalog.name") == 1
-            conn.execute(step.replace("'defaultdb'::pg_catalog.name", f"'{owner.dbname}'::pg_catalog.name"))
+        conn.execute(_a2_sql("apifootball_cert_path_a_roles.sql", owner))
+    for name in R1_FILES[:1]:
+        with psycopg.connect(owner.dsn) as conn:
+            conn.execute(_a2_sql(name, owner))
+    with psycopg.connect(owner.dsn) as conn:  # step 1b + assert, one transaction, AS the tables' owner
+        for name in R1_FILES[1:]:
+            conn.execute(_a2_sql(name, owner))
+
+
+def _cert_quota_state(target):
+    rc, out, err = _psql(target, "-f", str(AIVEN / "apifootball_cert_quota_state.sql"))
+    assert rc == 0, err
+    return out
 
 
 def _a2_drop_roles(schema_name):
     with psycopg.connect(schema_name.dsn, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA IF EXISTS fcb_cert_quota CASCADE")
         for role in (*A2_ROLES, "fcbpa_other", "fcbpa_group"):
             if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
                 conn.execute(SQL("DROP OWNED BY {}").format(Identifier(role)))
@@ -1096,7 +1109,8 @@ def a2_installed(owned):
             pytest.skip("PATH A2 roles already exist on this server; not touching them")
     rc, _, err = _workflow_tx(owner)
     assert rc == 0, err
-    # WITHOUT the A2 installation: the restore behaves exactly as before
+    # WITHOUT the A2 installation (schema absent): the restore behaves exactly as before
+    assert _cert_quota_state(owner) == "ABSENT"
     assert _state(owner) == "BRIDGE_0001_0008" and _fingerprint(owner) == _clean_fingerprint()
     try:
         _a2_install_roles(schema_name, owner)
@@ -1105,55 +1119,88 @@ def a2_installed(owned):
         _a2_drop_roles(schema_name)
 
 
-def test_a2_after_install_the_restore_workflow_path_still_passes_and_changes_nothing(a2_installed):
-    schema_name, owner = a2_installed
+def _runner_acl_entries(schema_name):
     with psycopg.connect(schema_name.dsn) as conn:
-        assert conn.execute("SELECT count(*) AS n FROM pg_class c, LATERAL aclexplode(c.relacl) x "
-                            "WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchone()[0] == 8
+        return conn.execute(
+            "SELECT (SELECT count(*) FROM pg_class c, LATERAL aclexplode(c.relacl) x WHERE x.grantee = 'fcb_cert_runner'::regrole)"
+            " + (SELECT count(*) FROM pg_attribute a, LATERAL aclexplode(a.attacl) x WHERE x.grantee = 'fcb_cert_runner'::regrole)"
+            " + (SELECT count(*) FROM pg_namespace n, LATERAL aclexplode(n.nspacl) x WHERE n.nspname = 'public'"
+            "    AND x.grantee = 'fcb_cert_runner'::regrole)").fetchone()[0]
+
+
+def test_a2_r1_exact_install_passes_the_restore_workflow_path_and_changes_nothing(a2_installed):
+    schema_name, owner = a2_installed
+    assert _cert_quota_state(owner) == "EXACT"
+    assert _runner_acl_entries(schema_name) == 0  # no table, column or public-schema entry for the runner
     assert _state(owner) == "BRIDGE_0001_0008"
-    assert _fingerprint(owner) == _clean_fingerprint()  # the exact runner grant renders as no ACL
+    assert _fingerprint(owner) == _clean_fingerprint()  # public is untouched by R1
     if _major() == 18:
         assert _fingerprint(owner) == _pinned_fingerprint()  # the production pin still matches
     rows = _migration_rows(owner)
-    rc, _, err = _workflow_tx(owner)  # the production no-op restore, through the workflow's transaction
+    rc, _, err = _workflow_tx(owner)  # the production no-op restore, through the workflow's $GUARD + generated guards
     assert rc == 0, err
     assert _migration_rows(owner) == rows and _state(owner) == "BRIDGE_0001_0008"
-    with psycopg.connect(schema_name.dsn) as conn:  # and it keeps the runner grant as it was
-        assert conn.execute("SELECT count(*) AS n FROM pg_class c, LATERAL aclexplode(c.relacl) x "
-                            "WHERE x.grantee = 'fcb_cert_runner'::regrole").fetchone()[0] == 8
+    assert _cert_quota_state(owner) == "EXACT"
+    rc, _, err = _workflow_tx(owner, guard=False)  # the generated guards alone accept it too
+    assert rc == 0, err
 
 
-A2_TAMPER = {
-    "extra_table_privilege": ["GRANT TRUNCATE ON public.api_football_quota_counters TO fcb_cert_runner"],
-    "extra_column_privilege": ["GRANT UPDATE (window_kind) ON public.api_football_quota_counters TO fcb_cert_runner"],
-    "grant_option": ["REVOKE SELECT ON public.api_football_quota_leases FROM fcb_cert_runner",
-                     "GRANT SELECT ON public.api_football_quota_leases TO fcb_cert_runner WITH GRANT OPTION"],
-    "missing_privilege": ["REVOKE DELETE ON public.api_football_quota_attempts FROM fcb_cert_runner"],
-    "other_table": ["GRANT SELECT ON public.oauth_claude_dcr_clients TO fcb_cert_runner"],
-    "other_role": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT SELECT ON public.api_football_quota_counters TO fcbpa_other"],
-    "public_grant": ["GRANT SELECT ON public.api_football_quota_leases TO PUBLIC"],
+# Every drift of the R1 state, as the superuser (an attacker with the owner's or a third role's powers).
+R1_TAMPER = {
+    "extra_function": ["CREATE FUNCTION fcb_cert_quota.extra() RETURNS int LANGUAGE sql AS 'select 1'"],
+    "altered_body": ["CREATE OR REPLACE FUNCTION fcb_cert_quota.release(p_key_hash text, p_lease_id text) RETURNS void "
+                     "LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$BEGIN END$$"],
+    "security_invoker": ["ALTER FUNCTION fcb_cert_quota.reserve(text) SECURITY INVOKER"],
+    "search_path_missing": ["ALTER FUNCTION fcb_cert_quota.reserve(text) RESET search_path"],
+    "execute_public": ["GRANT EXECUTE ON FUNCTION fcb_cert_quota.snapshot(text) TO PUBLIC"],
+    "execute_other_grantee": ["CREATE ROLE fcbpa_other NOLOGIN",
+                              "GRANT EXECUTE ON FUNCTION fcb_cert_quota.reserve(text) TO fcbpa_other"],
+    "extra_object_in_schema": ["CREATE TABLE fcb_cert_quota.t (a int)"],
+    "schema_owner_change": ["CREATE ROLE fcbpa_other NOLOGIN", "ALTER SCHEMA fcb_cert_quota OWNER TO fcbpa_other"],
+    "function_owner_change": ["CREATE ROLE fcbpa_other NOLOGIN",
+                              "ALTER FUNCTION fcb_cert_quota.reserve(text) OWNER TO fcbpa_other"],
+    "runner_table_privilege": ["GRANT SELECT ON public.api_football_quota_counters TO fcb_cert_runner"],
+    "runner_column_privilege": ["GRANT UPDATE (used) ON public.api_football_quota_counters TO fcb_cert_runner"],
+    "runner_legacy_nine_privileges": [
+        "GRANT SELECT, INSERT ON public.api_football_quota_counters TO fcb_cert_runner",
+        "GRANT UPDATE (used) ON public.api_football_quota_counters TO fcb_cert_runner",
+        "GRANT SELECT, INSERT, DELETE ON public.api_football_quota_leases, public.api_football_quota_attempts TO fcb_cert_runner"],
+    "runner_schema_create": ["GRANT CREATE ON SCHEMA fcb_cert_quota TO fcb_cert_runner"],
     "runner_not_plain": ["ALTER ROLE fcb_cert_runner CREATEDB"],
     "runner_member": ["CREATE ROLE fcbpa_group NOLOGIN", "GRANT fcbpa_group TO fcb_cert_runner"],
-    "owner_change": ["ALTER TABLE public.api_football_quota_leases OWNER TO fcb_cert_runner"],
-    # review P3 F3: any role able to inherit from / act as the runner
-    "member_inherit": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT fcb_cert_runner TO fcbpa_other WITH INHERIT TRUE, SET FALSE"],
-    "member_set": ["CREATE ROLE fcbpa_other NOLOGIN", "GRANT fcb_cert_runner TO fcbpa_other WITH INHERIT FALSE, SET TRUE"],
 }
 
 
-@pytest.mark.parametrize("tamper", sorted(A2_TAMPER))
-def test_a2_anything_beyond_the_exact_runner_grant_is_still_refused(a2_installed, tamper):
+@pytest.mark.parametrize("tamper", sorted(R1_TAMPER))
+def test_a2_r1_any_drift_of_fcb_cert_quota_is_refused_by_precheck_and_guards(a2_installed, tamper):
     schema_name, owner = a2_installed
-    _exec(schema_name.dsn, *A2_TAMPER[tamper])
-    assert _state(owner).startswith("REFUSE_"), tamper
+    _exec(schema_name.dsn, *R1_TAMPER[tamper])
+    assert _cert_quota_state(owner) == "DRIFT", tamper
+    assert _state(owner) == "REFUSE_UNEXPECTED_SCHEMAS", tamper
     rows = _migration_rows(owner)
-    rc, _, _err = _workflow_tx(owner)
-    assert rc != 0 and _migration_rows(owner) == rows  # refused before commit: nothing written
+    rc, _, err = _workflow_tx(owner)  # the workflow's $GUARD refuses first
+    assert rc != 0 and "FCB_TARGET_GUARD_FAILED" in err and _migration_rows(owner) == rows, tamper
+    rc, _, err = _workflow_tx(owner, guard=False)  # the generated in-transaction session guard refuses too
+    assert rc != 0 and "FCB_RESTORE_SESSION_GUARD_FAILED" in err and _migration_rows(owner) == rows, tamper
 
 
-# Review #201 (0f6e1ce) F1: the A2 ACL exception compared NULL when the runner was absent or the
-# ACL empty, and NOT(NULL) let the row through (fail-open). Every case below must be REFUSE_*,
-# with and without the A2 installation. (superuser_steps, owner_steps)
+def test_a2_r1_a_foreign_schema_named_like_r1_but_empty_is_refused(owned):
+    """An fcb_cert_quota that is not the R1 state (here: empty, no runner) is just an unexpected schema."""
+    schema_name, owner = owned
+    rc, _, err = _workflow_tx(owner)
+    assert rc == 0, err
+    try:
+        _exec(owner.dsn, "CREATE SCHEMA fcb_cert_quota")
+        assert _cert_quota_state(owner) == "DRIFT"
+        assert _state(owner) == "REFUSE_UNEXPECTED_SCHEMAS"
+        rc, _, err = _workflow_tx(owner)
+        assert rc != 0 and "FCB_TARGET_GUARD_FAILED" in err
+    finally:
+        _exec(schema_name.dsn, "DROP SCHEMA IF EXISTS fcb_cert_quota CASCADE")
+
+
+# Review #201 (0f6e1ce) F1 (kept as regression after the exception's removal): every case below must be
+# REFUSE_*, with and without the A2 R1 installation. (superuser_steps, owner_steps)
 A2_FAIL_OPEN = {
     "column_grant_public": ((), ["GRANT UPDATE (used) ON public.api_football_quota_counters TO PUBLIC"]),
     "column_grant_other_role": (["CREATE ROLE fcbpa_other NOLOGIN"],
