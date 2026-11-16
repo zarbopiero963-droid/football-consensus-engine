@@ -271,3 +271,60 @@ def test_gateway_live_status_is_none_only_for_a_valid_flag(tmp_path):
     assert s.gw.live_status() is None
     s.clock.t += 10 ** 8                                   # far past the flag's expiry
     assert s.gw.live_status() == "LIVE_TRADING_FLAG_EXPIRED"
+
+
+# ---------------------------------------------------------------- review 25d43a2 fixes
+def test_p2_1_refused_cancel_reports_an_already_queued_identical_request(live):
+    s, q, t, w = live
+    kw = dict(owner_command="Cancel all my open orders", scope="ALL", idempotency_key="cancel-key-P5Z")
+    assert run(t["sxbet_order_request_cancel"](**kw))["status"] == "QUEUED"
+    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    c = run(t["sxbet_order_request_cancel"](**kw))
+    assert c["status"] == "REFUSED_BEFORE_QUEUE" and c["request_with_this_key_exists"] is True
+    assert len(q.requests) == 1
+
+
+def test_p3_1_refused_place_spends_no_provider_read(live):
+    s, q, t, w = live
+    w.signer_rows = [_row(kill_switch="ENGAGED")]
+    text, _ = s7.owner_text(s, "order-key-P5F")
+    out = s7.place(t, s, "order-key-P5F", text)
+    assert out["error"]["code"] == "KILL_SWITCH_ENGAGED" and out["network_calls_made"] == 0
+
+
+def test_p3_2_kill_switch_engaged_at_the_end_of_the_cycle_is_published_engaged():
+    from signer.status import status_from_cycle
+    assert status_from_cycle({"kill_switch_engaged": False, "consecutive_failures": 3,
+                              "kill_switch_engaged_now": "WORKER_REPEATED_FAILURES"}, None)["kill_switch"] == "ENGAGED"
+    assert status_from_cycle({"kill_switch_engaged": False, "consecutive_failures": 3,
+                              "kill_switch_engage_error": "OSError"}, None)["kill_switch"] == "UNKNOWN"
+
+
+def test_p3_3_health_is_consistent_with_the_mode(tmp_path):
+    s = Stack(tmp_path)
+    t, _ = _register(s, network="testnet", mode=tm.TradingMode.live_for("testnet", True))
+    h = run(t["sxbet_health"]())
+    assert h["mode"] == "LIVE_TRADING" and h["available_modes"]["LIVE_TRADING"] == "ENABLED_QUEUE_TO_ISOLATED_SIGNER"
+    assert h["live_trading"].startswith("UNAVAILABLE_IN_MCP") and h["order_requests"]["status"] == "ENABLED"
+    (tmp_path / "b").mkdir()
+    t2, _ = _register(Stack(tmp_path / "b"))
+    assert run(t2["sxbet_health"]())["available_modes"]["LIVE_TRADING"] == "UNAVAILABLE"
+
+
+@pytest.mark.parametrize("kw", [{"mode": "LIVE"}, {"status_max_age_seconds": 10 ** 6},
+                                {"status_max_age_seconds": 29}, {"status_max_age_seconds": True}])
+def test_p3_6_a_mode_built_in_code_is_validated(kw):
+    with pytest.raises(ValueError):
+        tm.TradingMode(**kw)
+
+
+def test_p3_7_malformed_status_shape_is_a_fixed_refusal(live):
+    s, q, t, w = live
+    w.signer_status = lambda network: {"not": "a list of rows"}
+    c = run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
+                                            idempotency_key="cancel-key-P5M"))
+    assert c["error"]["code"] in ("SIGNER_STATUS_UNAVAILABLE", "SIGNER_STATUS_AMBIGUOUS", "SIGNER_UNREACHABLE")
+    w.signer_status = lambda network: [object()]
+    c = run(t["sxbet_order_request_cancel"](owner_command="Cancel all my open orders", scope="ALL",
+                                            idempotency_key="cancel-key-P5N"))
+    assert c["error"]["code"] == "SIGNER_STATUS_UNAVAILABLE" and q.requests == []

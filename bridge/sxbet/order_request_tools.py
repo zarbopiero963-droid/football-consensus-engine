@@ -84,14 +84,14 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
         LIVE is not authorized or its last cycle failed. Early refusal only: the signer re-checks everything."""
         try:
             rows = await asyncio.to_thread(writer.signer_status, settings.network)
-        except Exception:
-            rows = None
-        code = tm.precheck(rows, max_age_seconds=mode.status_max_age_seconds, kind=kind)
+            code = tm.precheck(rows, max_age_seconds=mode.status_max_age_seconds, kind=kind)
+        except Exception:                      # unreadable or malformed status: fail closed, no message (§2.1)
+            code = "SIGNER_STATUS_UNAVAILABLE"
         if code is None:
             return None
         return {**out, "status": "REFUSED_BEFORE_QUEUE", "state": "NOT_QUEUED", "error": {"code": code},
                 "queued": False,
-                "note": "Nothing was written: the signer cannot take trading requests now. Do not retry in a loop; "
+                "note": "This call wrote nothing: the signer cannot take trading requests now. Do not retry in a loop; "
                         "report the code to the owner. Kill switch release and LIVE authorization are owner acts "
                         "outside the MCP."}
 
@@ -165,6 +165,11 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     "next_step": "If request_with_this_key_exists is true or null, read sxbet_order_request_status "
                                  "before anything else."}
 
+        # P5: the signer gate runs before the metadata read (review 25d43a2 P3-1: no provider slot spent on a
+        # refusal, and the refusal code is never hidden by a provider error).
+        gate = await signer_gate(out, "PLACE")
+        if gate is not None:
+            return await refused(gate)
         meta_raw, err = await get(out, "/metadata/obv3", {}, auth=False)
         if err:
             return await refused({**out, "status": "PROVIDER_ERROR", "error": err})
@@ -188,9 +193,6 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     "odds_rounding": {"requested": intent["requested_percentage_odds"],
                                       "rounded_down": intent["percentage_odds"]},
                     "command_text_sha256": payload["command"]["command_text_sha256"]})
-        refusal = await signer_gate(out, "PLACE")
-        if refusal is not None:
-            return await refused(refusal)
         return await enqueue(out, payload)
 
     @add
@@ -216,7 +218,16 @@ def register_order_request_tools(server: Any, settings: Any, client: Any, ors: o
                     "command_text_sha256": payload["command"]["command_text_sha256"]})
         refusal = await signer_gate(out, "CANCEL")
         if refusal is not None:
-            return refusal
+            # Review 25d43a2 P2-1: a previous identical call may already be queued (e.g. after
+            # QUEUE_WRITE_OUTCOME_UNKNOWN): never let this refusal read as "not queued".
+            rid = payload["request_id"]
+            try:
+                exists = await asyncio.to_thread(writer.request, rid) is not None
+            except Exception:
+                exists = None
+            return {**refusal, "request_id": rid, "request_with_this_key_exists": exists,
+                    "next_step": "If request_with_this_key_exists is true or null, read sxbet_order_request_status "
+                                 "before anything else."}
         return await enqueue(out, payload)
 
     @add

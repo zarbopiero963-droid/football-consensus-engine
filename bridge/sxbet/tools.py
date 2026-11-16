@@ -296,8 +296,13 @@ def register_sxbet_tools(server: Any, settings: Settings, *, client: SXBetReadCl
         """SX Bet module status; no provider call. Live trading is unavailable (read-only + simulation module)."""
         return {"provider": "SX_BET", "enabled": True, "network": settings.network,
                 "api_key_present": bool(settings.api_key), "mode": mode.mode,
-                "available_modes": {"READ_ONLY": "AVAILABLE", "SIMULATION": "AVAILABLE", "LIVE_TRADING": "UNAVAILABLE"},
-                "live_trading": "UNAVAILABLE: no isolated signer with signer-verified per-order confirmation (governance 2.6)",
+                "available_modes": {"READ_ONLY": "AVAILABLE", "SIMULATION": "AVAILABLE",
+                                    "LIVE_TRADING": ("ENABLED_QUEUE_TO_ISOLATED_SIGNER" if mode.live
+                                                     else "UNAVAILABLE")},
+                "live_trading": ("UNAVAILABLE_IN_MCP: the MCP never signs or sends; LIVE_TRADING mode only queues "
+                                 "owner commands for the isolated signer, which decides (governance 2.6)" if mode.live
+                                 else "UNAVAILABLE: no isolated signer with signer-verified per-order confirmation "
+                                      "(governance 2.6)"),
                 "write_tools": [], "simulation_tools": ["sxbet_simulate_order", "sxbet_hedge_simulation",
                                                          "sxbet_close_position_preview", "sxbet_rules_evaluate"],
                 "derived_read_tools": ["sxbet_order_status", "sxbet_positions_summary", "sxbet_exposure_pnl",

@@ -26,6 +26,11 @@ def status_from_cycle(report: Mapping[str, Any], live_code: str | None) -> dict[
     """Map a worker cycle report and the gateway's live_status() to the published row (fail closed)."""
     engaged = report.get("kill_switch_engaged")
     kill = "ENGAGED" if engaged is True else "DISENGAGED" if engaged is False else "UNKNOWN"
+    # The kill switch may have been engaged (or an engage attempted) at the END of this cycle (review 25d43a2 P3-2).
+    if "kill_switch_engaged_now" in report:
+        kill = "ENGAGED"
+    elif "kill_switch_engage_error" in report:
+        kill = "UNKNOWN"
     live_ok = live_code is None                       # only an explicit None means "verified now"
     return {"kill_switch": kill,
             "live_trading": "AUTHORIZED" if live_ok else "NOT_AUTHORIZED",

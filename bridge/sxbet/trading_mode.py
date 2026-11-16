@@ -42,6 +42,14 @@ class TradingMode:
     error: str | None = None
     status_max_age_seconds: int = DEFAULT_STATUS_MAX_AGE_SECONDS
 
+    def __post_init__(self) -> None:
+        # Also for a mode built in code (review 25d43a2 P3-6): no unknown mode, no out-of-bounds staleness.
+        if self.mode not in MODES:
+            raise ValueError("SXBET_MCP_MODE_INVALID")
+        if type(self.status_max_age_seconds) is not int or \
+                not _AGE_BOUNDS[0] <= self.status_max_age_seconds <= _AGE_BOUNDS[1]:
+            raise ValueError("SXBET_SIGNER_STATUS_MAX_AGE_INVALID")
+
     @property
     def live(self) -> bool:
         return self.mode == LIVE_TRADING
