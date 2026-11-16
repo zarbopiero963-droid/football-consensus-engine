@@ -88,6 +88,8 @@ def env(tmp_path_factory):
         for m in migrations.load_migrations()[:8]:
             (upto8 / m.name).write_bytes((migrations.BRIDGE.directory / m.name).read_bytes())
         migrations.apply_migrations(ns.admin, upto8)  # the administrator owns bridge 0001-0008
+        with ns.admin() as conn:  # production shape after WP-009 phase 1: PUBLIC has no USAGE on public
+            conn.execute("REVOKE USAGE ON SCHEMA public FROM PUBLIC")
         with ns.admin() as conn:
             conn.execute("INSERT INTO api_football_quota_counters VALUES ('seed', 'day', 1, 7)")
             conn.execute("INSERT INTO sxbet_rate_cooldowns SELECT * FROM sxbet_rate_cooldowns LIMIT 0")
@@ -241,10 +243,14 @@ def test_runner_cannot_touch_any_defaultdb_table_including_the_coordinator(env):
     assert len(tables) == 33 and COORDINATOR <= set(tables)
     refused = 0
     for t in tables:
-        for statement in (f"UPDATE {t} SET {{c}} = {{c}}", f"TRUNCATE {t}", f"ALTER TABLE {t} ADD COLUMN x int",
-                          f"DROP TABLE {t}", f"SELECT * FROM {t}", f"DELETE FROM {t}", f"INSERT INTO {t} DEFAULT VALUES"):
+        # FCB-A2-R1-WP009-DECISIONS: the runner has no USAGE on public (phase-1 shape), so names are
+        # qualified (an unqualified one would not even resolve) and lookups go through the catalog
+        for statement in (f"UPDATE public.{t} SET {{c}} = {{c}}", f"TRUNCATE public.{t}", f"ALTER TABLE public.{t} ADD COLUMN x int",
+                          f"DROP TABLE public.{t}", f"SELECT * FROM public.{t}", f"DELETE FROM public.{t}",
+                          f"INSERT INTO public.{t} DEFAULT VALUES"):
             with env.runner("defaultdb") as conn:
-                col = conn.execute("SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass AND attnum = 1",
+                col = conn.execute("SELECT a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+                                   "WHERE c.relnamespace = 'public'::regnamespace AND c.relname = %s AND a.attnum = 1",
                                    (t,)).fetchone()["attname"]
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     conn.execute(statement.format(c=col))
@@ -806,7 +812,8 @@ def test_a2_r1_the_runner_holds_no_table_privilege_only_execute_on_four_function
         state = conn.execute(batch.quota_state_sql()).fetchone()["state"]
     assert rows == 0 and cols == 0 and state == "EXACT"
     assert fns == sorted("fcb_cert_quota." + f.replace(", ", ",") for f in R1_FUNCTIONS)
-    assert schemas == ["fcb_cert_quota:USAGE", "public:USAGE"]
+    # FCB-A2-R1-WP009-DECISIONS (intentional change): no USAGE on public any more, only on fcb_cert_quota
+    assert schemas == ["fcb_cert_quota:USAGE"]
     assert _coordinator_cycle(env)["remaining_day"] == 0  # the full cycle works with exactly these
 
 
@@ -1166,7 +1173,7 @@ def test_a2_evidence_is_catalog_only_stable_and_free_of_secrets(env):
     assert sorted(l for l in first if l.startswith("quota_schema_grant ")) == [
         "quota_schema_grant fcb_cert_runner USAGE grantable=false", "quota_schema_grant owner CREATE grantable=false",
         "quota_schema_grant owner USAGE grantable=false"]
-    assert "schema_grant public USAGE grantable=false" in first
+    assert not any(l.startswith("schema_grant public ") for l in first)  # R1: no runner entry on public
     assert "ledger triggers_enabled=13 triggers=13" in first
 
 

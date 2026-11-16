@@ -1,14 +1,8 @@
 # PATH A2 — privilegi di `fcb_cert_runner` su `defaultdb` (variante R1, decisione owner D2)
 
-**Stato:** variante preparata su un branch isolato (`claude/a2-r1-quota-rpc`), derivato dalla PR #201. Nessuna installazione in produzione. L'applicazione richiede una nuova ratifica scritta dell'owner dopo i gate WP-009.
+**Stato:** variante integrata nella PR #201 tramite il branch `claude/a2-r1-quota-rpc` (ratifica owner FCB-A2-R1-WP009-DECISIONS). Nessuna installazione in produzione. I 9 privilegi diretti del runner sono **eliminati** e sostituiti dalle 4 funzioni controllate; i limiti condivisi 8/min, 80/giorno e 2 concorrenti sono confermati come massimi fissi.
 
-**La variante non è ancora compatibile** con:
-- il precheck del restore;
-- i guard di sessione dei workflow restore e ruoli;
-- il backup;
-- la verifica WP-009 (`verify_bridge_roles.sql`).
-
-Vedi "Compatibilità bloccata". Per vincolo owner, questi file non sono stati modificati.
+Precheck del restore, guard di sessione generati, `$GUARD` dei workflow restore e ruoli, guard del backup e `verify_bridge_roles.sql` accettano `fcb_cert_quota` **solo** nello stato EXACT della query canonica; schema assente = comportamento di prima; ogni altro stato è rifiutato. Vedi "Compatibilità".
 
 Fonti:
 - `sql/aiven/apifootball_cert_path_a_quota_schema.sql`: step 1a, amministratore. Crea lo schema vuoto `fcb_cert_quota`, di proprietà del proprietario delle tabelle di quota.
@@ -16,7 +10,7 @@ Fonti:
 - `sql/aiven/apifootball_cert_path_a_quota_assert.sql`: verifica dello stato esatto, nella stessa transazione dello step 1b e dopo ogni rotazione della password.
 - `sql/aiven/apifootball_cert_quota_state.sql`: query canonica di sola lettura (`ABSENT`/`EXACT`/`DRIFT`). È incorporata byte per byte nell'assert e il runner la usa prima di qualsiasi richiesta.
 
-I file della variante a 9 privilegi (`apifootball_cert_path_a_coordinator_grants.sql` e `_assert.sql`) restano nel repository. Nessun workflow né lo script di installazione li esegue più. Li usano ancora soltanto i test di restore e WP-009, che verificano l'eccezione dei 9 privilegi tuttora presente nel precheck e in `verify_bridge_roles.sql`. Vanno rimossi insieme a quell'eccezione.
+I file della variante a 9 privilegi (`apifootball_cert_path_a_coordinator_grants.sql` e `_assert.sql`) sono **rimossi**, insieme all'eccezione dei 9 privilegi in precheck, impronte e `verify_bridge_roles.sql`.
 
 ## Matrice R1
 
@@ -27,9 +21,8 @@ I file della variante a 9 privilegi (`apifootball_cert_path_a_coordinator_grants
 | 3 | `fcb_cert_quota.release(text, text)` | `EXECUTE` | idem |
 | 4 | `fcb_cert_quota.snapshot(text)` | `EXECUTE` | idem |
 | 5 | `fcb_cert_quota.mark_exhausted(text, text)` | `EXECUTE` | idem |
-| — | schema `public` | `USAGE` (invariato, step 1) | amministratore |
 
-Il runner non ha **nessun** privilegio, né di tabella né di colonna, su `api_football_quota_counters`, `api_football_quota_leases` e `api_football_quota_attempts`, né su altre relazioni di `public`. Non ha CREATE né su `public` né su `fcb_cert_quota`.
+Il runner non ha **nessun** privilegio, né di tabella né di colonna, su `api_football_quota_counters`, `api_football_quota_leases` e `api_football_quota_attempts`, né su altre relazioni di `public`. Non ha CREATE né su `public` né su `fcb_cert_quota`, e **nessuna voce** sullo schema `public`: con la fase 1 WP-009 (PUBLIC senza USAGE su `public`) non ha nemmeno USAGE su `public`. Le funzioni `SECURITY DEFINER` non ne hanno bisogno; lo step 1 revoca un'eventuale USAGE esplicita della variante precedente. Il pre-flight del runner usa una ricerca nel catalogo al posto di `to_regclass('public.…')`, che senza USAGE fallirebbe. VERIFIED su PostgreSQL 18.6 (suite R1 con PUBLIC senza USAGE, sequenza completa WP-009 → R1).
 
 ## Le funzioni
 
@@ -87,32 +80,26 @@ Il runner rifiuta prima di qualsiasi richiesta:
 
 Nessuno di questi casi supera i limiti né riscrive lo stato del bridge. Il bridge resta fail-closed.
 
-**Limiti fissati (ASSUMED, da verificare dall'owner).** 8/80/2 sono i default di `bridge/api_football/config.py`. Se il runtime Render usa limiti più bassi (`APIFOOTBALL_MAX_*`), il runner può consumare fino a 8/80 mentre il bridge si ferma prima. Il valore effettivo su Render non è stato letto: nessun accesso alla produzione.
+**Limiti fissati (ratificati dall'owner).** 8/80/2 sono i default di `bridge/api_football/config.py` e sono confermati come massimi fissi, mai alzabili o aggirabili dal runner. Il residuo di disponibilità (consumo della quota entro i limiti) è accettato temporaneamente dall'owner; l'alterazione arbitraria delle tabelle non è accettata ed è eliminata (sopra).
 
 **R2 invariato.** Il runner può cambiare la propria password e le impostazioni del proprio ruolo.
 
-## Compatibilità bloccata (NON modificata, vincolo owner)
+## Compatibilità (adattata, FCB-A2-R1-WP009-DECISIONS)
 
-Misure su PostgreSQL 18.6 con la variante installata:
+Ogni controllo incorpora la stessa query canonica `sql/aiven/apifootball_cert_quota_state.sql` in forma di una sola riga (`cert_quota_state_one_line()` e `CERT_QUOTA_EXACT` in `scripts/generate_aiven_migrations.py`; i test offline verificano che il testo sia identico ovunque).
 
-| Controllo | Esito con R1 | Motivo |
-|---|---|---|
-| `defaultdb_precheck.sql` (restore WP-005) | `REFUSE_UNEXPECTED_SCHEMAS` (VERIFIED) | rifiuta ogni schema che non sia `public` o di sistema |
-| guard di sessione: costante `UNEXPECTED_SCHEMA_EXISTS` di `generate_aiven_migrations.py`; `$GUARD` dei workflow restore e ruoli | rifiuta (VERIFIED sulla costante del generatore; i `$GUARD` usano lo stesso testo) | idem |
-| guard del backup (`fcb_db_backup.py`) | `UNEXPECTED_SCHEMA` (VERIFIED) | idem |
-| `verify_bridge_roles.sql` (WP-009) | atteso `NOT_HARDENED:missing_runtime_grant` (per ispezione del codice, NON eseguito) | il modello attuale **richiede** i 9 privilegi per un `fcb_cert_runner` plain |
+| Controllo | Con R1 EXACT | Con R1 in deriva | Senza schema |
+|---|---|---|---|
+| `defaultdb_precheck.sql` (+ guard generati del restore) | stato invariato, es. `BRIDGE_0001_0008` (VERIFIED) | `REFUSE_UNEXPECTED_SCHEMAS` (VERIFIED, 15 manomissioni) | invariato (VERIFIED: output identico a `ca18d4f` su database fresco, fase 1 e fase 2) |
+| `$GUARD` dei workflow restore e ruoli (stesso testo, `$` e `"` escapati per bash) | accetta (VERIFIED con il testo estratto dal workflow) | `FCB_TARGET_GUARD_FAILED` (VERIFIED) | invariato |
+| guard del backup (`fcb_db_backup.py`) | ammesso e **incluso** nel dump; il restore isolato deve mostrare EXACT (`restore_cert_quota_state`, VERIFIED round trip su PG 18.6) | `UNEXPECTED_SCHEMA` prima di leggere righe (VERIFIED, 7 manomissioni) | invariato, `restore_cert_quota_state` = ABSENT |
+| `verify_bridge_roles.sql` (WP-009) | `HARDENED` dopo la fase 2 con le funzioni di `fcb_migrator` (VERIFIED) | `NOT_HARDENED:cert_quota_state` o il codice del privilegio (VERIFIED, 16 casi) | invariato: produzione di fase 1 = `HARDENED_PHASE1` (VERIFIED, test dedicato) |
+| impronte `fingerprint_bridge_*.sql` | invariate: tornano al testo di `main` (nessuna eccezione ACL), stessi valori pinnati | — | invariate |
 
-Per rendere R1 installabile serve una PR separata, approvata dall'owner. Toccherebbe:
-- precheck e guard rigenerati;
-- `UNEXPECTED_SCHEMA_EXISTS`;
-- i tre `$GUARD` dei workflow restore e ruoli;
-- il backup;
-- `verify_bridge_roles.sql`.
-
-In ciascun punto si accetterebbe `fcb_cert_quota` solo nello stato `EXACT`, secondo la query canonica, e si rimuoverebbe l'eccezione dei 9 privilegi. Questo modifica il percorso SQL e il workflow della fase 1 WP-009, che l'owner ha escluso da questa variante.
+Ordine: R1 si installa **dopo** la fase 2. Se installato in fase 1 è accettato, ma la fase 2 sposta le tabelle a `fcb_migrator` e non lo schema: la transazione della fase 2 fallisce su `cert_quota_state` e fa rollback (VERIFIED). Lo step 1a dopo la fase 2: l'amministratore ha solo l'appartenenza ADMIN a `fcb_migrator`, quindi si concede SET per la sola `CREATE SCHEMA … AUTHORIZATION` e lo revoca nello stesso blocco, con assert (VERIFIED su PG 18.6; ASSUMED su Aiven).
 
 ## Gate prima dell'applicazione in produzione (non autorizzata)
 
-1. Decisione dell'owner sulla compatibilità bloccata, poi una PR dedicata con CI verde e review indipendente.
-2. Gate WP-009: fase 1, switch di Render a `fcb_app`, 24 ore di osservazione, G1/G2, fase 2.
-3. Ratifica scritta dell'owner di questa matrice, del residuo di disponibilità e dei limiti fissati: 8/80/2, oppure valori diversi, uguali ai limiti effettivi del bridge.
+1. CI completa, test PG18 e nuova review indipendente sullo SHA finale della PR #201.
+2. Gate WP-009: switch di Render a `fcb_app`, 24 ore di osservazione, G1/G2, fase 2.
+3. Solo dopo la fase 2: installazione A2 R1 con i workflow `fcb-aiven-apifootball-cert-a2-*`, su GO scritto dell'owner.
