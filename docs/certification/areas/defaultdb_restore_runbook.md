@@ -59,7 +59,7 @@ exact SHA before any production run.
 | `REFUSE_RUNTIME_TABLE_DRIFT` | a runtime-named table that differs, checked in every state (tracked or not): definition, collation, UNLOGGED, reloptions, replica identity, privileges, owner other than the restoring role, RLS, rules, triggers, policies, inheritance, identity or generated columns. It would be skipped by `IF NOT EXISTS` and certified | no |
 | `REFUSE_UNSAFE_SEARCH_PATH` | `pg_catalog` is not first in the search path, the current schema is not `public`, or a database/role `search_path` setting exists | no |
 | `REFUSE_UNSAFE_SETTINGS` | any other setting of this database (any role), of the session role, or of every role (`ALTER ROLE ALL`), e.g. `role` | no |
-| `REFUSE_UNEXPECTED_SCHEMAS` | a non-system schema other than `public`; temporary schemas are matched by the anchored regex `^pg_(toast_)?temp_[0-9]+$`, and `_avnadmin_monitor` is ignored only in Aiven's real shape (owned by the `_avnadmin_monitor` role or a superuser, not by the session role, which is neither a member of the owner nor has CREATE on it) | no |
+| `REFUSE_UNEXPECTED_SCHEMAS` | a non-system schema other than `public`; temporary schemas are matched by the anchored regex `^pg_(toast_)?temp_[0-9]+$`, and `_avnadmin_monitor` is ignored only in Aiven's real shape (owned by the `_avnadmin_monitor` role or a superuser, not by the session role, which is neither a member of the owner nor has CREATE on it); PATH A2 R1's `fcb_cert_quota` is ignored only in the EXACT state of `sql/aiven/apifootball_cert_quota_state.sql` (same one-line text in the precheck, the generated guards and the workflow `$GUARD`) | no |
 | `REFUSE_EVENT_TRIGGERS` | an enabled event trigger exists; it would act on the restore's own DDL | no |
 | `REFUSE_DEFAULT_PRIVILEGES` | `ALTER DEFAULT PRIVILEGES` entries exist; they would grant on the new tables | no |
 | `BRIDGE_0001_0007` | exactly 0001–0007, names and checksums | yes (upgrade to 0008) |
@@ -88,7 +88,7 @@ The restore also refuses when:
 - the server is not PostgreSQL 18;
 - the connection is not TLS;
 - the current schema is not `public`;
-- any non-system schema exists other than `public` and Aiven's `_avnadmin_monitor` in its real shape;
+- any non-system schema exists other than `public`, Aiven's `_avnadmin_monitor` in its real shape and `fcb_cert_quota` in its EXACT R1 state;
 - `CURRENT_USER` differs from `SESSION_USER`, `search_path` is not exactly `public`, or a database/role setting other than `search_path` applies to the session.
 
 ## After a successful restore

@@ -261,7 +261,7 @@ _PAREN_WORDS = {"coalesce", "exists", "any", "all", "values", "as", "and", "or",
 
 
 def _bash_unescape(text):
-    return text.replace("\\$", "$")
+    return text.replace("\\$", "$").replace('\\"', '"')
 
 
 def _restore_guard_text():
@@ -397,3 +397,39 @@ def test_precheck_pins_exactly_the_bridge_functions_and_triggers():
         assert found, name
         assert _h.md5(found.group(2).encode()).hexdigest() == digest, name
     assert len(re.findall(r"\('[a-z_]+\|[a-z_]+\|[a-z_]+\|\d+'\)", sql_text)) == 9
+
+
+# ---------------------------------------------------------------- PATH A2 R1 (FCB-A2-R1-WP009-DECISIONS)
+# fcb_cert_quota is admitted ONLY in the EXACT state of sql/aiven/apifootball_cert_quota_state.sql; every
+# check carries the same one-line text, and the earlier nine-privilege runner exception is gone.
+
+def test_r1_every_schema_check_embeds_the_one_line_canonical_state():
+    state = gen.cert_quota_state_one_line()
+    assert gen.CERT_QUOTA_EXACT == (
+        "(n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name "
+        f"AND ({state}) OPERATOR(pg_catalog.=) 'EXACT'::pg_catalog.text)")
+    assert gen.UNEXPECTED_SCHEMA_EXISTS.endswith(f" AND NOT {gen.CERT_QUOTA_EXACT})")
+    assert gen.UNEXPECTED_SCHEMA_EXISTS in _restore_guard_text()
+    assert f"and not {gen.CERT_QUOTA_EXACT}" in _precheck_schema_query()
+    for name in ("defaultdb_precheck.sql", "defaultdb_restore_guard.sql", "defaultdb_restore_post_guard.sql"):
+        text = (AIVEN / name).read_text(encoding="utf-8")
+        assert f"AND NOT {gen.CERT_QUOTA_EXACT}" in text, name
+    verify = (AIVEN / "verify_bridge_roles.sql").read_text(encoding="utf-8")
+    assert (f"SELECT 'cert_quota_state', (({state}) OPERATOR(pg_catalog.<>) ALL "
+            "(ARRAY['ABSENT', 'EXACT']::pg_catalog.text[]))") in verify
+    # the one-line form is the file's query: same words, comment lines dropped
+    raw = (AIVEN / "apifootball_cert_quota_state.sql").read_text(encoding="utf-8")
+    assert state.split() == " ".join(l for l in raw.splitlines() if not l.lstrip().startswith("--")).rstrip().rstrip(";").split()
+
+
+def test_r1_the_nine_privilege_runner_exception_is_gone_everywhere():
+    for name in ("defaultdb_precheck.sql", "fingerprint_bridge_schema.sql", "fingerprint_bridge_structure.sql",
+                 "defaultdb_restore_guard.sql", "defaultdb_restore_post_guard.sql", "verify_bridge_roles.sql"):
+        text = (AIVEN / name).read_text(encoding="utf-8")
+        assert "cert_runner_grants" not in text and "cert_runner_column_grants" not in text, name
+        assert "ARRAY['DELETE', 'INSERT', 'SELECT']" not in text and "'/UPDATE/false'" not in text, name
+        assert "PATH A2 (owner GO)" not in text, name
+    for name in ("apifootball_cert_path_a_coordinator_grants.sql", "apifootball_cert_path_a_coordinator_assert.sql"):
+        assert not (AIVEN / name).exists(), name
+    pre = (AIVEN / "defaultdb_precheck.sql").read_text(encoding="utf-8")
+    assert "OR p.relacl IS NOT NULL" in pre and "WHERE a.attacl IS NOT NULL" in pre

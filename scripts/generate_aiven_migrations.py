@@ -115,9 +115,31 @@ ALLOWED_STATES = ('EMPTY', 'RUNTIME_ONLY', 'BRIDGE_0001_0007', 'BRIDGE_0001_0008
 # public.pg_advisory_xact_lock(integer) over pg_catalog's bigint function.
 ADVISORY_LOCK = 'SELECT pg_catalog.pg_advisory_xact_lock(460244120::pg_catalog.int8);\n'
 
+
+
+def cert_quota_state_one_line():
+    """PATH A2 R1: sql/aiven/apifootball_cert_quota_state.sql as ONE line (comment lines dropped, lines
+    joined by one space, final semicolon removed). The file has no adjacent string literals, so this is
+    the same query; it prints ABSENT, EXACT or DRIFT."""
+    text = (ROOT / 'sql' / 'aiven' / 'apifootball_cert_quota_state.sql').read_text(encoding='utf-8')
+    body = ' '.join(line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith('--'))
+    if not body.endswith(';') or '$' in body or '--' in body:
+        raise SystemExit('unexpected shape: apifootball_cert_quota_state.sql')
+    return body[:-1]
+
+
+# PATH A2 R1 (owner ratification FCB-A2-R1-WP009-DECISIONS): the ONLY admitted non-system schema
+# besides public (and Aiven's monitor) is fcb_cert_quota, and only in its EXACT canonical state.
+# Absent stays admitted; any drift makes the schema unexpected again (fail closed).
+CERT_QUOTA_EXACT = (
+    "(n.nspname OPERATOR(pg_catalog.=) 'fcb_cert_quota'::pg_catalog.name "
+    f"AND ({cert_quota_state_one_line()}) OPERATOR(pg_catalog.=) 'EXACT'::pg_catalog.text)"
+)
+
 # Unexpected (non-system) schemas, as sql/aiven/pg18_occupancy.sql: anchored temp-schema regex,
-# `_avnadmin_monitor` excluded only in Aiven's real shape (audit F1). The workflow's $GUARD
-# carries the same text (tests/test_defaultdb_restore_workflow.py keeps them equal).
+# `_avnadmin_monitor` excluded only in Aiven's real shape (audit F1), fcb_cert_quota only when
+# EXACT (PATH A2 R1). The workflows' $GUARD carry the same text, with `$` and `"` escaped for bash
+# (tests/test_defaultdb_restore_workflow.py and tests/test_defaultdb_roles_workflow.py keep them equal).
 UNEXPECTED_SCHEMA_EXISTS = (
     "EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n "
     "JOIN pg_catalog.pg_roles r_owner ON r_owner.oid OPERATOR(pg_catalog.=) n.nspowner "
@@ -127,7 +149,8 @@ UNEXPECTED_SCHEMA_EXISTS = (
     "AND n.nspowner OPERATOR(pg_catalog.<>) (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) SESSION_USER) "
     "AND (r_owner.rolsuper OR r_owner.rolname OPERATOR(pg_catalog.=) '_avnadmin_monitor'::pg_catalog.name) "
     "AND NOT pg_catalog.pg_has_role(SESSION_USER, n.nspowner, 'MEMBER') "
-    "AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE')))"
+    "AND NOT pg_catalog.has_schema_privilege(SESSION_USER, n.oid, 'CREATE')) "
+    f"AND NOT {CERT_QUOTA_EXACT})"
 )
 # Login-time settings other than search_path (database, role, database+role): audit F5.
 FOREIGN_SETTINGS_EXISTS = (

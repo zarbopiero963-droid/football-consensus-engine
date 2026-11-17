@@ -380,3 +380,40 @@ def test_execute_refuses_when_the_committed_plan_file_differs_from_the_code(monk
                        "--out", str(tmp_path / "out")]) == 2
     assert capsys.readouterr().out.strip() == "PLAN_OUT_OF_DATE"
     assert batch.main(["--plan-approval-request", "batch1"]) == 2  # nothing to approve either
+
+
+def test_per_run_cap_counts_every_reserved_attempt_including_ambiguous_ones(monkeypatch):
+    """Review #201: the in-memory per-run cap counts first sends, retries and ambiguous outcomes
+    (TRANSPORT_ERROR / RESERVED_UNKNOWN): once reached, nothing more is reserved or sent."""
+    import httpx
+    monkeypatch.setenv(batch.AUTH_VAR, "true")
+    ledger = FakeLedger(Store())
+    asyncio.run(ledger.open("camp-runcap-001", 78, "a" * 64))
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if len(seen) % 2:
+            raise httpx.ConnectTimeout("ambiguous")
+        return httpx.Response(200, json={})
+    transport = batch.budget_transport(httpx.MockTransport(handler), ledger, "camp-runcap-001", run_cap=3)
+
+    async def go():
+        codes = []
+        async with httpx.AsyncClient(transport=transport, base_url="https://x.example") as client:
+            for i in range(6):
+                token = batch._CURRENT_CALL.set(f"C{i}")
+                try:
+                    await client.get(f"/r{i}")
+                    codes.append("SENT")
+                except batch.BudgetExhausted as exc:
+                    codes.append(str(exc))
+                except httpx.TransportError:
+                    codes.append("AMBIGUOUS")
+                finally:
+                    batch._CURRENT_CALL.reset(token)
+        return codes
+    codes = asyncio.run(go())
+    assert len(seen) == 3 and codes[:3] == ["AMBIGUOUS", "SENT", "AMBIGUOUS"]
+    assert codes[3:] == ["RUN_REQUEST_CAP_REACHED"] * 3
+    assert batch.RUN_REQUEST_CAPS == {"BATCH1": 78, "LIVE_FULL_MATCH_SNAPSHOT": 8}

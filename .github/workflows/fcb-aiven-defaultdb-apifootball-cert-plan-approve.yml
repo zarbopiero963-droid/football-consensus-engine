@@ -18,6 +18,7 @@ name: FCB Aiven defaultdb API-FOOTBALL cert plan approval (owner-gated)
 #      pinned): append-only INSERT ... ON CONFLICT DO NOTHING, then assertions.
 # Rollback: none needed and none possible (append-only register, kept as evidence). Not
 # dispatching the campaign workflow stops every use. See docs/certification/apifootball/README.md.
+# DISABLED (PATH A2): the first step always fails with LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2.
 on:
   workflow_dispatch:
     inputs:
@@ -72,6 +73,14 @@ jobs:
       # A URI sslmode overrides PGSSLMODE in libpq: the target check rejects anything but verify-full.
       REQUIRE_SSLMODE_VERIFY_FULL: 'true'
     steps:
+      # PATH A2 (owner GO): the certification ledger lives ONLY in the dedicated database fcb_cert
+      # (fcb-aiven-apifootball-cert-a2-install.yml / -a2-plan-approve.yml). This legacy workflow would
+      # install or approve a SECOND ledger in defaultdb with an independent budget: it is disabled,
+      # fail-closed, BEFORE any checkout, secret or connection (tests/test_apifootball_cert_a2_workflows.py).
+      - name: LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2
+        run: |
+          echo "::error::LEGACY_LEDGER_WORKFLOW_DISABLED_PATH_A2"
+          exit 1
       - uses: actions/checkout@v4
         with:
           persist-credentials: false

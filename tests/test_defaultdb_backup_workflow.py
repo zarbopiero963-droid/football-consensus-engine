@@ -131,9 +131,16 @@ WRITE_SQL = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|DROP|ALTER|GRANT
 
 def test_source_side_sql_is_read_only_catalog_or_select():
     mod = _module()
+    # PATH A2 R1: GUARD_SQL embeds the canonical fcb_cert_quota state query, whose string literals
+    # ('/CREATE/false', 'CREATE', 'USAGE') are compared data; with its literals blanked it writes nothing,
+    # and the rest of GUARD_SQL is checked unchanged.
+    state = mod.CERT_QUOTA_STATE_SQL
+    assert mod.GUARD_SQL.count(state) == 1
+    assert not WRITE_SQL.search(re.sub(r"'(?:[^']|'')*'", "''", state))
+    assert not re.search(r"\b(EXECUTE|DO|PERFORM)\b", re.sub(r"'(?:[^']|'')*'", "''", state), re.I)
     for name in ("GUARD_SQL", "TABLES_SQL", "SEQUENCES_SQL", "FUNCTIONS_SQL", "REFERENCED_ROLES_SQL", "OWNERS_SQL",
                  "ACLS_SQL", "ROLES_SQL", "MEMBERSHIPS_SQL", "BOOTSTRAP_SQL", "COLUMN_OPTIONS_SQL", "DATABASE_SQL"):
-        assert not WRITE_SQL.search(getattr(mod, name)), name
+        assert not WRITE_SQL.search(getattr(mod, name).replace(state, "")), name
     for path in (mod.COUNT_SQL, mod.STRUCTURE_SQL):
         assert not WRITE_SQL.search(_sql_only(path.read_text())), path
     import inspect
@@ -1064,3 +1071,30 @@ def test_f5_runbook_documents_codes_families_residual_p3_and_digest_check():
     skipped = _fixture_skipped()
     c = json.dumps(sorted(x.split(" ", 1) for x in skipped), ensure_ascii=True, separators=(",", ":"))
     assert hashlib.sha256(c.encode()).hexdigest() == mod.skipped_settings_digest(skipped)
+
+
+# ------------------------------------------------------------------ PATH A2 R1 (FCB-A2-R1-WP009-DECISIONS)
+
+def test_r1_backup_admits_fcb_cert_quota_only_when_exact_and_dumps_it():
+    mod = _module()
+    import sys
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import generate_aiven_migrations as gen
+    assert mod.CERT_QUOTA_STATE_SQL == gen.cert_quota_state_one_line()
+    assert "(" + mod.CERT_QUOTA_STATE_SQL + ") AS cert_quota_state" in mod.GUARD_SQL
+    base = {"db": "defaultdb", "ver": 180006, "ssl": True, "same_user": True, "read_only": "on",
+            "isolation": "repeatable read", "own_other_schemas": [], "foreign_owned": 0, "acting_members": 0,
+            "large_objects": 0, "forced_rls": 0, "extensions_outside_public": 0}
+    for state, ok in (("EXACT", True), ("DRIFT", False), ("ABSENT", False), (None, False)):
+        problems, excluded = mod.check_guard({**base, "other_schemas": ["fcb_cert_quota"], "cert_quota_state": state},
+                                             expected_db="defaultdb", require_tls=True)
+        assert (problems == []) is ok and excluded == [], state  # admitted means DUMPED, never excluded
+    problems, _ = mod.check_guard({**base, "other_schemas": None, "cert_quota_state": "ABSENT"},
+                                  expected_db="defaultdb", require_tls=True)
+    assert problems == []
+    # EXACT admits that one schema only
+    problems, _ = mod.check_guard({**base, "other_schemas": ["fcb_cert_quota", "x"], "cert_quota_state": "EXACT"},
+                                  expected_db="defaultdb", require_tls=True)
+    assert problems == ["UNEXPECTED_SCHEMA"]
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert '"restore_cert_quota_state"' in src and 'src.get("cert_quota_state") in ("ABSENT", "EXACT")' in src
