@@ -1264,16 +1264,22 @@ def test_phase2_refuses_while_another_administrator_session_is_connected(phase1)
 
 
 def test_phase2_refuses_an_administrator_session_that_appears_during_the_observation(phase1):
+    # The late session opens 1.5 s after the transaction starts and stays open until the transaction
+    # returns (not a fixed 3 s): on a slow runner the checks before the observation window can take
+    # longer than 4.5 s, and a session closed before the window opened would not be "during" it.
+    done = threading.Event()
+
     def late_session():
         time.sleep(1.5)
         with phase1.connect("admin") as other:
             other.execute("SELECT 1")
-            time.sleep(3)
+            done.wait(timeout=120)
     t = threading.Thread(target=late_session)
     t.start()
     try:
         rc, _, err = _enable_tx(phase1, observe=4)
     finally:
+        done.set()
         t.join()
     assert rc != 0 and "FCB_ROLES_ADMIN_SESSION_PRESENT" in err
     assert phase1.roles_state() == "HARDENED_PHASE1"
