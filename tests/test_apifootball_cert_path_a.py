@@ -78,7 +78,14 @@ def test_defaultdb_gets_only_two_roles_and_the_minimal_coordinator_grant():
     assert not re.search(r"GRANT [^;]*\bON TABLE\b|GRANT [^;]*\bON (ALL|SEQUENCE)", fns)
     assert re.findall(r"^GRANT [^;]*?TO (\w+);", fns, re.M | re.S) == ["fcb_cert_runner", "fcb_cert_runner"]
     assert "GRANT USAGE ON SCHEMA fcb_cert_quota TO fcb_cert_runner;" in fns
-    assert fns.count("SECURITY DEFINER") == 4 and fns.count("SET search_path = pg_catalog, pg_temp") == 4
+    # review #201 P2 (intentional change): + the key pin (SECURITY INVOKER, same pinned search_path)
+    assert fns.count("SECURITY DEFINER") == 4 and fns.count("SET search_path = pg_catalog, pg_temp") == 5
+    assert "'SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS %L'" in fns
+    assert fns.count("RAISE EXCEPTION 'FCB_CERT_QUOTA_KEY_REFUSED'") == 4
+    assert fns.count("RAISE EXCEPTION 'FCB_CERT_QUOTA_ISOLATION_REFUSED'") == 4
+    assert "FCB_CERT_PATH_A_QUOTA_KEY_CHANGED" in fns and "REVOKE ALL ON FUNCTION fcb_cert_quota.pinned_key_hash() FROM PUBLIC;" in fns
+    from bridge.api_football.quota import _key_hash
+    assert path_a.pinned_key_hash_of("some-key") == _key_hash("some-key")
     assert fns.count("IF SESSION_USER OPERATOR(pg_catalog.<>) 'fcb_cert_runner'::pg_catalog.name THEN") == 4
     assert not re.search(r"\b(CREATE|ALTER|DROP)\s+ROLE\b|PASSWORD|WITH GRANT OPTION", fns)  # never a rotation
     assert "FCB_CERT_PATH_A_QUOTA_GUARD_FAILED" in fns and "3::pg_catalog.int8" in fns
